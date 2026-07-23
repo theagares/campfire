@@ -26,3 +26,6 @@ Thumbs.db
 # Env / local secrets
 .env
 .env.local
+
+# 엔진 로컬 런타임 상태 (탐지 job 메타데이터 store + 감사로그 — 실행할 때마다 생성됨)
+engine/app/store/data/

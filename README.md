@@ -19,62 +19,64 @@
   > TXT/PDF/DOCX/XLSX/PPTX 파싱과 PII·인젝션 탐지·마스킹은 동일하게 동작합니다.
   > HWP(구버전)는 LibreOffice가 설치돼 있으면 두 OS 모두 동일하게 지원됩니다.
 
-## 설치 및 실행
+## 설치 (명령어 한 줄)
 
-### 1) 저장소 클론
+git clone 없이, 저장소를 내려받아 엔진(Python)·데스크탑 앱(Electron) 의존성까지
+한 번에 설치합니다. 기본 설치 위치는 `~/securedoc-gateway` (환경변수
+`SECUREDOC_INSTALL_DIR`로 변경 가능).
 
-```bash
-git clone https://github.com/theagares/securedoc-gateway.git
-cd securedoc-gateway
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.ps1 | iex
 ```
 
-### 2) 엔진 (Python)
-
-데스크탑 앱이 개발 모드에서 이 폴더를 사이드카로 그대로 실행하므로,
-먼저 가상환경을 만들고 의존성을 설치해야 합니다.
+**macOS / Linux:**
 
 ```bash
-cd engine
-python -m venv .venv
-
-# Windows
-.venv\Scripts\python.exe -m pip install -e ".[test]"
-
-# macOS / Linux
-.venv/bin/python -m pip install -e ".[test]"
+curl -fsSL https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.sh | bash
 ```
 
-단독 실행 확인 (선택):
+설치가 끝나면 안내되는 대로 실행하면 됩니다:
 
 ```bash
-# Windows
-.venv\Scripts\python.exe -m app.main
-
-# macOS / Linux
-.venv/bin/python -m app.main
-```
-
-`/health` 응답에 `{"service":"securedoc-gateway","port":48200}` (또는 그 다음 사용 가능한 포트)가 뜨면 정상입니다.
-
-### 3) 데스크탑 앱 (Electron)
-
-```bash
-cd ../desktop
-npm install
+cd ~/securedoc-gateway/desktop
 npm start
 ```
 
-앱이 뜨면 엔진 사이드카(위 2번 venv)를 자동으로 spawn합니다. 창을 닫아도
-트레이에 상주하며, 트레이 아이콘 클릭으로 다시 열 수 있습니다.
+앱이 뜨면 엔진 사이드카를 자동으로 spawn합니다. 창을 닫아도 트레이에
+상주하며, 트레이 아이콘 클릭으로 다시 열 수 있습니다.
 
-설치형 패키지로 빌드하려면:
+설치형 패키지로 빌드하려면 `desktop/`에서:
 
 ```bash
 npm run dist:win   # Windows nsis 인스톨러
 npm run dist:mac   # macOS dmg (서명되지 않은 로컬 빌드)
 ```
 
-### 4) Chrome 확장
+### 소스로 직접 개발하려면 (git clone)
+
+기여하거나 코드를 직접 고치려면 위 원커맨드 설치 대신 일반적인 clone이 낫습니다.
+
+```bash
+git clone https://github.com/theagares/securedoc-gateway.git
+cd securedoc-gateway
+
+cd engine
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[test]"   # Windows
+.venv/bin/python -m pip install -e ".[test]"            # macOS/Linux
+
+cd ../desktop
+npm install
+npm start
+```
+
+단독으로 엔진만 실행해 확인하려면 `python -m app.main` (venv의 python 사용) —
+`/health` 응답에 `{"service":"securedoc-gateway","port":48200}` (또는 다음 사용
+가능한 포트)가 뜨면 정상입니다.
+
+### Chrome 확장
 
 1. Chrome 주소창에 `chrome://extensions` 입력
 2. 우측 상단 "개발자 모드" 켜기
