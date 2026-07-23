@@ -12,7 +12,7 @@ const path = require('path');
 const { Tray, BrowserWindow, Menu, nativeImage, screen } = require('electron');
 
 const POPOVER_W = 300;
-const POPOVER_H = 400;
+const POPOVER_H = 460; // ACTIVE MODEL 섹션 + 2×2 리소스 그리드(서브로우 포함) 반영해 확장
 
 class TrayController {
   constructor(app, { onShowDashboard, onQuit }) {
@@ -25,14 +25,16 @@ class TrayController {
 
   create() {
     const iconPath = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-    let image = nativeImage.createFromPath(iconPath);
+    let image = nativeImage.createFromPath(iconPath); // 같은 폴더의 tray-icon@2x.png 를 레티나용으로 자동 인식
     if (image.isEmpty()) {
       image = nativeImage.createEmpty();
     }
-    // tray-icon.png 원본이 Figma 20pix_logo(20×20) 그대로라 그 이하로 축소하면 뭉개진다 —
-    // 16/18px로 다운스케일하지 않고 원본 그대로(20×20) 사용.
+    // tray-icon.png 는 검정 라인아트 + 투명 배경(진짜 알파 채널)으로 만든 macOS 템플릿 전용
+    // 에셋이다 — setTemplateImage(true) 는 알파를 마스크로 쓰고 RGB 는 무시하기 때문에,
+    // 이전처럼 배경까지 불투명(알파 없음)한 PNG 를 넘기면 아이콘 전체가 라이트/다크 모드에
+    // 따라 검정 또는 흰색 사각형으로 통짜 채워져 "색이 반전된 것처럼" 보이는 버그가 있었다.
     if (process.platform === 'darwin') {
-      const tmpl = image.resize({ width: 20, height: 20 });
+      const tmpl = image.resize({ width: 22, height: 22 });
       tmpl.setTemplateImage(true);
       this.tray = new Tray(tmpl);
     } else {

@@ -65,6 +65,22 @@ $('#conn-ext-install').addEventListener('click', () => {
   const url = (state.connections && state.connections.extension.helpUrl) || '';
   if (url) api.openExternal(url);
 });
+
+// 다른 PC에 설치할 때 쓰는 원커맨드 설치 명령어 (README/scripts/install.ps1|sh 와 동일).
+// 현재 OS에 맞는 명령어를 자동으로 골라 보여준다.
+const INSTALL_REPO = 'theagares/securedoc-gateway';
+function installCommandForPlatform() {
+  const p = navigator.platform || '';
+  if (/mac/i.test(p)) {
+    return `curl -fsSL https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.sh | bash`;
+  }
+  if (/win/i.test(p)) {
+    return `irm https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.ps1 | iex`;
+  }
+  return `curl -fsSL https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.sh | bash`;
+}
+$('#install-cmd-text').textContent = installCommandForPlatform();
+
 $$('.codeblock-row .copy-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const code = btn.parentElement.querySelector('code').textContent;
@@ -159,12 +175,134 @@ function subRow(items) {
   return `<div class="rb-sub">${rows.join('')}</div>`;
 }
 
-// ── 처리현황 (Figma 정적 다이어그램, PLAN §8) ─────────────────────────────────
+// ── 처리현황 (드래그 가능한 다이어그램, PLAN §8 확정: "요소를 드래그해 위치를 조정"은
+// 디자인 표현이 아니라 실제 구현할 기능) ─────────────────────────────────────
+// 좌표는 Figma 노드(120:481 그룹, 카드 원점 기준 66,94)를 460×220 캔버스로 환산하고,
+// "탐지 종류 부분이 힌트 문구에 붙어 보인다"는 피드백을 반영해 y를 전체적으로 +15 내렸다.
+const PIPE_NODES = [
+  { id:'receive', src:'receive', label:null, left:0,      top:25.45, w:9.53, h:19.93 },
+  { id:'varco',   src:'varco',   label:null, left:34.13,  top:25,    w:18.91, h:20 },
+  { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:62.77, top:6.82, w:9.53, h:19.93 },
+  { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:62.77, top:44.88, w:9.53, h:19.93 },
+  { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:88.81, top:6.82, w:9.53, h:19.93 },
+  { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:88.77, top:45.64, w:9.53, h:19.93 },
+  { id:'ocr', src:'ocr', label:'OCR\n텍스트 추출', left:31.46, top:64.2, w:9.78, h:20.45 },
+  { id:'text-extract', src:'text-extract', label:'텍스트\n직접 추출', left:47.15, top:64.2, w:9.78, h:20.45 },
+];
+const PIPE_EDGES = [
+  { from:'receive', to:'varco' },
+  { from:'varco', to:'pii-detect' },
+  { from:'varco', to:'inj-detect' },
+  { from:'pii-detect', to:'pii-done' },
+  { from:'inj-detect', to:'inj-done' },
+  { from:'ocr', to:'varco', dashed:true },
+  { from:'text-extract', to:'varco', dashed:true },
+];
+const pipeNodeEls = {};
+let pipeDiagramBuilt = false;
+let pipeSaveTimer = null;
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function buildPipelineDiagram() {
+  if (pipeDiagramBuilt) return;
+  pipeDiagramBuilt = true;
+  const canvas = $('#pipe-diagram');
+  const svg = $('#pipe-lines');
+  const saved = (state.settings && state.settings.pipelineLayout) || {};
+
+  PIPE_NODES.forEach((n) => {
+    const pos = saved[n.id] || { left: n.left, top: n.top };
+    const el = document.createElement('div');
+    el.className = 'pipe-node' + (n.id === 'varco' ? ' varco' : '');
+    el.dataset.id = n.id;
+    el.style.left = pos.left + '%';
+    el.style.top = pos.top + '%';
+    el.style.width = n.w + '%';
+    el.style.height = n.h + '%';
+    const label = n.label ? `<div class="pn-label">${n.label}</div>` : '';
+    el.innerHTML = `<img class="pn-icon" src="../assets/figma/pipe-node-${n.src}.png" alt="${n.label || n.id}" />${label}`;
+    canvas.appendChild(el);
+    pipeNodeEls[n.id] = el;
+    makePipeNodeDraggable(el, canvas);
+  });
+
+  window.addEventListener('resize', drawPipeLines);
+  drawPipeLines();
+}
+
+function makePipeNodeDraggable(el, canvas) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startLeft = parseFloat(el.style.left);
+    const startTop = parseFloat(el.style.top);
+    const w = parseFloat(el.style.width);
+    const h = parseFloat(el.style.height);
+
+    const move = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const dxPct = ((ev.clientX - startX) / rect.width) * 100;
+      const dyPct = ((ev.clientY - startY) / rect.height) * 100;
+      el.style.left = clamp(startLeft + dxPct, 0, 100 - w) + '%';
+      el.style.top = clamp(startTop + dyPct, 0, 100 - h) + '%';
+      drawPipeLines();
+    };
+    const up = () => {
+      el.classList.remove('dragging');
+      el.releasePointerCapture(e.pointerId);
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      schedulePipeLayoutSave();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  });
+}
+
+function drawPipeLines() {
+  const svg = $('#pipe-lines');
+  if (!svg) return;
+  const centers = {};
+  PIPE_NODES.forEach((n) => {
+    const el = pipeNodeEls[n.id];
+    if (!el) return;
+    const l = parseFloat(el.style.left), t = parseFloat(el.style.top);
+    const w = parseFloat(el.style.width), h = parseFloat(el.style.height);
+    centers[n.id] = { x: l + w / 2, y: t + h / 2 };
+  });
+  const paths = PIPE_EDGES.map((e) => {
+    const a = centers[e.from], b = centers[e.to];
+    if (!a || !b) return '';
+    const dx = (b.x - a.x) / 2;
+    const d = `M ${a.x},${a.y} C ${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
+    return `<path d="${d}" class="${e.dashed ? 'dashed' : ''}" marker-end="url(#pipe-arrow)" />`;
+  }).join('');
+  // defs(화살촉)는 index.html 에 고정 정의돼 있어 매번 다시 그릴 필요 없이 path 만 교체.
+  Array.from(svg.querySelectorAll('path')).forEach((p) => p.remove());
+  svg.insertAdjacentHTML('beforeend', paths);
+}
+
+function schedulePipeLayoutSave() {
+  clearTimeout(pipeSaveTimer);
+  pipeSaveTimer = setTimeout(() => {
+    const layout = {};
+    PIPE_NODES.forEach((n) => {
+      const el = pipeNodeEls[n.id];
+      if (!el) return;
+      layout[n.id] = { left: parseFloat(el.style.left), top: parseFloat(el.style.top) };
+    });
+    api.savePipelineLayout(layout).catch(() => {});
+  }, 400);
+}
+
 function renderPipeline() {
+  buildPipelineDiagram();
   // 실시간 "탐지중" 신호는 엔진 REST 계약(§2)에 없어 idle 고정 표시.
-  // 실행중 상태 에셋(assets/figma/pipe-diagram-running.png)은 신호가 추가되면 그대로 교체 가능.
   const running = false;
-  $('#pipe-diagram-img').src = running ? '../assets/figma/pipe-diagram-running.png' : '../assets/figma/pipe-diagram-idle.png';
   const status = $('#pipe-status');
   status.className = 'pc-status ' + (running ? 'running' : 'idle');
   $('#pipe-status-label').textContent = running ? '탐지중' : '탐지 종료';
