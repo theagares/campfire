@@ -2,89 +2,117 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>UpSecurity</title>
   <style>
+    /* Figma 파일 hMO6k051z9JXBoa2fWySND 노드 36:2846 "현황" 1:1 반영.
+       색상은 Figma 캡처가 라이트 모드뿐이라 그대로, 다크 모드는 앱 본체(styles.css)와
+       동일한 톤으로 자체 보완. 브랜드 퍼플(#584CDC)로 통일 — 기존엔 앱 어디에도 없는
+       파란색(#3182F6)을 썼었다. */
     :root, [data-theme="light"] {
-      --bg:rgba(255,255,255,.92); --ink:#191F28; --ink-mute:#8B95A1; --line:#E5E8EB;
-      --signal:#3182F6; --ok:#12B886; --danger:#F04452; --warn:#FF9500;
-      --pii:#8B5CF6; --inj:#EC4899; --sunken:#F2F4F6;
+      --bg:rgba(235,245,252,.85); --card-bg:rgba(255,255,255,.6); --ink:#1F2937; --ink-mute:rgba(0,0,0,.5);
+      --purple:#584CDC; --ok:#09AE4B; --danger:#F04452; --warn:#FF9500;
+      --pii:#584CDC; --inj:#6A7282; --sunken:rgba(0,0,0,.08); --line:rgba(0,0,0,.08);
     }
     @media (prefers-color-scheme: dark) {
-      :root { --bg:rgba(31,31,36,.92); --ink:#F2F4F6; --ink-mute:#6B7684; --line:#2E2E35;
-        --signal:#4C8DFF; --ok:#28C08A; --danger:#FF5C6C; --warn:#FFB020; --pii:#A78BFA; --inj:#F472B6; --sunken:#26262C; }
+      :root { --bg:rgba(28,28,32,.85); --card-bg:rgba(255,255,255,.06); --ink:#F2F4F6; --ink-mute:rgba(255,255,255,.5);
+        --purple:#8B7CFF; --ok:#28C08A; --danger:#FF5C6C; --warn:#FFB020; --pii:#8B7CFF; --inj:#9CA3AF;
+        --sunken:rgba(255,255,255,.08); --line:rgba(255,255,255,.1); }
     }
     * { box-sizing:border-box; }
     html,body { margin:0; height:100%; background:transparent; }
     body { font-family:"Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;
-      color:var(--ink); font-size:13px; padding:8px; }
-    .pop { background:var(--bg); backdrop-filter:blur(20px); border:1px solid var(--line);
-      border-radius:16px; padding:14px; box-shadow:0 12px 40px rgba(0,0,0,.28); }
-    .row { display:flex; align-items:center; justify-content:space-between; }
-    .title { font-weight:800; font-size:14px; }
-    .title span { color:var(--signal); }
-    .sec { display:flex; align-items:center; gap:8px; font-weight:600; }
-    .switch { position:relative; width:42px; height:24px; }
-    .switch input { opacity:0; width:0; height:0; }
-    .slider { position:absolute; inset:0; background:#c9ccd1; border-radius:999px; transition:.2s; cursor:pointer; }
-    .slider:before { content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
-    input:checked + .slider { background:var(--ok); }
-    input:checked + .slider:before { transform:translateX(18px); }
+      color:var(--ink); font-size:12px; padding:8px; -webkit-font-smoothing:antialiased; }
+    .pop { background:var(--bg); backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,.6);
+      border-radius:16px; padding:14px; box-shadow:0 10px 40px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.5); }
+
+    .header-row { display:flex; justify-content:flex-end; }
+    .sec-toggle-wrap { display:inline-flex; cursor:pointer; }
+    .sec-toggle-wrap input { position:absolute; opacity:0; width:0; height:0; }
+    .sec-pill {
+      display:inline-flex; align-items:center; gap:8px; padding:5px 5px 5px 12px; border-radius:999px;
+      background:var(--sunken); font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink-mute);
+      transition:background .2s;
+    }
+    .sec-toggle-wrap input:checked + .sec-pill { background:var(--ok); color:#fff; }
+    .sec-knob { width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); flex:0 0 auto; }
+
     .divider { height:1px; background:var(--line); margin:12px 0; }
-    .pill { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-radius:10px; background:var(--sunken); margin-bottom:6px; }
-    .pill .nm { font-weight:600; }
-    .pill .st { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-mute); }
-    .dot { width:8px; height:8px; border-radius:50%; background:var(--ink-mute); }
-    .dot.on { background:var(--ok); } .dot.off { background:var(--danger); }
-    .res { display:flex; align-items:center; gap:8px; margin:6px 0; }
-    .res .l { width:42px; font-size:12px; color:var(--ink-mute); font-weight:600; }
-    .track { flex:1; height:6px; background:var(--sunken); border-radius:999px; overflow:hidden; }
-    .fill { height:100%; background:var(--signal); border-radius:999px; transition:width .4s; }
-    .fill.warn { background:var(--warn); } .fill.hot { background:var(--danger); }
-    .p { width:44px; text-align:right; font-size:12px; font-variant-numeric:tabular-nums; }
-    .p.na { color:var(--ink-mute); }
-    .counts { display:flex; gap:8px; margin-top:8px; }
-    .count { flex:1; background:var(--sunken); border-radius:10px; padding:9px 10px; }
-    .count .c-l { font-size:11px; color:var(--ink-mute); display:flex; align-items:center; gap:5px; }
-    .count .c-v { font-size:18px; font-weight:800; }
-    .sw { width:8px; height:8px; border-radius:2px; } .sw.pii{background:var(--pii)} .sw.inj{background:var(--inj)}
-    .more { display:block; width:100%; text-align:center; padding:9px; margin-top:12px; border:none; background:none; color:var(--signal); font-weight:600; font-size:13px; cursor:pointer; }
-    .quit { display:block; width:100%; padding:9px; margin-top:4px; border:1px solid var(--line); border-radius:10px; background:none; color:var(--danger); font-weight:700; cursor:pointer; }
-    .quit:hover { background:rgba(240,68,82,.08); }
+    .section-label { font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink); margin-bottom:8px; }
+
+    .model-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .model-count { font-size:10px; color:var(--ink-mute); margin-bottom:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .model-pill {
+      display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
+      background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
+    }
+    .model-pill .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto; }
+    .model-pill.on { border-color:var(--purple); color:var(--purple); }
+    .model-pill.on .mp-dot { background:var(--purple); }
+
+    .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
+    .res-block .rb-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+    .res-block .rb-icon { width:14px; height:14px; flex:0 0 14px; display:flex; align-items:center; justify-content:center; }
+    .res-block .rb-icon img { max-width:100%; max-height:100%; object-fit:contain; }
+    .res-block .rb-label { font-size:11px; font-weight:700; flex:1; }
+    .res-block .rb-pct { font-size:11px; font-weight:700; color:var(--purple); }
+    .res-block .rb-pct.na { color:var(--ink-mute); font-weight:600; }
+    .res-block .rb-bar { height:4px; border-radius:999px; background:var(--sunken); overflow:hidden; margin-bottom:6px; }
+    .res-block .rb-bar .fill { height:100%; background:var(--purple); border-radius:999px; transition:width .4s; }
+    .res-block .rb-bar .fill.warn { background:var(--warn); } .res-block .rb-bar .fill.hot { background:var(--danger); }
+    .res-block .rb-sub-item { display:flex; justify-content:space-between; font-size:9.5px; line-height:1.7; }
+    .res-block .rb-sub-item .l { color:var(--ink-mute); }
+    .res-block .rb-sub-item .v { color:var(--ink); font-weight:500; }
+
+    .more {
+      display:block; width:100%; text-align:center; padding:9px; margin-top:14px;
+      border:1px solid var(--line); border-radius:10px; background:var(--card-bg);
+      color:var(--ink); font-weight:600; font-size:11px; cursor:pointer;
+    }
+    .more:hover { background:var(--sunken); }
+    .quit-row { display:flex; justify-content:flex-end; margin-top:8px; }
+    .quit {
+      border:none; background:none; padding:2px 0; color:var(--ink-mute); font-weight:700;
+      font-size:9.5px; letter-spacing:.02em; text-decoration:underline; cursor:pointer;
+      display:inline-flex; align-items:center; gap:4px;
+    }
+    .quit:hover { color:var(--danger); }
   </style>
 </head>
 <body>
   <div class="pop">
-    <div class="row">
-      <div class="title">Up<span>Security</span></div>
-      <label class="sec">
-        <span id="sec-label">ON</span>
-        <span class="switch"><input type="checkbox" id="sec-toggle" checked /><span class="slider"></span></span>
+    <div class="header-row">
+      <label class="sec-toggle-wrap">
+        <input type="checkbox" id="sec-toggle" checked />
+        <span class="sec-pill" id="sec-pill">
+          <span id="sec-label">Security ON</span>
+          <span class="sec-knob"></span>
+        </span>
       </label>
     </div>
 
     <div class="divider"></div>
 
-    <div class="pill"><span class="nm">PII model</span><span class="st"><span class="dot" id="t-pii-dot"></span><span id="t-pii-label">—</span></span></div>
-    <div class="pill"><span class="nm">INJECTION model</span><span class="st"><span class="dot" id="t-inj-dot"></span><span id="t-inj-label">—</span></span></div>
-
-    <div class="divider"></div>
-
-    <div id="t-res"></div>
-
-    <div class="counts">
-      <div class="count">
-        <div class="c-l"><span class="sw pii"></span>PII 탐지 · 오늘</div>
-        <div class="c-v" id="t-pii-today">–</div>
+    <div class="section-label">ACTIVE MODEL</div>
+    <div class="model-grid">
+      <div class="model-col">
+        <div class="model-count">PII 탐지 | 오늘 <span id="t-pii-today">0</span>건</div>
+        <div class="model-pill" id="t-pii-pill"><span class="mp-dot" id="t-pii-dot"></span><span id="t-pii-label">PII model</span></div>
       </div>
-      <div class="count">
-        <div class="c-l"><span class="sw inj"></span>INJECTION · 오늘</div>
-        <div class="c-v" id="t-inj-today">–</div>
+      <div class="model-col">
+        <div class="model-count">INJECTION 탐지 | 오늘 <span id="t-inj-today">0</span>건</div>
+        <div class="model-pill" id="t-inj-pill"><span class="mp-dot" id="t-inj-dot"></span><span id="t-inj-label">INJECTION model</span></div>
       </div>
     </div>
 
+    <div class="divider"></div>
+
+    <div class="res-grid" id="t-res"></div>
+
     <button class="more" id="t-more">대시보드에서 더 자세히 보기 →</button>
-    <button class="quit" id="t-quit">QUIT UpSecurity</button>
+    <div class="quit-row">
+      <button class="quit" id="t-quit">QUIT UpSecurity</button>
+    </div>
   </div>
   <script src="tray.js"></script>
 </body>

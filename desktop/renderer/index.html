@@ -96,8 +96,6 @@
                   <div class="ch-status"><span class="badge-pill" id="conn-mcp-badge">확인 중…</span></div>
                 </div>
                 <div class="codeblock-list">
-                  <div class="codeblock-row"><code>ollama launch chatgpt</code><button class="copy-btn"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
-                  <div class="codeblock-row"><code>ollama launch chatgpt</code><button class="copy-btn"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
                   <div class="codeblock-row"><code>npx upsecurity-mcp connect</code><button class="copy-btn"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
                 </div>
                 <p class="muted" id="conn-mcp-note"></p>
@@ -115,6 +113,10 @@
                 <button class="conn-link" id="conn-ext-install">확장 프로그램 설치하기 →</button>
                 <p class="muted" id="conn-ext-note"></p>
               </div>
+            </div>
+            <div class="install-cmd-block">
+              <p class="muted">다른 PC에도 UpSecurity를 설치하려면 터미널에 아래 명령어를 붙여넣으세요</p>
+              <div class="codeblock-row"><code id="install-cmd-text"></code><button class="copy-btn" id="install-cmd-copy"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
             </div>
             <div class="conn-divider" style="margin-top:16px"></div>
             <p class="conn-footnote">더 많은 연동 방식이 곧 추가됩니다</p>
@@ -193,8 +195,14 @@
             </div>
             <div class="card pipe-card">
               <div class="pc-hint">요소를 드래그해 위치를 조정해보세요</div>
-              <div class="pipe-diagram">
-                <img id="pipe-diagram-img" src="../assets/figma/pipe-diagram-idle.png" alt="파이프라인 흐름" />
+              <div class="pipe-diagram" id="pipe-diagram">
+                <svg class="pipe-lines" id="pipe-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <defs>
+                    <marker id="pipe-arrow" markerWidth="6" markerHeight="6" refX="4.5" refY="2" orient="auto">
+                      <path d="M0,0 L5,2 L0,4 Z" fill="rgba(0,0,0,.3)" />
+                    </marker>
+                  </defs>
+                </svg>
               </div>
               <div class="pc-divider"></div>
               <div class="pc-status idle" id="pipe-status">
