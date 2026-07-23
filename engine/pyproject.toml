@@ -19,7 +19,11 @@ dependencies = [
     "mcp>=1.2",
     "openpyxl>=3.1",
     "python-pptx>=1.0",
-    "pyhwpx>=1.7",
+    # pyhwpx는 한/글(한컴오피스) 프로그램을 COM(pywin32)으로 자동화하는 방식이라
+    # Windows 전용이다 — 다른 OS엔 설치 대상 wheel 자체가 없어 sys_platform 마커로
+    # 조건부 의존성 처리한다. macOS/Linux에서는 HWPX만 "미지원 통과"로 우아하게
+    # 저하되고(app/core/parser/hwpx.py의 ImportError 처리), 나머지 기능은 그대로 동작한다.
+    "pyhwpx>=1.7 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
