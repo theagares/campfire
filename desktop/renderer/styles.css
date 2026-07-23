@@ -1,0 +1,309 @@
+/* renderer/styles.css — UpSecurity 대시보드 (Figma 완성본 1:1 반영, 파일 hMO6k051z9JXBoa2fWySND) */
+
+@font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-Regular.ttf'); font-weight:400; font-style:normal; }
+@font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-Medium.ttf'); font-weight:500; font-style:normal; }
+@font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-SemiBold.ttf'); font-weight:600; font-style:normal; }
+@font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-Bold.ttf'); font-weight:700; font-style:normal; }
+
+:root {
+  --bg:#FFFFFF; --sidebar-bg:#F9F9F9;
+  --ink-900:#0A0A0A; --ink-850:#101828; --ink-600:#4A5565; --ink-500:#6A7282; --ink-mute:#555555;
+  --ink-inactive:rgba(10,10,10,.5);
+  --line-06:rgba(0,0,0,.06); --line-07:rgba(0,0,0,.07); --line-08:rgba(0,0,0,.08); --line-10:rgba(0,0,0,.1);
+  --line-stroke:rgba(0,0,0,.27);
+  --purple:#584CDC; --purple-soft:rgba(88,76,220,.12);
+  --green:#09AE4B;
+  --grey-400:#99A1AF; --grey-500:#6A7282;
+  --card-border:#99A1AF; --card-shadow:0 0 4px rgba(0,0,0,.25); --pill-shadow:0 0 5px rgba(0,0,0,.25);
+  --code-bg:#F5F5F5; --code-ink:#364153;
+  --warn:#FF9500; --warn-soft:#FFF4E5;
+  --danger:#F04452; --danger-soft:#FEECEE;
+  --radius-card:10px; --radius-card-lg:23px;
+}
+
+* { box-sizing:border-box; }
+html, body { height:100%; margin:0; }
+body {
+  font-family:'Inter',"Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;
+  background:var(--bg); color:var(--ink-900);
+  font-size:13px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+button { font-family:inherit; cursor:pointer; }
+a { color:var(--purple); text-decoration:none; }
+img { display:block; }
+
+/* ── 레이아웃 ── */
+.app-shell { display:grid; grid-template-columns:220px 1fr; height:100vh; transition:grid-template-columns .18s ease; }
+.app-shell:has(.sidebar.collapsed) { grid-template-columns:64px 1fr; }
+
+.sidebar {
+  background:var(--sidebar-bg); border-right:1px solid var(--line-07);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+.sb-top {
+  height:57px; flex:0 0 57px; display:flex; align-items:center; justify-content:flex-end;
+  padding:0 14px; border-bottom:1px solid var(--line-06);
+}
+.sb-toggle { display:flex; align-items:center; justify-content:center; padding:6px; border-radius:10px; background:none; border:none; }
+.sb-toggle:hover { background:var(--line-06); }
+.sb-toggle img { width:16px; height:16px; transition:transform .18s ease; }
+
+.nav { display:flex; flex-direction:column; padding:16px 12px; gap:2px; flex:1; }
+.nav-item {
+  display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:14px;
+  color:var(--ink-inactive); font-weight:500; font-size:13px; line-height:19.5px;
+  background:none; border:none; text-align:left; width:100%;
+}
+.nav-item img.nav-ico { width:15px; height:15px; flex:0 0 15px; }
+.nav-item span.nav-label { flex:1; white-space:nowrap; }
+.nav-item .nav-dot { width:6px; height:6px; border-radius:9999px; background:var(--ink-600); opacity:0; margin-left:auto; flex:0 0 auto; }
+.nav-item.active {
+  background:linear-gradient(135deg, rgba(120,120,120,.18) 0%, rgba(100,100,100,.1) 100%);
+  box-shadow:inset 0 0 0 1px rgba(120,120,120,.18);
+  color:var(--ink-600); font-weight:500;
+}
+.nav-item.active .nav-dot { opacity:1; }
+
+.sb-user {
+  display:flex; align-items:center; gap:10px; padding:16px; border-top:1px solid var(--line-06);
+}
+.sb-user .avatar {
+  position:relative; width:28px; height:28px; border-radius:9999px; background:var(--ink-900);
+  color:#fff; display:grid; place-items:center; font-weight:700; font-size:11px; line-height:16.5px; flex:0 0 28px;
+}
+.sb-user .avatar .status-dot {
+  position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border-radius:9999px;
+  background:var(--green); border:1px solid #fff;
+}
+.sb-user .who { flex:1; min-width:0; font-weight:500; font-size:12px; line-height:18px; color:var(--ink-900); white-space:nowrap; }
+
+/* 접힌 상태 — 아이콘만, 64px 폭 (Figma 인터랙션 미확정이라 자체 구현) */
+.sidebar.collapsed .sb-top { justify-content:center; padding:0; }
+.sidebar.collapsed .sb-toggle img { transform:rotate(180deg); }
+.sidebar.collapsed .nav-item { justify-content:center; padding:10px 0; gap:0; }
+.sidebar.collapsed .nav-item span.nav-label,
+.sidebar.collapsed .nav-item .nav-dot,
+.sidebar.collapsed .sb-user .who,
+.sidebar.collapsed .gear-btn { display:none; }
+.sidebar.collapsed .sb-user { justify-content:center; padding:16px 0; gap:0; }
+
+/* ── 콘텐츠 ── */
+.content { overflow-y:auto; height:100%; display:flex; flex-direction:column; }
+.content-header { height:56px; flex:0 0 56px; border-bottom:1px solid var(--line-06); padding:0 30px; }
+.content-body { flex:1; padding:26px 30px 60px; }
+.content-col { max-width:600px; margin:0 auto; }
+
+.view { display:none; animation:fade .18s ease; }
+.view.active { display:block; }
+@keyframes fade { from { opacity:0; transform:translateY(4px);} to {opacity:1;transform:none;} }
+
+.page-head { margin-bottom:26px; }
+.page-head h1 { font-size:20px; font-weight:700; margin:0 0 6px; letter-spacing:-.4px; color:var(--ink-850); }
+.page-head p { margin:0; color:var(--ink-500); font-size:12px; }
+
+/* ── 카드(공용) ── */
+.card {
+  background:var(--bg); border:.5px solid var(--card-border); border-radius:var(--radius-card);
+  box-shadow:var(--card-shadow);
+}
+.grid { display:grid; gap:13px; }
+.grid-2 { grid-template-columns:repeat(2,1fr); }
+@media (max-width:640px){ .grid-2 { grid-template-columns:1fr; } }
+
+/* ── 홈 ── */
+.home-body { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:calc(100vh - 56px - 52px); text-align:center; }
+.home-body .hero-img { width:104px; height:107px; object-fit:contain; margin-bottom:-5px; }
+.home-body h2 { margin:0 0 40px; font-size:24px; font-weight:700; letter-spacing:-.025em; color:var(--ink-900); }
+.home-pills { display:flex; flex-direction:column; gap:16px; align-items:flex-start; }
+.home-pill-row { display:flex; align-items:center; gap:16px; }
+.home-pill-row .hp-label { width:80px; text-align:right; font-weight:600; font-size:13px; line-height:19.5px; color:var(--ink-inactive); }
+.home-pill-row .hp-div { width:1px; height:20px; background:var(--line-10); }
+.model-pill {
+  display:inline-flex; align-items:center; gap:8px; padding:6px 16px; border-radius:9999px;
+  background:#fff; font-weight:500; font-size:13px; line-height:19.5px;
+  box-shadow:0 0 14px rgba(120,120,120,.18), inset 0 0 8px rgba(120,120,120,.18);
+}
+.model-pill .mp-dot { width:6px; height:6px; border-radius:9999px; }
+.model-pill.on { border:1px solid var(--purple); }
+.model-pill.on .mp-dot { background:var(--purple); }
+.model-pill.on .mp-text { color:var(--purple); }
+.model-pill.off { border:1px solid rgba(120,120,120,.18); }
+.model-pill.off .mp-dot { background:var(--grey-500); }
+.model-pill.off .mp-text { color:var(--ink-mute); }
+
+/* ── 연결 ── */
+.conn-stack { display:flex; flex-direction:column; gap:16px; }
+.conn-card {
+  padding:27px; border-radius:var(--radius-card-lg); display:flex; flex-direction:column; gap:14px;
+  border-width:.5px; border-style:solid;
+}
+.conn-card.connected { border-color:var(--purple); }
+.conn-card.disconnected { border-color:var(--grey-400); }
+.conn-head { display:flex; align-items:flex-start; gap:13px; }
+.conn-head img.conn-ico { width:39px; height:39px; border-radius:9px; object-fit:cover; flex:0 0 39px; }
+.conn-head .ch-text h3 { margin:0 0 4px; font-size:12.5px; font-weight:600; color:var(--ink-850); }
+.conn-head .ch-text p { margin:0; font-size:11px; color:var(--ink-500); }
+.conn-head .ch-status { margin-left:auto; flex:0 0 auto; }
+.badge-pill {
+  display:inline-flex; padding:5px 7px; border-radius:5px; background:#fff;
+  font-size:10px; font-weight:600; letter-spacing:-.0186em; color:var(--purple);
+}
+.badge-plain { font-size:10px; font-weight:600; letter-spacing:-.0186em; color:var(--grey-500); }
+.codeblock-list { display:flex; flex-direction:column; gap:7px; }
+.codeblock-row {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:5px 7px; background:var(--code-bg); border-radius:5px;
+}
+.codeblock-row code { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size:9px; letter-spacing:-.0207em; color:var(--code-ink); }
+.copy-btn { display:flex; align-items:center; justify-content:center; padding:3px; border-radius:4px; background:none; border:none; }
+.copy-btn:hover { background:rgba(0,0,0,.05); }
+.copy-btn img { width:8.6px; height:8.6px; }
+.conn-link { font-size:10px; letter-spacing:-.0186em; color:#000; text-decoration:underline; background:none; border:none; padding:0; align-self:flex-start; }
+.conn-divider { height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); margin:2px 0; }
+.conn-footnote { margin:0; font-size:10px; color:rgba(0,0,0,.5); text-align:center; }
+
+/* ── 대시보드 ── */
+.dash-row + .dash-row { margin-top:13px; }
+
+/* 모델 카드 (Figma 63:249/63:250 좌표를 280×136 기준 %로 환산 — 카드 폭이 줄어도 비율 유지) */
+.model-card { position:relative; height:136px; }
+.model-card .mc-title { position:absolute; left:4.643%; top:9.559%; font-size:15px; font-weight:600; color:#000; }
+.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.model-card .mc-dot.on { background:var(--purple); }
+.model-card .mc-dot.off { background:var(--grey-400); }
+.model-card .mc-photo { position:absolute; border-radius:9999px; object-fit:cover; }
+/* 캡션은 이미지 폭에 맞춘 고정폭이면 텍스트가 2줄로 줄바꿈됐다 — 항상 한 줄로,
+   카드 가로 중앙(이미지 폭을 벗어나도 됨) 기준으로 정렬되도록 폭 제한 없이 중앙 고정. */
+.model-card .mc-caption { position:absolute; left:50%; transform:translateX(-50%); white-space:nowrap; text-align:center; font-size:10px; letter-spacing:-.0186em; color:#000; }
+
+/* PII 모델 카드: image 111×111 @ (84,15), dot @ right:12px */
+.model-card.pii .mc-dot { right:4.286%; }
+.model-card.pii .mc-photo { left:30%; top:11.029%; width:39.643%; height:81.618%; }
+.model-card.pii .mc-caption { top:75%; }
+
+/* Injection 모델 카드: image 87×87 @ (94,28), dot @ right:10px */
+.model-card.inj .mc-dot { right:3.571%; }
+.model-card.inj .mc-photo { left:33.571%; top:20.588%; width:31.071%; height:63.971%; }
+.model-card.inj .mc-caption { top:77.206%; }
+
+/* 탐지량 카드 (Figma 63:255/63:256 좌표를 280×176 기준 %로 환산)
+   — 기존엔 flex-column 자유배치라 콘텐츠 총합이 176px 를 넘어 footer(누적 N건)가
+   카드 밖으로 밀려났다. model-card/res-card 와 동일하게 절대좌표로 고정해 해결. */
+.detect-card { position:relative; height:176px; }
+.detect-card .dc-title { position:absolute; left:5%; top:9.66%; display:flex; align-items:center; gap:8px; font-size:15px; font-weight:600; color:#000; }
+.detect-card .dc-deco { width:16px; height:16px; object-fit:contain; }
+.dc-stats { position:absolute; left:8.571%; top:23.636%; width:84.286%; display:flex; gap:8px; }
+/* padding/line-height 를 명시하지 않으면 브라우저 기본 line-height(1.5)가 적용돼 박스가
+   77px 까지 커져서 top:64.773%(=114px)에 있는 dc-chart 와 겹쳤다 — 41.6~114px 구간(72.4px)
+   안에 확실히 들어가도록 줄간격을 명시적으로 좁혀 60px 로 고정. */
+.stat-box {
+  flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 6px;
+  background:#fff; border:1px solid #E5E7EB; border-radius:6.75px;
+}
+.stat-box .sb-label { font-size:10px; line-height:12px; font-weight:500; letter-spacing:.02em; color:#5D5D5D; }
+.stat-box .sb-value { font-size:18px; line-height:20px; font-weight:700; letter-spacing:.0026em; color:#1E2939; }
+.stat-box .sb-unit { font-size:10px; line-height:12px; color:#5D5D5D; }
+.dc-chart { position:absolute; left:5%; top:64.773%; width:89.286%; height:14.773%; object-fit:contain; }
+.dc-divider { position:absolute; left:5%; top:79.545%; width:89.286%; height:1px; background:rgba(0,0,0,.08); border-top:1px solid rgba(0,0,0,.27); }
+.dc-footer { position:absolute; left:5%; top:84.091%; width:89.286%; text-align:right; font-size:13px; font-weight:500; letter-spacing:.005em; color:var(--ink-500); }
+.dc-footer b { color:var(--purple); font-weight:500; }
+
+/* 시스템 리소스 카드 (Figma 63:258 좌표를 573×250 기준 %로 환산 — 카드 폭이 줄어도 비율 유지) */
+.res-card { position:relative; height:250px; }
+/* 제목 왼쪽 게이지 장식 아이콘(Figma #83:1074, x=14,y=13.39,30×20.32) — 처음엔 놓쳤던 요소 */
+.res-card .rc-title { position:absolute; left:2.443%; top:5.356%; display:flex; align-items:center; gap:8px; font-size:15px; font-weight:600; color:#000; }
+.res-card .rc-deco { width:24px; height:16px; object-fit:contain; }
+.res-cols { position:absolute; inset:0; }
+.res-divider { position:absolute; left:50.262%; top:16%; width:1px; height:80.4%; background:rgba(0,0,0,.08); }
+/* 네 블록 모두 width 동일(35.951%) — icon/gap 이 고정폭이라 폭이 같으면 바 길이도 항상 동일해짐.
+   icon 은 res-block 전체 높이가 아니라 rb-head(제목 줄) 하나에만 세로 중앙 정렬 —
+   그래야 하위 항목 개수가 블록마다 달라도(CPU 3줄 vs RAM 2줄) 아이콘 위치가 흔들리지 않는다.
+   left 도 컬럼별로 통일(Figma 원본은 CPU 11.693%/RAM 9.249%로 미세하게 달랐는데, 그러면
+   같은 컬럼 안에서 위아래 아이콘이 수직으로 어긋나 보여 CPU 기준으로 맞춤). */
+.res-block { position:absolute; display:flex; flex-direction:column; gap:6px; width:35.951%; }
+.res-block.cpu  { left:11.693%; top:18.8%; }
+.res-block.ram  { left:11.693%; top:60.8%; }
+.res-block.gpu  { left:60.035%; top:18.8%; }
+.res-block.vram { left:60.035%; top:61.2%; }
+.res-block .rb-head { display:flex; align-items:center; gap:10px; }
+.res-block .rb-icon { width:29px; height:29px; flex:0 0 29px; display:flex; align-items:center; justify-content:center; }
+.res-block .rb-icon img { max-width:100%; max-height:100%; object-fit:contain; }
+.res-block .rb-body { padding-left:39px; } /* 29px 아이콘 + 10px gap 만큼 들여써서 라벨과 줄맞춤 */
+.res-block .rb-top { flex:1; min-width:0; display:flex; align-items:baseline; justify-content:space-between; }
+.res-block .rb-label { font-size:13px; font-weight:600; color:rgba(0,0,0,.8); }
+.res-block .rb-value { font-size:12px; font-weight:700; text-align:right; }
+.res-block .rb-value .main { color:var(--purple); }
+.res-block .rb-value .sub { color:#94A3B8; }
+.res-block .rb-bar { height:7px; border-radius:9999px; background:rgba(0,0,0,.1); overflow:hidden; }
+.res-block .rb-bar .fill { height:100%; background:var(--purple); border-radius:9999px; transition:width .4s ease; }
+.res-block .rb-bar .fill.warn { background:var(--warn); } .res-block .rb-bar .fill.hot { background:var(--danger); }
+.res-block.na .rb-value { color:#94A3B8; }
+/* 실측 세부 항목(Figma 63:258 하단 서브로우) — CPU/RAM/GPU/VRAM 전부 실측 가능(system-metrics.js), 세로+좌측 정렬 */
+.res-block .rb-sub { display:flex; flex-direction:column; gap:3px; margin-top:7px; font-size:9.03px; }
+.res-block .rb-sub-item { display:flex; align-items:baseline; justify-content:flex-start; gap:5px; }
+.res-block .rb-sub-label { color:rgba(0,0,0,.45); }
+.res-block .rb-sub-value { color:rgba(0,0,0,.7); font-weight:500; }
+
+/* ── 처리현황 (파이프라인, Figma 좌표를 580×393 기준 %로 환산) ── */
+.pipe-card {
+  position:relative; width:100%; max-width:580px; height:393px; margin:0 auto; border-radius:13px;
+  background-image:radial-gradient(circle, rgba(0,0,0,.05) 1px, transparent 1px);
+  background-size:16px 16px; padding:18px; overflow:hidden;
+}
+.pipe-card .pc-hint { position:absolute; right:3.448%; top:4.58%; font-size:12px; font-weight:500; text-decoration:underline; color:var(--ink-500); }
+.pipe-diagram { position:absolute; left:50%; top:23.918%; transform:translateX(-50%); width:79.0%; max-width:calc(100% - 40px); }
+.pipe-diagram img { width:100%; height:auto; display:block; }
+.pipe-card .pc-divider { position:absolute; left:4.655%; right:4.655%; bottom:14.249%; height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); }
+.pipe-card .pc-status { position:absolute; right:5.862%; bottom:8.906%; display:flex; align-items:center; gap:8px; }
+.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.pipe-card .pc-status.idle .ps-dot { background:var(--grey-500); }
+.pipe-card .pc-status.idle .ps-label { color:var(--grey-500); }
+.pipe-card .pc-status.running .ps-dot { background:var(--purple); }
+.pipe-card .pc-status.running .ps-label { color:var(--purple); }
+.pipe-card .pc-status .ps-label { font-size:12px; font-weight:700; }
+.pipe-toolbar { display:flex; justify-content:center; margin-top:14px; }
+.pipe-toolbar .btn.sm { font-size:12px; color:var(--ink-500); background:none; border:1px solid var(--line-10); border-radius:8px; padding:6px 12px; }
+
+/* ── 설정 진입점: 프로필 행 우측 톱니 아이콘만(글자 없음), Figma 미정 영역 — 기존 UX 유지, PLAN §8 ── */
+.gear-btn {
+  flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:26px; height:26px;
+  padding:0; border-radius:9999px; background:none; border:1px solid var(--line-08);
+  color:var(--ink-500); font-size:14px; line-height:1;
+}
+.gear-btn:hover { background:var(--line-06); color:var(--ink-900); }
+.modal-backdrop { position:fixed; inset:0; background:rgba(17,24,39,.42); display:none; align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(2px); }
+.modal-backdrop.open { display:flex; }
+.modal { width:520px; max-width:92vw; max-height:88vh; overflow-y:auto; background:#fff; border:1px solid var(--line-08); border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+.modal-head { display:flex; justify-content:space-between; align-items:center; padding:20px 22px; border-bottom:1px solid var(--line-06); }
+.modal-head h2 { margin:0; font-size:17px; font-weight:700; }
+.modal-body { padding:20px 22px; display:flex; flex-direction:column; gap:20px; }
+.modal-foot { padding:16px 22px; border-top:1px solid var(--line-06); display:flex; justify-content:flex-end; gap:10px; }
+.field { display:flex; flex-direction:column; gap:7px; }
+.field label { font-weight:600; font-size:13px; }
+.field .hint { color:var(--ink-500); font-size:11px; }
+.field input[type=text], .field input[type=url] {
+  padding:10px 12px; border-radius:10px; border:1px solid var(--line-10); background:#fafafa; color:var(--ink-900); font-size:13px; font-family:inherit; }
+.field.disabled { opacity:.55; }
+.setting-row { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+.disabled-tag { font-size:10px; font-weight:600; color:var(--ink-500); background:#f5f5f5; border:1px solid var(--line-08); padding:3px 8px; border-radius:9999px; }
+.icon-x { background:none; border:none; color:var(--ink-500); font-size:20px; line-height:1; }
+.banner { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:10px; font-size:12px; }
+.banner.warn { background:var(--warn-soft); color:var(--ink-900); border:1px solid var(--warn); }
+.banner.info { background:var(--purple-soft); color:var(--ink-600); }
+.divider { height:1px; background:var(--line-06); margin:2px 0; }
+.tabnum { font-variant-numeric:tabular-nums; }
+.pill { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:9999px; font-size:12px; font-weight:600; background:#f5f5f5; border:1px solid var(--line-08); }
+.dot { width:8px; height:8px; border-radius:9999px; background:var(--grey-500); }
+.dot.on { background:var(--green); box-shadow:0 0 0 3px rgba(9,174,75,.15); }
+.dot.off { background:var(--danger); box-shadow:0 0 0 3px var(--danger-soft); }
+.dot.warn { background:var(--warn); box-shadow:0 0 0 3px var(--warn-soft); }
+.btn { padding:9px 16px; border-radius:10px; border:1px solid var(--line-10); background:#fff; color:var(--ink-900); font-weight:600; font-size:13px; }
+.btn:hover { background:#fafafa; }
+.btn.primary { background:var(--purple); border-color:var(--purple); color:#fff; }
+.btn.primary:hover { background:#4a3fc4; }
+.btn.ghost { border-color:transparent; background:none; color:var(--ink-500); }
+.seg { display:inline-flex; background:#f5f5f5; border:1px solid var(--line-08); border-radius:9px; padding:3px; gap:2px; }
+.seg button { border:none; background:none; color:var(--ink-500); font-weight:600; padding:6px 14px; border-radius:7px; font-size:12px; }
+.seg button.active { background:#fff; color:var(--ink-900); box-shadow:var(--card-shadow); }
+.muted { color:var(--ink-500); font-size:12px; }

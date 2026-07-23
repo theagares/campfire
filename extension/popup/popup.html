@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>securedoc-gateway 설정</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <div class="brand-mark" aria-hidden="true">🛡️</div>
+      <div class="brand-copy">
+        <h1>securedoc-gateway</h1>
+        <p class="subtitle">설정</p>
+      </div>
+    </header>
+
+    <!-- 서버 설정 (읽기 전용) -->
+    <section class="card">
+      <h2 class="card-title">서버 설정</h2>
+      <div class="row">
+        <span class="row-label">연결 대상</span>
+        <span class="row-value" id="target-value">확인 중…</span>
+      </div>
+      <div class="row">
+        <span class="row-label">로컬 포트</span>
+        <span class="row-value mono" id="port-value">—</span>
+      </div>
+      <p class="note">포트는 자동 탐지되며(48200~48209 스캔) 수정할 수 없습니다.
+        원격 URL은 앱 설정에서만 변경합니다.</p>
+    </section>
+
+    <!-- 앱 설정 -->
+    <section class="card">
+      <h2 class="card-title">앱 설정</h2>
+      <div class="row">
+        <span class="row-label">엔진 연결</span>
+        <span class="status-pill" id="engine-pill"><span class="dot"></span><span id="engine-text">확인 중…</span></span>
+      </div>
+      <div id="engine-detail" class="engine-detail"></div>
+      <button class="btn btn-primary" id="open-dashboard" disabled>대시보드 열기</button>
+      <p class="note" id="install-note" hidden>
+        로컬 앱(securedoc-gateway)이 설치/실행되어 있지 않습니다. 앱을 설치하면
+        로컬 엔진으로 우선 연결되고 대시보드를 열 수 있습니다. 현재는 원격 서버로
+        폴백해 동작 중입니다.
+      </p>
+      <button class="btn btn-ghost" id="rescan">서버 다시 탐지</button>
+    </section>
+
+    <footer class="footer">
+      <span>PII · 프롬프트 인젝션 마스킹 게이트웨이</span>
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Electron build output
+desktop/release/
+desktop/dist/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Chrome extension local QA artifacts (test profiles, large & machine-specific)
+extension/.qa/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Env / local secrets
+.env
+.env.local

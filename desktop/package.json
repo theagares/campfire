@@ -1,0 +1,89 @@
+{
+  "name": "upsecurity-desktop",
+  "productName": "UpSecurity",
+  "version": "0.1.0",
+  "description": "securedoc-gateway 데스크탑 앱 — 로컬 Python 엔진 사이드카 + 대시보드 + 트레이 (PLAN §8, Build Unit U4)",
+  "author": "securedoc-gateway",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "check": "node scripts/syntax-check.js",
+    "smoke:engine": "node scripts/smoke-engine.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "_comment_engine_bundle": "extraResources 는 prod 패키징 시 Python 엔진(venv 포함)을 앱 리소스로 번들한다. dev 에서는 SECUREDOC_ENGINE_DIR 미설정 시 소스트리의 ../engine 을 직접 쓴다(main/paths.js). prod 에서는 process.resourcesPath/engine 을 쓴다.",
+  "_comment_updater": "publish/자동업데이트 서버 URL 은 placeholder. 실제 배포 채널·인증 토큰은 CI 환경변수(GH_TOKEN 등)로만 주입하고 소스에 넣지 않는다.",
+  "build": {
+    "appId": "com.airookie.upsecurity",
+    "productName": "UpSecurity",
+    "copyright": "Copyright © 2026 securedoc-gateway",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "_comment": "dev: 소스트리 ../engine 을 직접 사용(번들 안 함). prod: 아래 경로를 resources/engine 으로 번들. .venv 를 반드시 포함해야 python.exe 사이드카가 뜬다. 용량 큰 캐시/테스트는 제외.",
+        "from": "../engine",
+        "to": "engine",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!tests/**",
+          "!**/.pytest_cache/**",
+          "!.venv/**/__pycache__/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools"
+    },
+    "publish": [
+      {
+        "_comment": "PLACEHOLDER — 실제 업데이트 서버로 교체 필요. 인증 토큰은 소스에 넣지 말 것(CI 환경변수 사용).",
+        "provider": "generic",
+        "url": "https://updates.airookieupsecurity.com/desktop"
+      }
+    ]
+  }
+}

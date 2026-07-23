@@ -1,0 +1,84 @@
+# app/rules/pii_ko.yaml
+# 한국어 PII 룰베이스 (PLAN §5). v1 은 단순 이식 수준.
+# 각 룰:
+#   type       : PLAN §5 PII 유형 상수
+#   pattern    : 파이썬 정규식 (re.VERBOSE 아님)
+#   flags      : [IGNORECASE, MULTILINE] 등 re 플래그명 (선택)
+#   group      : 캡처 그룹 번호(기본 0=전체 매치). 키워드 앵커링 시 실제 PII 그룹만.
+#   confidence : 0.0~1.0
+#   validator  : 추가 검증 함수명 (rrn_checksum / luhn 등, 선택)
+#
+# 겹침 병합 시 confidence 가 높은 룰이 우선한다(pipeline).
+
+rules:
+  # 주민등록번호 — 앞 6자리 생년월일 + 뒤 7자리(성별+지역+체크섬). 체크섬 검증.
+  - type: ID_NUMBER
+    pattern: '\b(\d{6})[-\s]?([1-4]\d{6})\b'
+    confidence: 0.98
+    validator: rrn_checksum
+
+  # 외국인등록번호 — 뒤 첫자리 5~8
+  - type: ID_NUMBER
+    pattern: '\b(\d{6})[-\s]?([5-8]\d{6})\b'
+    confidence: 0.9
+    validator: rrn_checksum
+
+  # 여권번호(한국) — M/S/R/O + 8자리 → OTHER_PII 로는 두지 않고 ID_NUMBER 취급
+  - type: ID_NUMBER
+    pattern: '\b([MSRODmsrod]\d{8})\b'
+    confidence: 0.6
+
+  # 신용/체크카드 번호 — 16자리(4-4-4-4), Luhn 검증
+  - type: CREDIT_CARD
+    pattern: '\b(\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4})\b'
+    confidence: 0.9
+    validator: luhn
+
+  # 휴대폰 번호
+  - type: PHONE
+    pattern: '\b(01[016789][-\s.]?\d{3,4}[-\s.]?\d{4})\b'
+    confidence: 0.95
+
+  # 유선 전화(지역번호 02 또는 0XX) — 서울 02 / 그 외 3자리 국번
+  - type: PHONE
+    pattern: '\b(0(?:2|[3-6][0-5])[-\s.]?\d{3,4}[-\s.]?\d{4})\b'
+    confidence: 0.8
+
+  # 이메일 (언어 무관)
+  - type: EMAIL
+    pattern: '\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b'
+    confidence: 0.97
+
+  # 계좌번호 — 은행/계좌 키워드 앵커 뒤 숫자(-포함) 8~20자. 그룹1만 마스킹.
+  - type: BANK_ACCOUNT
+    pattern: '(?:계좌|계좌번호|입금|송금|account)\s*(?:번호)?\s*[:：]?\s*(\d{2,6}[-\s]\d{2,6}[-\s]?\d{0,6})'
+    flags: [IGNORECASE]
+    group: 1
+    confidence: 0.85
+
+  # 생년월일 — YYYY년MM월DD일 / YYYY-MM-DD / YYYY.MM.DD
+  - type: DATE_OF_BIRTH
+    pattern: '\b((?:19|20)\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})\s*일?'
+    confidence: 0.55
+
+  # 이름 — "이름/성명/성함 : 홍길동" 키워드 앵커. 그룹1(한글 2~4자)만 마스킹.
+  - type: PERSON_NAME
+    pattern: '(?:이름|성명|성함|고객명|담당자)\s*[:：]?\s*([가-힣]{2,4})(?![가-힣])'
+    group: 1
+    confidence: 0.8
+
+  # 이름 — 호칭 동반 (홍길동님 / 김철수 씨 / 이영희 귀하)
+  - type: PERSON_NAME
+    pattern: '\b([가-힣]{2,4})\s*(?:님|씨|귀하|드림)\b'
+    group: 1
+    confidence: 0.5
+
+  # 주소 — 시/도 + 시/군/구 + (로|길) 번지
+  - type: ADDRESS
+    pattern: '([가-힣]+(?:특별시|광역시|특별자치시|특별자치도|도)\s?[가-힣]+(?:시|군|구)\s?[가-힣0-9]+(?:로|길)\s?\d+(?:-\d+)?(?:\s?\d+동)?(?:\s?\d+호)?)'
+    confidence: 0.75
+
+  # 조직/기관 — 흔한 접미사 기반
+  - type: ORGANIZATION
+    pattern: '\b([가-힣A-Za-z0-9]+(?:주식회사|㈜|전자|은행|증권|카드|대학교|대학병원|병원|보험|공사|공단|연구원|재단|협회|위원회))\b'
+    confidence: 0.5
