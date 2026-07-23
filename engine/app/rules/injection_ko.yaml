@@ -1,0 +1,103 @@
+# app/rules/injection_ko.yaml
+# 프롬프트 인젝션 룰베이스 (PLAN §5).
+# 근거: 파이프라인/프롬프트_인젝션_공격_유형.md 의 7개 유형.
+# 한국어 + 영어 패턴 모두 포함(이메일처럼 언어 무관·범용 공격 문구는 유지).
+#
+# 각 룰: type / pattern / flags / confidence
+
+rules:
+  # ── 2-1 지시 무력화 (INSTRUCTION_OVERRIDE) ────────────────────────────────
+  - type: INSTRUCTION_OVERRIDE
+    pattern: '(?:이전|앞|위)의?\s*(?:모든\s*)?(?:지시|지침|명령|대화|내용)(?:사항)?(?:들)?(?:을|를|은|는)?\s*(?:모두\s*)?(?:무시|잊)'
+    confidence: 0.95
+  - type: INSTRUCTION_OVERRIDE
+    pattern: 'ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|above|prior|earlier)\s+(?:instructions|prompts|messages|context)'
+    flags: [IGNORECASE]
+    confidence: 0.95
+  - type: INSTRUCTION_OVERRIDE
+    pattern: 'forget\s+(?:everything|all)\s+(?:above|before|previous)'
+    flags: [IGNORECASE]
+    confidence: 0.9
+  - type: INSTRUCTION_OVERRIDE
+    pattern: 'disregard\s+(?:all\s+)?(?:previous|prior|the above)\s+(?:instructions|rules)'
+    flags: [IGNORECASE]
+    confidence: 0.9
+
+  # ── 2-2 역할 조작 (ROLE_MANIPULATION) ─────────────────────────────────────
+  - type: ROLE_MANIPULATION
+    pattern: '당신은\s*이제\s*(?:제한\s*없는|제약\s*없는|보안\s*필터가?\s*없는)'
+    confidence: 0.9
+  - type: ROLE_MANIPULATION
+    pattern: '너는\s*이제\s*(?:보안\s*필터가?\s*없는|제한\s*없는)'
+    confidence: 0.9
+  - type: ROLE_MANIPULATION
+    pattern: 'you\s+are\s+now\s+(?:DAN|an?\s+unrestricted|a\s+system\s+with\s+no)'
+    flags: [IGNORECASE]
+    confidence: 0.9
+  - type: ROLE_MANIPULATION
+    pattern: 'act\s+as\s+(?:an?\s+)?(?:unrestricted|jailbroken|DAN)'
+    flags: [IGNORECASE]
+    confidence: 0.85
+  - type: ROLE_MANIPULATION
+    pattern: 'from\s+now\s+on,?\s+you\s+are'
+    flags: [IGNORECASE]
+    confidence: 0.6
+
+  # ── 2-3 시스템 프롬프트 탈취 (SYSTEM_PROMPT_LEAK) ─────────────────────────
+  - type: SYSTEM_PROMPT_LEAK
+    pattern: '(?:지금까지\s*받은\s*)?(?:모든\s*)?지시(?:사항)?(?:을|를)?\s*(?:그대로\s*)?(?:출력|보여|알려|복사)'
+    confidence: 0.85
+  - type: SYSTEM_PROMPT_LEAK
+    pattern: '(?:초기\s*설정|시스템\s*프롬프트)(?:을|를)?\s*(?:알려|출력|보여)'
+    confidence: 0.85
+  - type: SYSTEM_PROMPT_LEAK
+    pattern: '(?:print|reveal|repeat|show)\s+(?:me\s+)?your\s+(?:system\s+)?(?:prompt|instructions)'
+    flags: [IGNORECASE]
+    confidence: 0.9
+  - type: SYSTEM_PROMPT_LEAK
+    pattern: 'what\s+are\s+your\s+(?:exact\s+)?instructions'
+    flags: [IGNORECASE]
+    confidence: 0.85
+
+  # ── 2-4 탈옥 (JAILBREAK) ──────────────────────────────────────────────────
+  - type: JAILBREAK
+    pattern: 'DAN\s*모드(?:를)?\s*(?:활성화|켜)'
+    flags: [IGNORECASE]
+    confidence: 0.9
+  - type: JAILBREAK
+    pattern: '(?:developer|dev)\s+mode'
+    flags: [IGNORECASE]
+    confidence: 0.7
+  - type: JAILBREAK
+    pattern: '(?:교육\s*목적|가상의?\s*시나리오|픽션)(?:이니|으로|이므로)?.{0,20}(?:제한\s*없이|규제\s*없이)'
+    confidence: 0.8
+  - type: JAILBREAK
+    pattern: 'for\s+a\s+(?:fictional|hypothetical)\s+(?:story|scenario)'
+    flags: [IGNORECASE]
+    confidence: 0.6
+
+  # ── 2-5 숨겨진 명령 (HIDDEN_COMMAND) ─────────────────────────────────────
+  - type: HIDDEN_COMMAND
+    pattern: '<!--.*?(?:ignore|무시|instruction|명령).*?-->'
+    flags: [IGNORECASE, DOTALL]
+    confidence: 0.85
+  - type: HIDDEN_COMMAND
+    pattern: '<font\s+color\s*=\s*["'']?white["'']?\s*>.*?</font>'
+    flags: [IGNORECASE, DOTALL]
+    confidence: 0.8
+
+  # ── 2-6 데이터 탈취 (DATA_EXFILTRATION) ──────────────────────────────────
+  - type: DATA_EXFILTRATION
+    pattern: '(?:이\s*대화|위)의?\s*(?:모든\s*)?(?:내용|개인정보)(?:을|를)?\s*(?:요약)?.{0,15}(?:전송|전달|보내|나열|출력|알려)'
+    confidence: 0.8
+  - type: DATA_EXFILTRATION
+    pattern: '(?:업로드된?\s*)?(?:파일|문서)(?:의)?\s*(?:내용)?(?:을|를)?\s*(?:모두\s*)?나열'
+    confidence: 0.75
+  - type: DATA_EXFILTRATION
+    pattern: 'send\s+(?:a\s+)?(?:summary|the\s+data|all\s+.{0,20})\s+to\s+https?://'
+    flags: [IGNORECASE]
+    confidence: 0.85
+  - type: DATA_EXFILTRATION
+    pattern: 'list\s+all\s+(?:personal\s+information|confidential|data)'
+    flags: [IGNORECASE]
+    confidence: 0.8
