@@ -11,7 +11,13 @@
 
 - [Node.js](https://nodejs.org) 22 이상 (Electron 35이 내부적으로 요구)
 - [Python](https://www.python.org) 3.10 이상
-- **Windows** (엔진 의존성 `pyhwpx`가 HWP 파싱을 위해 `pywin32`/COM 자동화를 사용하므로 현재는 Windows에서만 설치가 됩니다. macOS/Linux 지원은 추후 과제)
+- **Windows 또는 macOS**
+
+  > HWPX 파싱은 `pyhwpx`(한/글 프로그램을 COM으로 자동화)를 쓰기 때문에
+  > Windows + 한/글 설치 환경에서만 동작합니다. macOS/Linux나 한/글 미설치
+  > Windows에서는 이 파일 형식만 "미지원"으로 우아하게 처리되고, 그 외
+  > TXT/PDF/DOCX/XLSX/PPTX 파싱과 PII·인젝션 탐지·마스킹은 동일하게 동작합니다.
+  > HWP(구버전)는 LibreOffice가 설치돼 있으면 두 OS 모두 동일하게 지원됩니다.
 
 ## 설치 및 실행
 
@@ -30,13 +36,22 @@ cd securedoc-gateway
 ```bash
 cd engine
 python -m venv .venv
+
+# Windows
 .venv\Scripts\python.exe -m pip install -e ".[test]"
+
+# macOS / Linux
+.venv/bin/python -m pip install -e ".[test]"
 ```
 
 단독 실행 확인 (선택):
 
 ```bash
+# Windows
 .venv\Scripts\python.exe -m app.main
+
+# macOS / Linux
+.venv/bin/python -m app.main
 ```
 
 `/health` 응답에 `{"service":"securedoc-gateway","port":48200}` (또는 그 다음 사용 가능한 포트)가 뜨면 정상입니다.
@@ -52,10 +67,11 @@ npm start
 앱이 뜨면 엔진 사이드카(위 2번 venv)를 자동으로 spawn합니다. 창을 닫아도
 트레이에 상주하며, 트레이 아이콘 클릭으로 다시 열 수 있습니다.
 
-설치형 패키지(exe/dmg)로 빌드하려면:
+설치형 패키지로 빌드하려면:
 
 ```bash
 npm run dist:win   # Windows nsis 인스톨러
+npm run dist:mac   # macOS dmg (서명되지 않은 로컬 빌드)
 ```
 
 ### 4) Chrome 확장
