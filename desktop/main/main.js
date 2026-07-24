@@ -115,14 +115,14 @@ app.whenReady().then(async () => {
   ipc.register({
     engineManager,
     config,
-    onShowDashboard: () => showDashboard('home'),
+    onShowDashboard: () => showDashboard('dashboard'),
     onQuit: quitApp,
   });
 
   createMainWindow();
 
   tray = new TrayController(app, {
-    onShowDashboard: () => showDashboard('home'),
+    onShowDashboard: () => showDashboard('dashboard'),
     onQuit: quitApp,
   });
   tray.create();

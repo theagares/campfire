@@ -335,41 +335,21 @@ img { display:block; }
 .seg button.active { background:#fff; color:var(--ink-900); box-shadow:var(--card-shadow); }
 .muted { color:var(--ink-500); font-size:12px; }
 
-/* ── 글리터 효과: 활성화("불이 켜진") 상태 표시에 반짝임 추가 ──
-   케이스마다 배경색이 달라 currentColor 로 색을 상속받아 재사용한다(pulse 는 색이 있는
-   요소, sparkle 은 그 위로 스치는 흰 하이라이트라 색과 무관하게 공통 사용 가능). */
-@keyframes glitter-pulse {
-  0%, 100% { box-shadow:0 0 0 0 currentColor, 0 0 2px 0 currentColor; }
-  50% { box-shadow:0 0 0 3px color-mix(in srgb, currentColor 35%, transparent), 0 0 6px 1px currentColor; }
-}
-@keyframes glitter-sparkle {
-  0%, 100% { opacity:0; transform:scale(.4) rotate(0deg); }
-  50% { opacity:1; transform:scale(1) rotate(45deg); }
-}
-.mc-dot, .mp-dot, .ps-dot, .dot {
-  position:relative;
+/* ── 네온 글로우: 활성화("불이 켜진") 상태 표시 주변으로 빛이 퍼지는 효과 ──
+   케이스마다 색이 달라 currentColor 로 상속받아 재사용한다. 반짝이는 스파클이 아니라
+   네온사인처럼 부드러운 빛 번짐이 커졌다 작아졌다 하는 단순한 pulse. */
+@keyframes neon-glow {
+  0%, 100% { box-shadow:0 0 2px 0 currentColor, 0 0 4px 0 currentColor; }
+  50% { box-shadow:0 0 6px 1px currentColor, 0 0 14px 4px currentColor; }
 }
 .model-card .mc-dot.on,
 .model-pill.on .mp-dot,
 .pipe-card .pc-status.running .ps-dot,
 .dot.on {
   color:var(--green);
-  animation:glitter-pulse 2.1s ease-in-out infinite;
+  animation:neon-glow 2.1s ease-in-out infinite;
 }
 .model-pill.on .mp-dot,
 .model-card .mc-dot.on {
   color:var(--purple);
-}
-.model-card .mc-dot.on::after,
-.model-pill.on .mp-dot::after,
-.pipe-card .pc-status.running .ps-dot::after,
-.dot.on::after {
-  content:''; position:absolute; top:50%; left:50%; width:4px; height:4px;
-  margin:-2px 0 0 -2px; pointer-events:none;
-  background:
-    linear-gradient(currentColor, currentColor) center/1px 100% no-repeat,
-    linear-gradient(currentColor, currentColor) center/100% 1px no-repeat;
-  filter:drop-shadow(0 0 2px #fff);
-  animation:glitter-sparkle 2.1s ease-in-out infinite;
-  animation-delay:.4s;
 }
