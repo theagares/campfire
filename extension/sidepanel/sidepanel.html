@@ -33,22 +33,26 @@
       <p class="warn-note" id="progress-warn" hidden></p>
     </section>
 
-    <!-- 결과 (HITL 검토) -->
+    <!-- 결과 (HITL 검토) — Figma #45:951 그대로: 문서가 화면 전체 높이를 차지하는
+         본문(좌) + 탐지 항목 사이드바(우) 2컬럼 -->
     <section class="view view-result" id="view-result" hidden>
-      <div class="section-label">
-        <span>문서 검토</span>
-        <span class="legend">
-          <span class="lg"><i class="sw sw-pii"></i>PII</span>
-          <span class="lg"><i class="sw sw-inj"></i>인젝션</span>
-        </span>
+      <div class="result-layout">
+        <div class="result-main">
+          <div class="section-label">
+            <span>문서 검토</span>
+            <span class="legend">
+              <span class="lg"><i class="sw sw-pii"></i>PII</span>
+              <span class="lg"><i class="sw sw-inj"></i>인젝션</span>
+            </span>
+          </div>
+          <div class="diff" id="diff"></div>
+        </div>
+        <div class="result-side">
+          <div class="section-label"><span>탐지 항목</span></div>
+          <p class="hint">토글을 끄면 마스킹에서 제외됩니다</p>
+          <div class="items" id="items"></div>
+        </div>
       </div>
-      <div class="diff" id="diff"></div>
-
-      <div class="section-label">
-        <span>탐지 항목</span>
-        <span class="hint">토글을 끄면 마스킹에서 제외됩니다</span>
-      </div>
-      <div class="items" id="items"></div>
     </section>
 
     <!-- 오류 / 미검사 통과 -->
