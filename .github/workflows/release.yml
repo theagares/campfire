@@ -111,8 +111,15 @@ jobs:
           APP=$(find desktop/release -maxdepth 3 -iname "*.app" | head -1)
           if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
           echo "실행: $APP"
-          "$APP/Contents/MacOS/UpSecurity" &
-          sleep 10
+          echo "--- bundled engine python check ---"
+          RES="$APP/Contents/Resources/engine"
+          ls -la "$RES" || true
+          ls -la "$RES/.venv/bin" || true
+          "$RES/.venv/bin/python" -c "print('engine python OK')" || true
+          "$APP/Contents/MacOS/UpSecurity" > /tmp/upsec-app.log 2>&1 &
+          sleep 12
+          echo "--- app stdout/stderr ---"
+          cat /tmp/upsec-app.log || true
           ok=0
           for port in $(seq 48200 48209); do
             if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
