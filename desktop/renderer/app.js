@@ -103,7 +103,36 @@ function renderDashboard() {
   setModelDot('#dash-pii-dot', '#dash-pii-label', m.pii, 'A.X Encoder base 0.1B');
   setModelDot('#dash-inj-dot', '#dash-inj-label', m.injection, 'EXAONE 4.0 1.2B');
 
+  // 최근 14일 탐지 추이(engine store 실측, main/engine-stats.js trend) — 오늘 버킷은
+  // 새 탐지가 기록될 때마다 값이 올라가므로, 5초 폴링(onStats)만으로도 실시간처럼
+  // 그래프가 갱신된다. 예전엔 데이터와 무관한 장식용 고정 이미지였다.
+  renderTrendChart('#dc-chart-pii', s.trend, 'pii', '#584CDC');
+  renderTrendChart('#dc-chart-inj', s.trend, 'injection', '#F04452');
+
   renderResources($('#db-resources'));
+}
+function renderTrendChart(svgSel, trend, key, color) {
+  const svg = $(svgSel);
+  if (!svg) return;
+  const values = (trend || []).map((t) => Number(t[key]) || 0);
+  if (!values.length) { svg.innerHTML = ''; return; }
+
+  const max = Math.max(1, ...values);
+  const n = values.length;
+  const points = values.map((v, i) => {
+    const x = n > 1 ? (i / (n - 1)) * 100 : 100;
+    const y = 96 - (v / max) * 92; // 위 4% / 아래 4% 여백
+    return [x, y];
+  });
+  const line = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+  const area = `${line} L100,100 L0,100 Z`;
+  const [lastX, lastY] = points[points.length - 1];
+
+  svg.innerHTML = `
+    <path class="dc-chart-area" d="${area}" fill="${color}"></path>
+    <path class="dc-chart-line" d="${line}" stroke="${color}"></path>
+    <circle class="dc-chart-dot" cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="2.4" fill="${color}"></circle>
+  `;
 }
 function setModelDot(dotSel, labelSel, model, fallbackCaption) {
   const ready = model && model.ready;

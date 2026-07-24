@@ -210,7 +210,12 @@ img { display:block; }
 .stat-box .sb-label { font-size:10px; line-height:12px; font-weight:500; letter-spacing:.02em; color:#5D5D5D; }
 .stat-box .sb-value { font-size:18px; line-height:20px; font-weight:700; letter-spacing:.0026em; color:#1E2939; }
 .stat-box .sb-unit { font-size:10px; line-height:12px; color:#5D5D5D; }
-.dc-chart { position:absolute; left:5%; top:64.773%; width:89.286%; height:14.773%; object-fit:contain; }
+/* 실제 최근 14일 탐지 추이(engine store 실측, main/engine-stats.js 의 trend 배열)를
+   그리는 SVG — 예전엔 데이터와 무관한 장식용 고정 이미지였다. */
+.dc-chart { position:absolute; left:5%; top:64.773%; width:89.286%; height:14.773%; overflow:visible; }
+.dc-chart .dc-chart-area { opacity:.16; }
+.dc-chart .dc-chart-line { fill:none; stroke-width:2; vector-effect:non-scaling-stroke; }
+.dc-chart .dc-chart-dot { vector-effect:non-scaling-stroke; }
 .dc-divider { position:absolute; left:5%; top:79.545%; width:89.286%; height:1px; background:rgba(0,0,0,.08); border-top:1px solid rgba(0,0,0,.27); }
 .dc-footer { position:absolute; left:5%; top:84.091%; width:89.286%; text-align:right; font-size:13px; font-weight:500; letter-spacing:.005em; color:var(--ink-500); }
 .dc-footer b { color:var(--purple); font-weight:500; }
