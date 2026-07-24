@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>UpSecurity</title>
-  <link rel="stylesheet" href="glow.css" />
   <style>
     /* Figma 파일 hMO6k051z9JXBoa2fWySND 노드 36:2846 "현황" 1:1 반영.
        색상은 Figma 캡처가 라이트 모드뿐이라 그대로, 다크 모드는 앱 본체(styles.css)와
@@ -67,13 +66,34 @@
       display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
       background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
     }
-    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes(glow.css, 공유)를
-       쓴다 — 예전엔 여기만 옛날 neon-glow(단일 레이어 강한 pulse)를 따로 갖고 있어서 앱
-       본체와 트레이 팝업의 glow가 서로 다르게 보였다(실측 버그). 앱 쪽에서 이미 확인된
-       세 가지 규칙을 여기도 그대로 따른다: (1) delay는 negative로 주지 않는다 — on 클래스가
-       토글되는 순간 중간 밝기값으로 스냅되어 반짝이는 것처럼 보이기 때문. (2) transition을
-       걸어 꺼질 때도 부드럽게 페이드아웃되게 한다. (3) mp-dot 애니메이션의 duration은 앱의
-       퍼플 계열(ambient-glow-c, 6.3s)과 동일하게 맞춘다. */
+    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes를 쓴다 — 예전엔
+       여기만 옛날 neon-glow(단일 레이어 강한 pulse)를 따로 갖고 있어서 앱 본체와 트레이
+       팝업의 glow가 서로 다르게 보였다(실측 버그). 앱 쪽에서 이미 확인된 세 가지 규칙을
+       여기도 그대로 따른다: (1) delay는 negative로 주지 않는다 — on 클래스가 토글되는
+       순간 중간 밝기값으로 스냅되어 반짝이는 것처럼 보이기 때문. (2) transition을 걸어
+       꺼질 때도 부드럽게 페이드아웃되게 한다. (3) mp-dot 애니메이션의 duration은 앱의
+       퍼플 계열(ambient-glow-c, 6.3s)과 동일하게 맞춘다.
+       keyframes는 styles.css의 것과 토씨 하나 안 틀리고 동일해야 한다 — 원래 별도
+       glow.css로 분리해서 두 파일이 <link>로 공유하게 했었는데, 이 환경에서 그 두 번째
+       스타일시트가 안정적으로 로드되지 않아(정확한 원인 미확인) glow가 아예 하나도
+       안 보이는 회귀가 생겼다(실측). 그래서 각 파일에 직접 넣는 방식으로 되돌렸다 —
+       한쪽만 고치면 트레이/앱 glow가 다시 갈리니 항상 같이 수정할 것(ambient-glow-a/b는
+       여기선 안 쓰여서(앱 쪽 mc-dot/ps-dot/dot 전용) 안 넣었다 — mp-dot이 쓰는
+       ambient-glow-c만 있으면 됨). */
+    @keyframes ambient-glow-c {
+      0%, 100% {
+        box-shadow:
+          0 0 8px color-mix(in srgb, currentColor 32%, transparent),
+          0 0 24px color-mix(in srgb, currentColor 12%, transparent),
+          0 0 60px color-mix(in srgb, currentColor 4%, transparent);
+      }
+      50% {
+        box-shadow:
+          0 0 8.28px color-mix(in srgb, currentColor 33.3%, transparent),
+          0 0 24.84px color-mix(in srgb, currentColor 12.5%, transparent),
+          0 0 62.1px color-mix(in srgb, currentColor 4.2%, transparent);
+      }
+    }
     .model-pill .mp-dot {
       width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto;
       transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out;
@@ -85,10 +105,10 @@
       will-change:box-shadow;
     }
     /* sec-pill은 켜지면 배경이 초록(var(--ok))이 되고 그 위에 흰 글자(color:#fff, 위 규칙)가
-       올라가므로, glow.css의 currentColor 기반 keyframes를 그대로 쓰면 halo 색이 아니라
-       글자색까지 초록으로 덮어써서 흰 글자가 초록 배경에 묻힌다. 그래서 이 요소만
-       currentColor 대신 var(--ok)를 직접 섞는 로컬 keyframes를 쓴다 — 겹 구조/증가 비율은
-       glow.css의 ambient-glow-a와 동일(공용 파일의 사용법 설명 참고). */
+       올라가므로, currentColor 기반 keyframes(위 ambient-glow-c 등)를 그대로 쓰면 halo
+       색이 아니라 글자색까지 초록으로 덮어써서 흰 글자가 초록 배경에 묻힌다. 그래서 이
+       요소만 currentColor 대신 var(--ok)를 직접 섞는 로컬 keyframes를 쓴다 — 겹 구조/
+       증가 비율은 위 ambient-glow-a(styles.css 참고)와 동일하다. */
     @keyframes ambient-glow-sec {
       0%, 100% {
         box-shadow:
