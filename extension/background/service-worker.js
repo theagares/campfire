@@ -208,6 +208,35 @@ async function scanPrompt({ text }, onProgress) {
 const sessions = new Map();
 let activeSessionId = null;   // 사이드패널이 PANEL_READY 로 물어볼 최신 세션
 
+// ════════════════════════════════════════════════════════════════════════════
+// 사이드패널 탭 스코핑 — 기본적으로 manifest side_panel.default_path 는 모든 탭에
+// 전역으로 열려 있어서, 검사를 요청한 탭이 아닌 다른 탭으로 넘어가도 같은 패널이
+// 그대로 유지되는 문제가 있다. 검사를 요청한 탭에서만 보이도록, 그 탭만 명시적으로
+// enabled:true 로 켜고 나머지 탭은 활성화되는 시점에 꺼서 "탭 전용" 패널로 만든다.
+// ════════════════════════════════════════════════════════════════════════════
+const SIDEPANEL_PATH = 'sidepanel/sidepanel.html';
+let currentPanelTabId = null; // 지금 사이드패널이 켜져 있어야 하는 탭 (요청한 탭)
+
+function disablePanelForTab(tabId) {
+  if (tabId == null) return;
+  chrome.sidePanel?.setOptions?.({ tabId, enabled: false }).catch(() => {});
+}
+
+// 새로 활성화되는 탭이 "요청한 탭"이 아니면 그 자리에서 비활성화 — 탭을 넘기면
+// 사이드패널이 닫힌다(크롬이 enabled:false 탭에선 패널을 자동으로 숨김).
+chrome.tabs.onActivated?.addListener(({ tabId }) => {
+  if (tabId !== currentPanelTabId) disablePanelForTab(tabId);
+});
+
+// 확장 설치/브라우저 시작 시점엔 이미 열려 있던 다른 탭들도 전부 기본 비활성화로
+// 맞춰준다(그 시점엔 진행 중인 세션이 없으므로 전부 꺼도 안전).
+async function disableAllExistingTabsPanel() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    tabs.forEach((t) => disablePanelForTab(t.id));
+  } catch (_) {}
+}
+
 function pushToPanel(message) {
   // 열려 있는 확장 페이지(사이드패널)로 broadcast. 아직 안 열렸으면 조용히 무시.
   const p = chrome.runtime.sendMessage(message);
@@ -291,6 +320,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.sendMessage(session.tabId, {
         type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
       }).catch(() => {});
+      // 결정이 끝났으니 이 탭의 패널도 꺼둔다 — 나중에 이 탭으로 돌아와도
+      // 끝난 검사 결과가 다시 뜨지 않게.
+      disablePanelForTab(session.tabId);
+      if (currentPanelTabId === session.tabId) currentPanelTabId = null;
     }
     sessions.delete(sessionId);
     if (activeSessionId === sessionId) activeSessionId = null;
@@ -303,6 +336,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'OPEN_SIDE_PANEL') {
     const tabId = sender?.tab?.id ?? message.tabId;
     if (tabId != null && chrome.sidePanel?.open) {
+      // setOptions 는 await 하지 않는다 — 바로 아래 open() 이 이 메시지 핸들러의
+      // 동기 호출 스택 안에서 곧바로 실행돼야 제스처가 유지된다(실측 확인, 위 주석 참고).
+      chrome.sidePanel.setOptions({ tabId, path: SIDEPANEL_PATH, enabled: true }).catch(() => {});
+      if (currentPanelTabId != null && currentPanelTabId !== tabId) {
+        disablePanelForTab(currentPanelTabId);
+      }
+      currentPanelTabId = tabId;
       chrome.sidePanel.open({ tabId }).catch(() => {});
     }
     sendResponse({ ok: true });
@@ -348,9 +388,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // 설치/기동 시 서버 1회 탐지 + 사이드패널 동작 방식 설정
 chrome.runtime.onInstalled?.addListener(() => {
   discoverServer().catch(() => {});
+  disableAllExistingTabsPanel();
 });
 chrome.runtime.onStartup?.addListener(() => {
   discoverServer().catch(() => {});
+  disableAllExistingTabsPanel();
 });
 
 // 툴바 아이콘 클릭은 action.default_popup(설정 전용)로 처리되므로, 사이드패널이
