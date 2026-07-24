@@ -59,6 +59,10 @@ class TrayController {
       skipTaskbar: true,
       transparent: true,
       alwaysOnTop: true,
+      // macOS 전용 네이티브 프로스티드 글래스(Figma 디자인의 "애플 글래스" 룩) — CSS
+      // backdrop-filter 는 창 자신의 콘텐츠만 블러하지만, vibrancy 는 창 뒤 실제 데스크탑을
+      // OS 컴포지터가 진짜로 블러/채도 처리해서 보여준다(Windows 에선 무시되는 옵션).
+      ...(process.platform === 'darwin' ? { vibrancy: 'popover', visualEffectState: 'active' } : {}),
       webPreferences: {
         preload: path.join(__dirname, 'tray-preload.js'),
         contextIsolation: true,

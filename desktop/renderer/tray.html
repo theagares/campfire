@@ -19,6 +19,15 @@
         --purple:#8B7CFF; --ok:#28C08A; --danger:#FF5C6C; --warn:#FFB020; --pii:#8B7CFF; --inj:#9CA3AF;
         --sunken:rgba(255,255,255,.08); --line:rgba(255,255,255,.1); }
     }
+    /* macOS 는 BrowserWindow 의 vibrancy(네이티브 프로스티드 글래스, main/tray.js)가 창
+       뒤 데스크탑을 실제로 블러/채도 처리해서 보여준다 — 그 위에 CSS 배경까지 진하게
+       칠하면 vibrancy 가 거의 안 보이게 묻힌다. body.mac-glass(js 로 플랫폼 감지 후 부여)
+       일 때만 배경 알파를 확 낮춰 네이티브 효과가 실제로 비치게 한다. Windows 는 vibrancy
+       가 없어 CSS backdrop-filter 가 유일한 블러 효과라 기존 진한 배경을 그대로 쓴다. */
+    body.mac-glass { --bg:rgba(235,245,252,.38); --card-bg:rgba(255,255,255,.32); }
+    @media (prefers-color-scheme: dark) {
+      body.mac-glass { --bg:rgba(28,28,32,.32); --card-bg:rgba(255,255,255,.1); }
+    }
     * { box-sizing:border-box; }
     html,body { margin:0; height:100%; background:transparent; }
     body { font-family:"Pretendard",-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;
