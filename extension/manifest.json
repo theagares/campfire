@@ -8,8 +8,7 @@
     "activeTab",
     "scripting",
     "storage",
-    "tabs",
-    "sidePanel"
+    "tabs"
   ],
   "host_permissions": [
     "https://api.airookieupsecurity.com/*",
@@ -95,6 +94,23 @@
   "web_accessible_resources": [
     {
       "resources": ["icons/*"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://*.chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://*.claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://*.gemini.google.com/*",
+        "https://copilot.microsoft.com/*",
+        "https://*.copilot.microsoft.com/*",
+        "https://grok.com/*",
+        "https://*.grok.com/*",
+        "https://perplexity.ai/*",
+        "https://*.perplexity.ai/*"
+      ]
+    },
+    {
+      "resources": ["sidepanel/*"],
       "matches": [
         "https://chatgpt.com/*",
         "https://*.chatgpt.com/*",

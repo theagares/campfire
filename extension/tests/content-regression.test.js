@@ -69,7 +69,6 @@ const documentStub = {
 };
 
 const chromeStub = {
-  sidePanel: { open: () => Promise.resolve() },
   tabs: { sendMessage: () => Promise.resolve(), create() {} },
   storage: {
     local: { get(defaults, cb) { cb({ ...defaults, protectionEnabled: true }); }, set(_v, cb) { cb?.(); } },
@@ -77,6 +76,7 @@ const chromeStub = {
   },
   runtime: {
     lastError: null,
+    getURL: (p) => `chrome-extension://test-id/${p}`,
     onMessage: { addListener() {}, removeListener() {} },
     sendMessage(message, cb) {
       runtimeMessages.push(message);

@@ -5,18 +5,16 @@
  *   1) 서버 선택: 48200~48209 병렬 /health 스캔 → 시그니처 일치 포트 채택(캐싱),
  *      실패 시 원격 폴백. (PLAN §3/§11)
  *   2) 검사 오케스트레이션: content.js 의 START_SCAN 요청을 받아 엔진 REST(/jobs,
- *      /jobs/prompt, /jobs/{id}/events)로 검사하고, 진행/결과를 사이드패널에 push.
- *   3) HITL 결정 라우팅: 사이드패널의 PANEL_DECISION 을 원본 탭의 content.js 로 중계
+ *      /jobs/prompt, /jobs/{id}/events)로 검사하고, 진행/결과를 검토 패널에 push.
+ *   3) HITL 결정 라우팅: 검토 패널의 PANEL_DECISION 을 원본 탭의 content.js 로 중계
  *      (제스처 불필요 흐름이라 SW 경유해도 무방 — PLAN §변경1).
  *   4) 설정 popup 지원: GET_CONNECTION_INFO 로 현재 연결 대상/포트/엔진 상태 제공.
  *   5) 마스킹 조정 파일 재생성: WRAP_MASKED_TEXT.
  *
- * ※ 사이드패널을 "여는" 호출은 SW 가 한다 (2026-07-23 정정). chrome.sidePanel
- *   네임스페이스는 content script(Isolated world) 컨텍스트엔 애초에 존재하지 않음을
- *   실측 확인했다 — 그래서 content.js 는 OPEN_SIDE_PANEL 메시지를 SW 로 "1회만" 보내고,
- *   SW 는 그 메시지 핸들러 안에서 곧바로(추가 await 없이) chrome.sidePanel.open() 을
- *   호출한다. 메시지 왕복이 1회뿐이면 사용자 제스처가 보존된다는 걸 실측으로 확인했다
- *   (PLAN §변경1 참고).
+ * ※ 검토 패널 자체는 더 이상 chrome.sidePanel API로 열지 않는다(2026-07-24
+ *   재정정) — content.js 가 이 탭의 페이지 DOM에 직접 iframe으로 주입한다
+ *   (content.js의 "검토 패널 열기" 섹션 주석 참고). SW는 그 이후의 검사 오케스트레이션
+ *   (START_SCAN/PANEL_READY/PANEL_DECISION)만 담당한다.
  */
 
 import { wrapMaskedFile } from '../utils/docwrapper.js';
@@ -206,107 +204,14 @@ async function scanPrompt({ text }, onProgress) {
 
 // sessionId -> { tabId, kind, status, progress:[], result, error, meta }
 const sessions = new Map();
-let activeSessionId = null;   // 사이드패널이 PANEL_READY 로 물어볼 최신 세션
-
-// ════════════════════════════════════════════════════════════════════════════
-// 사이드패널 탭 스코핑
-//
-// manifest의 side_panel.default_path를 두면 "모든 탭에 기본으로 열려 있는 전역
-// 패널 인스턴스"가 되어(크롬 공식 side panel 가이드 및 커뮤니티에서 확인된 동작 —
-// https://pmds.info/blog/chrome-extension-side-panel-per-tab), 탭별 enabled:false
-// 로 막으려는 시도와 충돌한다. 그래서 manifest에서 default_path를 아예 제거하고,
-// 서비스 워커 시작 시 전역으로 setOptions({enabled:false})를 걸어 "기본은 어떤
-// 탭에도 패널이 없음"을 만든 다음, 검사를 요청한 탭에만 그때그때 enabled:true +
-// path를 부여한다.
-//
-// 다만 이렇게 해도 완전한 "다른 탭으로 넘기면 즉시 닫힘"은 현재 크롬
-// sidePanel API로는 보장되지 않는다 — enabled:false는 "그 탭에서 다시 열 수
-// 없게" 만들 뿐, 이미 창에 도킹되어 열려 있는 패널을 강제로 닫는 sidePanel.close()
-// 같은 API 자체가 아직 없다(W3C webextensions 이슈로 계속 요청 중:
-// https://github.com/w3c/webextensions/issues/521, 크로미움 개발자 그룹 논의:
-// https://groups.google.com/a/chromium.org/g/chromium-extensions/c/YAfMKV-GN4I).
-// 현재 API로 달성 가능한 최선은 "다른 탭에서는 내용이 새지 않고 빈 대기 화면만
-// 보이는 것"까지이고, 실제로 그렇게 동작한다. 패널이 물리적으로 닫히는 것은
-// 크롬이 close()류 API를 추가하기 전까지는 확장 코드만으로 강제할 수 없다.
-//
-// "지금 패널이 켜져 있어야 하는 탭" 추적은 일반 JS 변수가 아니라 chrome.storage.session
-// 에 저장한다 — MV3 서비스 워커는 ~30초 유휴 후 꺼졌다가 다음 이벤트에 다시 깨어나는데,
-// 그때 모듈 전체가 재실행되면서 일반 변수는 null로 초기화돼버린다(검토 화면을 30초
-// 넘게 보고 있다가 탭을 넘기면 흔히 발생). storage.session은 SW 재시작에도 값이
-// 유지되므로 이 문제를 피한다.
-// ════════════════════════════════════════════════════════════════════════════
-const SIDEPANEL_PATH = 'sidepanel/sidepanel.html';
-const PANEL_TAB_KEY = 'sidepanelActiveTabId';
-
-async function getCurrentPanelTabId() {
-  const obj = await chrome.storage.session.get(PANEL_TAB_KEY);
-  return obj[PANEL_TAB_KEY] ?? null;
-}
-async function setCurrentPanelTabId(tabId) {
-  if (tabId == null) await chrome.storage.session.remove(PANEL_TAB_KEY);
-  else await chrome.storage.session.set({ [PANEL_TAB_KEY]: tabId });
-}
-
-function disablePanelForTab(tabId) {
-  if (tabId == null) return Promise.resolve();
-  return chrome.sidePanel?.setOptions?.({ tabId, enabled: false }).catch(() => {}) ?? Promise.resolve();
-}
-
-// 요청한 탭만 남기고 "그 순간 열려 있는 다른 모든 탭"을 즉시 비활성화한다.
-// (이전엔 tabs.onActivated 로 "전환되는 순간"에 반응해서 껐는데, 크롬이 그 전환
-// 시점에 이미 예전 상태로 패널을 표시하기로 결정해버리는 타이밍 경합 여지가 있다.
-// 패널을 켜는 바로 그 순간 다른 탭들을 미리 다 꺼두면 그런 경합 자체가 없어진다.
-// open() 의 제스처 보존과 무관하므로 비동기로 처리해도 된다 — OPEN_SIDE_PANEL
-// 핸들러에서 await 없이 fire-and-forget으로 호출한다.)
-async function switchPanelToTab(newTabId) {
-  try {
-    const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.filter((t) => t.id !== newTabId).map((t) => disablePanelForTab(t.id)));
-  } catch (_) {}
-  await setCurrentPanelTabId(newTabId);
-}
-
-async function clearPanelTabIfMatches(tabId) {
-  const current = await getCurrentPanelTabId();
-  if (current === tabId) await setCurrentPanelTabId(null);
-}
-
-// 새로 활성화되는 탭이 "요청한 탭"이 아니면 그 자리에서 비활성화 — 탭을 넘기면
-// 사이드패널이 닫힌다(크롬이 enabled:false 탭에선 패널을 자동으로 숨김).
-chrome.tabs.onActivated?.addListener(async ({ tabId }) => {
-  const current = await getCurrentPanelTabId();
-  if (tabId !== current) disablePanelForTab(tabId);
-});
-
-// 탭이 아니라 브라우저 "창"을 전환하는 경우도 대비 — 다른 창의 활성 탭이 요청한
-// 탭이 아니면 그 탭도 꺼준다.
-chrome.windows.onFocusChanged?.addListener(async (windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, windowId });
-    if (!tab) return;
-    const current = await getCurrentPanelTabId();
-    if (tab.id !== current) disablePanelForTab(tab.id);
-  } catch (_) {}
-});
-
-// 확장 설치/브라우저 시작 시점: 전역 기본값 자체를 비활성화(더 이상 manifest
-// default_path가 없으니 이게 유일한 "기본은 꺼짐" 설정이다) + 이미 열려 있던
-// 개별 탭들도 혹시 이전에 켜진 상태가 남아있을 수 있으니 전부 다시 비활성화.
-async function disableAllExistingTabsPanel() {
-  try {
-    await chrome.sidePanel.setOptions({ enabled: false });
-    const tabs = await chrome.tabs.query({});
-    tabs.forEach((t) => disablePanelForTab(t.id));
-    await setCurrentPanelTabId(null);
-  } catch (_) {}
-}
+let activeSessionId = null;   // PANEL_READY 가 sender.tab 없이 물어볼 때의 폴백
 
 function pushToPanel(message) {
-  // chrome.runtime.sendMessage는 특정 탭이 아니라 열려 있는 모든 확장 페이지(모든
-  // 탭의 사이드패널 인스턴스 포함)에 전역 broadcast된다 — 그래서 반드시 message.tabId
-  // 를 실어 보내고, 받는 쪽(sidepanel.js)이 자기 탭 것이 아니면 무시하게 해야 한다.
-  // 아직 아무 패널도 안 열렸으면 조용히 무시된다.
+  // chrome.runtime.sendMessage는 특정 탭이 아니라 열려 있는 모든 확장 페이지(iframe으로
+  // 주입된 검토 패널 포함)에 전역 broadcast된다 — 그래서 반드시 message.tabId를 실어
+  // 보내고, 받는 쪽(sidepanel.js)이 자기 탭 것이 아니면 무시하게 해야 한다(각 탭의
+  // 검토 패널은 그 탭의 DOM 안에만 존재하므로 실제로 다른 탭에 새어나가진 않지만,
+  // 한 탭 안에 여러 세션이 겹칠 수 있는 경우를 위한 방어).
   const p = chrome.runtime.sendMessage(message);
   if (p?.catch) p.catch(() => {});
 }
@@ -394,7 +299,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  // 사이드패널의 HITL 결정 → 원본 탭 content.js 로 중계 (제스처 불필요)
+  // 검토 패널의 HITL 결정 → 원본 탭 content.js 로 중계 (제스처 불필요)
   if (type === 'PANEL_DECISION') {
     const { sessionId, decision } = message;
     const session = sessions.get(sessionId);
@@ -402,30 +307,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.sendMessage(session.tabId, {
         type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
       }).catch(() => {});
-      // 결정이 끝났으니 이 탭의 패널도 꺼둔다 — 나중에 이 탭으로 돌아와도
-      // 끝난 검사 결과가 다시 뜨지 않게.
-      disablePanelForTab(session.tabId);
-      clearPanelTabIfMatches(session.tabId);
     }
     sessions.delete(sessionId);
     if (activeSessionId === sessionId) activeSessionId = null;
-    sendResponse({ ok: true });
-    return false;
-  }
-
-  // content.js: 제스처 시점에 사이드패널을 연다 (PLAN §변경1, 2026-07-23 정정 — 정식 1차 경로).
-  // 메시지 왕복 1회 안에서 추가 await 없이 곧바로 호출해야 제스처가 보존된다(실측 확인).
-  if (type === 'OPEN_SIDE_PANEL') {
-    const tabId = sender?.tab?.id ?? message.tabId;
-    if (tabId != null && chrome.sidePanel?.open) {
-      // setOptions/switchPanelToTab 은 await 하지 않는다 — 바로 아래 open() 이 이
-      // 메시지 핸들러의 동기 호출 스택 안에서 곧바로 실행돼야 제스처가 유지된다
-      // (실측 확인, 위 주석 참고). 이전 탭 비활성화·추적 갱신은 open() 성패와
-      // 무관하므로 fire-and-forget 으로 흘려보내도 안전하다.
-      chrome.sidePanel.setOptions({ tabId, path: SIDEPANEL_PATH, enabled: true }).catch(() => {});
-      switchPanelToTab(tabId);
-      chrome.sidePanel.open({ tabId }).catch(() => {});
-    }
     sendResponse({ ok: true });
     return false;
   }
@@ -466,16 +350,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-// 설치/기동 시 서버 1회 탐지 + 사이드패널 동작 방식 설정
+// 설치/기동 시 서버 1회 탐지
 chrome.runtime.onInstalled?.addListener(() => {
   discoverServer().catch(() => {});
-  disableAllExistingTabsPanel();
 });
 chrome.runtime.onStartup?.addListener(() => {
   discoverServer().catch(() => {});
-  disableAllExistingTabsPanel();
 });
 
-// 툴바 아이콘 클릭은 action.default_popup(설정 전용)로 처리되므로, 사이드패널이
-// 아이콘 클릭으로 열리지 않게 명시적으로 비활성화한다(PLAN §변경1/§변경2 분리).
-chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: false }).catch(() => {});
+// 툴바 아이콘 클릭은 action.default_popup(설정 전용)로 처리된다(PLAN §변경1/§변경2 분리).

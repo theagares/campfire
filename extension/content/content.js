@@ -1,14 +1,14 @@
 /**
  * content.js  ─  isolated world
  *
- * 역할 (PLAN §변경1 — 사이드패널 HITL):
+ * 역할 (PLAN §변경1 — 검토 패널 HITL, 2026-07-24 재정정):
  *   1. 사용자 제스처(전송 버튼 클릭 / Enter / 파일 선택·드롭·붙여넣기)를 캡처 단계에서
  *      가로챈다.
- *   2. 그 자리에서 **직접 chrome.sidePanel.open({tabId})** 을 호출해 사이드패널을 연다.
- *      (SW 경유 금지 — 제스처 소실 방지. content 컨텍스트에 sidePanel API 가 없을 때만
- *       SW 폴백.)  "패널 열기(제스처 필요)"와 "검사 수행(제스처 무관)"을 분리한다.
+ *   2. 그 자리에서 검토 패널을 **직접 이 탭의 페이지 DOM에 iframe으로 주입**한다
+ *      (아래 "검토 패널 열기" 섹션 참고 — chrome.sidePanel API 대신 이 방식을 쓰는
+ *      이유는 그 섹션의 주석에 정리돼 있다).
  *   3. 패널을 연 "이후에" SW(START_SCAN)를 거쳐 엔진 REST 로 PII/인젝션 검사를 수행한다.
- *   4. 사이드패널의 승인 결과(PANEL_DECISION)를 SW→content 로 받아, 파일 인풋 재주입
+ *   4. 검토 패널의 승인 결과(PANEL_DECISION)를 SW→content 로 받아, 파일 인풋 재주입
  *      또는 interceptor(MAIN world)로의 SECUREDOC_RESULT / SECUREDOC_PROMPT_RESULT
  *      postMessage 로 마스킹본 치환·재전송을 트리거한다.
  *
@@ -21,7 +21,6 @@
   'use strict';
 
   let protectionEnabled = true;
-  let myTabId = null;
 
   const bridgeToken = (
     globalThis.crypto?.randomUUID?.()
@@ -47,14 +46,6 @@
   }
 
   sendBridgeTokenToMain();
-
-  // 제스처 시점에 동기적으로 쓰기 위해 tabId 를 미리(로드 시) 캐싱한다.
-  try {
-    chrome.runtime.sendMessage({ type: 'GET_TAB_ID' }, (res) => {
-      if (chrome.runtime.lastError) return;
-      if (res && typeof res.tabId === 'number') myTabId = res.tabId;
-    });
-  } catch (_) { /* context invalidated */ }
 
   chrome.storage?.local?.get?.({ protectionEnabled: true }, ({ protectionEnabled: enabled }) => {
     protectionEnabled = Boolean(enabled);
@@ -111,26 +102,67 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 사이드패널 열기 — SW 단일 홉 위임 (PLAN §변경1 핵심, 2026-07-23 실측 후 정정)
+  // 검토 패널 열기 — 페이지 DOM에 직접 iframe 오버레이 주입 (2026-07-24 재정정)
   //
-  // (정정 경위) 원래는 "content 스크립트가 chrome.sidePanel.open()을 직접 호출"하는
-  // 걸 1순위로 두고 SW 경유를 "제스처 소실 위험 있는 폴백"으로 취급했었다. 그런데
-  // 실제 브라우저(Chrome 149)로 크로미움 익스텐션을 로드해 검증한 결과, chrome.sidePanel
-  // 네임스페이스 자체가 content script(Isolated world) 컨텍스트엔 애초에 존재하지 않는다
-  // (typeof chrome.sidePanel === 'undefined' 실측 확인 — 문서의 "content script에서
-  // 여는 사용자 인터랙션" 문구는 "제스처가 content에서 시작돼도 된다"는 뜻이지 "API
-  // 호출 자체를 content에서 한다"는 뜻이 아니었다). 즉 "직접 호출" 경로는 애초에
-  // 실행 불가능한 죽은 코드였고, 반대로 "폴백"이라 불렀던 SW 단일 홉 경유가
-  // Chromium 팀이 공식적으로 보장하는 유일하게 동작하는 경로임을 실측으로 확인했다
-  // (메시지 왕복 1회, SW가 그 메시지 안에서 동기적으로 처리하면 제스처가 보존됨).
-  // 그래서 SW 위임을 정식 1차 경로로 승격한다.
+  // (정정 경위) chrome.sidePanel API로 구현했었는데, 실사용 중 두 가지가 API 자체의
+  // 구조적 한계로 확인됐다:
+  //   1) 탭 스코핑이 불완전함 — 그 탭의 활성 상태를 setOptions({enabled:false})로
+  //      끄더라도, "이미 창에 도킹되어 열린 패널"을 강제로 닫는 API가 없다
+  //      (sidePanel.close() 자체가 없음 — W3C webextensions #521에서 계속 요청
+  //      중인 미구현 기능: https://github.com/w3c/webextensions/issues/521).
+  //   2) manifest의 side_panel.default_path가 "모든 탭에 기본으로 열린 전역 패널
+  //      인스턴스"를 만들어버려 탭별 차단과 근본적으로 충돌한다
+  //      (https://pmds.info/blog/chrome-extension-side-panel-per-tab).
+  //
+  // 대신 검토 패널을 이 탭의 페이지 DOM에 직접 iframe으로 주입하는 방식으로
+  // 바꿨다 — 이러면:
+  //   - iframe은 물리적으로 "이 탭의 DOM 안"에만 존재하므로 다른 탭엔 애초에
+  //     나타날 수 없다(탭 스코핑 문제 자체가 소멸, 별도 enabled/disabled 관리 불요).
+  //   - 폭/높이를 우리가 완전히 통제한다(브라우저가 정하는 사이드패널 독 폭에
+  //     종속되지 않음).
+  //   - DOM에서 제거하면 확실하게 닫힌다(닫기 API 부재 문제가 없음).
+  //   - iframe의 src는 chrome-extension:// 오리진이라 그 안에서 로드되는
+  //     sidepanel.html은 여전히 chrome.runtime 메시징 등 확장 권한을 그대로 쓴다
+  //     (manifest web_accessible_resources에 sidepanel/* 노출 필요).
+  //   - DOM 삽입 자체엔 사용자 제스처가 필요 없으므로(사이드패널 API 때와 달리)
+  //     SW를 거칠 필요조차 없어졌다 — 제스처 시점에 바로, 동기적으로 주입한다.
   // ══════════════════════════════════════════════════════════════════════════
+  let overlayRoot = null;
+  let overlayIframe = null;
+
   function openSidePanel() {
+    if (overlayIframe) return; // 이미 열려 있으면 그대로 재사용
     try {
-      const p = chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL', tabId: myTabId });
-      if (p?.catch) p.catch(() => {});
+      overlayRoot = document.createElement('div');
+      overlayRoot.id = '__ups_overlay_host';
+      overlayRoot.style.cssText = [
+        'all: initial', 'position: fixed', 'top: 0', 'right: 0',
+        'width: 560px', 'max-width: 92vw', 'height: 100vh',
+        'z-index: 2147483647', 'box-shadow: -4px 0 24px rgba(0,0,0,.18)',
+        'background: #fff',
+      ].join(' !important; ') + ' !important;';
+
+      overlayIframe = document.createElement('iframe');
+      overlayIframe.src = chrome.runtime.getURL('sidepanel/sidepanel.html');
+      overlayIframe.title = 'UpSecurity 문서 검토';
+      overlayIframe.style.cssText = 'width: 100% !important; height: 100% !important; border: 0 !important; display: block !important;';
+
+      overlayRoot.appendChild(overlayIframe);
+      (document.documentElement || document.body).appendChild(overlayRoot);
     } catch (_) { /* context invalidated */ }
   }
+
+  function closeSidePanel() {
+    try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
+    overlayRoot = null;
+    overlayIframe = null;
+  }
+
+  // 검토 패널(iframe) 자신이 결정 완료 후 닫아달라고 보내는 postMessage 수신.
+  window.addEventListener('message', (event) => {
+    if (event.source !== overlayIframe?.contentWindow) return;
+    if (event.data?.type === 'UPS_CLOSE_OVERLAY') closeSidePanel();
+  });
 
   // ══════════════════════════════════════════════════════════════════════════
   // 패널 세션 — START_SCAN 후 PANEL_DECISION 을 기다린다

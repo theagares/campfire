@@ -338,6 +338,41 @@ class Detector(Protocol):
   진행(이번 검증은 로컬 격리 테스트 페이지 기준 — 실제 사이트의 DOM/CSP가 이 메커니즘
   자체에 영향 줄 가능성은 낮지만 사이트별 셀렉터 정확성은 별도로 확인 필요).
 
+**재정정 (2026-07-24) — `chrome.sidePanel` API 폐기, 페이지 내 iframe 오버레이로 전환**:
+실사용 중 이 API 자체의 구조적 한계 두 가지가 확인됐다 —
+(1) 탭 스코핑 불완전: `setOptions({tabId, enabled:false})`는 "그 탭에서 다시 열 수
+없게" 만들 뿐, 이미 창에 도킹되어 열린 패널을 강제로 닫는 `close()` 같은 API가
+아직 없다(W3C webextensions #521에서 계속 요청 중인 미구현 기능:
+https://github.com/w3c/webextensions/issues/521). (2) manifest의
+`side_panel.default_path`가 "모든 탭에 기본으로 열린 전역 패널 인스턴스"를 만들어
+탭별 차단과 근본적으로 충돌한다(https://pmds.info/blog/chrome-extension-side-panel-per-tab).
+이 둘을 여러 겹으로 우회해봤지만(전역 disable, 선제적 다른 탭 비활성화, 세션
+브로드캐스트 tabId 스코핑 등) "다른 탭으로 넘기면 이미 열린 패널이 물리적으로
+완전히 닫힌다"는 크롬이 close() 계열 API를 추가하기 전까진 확장 코드만으로
+강제할 수 없는 플랫폼 한계였다.
+
+**최종 설계**: `chrome.sidePanel` 전체를 걷어내고, 검토 패널을 `content.js`가 이
+탭의 페이지 DOM에 **직접 iframe으로 주입**하는 방식으로 바꿨다(`src`는
+`chrome.runtime.getURL('sidepanel/sidepanel.html')`, `position:fixed; right:0;
+width:560px; height:100vh; z-index:2147483647`로 우측 도킹). 기존 sidepanel.html/
+css/js는 그대로 재사용(iframe도 chrome-extension:// 오리진이라 `chrome.runtime`
+메시징이 동일하게 동작). 이 방식의 이점:
+  - iframe은 물리적으로 그 탭의 DOM 안에만 존재 → 다른 탭엔 애초에 나타날 수
+    없다(탭 스코핑 문제 자체가 소멸, enabled/disabled 관리 전부 불필요).
+  - 폭/높이를 완전히 우리가 통제(브라우저가 정하는 사이드패널 독 폭에 종속되지 않음).
+  - DOM에서 제거하면 확실하게 닫힌다(닫기 API 부재 문제가 없음) — 상단바에 X
+    버튼을 추가해 진행 중에도 수동으로 닫을 수 있게 했다(사이드패널엔 있던
+    네이티브 닫기 버튼이 없어졌으므로).
+  - DOM 삽입 자체엔 사용자 제스처가 필요 없어, "SW가 메시지 핸들러 안에서
+    await 없이 곧바로 호출해야 제스처가 보존된다"는 위 문단의 제약 자체가
+    사라졌다 — content.js가 제스처 시점에 동기적으로 직접 주입한다(SW 왕복 불필요).
+  - manifest에서 `sidePanel` 권한과 `side_panel.default_path`를 제거, 대신
+    `web_accessible_resources`에 `sidepanel/*`를 노출해 페이지 컨텍스트에서
+    iframe으로 로드 가능하게 함.
+  Playwright로 실제 트러스티드 클릭 제스처를 통한 전체 플로우(오버레이 주입 →
+  실제 엔진 스캔 → 결과 렌더 → X 버튼으로 닫기)를 검증, tab A에서 연 오버레이가
+  tab B의 DOM엔 전혀 존재하지 않음을 확인.
+
 ### 변경 2 — 익스텐션 popup: 설정 전용으로 재도입 (2026-07-23 최종 확정)
 
 **경위**: 2026-07-21에 "popup 축소" 계획을 한 번 폐기했었다 — 당시 Figma의 트레이
