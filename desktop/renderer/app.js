@@ -53,33 +53,21 @@ function renderConnections() {
   mcpBadge.textContent = mcpOn ? '연결됨' : '미연결';
   $('#conn-mcp-note').textContent = c.mcp.note || '';
 
-  // 익스텐션 활성 연결은 앱에서 관측 불가 → 항상 'unknown'(§connections.js 주석).
-  // Figma 문구 "미연결"은 확정적 부정 주장이라 정확하지 않으므로, 실제 상태를
-  // 정직하게 반영하는 기존 문구를 유지한다(시각 스타일만 Figma의 무채색 배지에 맞춤).
+  // 확장의 최근 /health 요청(Origin: chrome-extension://...)을 엔진이 감지해 알려주는
+  // extensionLastSeenSecondsAgo 기준 — MCP 카드와 동일한 패턴(§connections.js 참고).
   const extCard = $('#conn-ext-card');
-  extCard.classList.add('disconnected');
-  $('#conn-ext-badge').textContent = '상태 확인 불가';
+  const extOn = c.extension.status === 'available';
+  extCard.classList.toggle('connected', extOn);
+  extCard.classList.toggle('disconnected', !extOn);
+  const extBadge = $('#conn-ext-badge');
+  extBadge.className = extOn ? 'badge-pill' : 'badge-plain';
+  extBadge.textContent = extOn ? '연결됨' : '미연결';
   $('#conn-ext-note').textContent = c.extension.note || '';
 }
 $('#conn-ext-install').addEventListener('click', () => {
   const url = (state.connections && state.connections.extension.helpUrl) || '';
   if (url) api.openExternal(url);
 });
-
-// 다른 PC에 설치할 때 쓰는 원커맨드 설치 명령어 (README/scripts/install.ps1|sh 와 동일).
-// 현재 OS에 맞는 명령어를 자동으로 골라 보여준다.
-const INSTALL_REPO = 'theagares/securedoc-gateway';
-function installCommandForPlatform() {
-  const p = navigator.platform || '';
-  if (/mac/i.test(p)) {
-    return `curl -fsSL https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.sh | bash`;
-  }
-  if (/win/i.test(p)) {
-    return `irm https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.ps1 | iex`;
-  }
-  return `curl -fsSL https://raw.githubusercontent.com/${INSTALL_REPO}/main/scripts/install.sh | bash`;
-}
-$('#install-cmd-text').textContent = installCommandForPlatform();
 
 $$('.codeblock-row .copy-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
