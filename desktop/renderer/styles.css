@@ -124,7 +124,7 @@ img { display:block; }
   background:#fff; font-weight:500; font-size:13px; line-height:19.5px;
   box-shadow:0 0 14px rgba(120,120,120,.18), inset 0 0 8px rgba(120,120,120,.18);
 }
-.model-pill .mp-dot { width:6px; height:6px; border-radius:9999px; }
+.model-pill .mp-dot { width:6px; height:6px; border-radius:9999px; transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
 .model-pill.on { border:1px solid var(--purple); }
 .model-pill.on .mp-dot { background:var(--purple); }
 .model-pill.on .mp-text { color:var(--purple); }
@@ -173,7 +173,7 @@ img { display:block; }
    꽉 차 있어(PII 로고는 흰 여백이 있어 안 보였다) 이 초과분과 mc-photo 상단이 겹쳐 로고가
    글자 아래쪽을 가렸다. stat-box 와 동일한 원인이라 동일하게 명시적으로 좁힌다. */
 .model-card .mc-title { position:absolute; left:4.643%; top:9.559%; font-size:15px; line-height:16px; font-weight:600; color:#000; }
-.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
 .model-card .mc-dot.on { background:var(--purple); }
 .model-card .mc-dot.off { background:var(--grey-400); }
 .model-card .mc-photo { position:absolute; border-radius:9999px; object-fit:cover; }
@@ -290,7 +290,7 @@ img { display:block; }
    정확히 맞춘다. */
 .pipe-card .pc-divider { position:absolute; left:4.655%; right:4.655%; bottom:8.6%; height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); }
 .pipe-card .pc-status { position:absolute; right:5.862%; bottom:3%; display:flex; align-items:center; gap:8px; }
-.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
 .pipe-card .pc-status.idle .ps-dot { background:var(--grey-500); }
 .pipe-card .pc-status.idle .ps-label { color:var(--grey-500); }
 .pipe-card .pc-status.running .ps-dot { background:var(--purple); }
@@ -328,7 +328,7 @@ img { display:block; }
 .divider { height:1px; background:var(--line-06); margin:2px 0; }
 .tabnum { font-variant-numeric:tabular-nums; }
 .pill { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:9999px; font-size:12px; font-weight:600; background:#f5f5f5; border:1px solid var(--line-08); }
-.dot { width:8px; height:8px; border-radius:9999px; background:var(--grey-500); }
+.dot { width:8px; height:8px; border-radius:9999px; background:var(--grey-500); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
 .dot.on { background:var(--green); box-shadow:0 0 0 3px rgba(9,174,75,.15); }
 .dot.off { background:var(--danger); box-shadow:0 0 0 3px var(--danger-soft); }
 .dot.warn { background:var(--warn); box-shadow:0 0 0 3px var(--warn-soft); }
@@ -350,8 +350,15 @@ img { display:block; }
    (실측: spread-radius를 0에서부터 애니메이션하는 것도 고리가 "팍" 튀어나오는 것처럼
    보여 마찬가지로 반짝임의 원인이었음 — 그래서 spread는 아예 고정하고 blur/opacity만,
    그것도 겹마다 정확히 동일한 비율(밝기 ×1.04, 크기 ×1.03 안팎)로만 바꾼다).
-   점마다 duration/delay/진폭을 조금씩 다르게(음수 delay로 서로 다른 위상에서 즉시 시작)
-   줘서 여러 점이 동시에 숨쉬지 않도록 한다. */
+   점마다 duration/진폭을 조금씩 다르게 줘서 여러 점이 동시에 숨쉬지 않도록 한다(delay는
+   일부러 안 준다 — 아래 각 규칙의 주석 참고).
+   그리고 이 glow는 .on/.running 클래스가 런타임에 켜졌다 꺼졌다 하는 점에 붙는데,
+   애니메이션이 붙고 떨어지는 전환 자체는 transition으로 처리하지 못한다(애니메이션이
+   있는 동안엔 transition이 관여하지 않다가 꺼지는 순간 갑자기 정적 box-shadow로
+   점프하기 때문 — 실측: "빛이 꺼지는 순간만 깜빡이는 것처럼 보인다"). 그래서 각 점의
+   기본(.mp-dot/.mc-dot/.ps-dot/.dot) 규칙에 transition:box-shadow/background-color를
+   따로 걸어, 애니메이션이 빠지는 마지막 프레임 값에서 꺼진 상태의 정적 값까지 부드럽게
+   식도록 만든다. */
 @keyframes ambient-glow-a {
   0%, 100% {
     box-shadow:
