@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>UpSecurity</title>
+  <link rel="stylesheet" href="glow.css" />
   <style>
     /* Figma 파일 hMO6k051z9JXBoa2fWySND 노드 36:2846 "현황" 1:1 반영.
        색상은 Figma 캡처가 라이트 모드뿐이라 그대로, 다크 모드는 앱 본체(styles.css)와
@@ -42,7 +43,7 @@
     .sec-pill {
       display:inline-flex; align-items:center; gap:8px; padding:5px 5px 5px 12px; border-radius:999px;
       background:var(--sunken); font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink-mute);
-      transition:background .2s;
+      transition:background .2s, box-shadow .8s ease-in-out;
     }
     .sec-toggle-wrap input:checked + .sec-pill { background:var(--ok); color:#fff; }
     .sec-knob { width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); flex:0 0 auto; }
@@ -66,20 +67,45 @@
       display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
       background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
     }
-    .model-pill .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto; }
-    .model-pill.on { border-color:var(--purple); color:var(--purple); }
-    .model-pill.on .mp-dot { background:var(--purple); animation:neon-glow 2.8s cubic-bezier(.45,0,.55,1) infinite; will-change:box-shadow; }
-
-    /* 네온 글로우: 활성화된 버튼/점 주변으로 빛이 퍼지는 효과(app 본체 styles.css 와 동일한 관례) —
-       대칭 cubic-bezier 이징 + 느린 주기로 숨쉬듯 부드럽게 커졌다 작아진다. */
-    @keyframes neon-glow {
-      0%, 100% { box-shadow:0 0 2px 0 currentColor, 0 0 4px 0 currentColor; }
-      50% { box-shadow:0 0 8px 2px currentColor, 0 0 16px 5px currentColor; }
+    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes(glow.css, 공유)를
+       쓴다 — 예전엔 여기만 옛날 neon-glow(단일 레이어 강한 pulse)를 따로 갖고 있어서 앱
+       본체와 트레이 팝업의 glow가 서로 다르게 보였다(실측 버그). 앱 쪽에서 이미 확인된
+       세 가지 규칙을 여기도 그대로 따른다: (1) delay는 negative로 주지 않는다 — on 클래스가
+       토글되는 순간 중간 밝기값으로 스냅되어 반짝이는 것처럼 보이기 때문. (2) transition을
+       걸어 꺼질 때도 부드럽게 페이드아웃되게 한다. (3) mp-dot 애니메이션의 duration은 앱의
+       퍼플 계열(ambient-glow-c, 6.3s)과 동일하게 맞춘다. */
+    .model-pill .mp-dot {
+      width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto;
+      transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out;
     }
-    .sec-toggle-wrap input:checked + .sec-pill { animation:neon-glow-green 2.8s cubic-bezier(.45,0,.55,1) infinite; will-change:box-shadow; }
-    @keyframes neon-glow-green {
-      0%, 100% { box-shadow:0 0 3px 0 var(--ok), 0 0 6px 0 var(--ok); }
-      50% { box-shadow:0 0 10px 2px var(--ok), 0 0 20px 6px var(--ok); }
+    .model-pill.on { border-color:var(--purple); color:var(--purple); }
+    .model-pill.on .mp-dot {
+      background:var(--purple); color:var(--purple);
+      animation:ambient-glow-c 6.3s ease-in-out infinite;
+      will-change:box-shadow;
+    }
+    /* sec-pill은 켜지면 배경이 초록(var(--ok))이 되고 그 위에 흰 글자(color:#fff, 위 규칙)가
+       올라가므로, glow.css의 currentColor 기반 keyframes를 그대로 쓰면 halo 색이 아니라
+       글자색까지 초록으로 덮어써서 흰 글자가 초록 배경에 묻힌다. 그래서 이 요소만
+       currentColor 대신 var(--ok)를 직접 섞는 로컬 keyframes를 쓴다 — 겹 구조/증가 비율은
+       glow.css의 ambient-glow-a와 동일(공용 파일의 사용법 설명 참고). */
+    @keyframes ambient-glow-sec {
+      0%, 100% {
+        box-shadow:
+          0 0 8px color-mix(in srgb, var(--ok) 32%, transparent),
+          0 0 24px color-mix(in srgb, var(--ok) 12%, transparent),
+          0 0 60px color-mix(in srgb, var(--ok) 4%, transparent);
+      }
+      50% {
+        box-shadow:
+          0 0 8.24px color-mix(in srgb, var(--ok) 33.4%, transparent),
+          0 0 24.72px color-mix(in srgb, var(--ok) 12.5%, transparent),
+          0 0 61.8px color-mix(in srgb, var(--ok) 4.2%, transparent);
+      }
+    }
+    .sec-toggle-wrap input:checked + .sec-pill {
+      animation:ambient-glow-sec 5.8s ease-in-out infinite;
+      will-change:box-shadow;
     }
 
     .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
