@@ -231,11 +231,13 @@ function buildPipelineDiagram() {
   drawPipeLines();
 }
 
-// 위/좌/우는 캔버스 가장자리에서 5% 여백을 남기고, 아래쪽은 구분선(.pc-divider) 바로
-// 위까지만 움직이게 한다 — 라벨이 있는 노드(OCR/텍스트 직접 추출 등)는 라벨 높이까지
+// 위/좌/우는 카드(.pipe-card) 전체 기준 5% 여백만 남기고, 아래쪽은 구분선(.pc-divider)
+// 바로 위까지만 움직이게 한다 — 라벨이 있는 노드(OCR/텍스트 직접 추출 등)는 라벨 높이까지
 // 감안해야 실제로 선과 안 겹친다. 고정 퍼센트를 미리 계산해두는 대신 드래그를 시작할
-// 때마다 캔버스·구분선·라벨의 실측 픽셀 위치를 다시 재서 정확히 맞춘다(창 크기가
-// 달라져도 항상 맞는다).
+// 때마다 카드·캔버스·구분선·라벨의 실측 픽셀 위치를 다시 재서 정확히 맞춘다(창 크기가
+// 달라져도 항상 맞는다). 노드 좌표(left/top)는 캔버스(.pipe-diagram) 기준 %라서, "카드
+// 기준 5%"를 캔버스 좌표계로 환산하면 캔버스가 카드보다 안쪽에 있는 만큼 음수/100% 초과
+// 값이 나올 수 있는데 — 그게 정상이다(카드 기준 여백이라 그렇다).
 const PIPE_EDGE_MARGIN_PCT = 5;
 const PIPE_DIVIDER_GAP_PX = 6;
 
@@ -252,18 +254,25 @@ function makePipeNodeDraggable(el, canvas) {
     const h = parseFloat(el.style.height);
 
     const canvasRect = canvas.getBoundingClientRect();
+    const cardRect = canvas.closest('.pipe-card').getBoundingClientRect();
     const divider = document.querySelector('.pc-divider');
     const dividerTopPx = divider ? divider.getBoundingClientRect().top - canvasRect.top : canvasRect.height;
     const label = el.querySelector('.pn-label');
     const labelReservePx = label ? label.getBoundingClientRect().height + 3 : 0; // 3px = .pn-label margin-top
     const maxTopPx = dividerTopPx - labelReservePx - PIPE_DIVIDER_GAP_PX - (h / 100) * canvasRect.height;
-    const maxTopPct = Math.max(PIPE_EDGE_MARGIN_PCT, (maxTopPx / canvasRect.height) * 100);
+    const maxTopPct = (maxTopPx / canvasRect.height) * 100;
+
+    const cardMarginX = cardRect.width * (PIPE_EDGE_MARGIN_PCT / 100);
+    const cardMarginY = cardRect.height * (PIPE_EDGE_MARGIN_PCT / 100);
+    const minLeftPct = ((cardRect.left + cardMarginX - canvasRect.left) / canvasRect.width) * 100;
+    const maxLeftPct = ((cardRect.right - cardMarginX - canvasRect.left) / canvasRect.width) * 100 - w;
+    const minTopPct = ((cardRect.top + cardMarginY - canvasRect.top) / canvasRect.height) * 100;
 
     const move = (ev) => {
       const dxPct = ((ev.clientX - startX) / canvasRect.width) * 100;
       const dyPct = ((ev.clientY - startY) / canvasRect.height) * 100;
-      el.style.left = clamp(startLeft + dxPct, PIPE_EDGE_MARGIN_PCT, 100 - PIPE_EDGE_MARGIN_PCT - w) + '%';
-      el.style.top = clamp(startTop + dyPct, PIPE_EDGE_MARGIN_PCT, maxTopPct) + '%';
+      el.style.left = clamp(startLeft + dxPct, minLeftPct, maxLeftPct) + '%';
+      el.style.top = clamp(startTop + dyPct, minTopPct, maxTopPct) + '%';
       drawPipeLines();
     };
     const up = () => {
