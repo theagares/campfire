@@ -82,13 +82,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Windows 전용: electron-builder 가 코드사이닝 도구(winCodeSign, macOS dylib 심볼릭
-          # 링크 포함)를 내려받다 실패하는 문제 회피(위 주석 참고). macOS 에서는 이 값을
-          # 끄면 안 된다 — 기본 자동 발급되는 "ad-hoc" 서명까지 막혀서 앱이 완전히 서명 없는
-          # 상태로 빌드되고, Apple Silicon(arm64) 러너는 서명 없는 바이너리를 실행 자체를
-          # 거부한다(spctl: rejected/no usable signature, 실측 확인 — 프로세스는 뜨지만
-          # 엔진을 스폰하기도 전에 아무 동작도 못 함).
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.os == 'windows-latest' && 'false' || 'true' }}
+          # electron-builder 자체 코드사이닝 탐색은 양쪽 다 끈다: Windows 는 코드사이닝
+          # 도구(winCodeSign, macOS dylib 심볼릭 링크 포함)를 내려받다 실패하는 문제 회피용,
+          # macOS 는 어차피 진짜 인증서가 없어 electron-builder 자체 탐색은 늘 실패로
+          # 끝나고(경고만 찍고 무서명으로 통과) 실제 서명은 afterPack 훅(scripts/afterPack.js)
+          # 이 담당한다(package.json _comment_mac_signing 참고).
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }} -- --publish always
 
       # 빌드가 "성공"해도 번들된 엔진이 실제로 뜨는지는 별개 문제였다(portable Python
