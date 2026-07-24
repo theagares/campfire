@@ -71,11 +71,23 @@ body {
 }
 .mp-dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex-shrink: 0;
-  animation: mp-pulse 2s ease-in-out infinite;
+  animation: mp-pulse 5.4s cubic-bezier(.45,0,.55,1) infinite;
 }
+/* Core(점)는 고정하고 바깥 halo 3겹만 아주 미세하게 밝기·크기를 오가며
+   "숨 쉬듯" 은은하게 빛나게 한다 — 강한 pulse/bloom 대신 ambient glow. */
 @keyframes mp-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(88, 76, 220, .1); }
-  50% { box-shadow: 0 0 0 7px rgba(88, 76, 220, .18); }
+  0%, 100% {
+    box-shadow:
+      0 0 8px 0 rgba(88, 76, 220, .32),
+      0 0 24px 1px rgba(88, 76, 220, .12),
+      0 0 60px 2px rgba(88, 76, 220, .04);
+  }
+  50% {
+    box-shadow:
+      0 0 9px 0 rgba(88, 76, 220, .35),
+      0 0 27px 2px rgba(88, 76, 220, .15),
+      0 0 65px 3px rgba(88, 76, 220, .05);
+  }
 }
 .agent-title { font-size: 19px; font-weight: 700; letter-spacing: -.02em; color: #0a0a0a; margin-top: 4px; }
 .progress-title { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
