@@ -25,7 +25,7 @@
   },
   "_comment_engine_bundle": "extraResources 는 prod 패키징 시 Python 엔진(venv 포함)을 앱 리소스로 번들한다(build.extraResources[0], from:../engine to:engine — .venv 를 반드시 포함해야 python.exe 사이드카가 뜬다. 용량 큰 캐시/테스트는 제외). dev 에서는 SECUREDOC_ENGINE_DIR 미설정 시 소스트리의 ../engine 을 직접 쓴다(main/paths.js). prod 에서는 process.resourcesPath/engine 을 쓴다.",
   "_comment_updater": "publish 는 GitHub Releases 사용(build.publish[0] — provider:github, repo owner/name). electron-builder --publish 또는 GH_TOKEN 있는 CI에서 릴리스 자산으로 업로드하면 electron-updater 가 그 릴리스를 자동으로 확인한다. 인증 토큰은 CI 환경변수(GH_TOKEN)로만 주입하고 소스에 넣지 않는다.",
-  "_comment_mac_signing": "build.mac.identity:'-' 는 codesign 의 ad-hoc 서명(진짜 Apple Developer 인증서 불필요). 유료 인증서가 없어도 이거라도 있어야 Gatekeeper 가 실행을 막지 않는다 — 특히 Apple Silicon(arm64) 은 서명이 아예 없는 바이너리는 커널이 실행 자체를 거부한다(실측 확인: identity 없이 빌드하면 spctl 이 rejected/no usable signature 를 내고, 앱 프로세스는 뜨는 것처럼 보여도 실제로는 아무 코드도 못 돌림). ad-hoc 서명은 노터라이즈가 아니라서 최초 실행 시 '확인되지 않은 개발자' 경고는 여전히 뜰 수 있다 — 그건 사용자가 우클릭 열기로 넘기면 된다.",
+  "_comment_mac_signing": "build.mac.identity 는 electron-builder 안에서 '키체인에서 이 문자열을 포함하는 인증서를 찾아라'는 검색어로만 쓰인다 — '-'를 넣어도 ad-hoc 서명을 강제하는 특수값이 아니라서(실측 확인: identity:'-' 여도 spctl 이 여전히 rejected/no usable signature), 진짜 인증서가 없는 이 프로젝트에선 그냥 무서명으로 넘어간다. 그래서 scripts/afterSign.js(build.afterSign — electron-builder 자체 서명 시도 이후, dmg 생성 이전 실행) 에서 codesign --sign - 로 직접 ad-hoc 서명을 강제한다 — Apple Silicon(arm64) 은 서명이 아예 없는 바이너리는 커널이 실행 자체를 거부하기 때문(노터라이즈는 아니라서 최초 실행 시 '확인되지 않은 개발자' 경고는 뜰 수 있음 — 사용자가 우클릭 열기로 넘기면 됨).",
   "build": {
     "appId": "com.airookie.upsecurity",
     "productName": "UpSecurity",
@@ -68,6 +68,7 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true
     },
+    "afterSign": "scripts/afterSign.js",
     "mac": {
       "target": [
         {
@@ -76,8 +77,7 @@
         }
       ],
       "icon": "build/icon.png",
-      "category": "public.app-category.developer-tools",
-      "identity": "-"
+      "category": "public.app-category.developer-tools"
     },
     "publish": [
       {
