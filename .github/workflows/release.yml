@@ -1,0 +1,58 @@
+name: Build desktop installers (draft release)
+
+# 수동 실행(workflow_dispatch)으로 Windows/macOS 설치 파일을 electron-builder 로 빌드해
+# GitHub Releases에 "초안(draft)"으로 올린다 — 초안은 저장소 밖에 공개되지 않으므로
+# 실제로 공개 배포하려면 Releases 페이지에서 사람이 직접 "Publish"를 눌러야 한다.
+#
+# Windows 로컬(개발자 PC, 비관리자 세션)에서는 electron-builder 가 코드사이닝 도구 묶음
+# (winCodeSign, macOS dylib 심볼릭 링크 포함)을 내려받다 "Cannot create symbolic link"로
+# 실패한다(심볼릭 링크 생성엔 관리자 권한/개발자 모드 필요) — GitHub 호스팅 러너는 이 제약이
+# 없어 빌드가 정상적으로 된다.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+          - os: macos-latest
+            script: dist:mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up engine venv (extraResources 로 앱에 번들됨)
+        working-directory: engine
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ -f .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -e .
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build & upload as draft release asset
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run ${{ matrix.script }} -- --publish always
