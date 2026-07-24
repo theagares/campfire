@@ -57,9 +57,13 @@ jobs:
             PYROOT=$(dirname "$PYEXE")
             cp -r "$PYROOT" .venv
           else
-            # macOS/Linux: uv 배포본은 <root>/bin/python3.x 레이아웃
+            # macOS/Linux: uv 배포본은 <root>/bin/python3.x 레이아웃. uv 는 버전 별칭 경로
+            # 자체가 실제 설치 디렉터리를 가리키는 심볼릭 링크라(예: cpython-3.11-...) 그냥
+            # cp -R 만 하면 "복사본"이 실제로는 러너 전용 캐시 경로를 가리키는 심볼릭 링크로
+            # 그대로 남아 다른 머신(사용자 Mac)에서 못 찾는다(실측 확인됨) — -L 로 실제
+            # 내용을 완전히 역참조해서 복사해야 진짜로 자기 완결적인 사본이 된다.
             PYROOT=$(dirname "$(dirname "$PYEXE")")
-            cp -R "$PYROOT" .venv
+            cp -RL "$PYROOT" .venv
             ln -sf "$(basename "$PYEXE")" .venv/bin/python
           fi
           # uv 가 관리하던 원본 설치는 PEP 668 "externally-managed" 마커가 있어 pip install 을
