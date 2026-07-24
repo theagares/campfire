@@ -10,9 +10,18 @@
  *
  * 엔진 실행 계약 (PLAN §8, 요구사항):
  *   - cwd = <engineDir>
- *   - 명령 = <engineDir>/.venv/Scripts/python.exe -m app.main   (win)
- *            <engineDir>/.venv/bin/python       -m app.main   (mac/linux)
+ *   - 명령 = <engineDir>/.venv/Scripts/python.exe -m app.main   (win, 개발용 stdlib venv 레이아웃)
+ *            <engineDir>/.venv/bin/python       -m app.main   (mac/linux, 개발용 stdlib venv 레이아웃)
  *   - 엔진은 스스로 48200~48209 포트를 스캔해 바인딩하고 /health 로 실제 포트를 알린다(PLAN §11).
+ *
+ * 패키징된 배포본(extraResources 로 번들되는 .venv)은 위 stdlib venv 레이아웃이 아니라
+ * "portable" Python(uv 가 관리하는 python-build-standalone 빌드 등, 자기 완결적이라
+ * 어디로 옮겨도 그대로 실행됨) 을 그대로 복사해 넣는다 — Scripts/ 하위가 아니라 .venv
+ * 루트에 python.exe(win)/bin/python(mac) 이 바로 온다. stdlib venv 는 Windows에서
+ * Scripts/python.exe 가 pyvenv.cfg 의 home 경로(빌드 머신에만 있는 절대경로)를 찾는
+ * 런처 스텁이라 다른 머신에 그대로 복사하면 "No Python at ..." 로 죽는다(실측 확인됨,
+ * mac 은 bin/python 이 절대경로 심볼릭 링크라 동일한 문제). resolvePythonExe 는 두
+ * 레이아웃을 모두 찾아보고 실제 존재하는 쪽을 쓴다.
  */
 
 const path = require('path');
@@ -32,15 +41,19 @@ function resolveEngineDir(app) {
   return path.resolve(__dirname, '..', '..', 'engine');
 }
 
-/** venv python 실행파일 경로 (플랫폼별) */
+/** venv python 실행파일 경로 (플랫폼별) — stdlib venv 레이아웃과 portable 레이아웃 둘 다 확인 */
 function resolvePythonExe(engineDir) {
   const override = process.env.SECUREDOC_PYTHON;
   if (override && override.trim()) {
     return path.resolve(override.trim());
   }
   if (process.platform === 'win32') {
-    return path.join(engineDir, '.venv', 'Scripts', 'python.exe');
+    const stdlibVenv = path.join(engineDir, '.venv', 'Scripts', 'python.exe');
+    if (safeExists(stdlibVenv)) return stdlibVenv;
+    return path.join(engineDir, '.venv', 'python.exe'); // portable(embeddable-style) 레이아웃
   }
+  // mac/linux: portable 배포본도 bin/python 레이아웃을 그대로 쓴다(빌드 스크립트가
+  // bin/python 심볼릭 링크를 보장) — 별도 fallback 불필요.
   return path.join(engineDir, '.venv', 'bin', 'python');
 }
 

@@ -8,6 +8,13 @@ name: Build desktop installers (draft release)
 # (winCodeSign, macOS dylib 심볼릭 링크 포함)을 내려받다 "Cannot create symbolic link"로
 # 실패한다(심볼릭 링크 생성엔 관리자 권한/개발자 모드 필요) — GitHub 호스팅 러너는 이 제약이
 # 없어 빌드가 정상적으로 된다.
+#
+# 엔진 Python 런타임은 stdlib venv(python -m venv) 대신 uv 가 관리하는 portable Python
+# (python-build-standalone)을 그대로 복사해서 번들한다. stdlib venv 는 Windows에서
+# Scripts/python.exe 가 pyvenv.cfg 의 home(빌드 머신 전용 절대경로)을 찾는 런처 스텁이고,
+# mac/linux 는 bin/python 이 그 절대경로를 가리키는 심볼릭 링크라 — 둘 다 다른 머신에
+# 설치하면 실행이 안 된다(실측 확인됨: "No Python at ...". portable 빌드는 자기 완결적이라
+# 폴더째 복사해도 그대로 동작한다.
 on:
   workflow_dispatch: {}
 
@@ -32,16 +39,30 @@ jobs:
         with:
           node-version: 22
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install uv
+        shell: bash
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-      - name: Set up engine venv (extraResources 로 앱에 번들됨)
+      - name: Set up portable engine runtime (extraResources 로 앱에 번들됨)
         working-directory: engine
         shell: bash
         run: |
-          python -m venv .venv
-          if [ -f .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.11
+          PYEXE=$(uv python find 3.11)
+          echo "uv managed python: $PYEXE"
+          rm -rf .venv
+          if [[ "$PYEXE" == *.exe ]]; then
+            # Windows: uv 배포본은 <root>/python.exe 플랫 레이아웃
+            PYROOT=$(dirname "$PYEXE")
+            cp -r "$PYROOT" .venv
+          else
+            # macOS/Linux: uv 배포본은 <root>/bin/python3.x 레이아웃
+            PYROOT=$(dirname "$(dirname "$PYEXE")")
+            cp -R "$PYROOT" .venv
+            ln -sf "$(basename "$PYEXE")" .venv/bin/python
+          fi
+          if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install -e .
 
@@ -56,3 +77,41 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }} -- --publish always
+
+      # 빌드가 "성공"해도 번들된 엔진이 실제로 뜨는지는 별개 문제였다(portable Python
+      # 전환의 원인이 된 버그) — 설치 파일을 실제로 설치/실행해 /health 를 확인한다.
+      - name: Verify installed app can start the bundled engine (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
+          if (-not $setupExe) { Write-Error "설치 파일을 찾지 못했습니다"; exit 1 }
+          Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait
+          Start-Sleep -Seconds 3
+          $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
+          if (-not (Test-Path $appExe)) { Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"; exit 1 }
+          Start-Process -FilePath $appExe
+          Start-Sleep -Seconds 10
+          $ok = $false
+          foreach ($port in 48200..48209) {
+            try {
+              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
+              if ($resp.StatusCode -eq 200) { Write-Output "엔진 정상: 포트 $port, $($resp.Content)"; $ok = $true; break }
+            } catch {}
+          }
+          if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209)"; exit 1 }
+
+      - name: Verify packaged app can start the bundled engine (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          APP=$(find desktop/release -maxdepth 3 -iname "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
+          echo "실행: $APP"
+          "$APP/Contents/MacOS/UpSecurity" &
+          sleep 10
+          ok=0
+          for port in $(seq 48200 48209); do
+            if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
+          done
+          if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209)"; exit 1; fi
