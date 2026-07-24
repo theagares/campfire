@@ -93,15 +93,17 @@ body {
   border: 1px solid #eab30855; border-radius: 8px; padding: 8px 12px; margin-top: 4px;
 }
 
-/* ── 결과: Figma #45:951 그대로 — 문서(좌, 화면 전체 높이) + 탐지 항목(우, 고정폭) ── */
+/* ── 결과: Figma #45:951 그대로 — 문서(좌, 화면 전체 높이) + 탐지 항목(우) 2컬럼.
+   Figma 실측 비율(469:195 ≈ 70.6:29.4)을 그대로 따르는 비율 분할 — 고정폭이었던
+   전 버전은 패널 폭이 좁을 때 문서 영역이 지나치게 눌렸다. */
 .view-result { display: flex; flex-direction: column; padding: 0; }
 .result-layout { flex: 1; display: flex; min-height: 0; }
 .result-main {
-  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  flex: 706 1 0; min-width: 0; display: flex; flex-direction: column;
   padding: 16px 14px; min-height: 0;
 }
 .result-side {
-  width: 172px; flex-shrink: 0; min-height: 0;
+  flex: 294 0 0; min-width: 150px; min-height: 0;
   display: flex; flex-direction: column;
   padding: 16px 12px; border-left: 1px solid var(--border);
   overflow-y: auto;
