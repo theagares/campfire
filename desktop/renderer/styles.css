@@ -337,17 +337,20 @@ img { display:block; }
 
 /* ── 네온 글로우: 활성화("불이 켜진") 상태 표시 주변으로 빛이 퍼지는 효과 ──
    케이스마다 색이 달라 currentColor 로 상속받아 재사용한다. 반짝이는 스파클이 아니라
-   네온사인처럼 부드러운 빛 번짐이 커졌다 작아졌다 하는 단순한 pulse. */
+   네온사인처럼 부드러운 빛 번짐이 커졌다 작아졌다 하는 단순한 pulse — 중간 정지 없이
+   끝까지 부드럽게 이어지도록 대칭 cubic-bezier 이징을 쓰고, 주기를 조금 늘려 숨쉬듯
+   천천히 커졌다 작아지게 한다. */
 @keyframes neon-glow {
   0%, 100% { box-shadow:0 0 2px 0 currentColor, 0 0 4px 0 currentColor; }
-  50% { box-shadow:0 0 6px 1px currentColor, 0 0 14px 4px currentColor; }
+  50% { box-shadow:0 0 8px 2px currentColor, 0 0 16px 5px currentColor; }
 }
 .model-card .mc-dot.on,
 .model-pill.on .mp-dot,
 .pipe-card .pc-status.running .ps-dot,
 .dot.on {
   color:var(--green);
-  animation:neon-glow 2.1s ease-in-out infinite;
+  animation:neon-glow 2.8s cubic-bezier(.45,0,.55,1) infinite;
+  will-change:box-shadow;
 }
 .model-pill.on .mp-dot,
 .model-card .mc-dot.on {
