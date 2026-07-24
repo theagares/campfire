@@ -213,19 +213,60 @@ let activeSessionId = null;   // 사이드패널이 PANEL_READY 로 물어볼 �
 // 전역으로 열려 있어서, 검사를 요청한 탭이 아닌 다른 탭으로 넘어가도 같은 패널이
 // 그대로 유지되는 문제가 있다. 검사를 요청한 탭에서만 보이도록, 그 탭만 명시적으로
 // enabled:true 로 켜고 나머지 탭은 활성화되는 시점에 꺼서 "탭 전용" 패널로 만든다.
+//
+// "지금 패널이 켜져 있어야 하는 탭" 추적은 일반 JS 변수가 아니라 chrome.storage.session
+// 에 저장한다 — MV3 서비스 워커는 ~30초 유휴 후 꺼졌다가 다음 이벤트에 다시 깨어나는데,
+// 그때 모듈 전체가 재실행되면서 일반 변수는 null로 초기화돼버린다(검토 화면을 30초
+// 넘게 보고 있다가 탭을 넘기면 흔히 발생). storage.session은 SW 재시작에도 값이
+// 유지되므로 이 문제를 피한다.
 // ════════════════════════════════════════════════════════════════════════════
 const SIDEPANEL_PATH = 'sidepanel/sidepanel.html';
-let currentPanelTabId = null; // 지금 사이드패널이 켜져 있어야 하는 탭 (요청한 탭)
+const PANEL_TAB_KEY = 'sidepanelActiveTabId';
+
+async function getCurrentPanelTabId() {
+  const obj = await chrome.storage.session.get(PANEL_TAB_KEY);
+  return obj[PANEL_TAB_KEY] ?? null;
+}
+async function setCurrentPanelTabId(tabId) {
+  if (tabId == null) await chrome.storage.session.remove(PANEL_TAB_KEY);
+  else await chrome.storage.session.set({ [PANEL_TAB_KEY]: tabId });
+}
 
 function disablePanelForTab(tabId) {
   if (tabId == null) return;
   chrome.sidePanel?.setOptions?.({ tabId, enabled: false }).catch(() => {});
 }
 
+// 요청한 탭을 켜고, 그 전까지 켜져 있던 탭은 끈다 (open() 의 제스처 보존과 무관하므로
+// 비동기로 처리해도 된다 — 아래 OPEN_SIDE_PANEL 핸들러에서 await 없이 fire-and-forget).
+async function switchPanelToTab(newTabId) {
+  const prev = await getCurrentPanelTabId();
+  if (prev != null && prev !== newTabId) disablePanelForTab(prev);
+  await setCurrentPanelTabId(newTabId);
+}
+
+async function clearPanelTabIfMatches(tabId) {
+  const current = await getCurrentPanelTabId();
+  if (current === tabId) await setCurrentPanelTabId(null);
+}
+
 // 새로 활성화되는 탭이 "요청한 탭"이 아니면 그 자리에서 비활성화 — 탭을 넘기면
 // 사이드패널이 닫힌다(크롬이 enabled:false 탭에선 패널을 자동으로 숨김).
-chrome.tabs.onActivated?.addListener(({ tabId }) => {
-  if (tabId !== currentPanelTabId) disablePanelForTab(tabId);
+chrome.tabs.onActivated?.addListener(async ({ tabId }) => {
+  const current = await getCurrentPanelTabId();
+  if (tabId !== current) disablePanelForTab(tabId);
+});
+
+// 탭이 아니라 브라우저 "창"을 전환하는 경우도 대비 — 다른 창의 활성 탭이 요청한
+// 탭이 아니면 그 탭도 꺼준다.
+chrome.windows.onFocusChanged?.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (!tab) return;
+    const current = await getCurrentPanelTabId();
+    if (tab.id !== current) disablePanelForTab(tab.id);
+  } catch (_) {}
 });
 
 // 확장 설치/브라우저 시작 시점엔 이미 열려 있던 다른 탭들도 전부 기본 비활성화로
@@ -234,6 +275,7 @@ async function disableAllExistingTabsPanel() {
   try {
     const tabs = await chrome.tabs.query({});
     tabs.forEach((t) => disablePanelForTab(t.id));
+    await setCurrentPanelTabId(null);
   } catch (_) {}
 }
 
@@ -323,7 +365,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // 결정이 끝났으니 이 탭의 패널도 꺼둔다 — 나중에 이 탭으로 돌아와도
       // 끝난 검사 결과가 다시 뜨지 않게.
       disablePanelForTab(session.tabId);
-      if (currentPanelTabId === session.tabId) currentPanelTabId = null;
+      clearPanelTabIfMatches(session.tabId);
     }
     sessions.delete(sessionId);
     if (activeSessionId === sessionId) activeSessionId = null;
@@ -336,13 +378,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'OPEN_SIDE_PANEL') {
     const tabId = sender?.tab?.id ?? message.tabId;
     if (tabId != null && chrome.sidePanel?.open) {
-      // setOptions 는 await 하지 않는다 — 바로 아래 open() 이 이 메시지 핸들러의
-      // 동기 호출 스택 안에서 곧바로 실행돼야 제스처가 유지된다(실측 확인, 위 주석 참고).
+      // setOptions/switchPanelToTab 은 await 하지 않는다 — 바로 아래 open() 이 이
+      // 메시지 핸들러의 동기 호출 스택 안에서 곧바로 실행돼야 제스처가 유지된다
+      // (실측 확인, 위 주석 참고). 이전 탭 비활성화·추적 갱신은 open() 성패와
+      // 무관하므로 fire-and-forget 으로 흘려보내도 안전하다.
       chrome.sidePanel.setOptions({ tabId, path: SIDEPANEL_PATH, enabled: true }).catch(() => {});
-      if (currentPanelTabId != null && currentPanelTabId !== tabId) {
-        disablePanelForTab(currentPanelTabId);
-      }
-      currentPanelTabId = tabId;
+      switchPanelToTab(tabId);
       chrome.sidePanel.open({ tabId }).catch(() => {});
     }
     sendResponse({ ok: true });
