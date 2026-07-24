@@ -62,9 +62,12 @@ jobs:
             cp -R "$PYROOT" .venv
             ln -sf "$(basename "$PYEXE")" .venv/bin/python
           fi
+          # uv 가 관리하던 원본 설치는 PEP 668 "externally-managed" 마커가 있어 pip install 을
+          # 거부한다 — 복사본은 어차피 이 빌드 전용 일회성 사본이니 마커를 지우고 무시한다.
+          find .venv -name EXTERNALLY-MANAGED -delete
           if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
-          "$PY" -m pip install --upgrade pip
-          "$PY" -m pip install -e .
+          "$PY" -m pip install --upgrade pip --break-system-packages
+          "$PY" -m pip install -e . --break-system-packages
 
       - name: Install desktop dependencies
         working-directory: desktop
