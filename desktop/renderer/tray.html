@@ -57,7 +57,18 @@
     }
     .model-pill .mp-dot { width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto; }
     .model-pill.on { border-color:var(--purple); color:var(--purple); }
-    .model-pill.on .mp-dot { background:var(--purple); }
+    .model-pill.on .mp-dot { background:var(--purple); animation:neon-glow 2.1s ease-in-out infinite; }
+
+    /* 네온 글로우: 활성화된 버튼/점 주변으로 빛이 퍼지는 효과(app 본체 styles.css 와 동일한 관례) */
+    @keyframes neon-glow {
+      0%, 100% { box-shadow:0 0 2px 0 currentColor, 0 0 4px 0 currentColor; }
+      50% { box-shadow:0 0 6px 1px currentColor, 0 0 14px 4px currentColor; }
+    }
+    .sec-toggle-wrap input:checked + .sec-pill { animation:neon-glow-green 2.1s ease-in-out infinite; }
+    @keyframes neon-glow-green {
+      0%, 100% { box-shadow:0 0 3px 0 var(--ok), 0 0 6px 0 var(--ok); }
+      50% { box-shadow:0 0 8px 1px var(--ok), 0 0 18px 5px var(--ok); }
+    }
 
     .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
     .res-block .rb-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
