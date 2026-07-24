@@ -50,6 +50,16 @@
     .divider { height:1px; background:var(--line); margin:12px 0; }
     .section-label { font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink); margin-bottom:8px; }
 
+    /* Figma 는 팝업이 카드 두 개 구조다 — 바깥 카드(.pop)엔 상단 Security ON 토글과
+       하단 QUIT 만 직접 놓이고, ACTIVE MODEL/모델 pill/리소스 통계/"더 보기" 버튼은
+       전부 그 안의 별도 카드(.inner-card, 자기 테두리·그림자·더 작은 radius)에 담긴다. */
+    .outer-divider { height:1px; background:var(--line); margin:12px 0 10px; }
+    .inner-card {
+      background:var(--card-bg); border:1px solid rgba(255,255,255,.5); border-radius:12px;
+      box-shadow:0 2px 10px rgba(0,0,0,.07), inset 0 1px 0 rgba(255,255,255,.6);
+      padding:14px;
+    }
+
     .model-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .model-count { font-size:10px; color:var(--ink-mute); margin-bottom:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .model-pill {
@@ -113,25 +123,28 @@
       </label>
     </div>
 
-    <div class="divider"></div>
+    <div class="outer-divider"></div>
 
-    <div class="section-label">ACTIVE MODEL</div>
-    <div class="model-grid">
-      <div class="model-col">
-        <div class="model-count">PII 탐지 | 오늘 <span id="t-pii-today">0</span>건</div>
-        <div class="model-pill" id="t-pii-pill"><span class="mp-dot" id="t-pii-dot"></span><span id="t-pii-label">PII model</span></div>
+    <div class="inner-card">
+      <div class="section-label">ACTIVE MODEL</div>
+      <div class="model-grid">
+        <div class="model-col">
+          <div class="model-count">PII 탐지 | 오늘 <span id="t-pii-today">0</span>건</div>
+          <div class="model-pill" id="t-pii-pill"><span class="mp-dot" id="t-pii-dot"></span><span id="t-pii-label">PII model</span></div>
+        </div>
+        <div class="model-col">
+          <div class="model-count">INJECTION 탐지 | 오늘 <span id="t-inj-today">0</span>건</div>
+          <div class="model-pill" id="t-inj-pill"><span class="mp-dot" id="t-inj-dot"></span><span id="t-inj-label">INJECTION model</span></div>
+        </div>
       </div>
-      <div class="model-col">
-        <div class="model-count">INJECTION 탐지 | 오늘 <span id="t-inj-today">0</span>건</div>
-        <div class="model-pill" id="t-inj-pill"><span class="mp-dot" id="t-inj-dot"></span><span id="t-inj-label">INJECTION model</span></div>
-      </div>
+
+      <div class="divider"></div>
+
+      <div class="res-grid" id="t-res"></div>
+
+      <button class="more" id="t-more">대시보드에서 더 자세히 보기 →</button>
     </div>
 
-    <div class="divider"></div>
-
-    <div class="res-grid" id="t-res"></div>
-
-    <button class="more" id="t-more">대시보드에서 더 자세히 보기 →</button>
     <div class="quit-row">
       <button class="quit" id="t-quit">QUIT UpSecurity</button>
     </div>
