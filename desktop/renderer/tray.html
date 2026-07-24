@@ -39,10 +39,20 @@
     .header-row { display:flex; justify-content:flex-end; }
     .sec-toggle-wrap { display:inline-flex; cursor:pointer; }
     .sec-toggle-wrap input { position:absolute; opacity:0; width:0; height:0; }
+    /* sec-pill 은 그 자체가 불투명한 배경을 가진 필(글자 포함)이라, dot 들처럼 pill
+       자신에 ::before glow를 걸면 그 그라디언트가 pill 자신의 배경 위에(= 글자 위에)
+       그려져 버린다(::before 도 pill 의 자식이라 pill 자기 배경보다는 나중에,
+       하지만 pill 안의 진짜 텍스트보다는 먼저 그려지는데, 문제는 그라디언트 중심의
+       불투명한 부분이 텍스트 대비를 해칠 정도로 진하다는 것). 그래서 glow는 배경이
+       없는 바깥 래퍼(.sec-toggle-wrap)의 ::before로 걸어 맨 아래에 깔고, pill
+       자신은 z-index로 그 위에 올려서 글자는 그대로 선명하게, 가장자리로 번지는
+       빛만 pill 바깥으로 보이게 한다. */
+    .sec-toggle-wrap { position:relative; }
     .sec-pill {
+      position:relative; z-index:1;
       display:inline-flex; align-items:center; gap:8px; padding:5px 5px 5px 12px; border-radius:999px;
       background:var(--sunken); font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink-mute);
-      transition:background .2s, box-shadow .8s ease-in-out;
+      transition:background .2s;
     }
     .sec-toggle-wrap input:checked + .sec-pill { background:var(--ok); color:#fff; }
     .sec-knob { width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); flex:0 0 auto; }
@@ -66,66 +76,73 @@
       display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
       background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
     }
-    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes를 쓴다 — 예전엔
-       여기만 옛날 neon-glow(단일 레이어 강한 pulse)를 따로 갖고 있어서 앱 본체와 트레이
-       팝업의 glow가 서로 다르게 보였다(실측 버그). 앱 쪽에서 이미 확인된 세 가지 규칙을
-       여기도 그대로 따른다: (1) delay는 negative로 주지 않는다 — on 클래스가 토글되는
-       순간 중간 밝기값으로 스냅되어 반짝이는 것처럼 보이기 때문. (2) transition을 걸어
-       꺼질 때도 부드럽게 페이드아웃되게 한다. (3) mp-dot 애니메이션의 duration은 앱의
-       퍼플 계열(ambient-glow-c, 6.3s)과 동일하게 맞춘다.
-       keyframes는 styles.css의 것과 토씨 하나 안 틀리고 동일해야 한다 — 원래 별도
-       glow.css로 분리해서 두 파일이 <link>로 공유하게 했었는데, 이 환경에서 그 두 번째
-       스타일시트가 안정적으로 로드되지 않아(정확한 원인 미확인) glow가 아예 하나도
-       안 보이는 회귀가 생겼다(실측). 그래서 각 파일에 직접 넣는 방식으로 되돌렸다 —
-       한쪽만 고치면 트레이/앱 glow가 다시 갈리니 항상 같이 수정할 것(ambient-glow-a/b는
-       여기선 안 쓰여서(앱 쪽 mc-dot/ps-dot/dot 전용) 안 넣었다 — mp-dot이 쓰는
-       ambient-glow-c만 있으면 됨). */
+    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes/구조를 쓴다.
+       중요한 실측 결과(styles.css의 "Ambient Glow" 섹션 주석에 자세히 남겨뒀다 — 다시
+       이 삽질 하지 말 것): box-shadow는 이 환경에서 "값이 바뀌는" 모든 경우(keyframes,
+       ::before, JS로 매 프레임 대입, 심지어 정적 값이어도 그 요소에 opacity<1/transform
+       애니메이션이 걸리기만 해도)에 페인트가 전혀 안 된다. 실측으로 검증된 대안:
+       box-shadow 대신 ::before에 background:radial-gradient() 로 halo를 그리고
+       opacity/transform(scale)만 애니메이션하면 문제없이 그려진다.
+       keyframes/구조는 styles.css의 것과 토씨 하나 안 틀리고 동일해야 한다(별도 파일
+       공유는 이 환경에서 안정적으로 로드 안 되는 문제가 있었음 — 실측). 한쪽만 고치면
+       트레이/앱 glow가 다시 갈리니 항상 같이 수정할 것(ambient-glow-a/b는 여기선 안
+       쓰여서(앱 쪽 mc-dot/ps-dot/dot 전용) 안 넣었다 — mp-dot이 쓰는 ambient-glow-c만
+       있으면 됨). */
     @keyframes ambient-glow-c {
-      0%, 100% {
-        box-shadow:
-          0 0 8px color-mix(in srgb, currentColor 32%, transparent),
-          0 0 24px color-mix(in srgb, currentColor 12%, transparent),
-          0 0 60px color-mix(in srgb, currentColor 4%, transparent);
-      }
-      50% {
-        box-shadow:
-          0 0 8.28px color-mix(in srgb, currentColor 33.3%, transparent),
-          0 0 24.84px color-mix(in srgb, currentColor 12.5%, transparent),
-          0 0 62.1px color-mix(in srgb, currentColor 4.2%, transparent);
-      }
+      0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
+      50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
     }
     .model-pill .mp-dot {
+      position:relative;
       width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto;
-      transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out;
+      transition:background-color .8s ease-in-out;
+    }
+    .model-pill .mp-dot::before {
+      content:''; position:absolute; left:50%; top:50%; width:140px; height:140px;
+      transform:translate(-50%,-50%) scale(1);
+      border-radius:9999px; pointer-events:none;
+      opacity:0; transition:opacity .8s ease-in-out;
+      background:radial-gradient(circle,
+        color-mix(in srgb, currentColor 32%, transparent) 0%,
+        color-mix(in srgb, currentColor 12%, transparent) 20%,
+        color-mix(in srgb, currentColor 4%, transparent) 45%,
+        transparent 70%);
     }
     .model-pill.on { border-color:var(--purple); color:var(--purple); }
-    .model-pill.on .mp-dot {
-      background:var(--purple); color:var(--purple);
+    .model-pill.on .mp-dot { background:var(--purple); color:var(--purple); }
+    .model-pill.on .mp-dot::before {
+      opacity:1;
+      will-change:opacity, transform;
       animation:ambient-glow-c 6.3s ease-in-out infinite;
-      will-change:box-shadow;
     }
     /* sec-pill은 켜지면 배경이 초록(var(--ok))이 되고 그 위에 흰 글자(color:#fff, 위 규칙)가
-       올라가므로, currentColor 기반 keyframes(위 ambient-glow-c 등)를 그대로 쓰면 halo
+       올라가므로, currentColor 기반 gradient(위 ambient-glow-c 등)를 그대로 쓰면 halo
        색이 아니라 글자색까지 초록으로 덮어써서 흰 글자가 초록 배경에 묻힌다. 그래서 이
-       요소만 currentColor 대신 var(--ok)를 직접 섞는 로컬 keyframes를 쓴다 — 겹 구조/
-       증가 비율은 위 ambient-glow-a(styles.css 참고)와 동일하다. */
+       요소만 currentColor 대신 var(--ok)를 직접 섞는다 — 겹 구조/증가 비율은 위
+       ambient-glow-c와 동일. glow는 pill 자신이 아니라 배경 없는 바깥 래퍼
+       (.sec-toggle-wrap)의 ::before에 걸어서 pill 자신의 불투명한 배경/글자 위로
+       그려지지 않고 pill 바깥으로만 번지게 한다(위 .sec-pill 주석 참고) — pill이
+       원형이 아니라 알약(가로로 긴 사각+둥근 모서리) 모양이라 그라디언트도 폭에 맞춰
+       타원(240x120)으로 키웠다. */
     @keyframes ambient-glow-sec {
-      0%, 100% {
-        box-shadow:
-          0 0 8px color-mix(in srgb, var(--ok) 32%, transparent),
-          0 0 24px color-mix(in srgb, var(--ok) 12%, transparent),
-          0 0 60px color-mix(in srgb, var(--ok) 4%, transparent);
-      }
-      50% {
-        box-shadow:
-          0 0 8.24px color-mix(in srgb, var(--ok) 33.4%, transparent),
-          0 0 24.72px color-mix(in srgb, var(--ok) 12.5%, transparent),
-          0 0 61.8px color-mix(in srgb, var(--ok) 4.2%, transparent);
-      }
+      0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
+      50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
     }
-    .sec-toggle-wrap input:checked + .sec-pill {
+    .sec-toggle-wrap::before {
+      content:''; position:absolute; left:50%; top:50%; width:240px; height:120px;
+      transform:translate(-50%,-50%) scale(1);
+      border-radius:9999px; pointer-events:none;
+      opacity:0; transition:opacity .8s ease-in-out;
+      background:radial-gradient(ellipse,
+        color-mix(in srgb, var(--ok) 32%, transparent) 0%,
+        color-mix(in srgb, var(--ok) 12%, transparent) 20%,
+        color-mix(in srgb, var(--ok) 4%, transparent) 45%,
+        transparent 70%);
+    }
+    .sec-toggle-wrap:has(input:checked)::before {
+      opacity:1;
+      will-change:opacity, transform;
       animation:ambient-glow-sec 5.8s ease-in-out infinite;
-      will-change:box-shadow;
     }
 
     .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
