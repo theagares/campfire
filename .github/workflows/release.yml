@@ -116,8 +116,22 @@ jobs:
           if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
           echo "실행: $APP"
           RES="$APP/Contents/Resources/engine"
+
+          echo "--- codesign/gatekeeper 상태 ---"
+          codesign -dv --verbose=4 "$APP" 2>&1 || true
+          spctl -a -v "$APP" 2>&1 || true
+
           echo "--- 엔진을 Electron 없이 직접 실행해서 원인 격리 ---"
-          (cd "$RES" && timeout 8 ./.venv/bin/python -m app.main; echo "engine direct exit=$?") 2>&1 || true
+          (cd "$RES" && ./.venv/bin/python -m app.main > /tmp/engine-direct.log 2>&1 &)
+          sleep 6
+          echo "direct engine log (len=$(wc -c < /tmp/engine-direct.log)):"
+          cat /tmp/engine-direct.log || true
+          for port in $(seq 48200 48209); do
+            if curl -sf "http://127.0.0.1:$port/health"; then echo "direct engine healthy on port $port"; break; fi
+          done
+          pkill -f "app.main" 2>/dev/null || true
+          sleep 1
+
           echo "--- Electron 앱 실행 ---"
           "$APP/Contents/MacOS/UpSecurity" > /tmp/upsec-app.log 2>&1 &
           APP_PID=$!
@@ -128,7 +142,7 @@ jobs:
           ps aux | grep -i -E "upsecurity|python" | grep -v grep || echo "(no matching process)"
           kill -0 "$APP_PID" 2>/dev/null && echo "electron main pid $APP_PID alive" || echo "electron main pid $APP_PID NOT alive"
           echo "--- crash reports ---"
-          find "$HOME/Library/Logs/DiagnosticReports" -iname "*upsecurity*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
+          find "$HOME/Library/Logs/DiagnosticReports" -iname "*upsecurity*" -o -iname "*electron*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
           ok=0
           for port in $(seq 48200 48209); do
             if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
