@@ -31,7 +31,7 @@ const el = {
   docName: $('doc-name'), docType: $('doc-type'), diff: $('diff'), items: $('items'),
   errTitle: $('err-title'), errMsg: $('err-msg'),
   footer: $('footer'), maskSummary: $('mask-summary'),
-  btnCancel: $('btn-cancel'), btnSend: $('btn-send'),
+  btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
 };
 
 // 진행 단계 순서(2번째 인젝션 탐지가 3이 아닌 4인 것은 SW 쪽 단계 정의를 따름)
@@ -240,8 +240,14 @@ function sendDecision(decision) {
   if (state.decided) return;
   state.decided = true;
   chrome.runtime.sendMessage({ type: 'PANEL_DECISION', sessionId: state.sessionId, decision });
-  // 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음)
-  setTimeout(() => window.close(), 150);
+  // 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음).
+  // iframe 오버레이로 열렸을 때는 content.js가 이 postMessage를 받아 DOM에서
+  // 제거한다 — window.close()는 iframe에선 아무 효과가 없어 안전하게 그대로 둔다
+  // (네이티브 sidePanel/독립 탭 등 다른 호스팅 방식으로 열렸을 경우를 위한 폴백).
+  setTimeout(() => {
+    try { window.parent.postMessage({ type: 'UPS_CLOSE_OVERLAY' }, '*'); } catch (_) {}
+    window.close();
+  }, 150);
 }
 
 function buildFinalText() {
@@ -252,6 +258,7 @@ function buildFinalText() {
 }
 
 el.btnCancel.addEventListener('click', () => sendDecision({ action: 'cancel' }));
+el.btnClose.addEventListener('click', () => sendDecision({ action: 'cancel' }));
 
 el.btnSend.addEventListener('click', async () => {
   const total = state.segments.filter(s => s.type === 'item').length;
