@@ -343,65 +343,11 @@ img { display:block; }
 .muted { color:var(--ink-500); font-size:12px; }
 
 /* ── Ambient Glow: 활성화("불이 켜진") 상태 표시 점 주변으로 빛이 은은하게 번지는 효과 ──
-   케이스마다 색이 달라 currentColor 로 상속받아 재사용한다. 점(Core) 자체는 건드리지 않고
-   그 바깥 halo 3겹(8/24/60px blur)만 변화시킨다 — 중요한 건 세 겹 모두 "같은 비율"로
-   동시에 커졌다 작아져야 한다는 것: 겹마다 증가 폭이 다르면(예: 안쪽은 +9%인데 바깥쪽은
-   +25%) 겹들이 서로 어긋나 보여서 부드러운 숨쉬기가 아니라 반짝이는 것처럼 읽힌다
-   (실측: spread-radius를 0에서부터 애니메이션하는 것도 고리가 "팍" 튀어나오는 것처럼
-   보여 마찬가지로 반짝임의 원인이었음 — 그래서 spread는 아예 고정하고 blur/opacity만,
-   그것도 겹마다 정확히 동일한 비율(밝기 ×1.04, 크기 ×1.03 안팎)로만 바꾼다).
-   점마다 duration/진폭을 조금씩 다르게 줘서 여러 점이 동시에 숨쉬지 않도록 한다(delay는
-   일부러 안 준다 — 아래 각 규칙의 주석 참고).
-   그리고 이 glow는 .on/.running 클래스가 런타임에 켜졌다 꺼졌다 하는 점에 붙는데,
-   애니메이션이 붙고 떨어지는 전환 자체는 transition으로 처리하지 못한다(애니메이션이
-   있는 동안엔 transition이 관여하지 않다가 꺼지는 순간 갑자기 정적 box-shadow로
-   점프하기 때문 — 실측: "빛이 꺼지는 순간만 깜빡이는 것처럼 보인다"). 그래서 각 점의
-   기본(.mp-dot/.mc-dot/.ps-dot/.dot) 규칙에 transition:box-shadow/background-color를
-   따로 걸어, 애니메이션이 빠지는 마지막 프레임 값에서 꺼진 상태의 정적 값까지 부드럽게
-   식도록 만든다. */
-@keyframes ambient-glow-a {
-  0%, 100% {
-    box-shadow:
-      0 0 8px color-mix(in srgb, currentColor 32%, transparent),
-      0 0 24px color-mix(in srgb, currentColor 12%, transparent),
-      0 0 60px color-mix(in srgb, currentColor 4%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 8.24px color-mix(in srgb, currentColor 33.4%, transparent),
-      0 0 24.72px color-mix(in srgb, currentColor 12.5%, transparent),
-      0 0 61.8px color-mix(in srgb, currentColor 4.2%, transparent);
-  }
-}
-@keyframes ambient-glow-b {
-  0%, 100% {
-    box-shadow:
-      0 0 8px color-mix(in srgb, currentColor 32%, transparent),
-      0 0 24px color-mix(in srgb, currentColor 12%, transparent),
-      0 0 60px color-mix(in srgb, currentColor 4%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 8.16px color-mix(in srgb, currentColor 33.1%, transparent),
-      0 0 24.48px color-mix(in srgb, currentColor 12.4%, transparent),
-      0 0 61.2px color-mix(in srgb, currentColor 4.1%, transparent);
-  }
-}
-@keyframes ambient-glow-c {
-  0%, 100% {
-    box-shadow:
-      0 0 8px color-mix(in srgb, currentColor 32%, transparent),
-      0 0 24px color-mix(in srgb, currentColor 12%, transparent),
-      0 0 60px color-mix(in srgb, currentColor 4%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 8.28px color-mix(in srgb, currentColor 33.3%, transparent),
-      0 0 24.84px color-mix(in srgb, currentColor 12.5%, transparent),
-      0 0 62.1px color-mix(in srgb, currentColor 4.2%, transparent);
-  }
-}
-/* delay는 일부러 안 준다 — 이 점들은 상태(엔진 health/파이프라인 실행 여부)가 바뀔 때마다
+   keyframes(ambient-glow-a/b/c)는 트레이 팝업(tray.html)과 공유하는 glow.css에 있다
+   (index.html이 styles.css보다 먼저 <link>함) — 새로 만들지 말고 그걸 그대로 쓸 것,
+   자세한 설계 이유(겹마다 동일 비율로만 변화시키는 이유, spread를 안 쓰는 이유 등)도
+   glow.css 상단 주석 참고.
+   delay는 일부러 안 준다 — 이 점들은 상태(엔진 health/파이프라인 실행 여부)가 바뀔 때마다
    런타임에 on/off 클래스가 켜졌다 꺼졌다 한다. 음수 delay로 "시작 위상"을 어긋나게 하면
    클래스가 켜지는 그 순간 애니메이션이 중간 밝기값으로 곧장 스냅되어(음수 delay는
    "그만큼 이미 재생된 것"으로 간주되어 순간이동한다) 부드러운 페이드인 대신 "색이 갑자기
