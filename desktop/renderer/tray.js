@@ -4,6 +4,11 @@
 const t = window.tray;
 const $ = (s) => document.querySelector(s);
 
+// macOS 는 main/tray.js 의 BrowserWindow vibrancy(네이티브 글래스)가 적용되므로 CSS 배경을
+// 옅게 낮춰 실제로 비치게 한다(styles 의 body.mac-glass 참고). Windows 는 vibrancy 가 없어
+// 기존 진한 CSS 배경 그대로 둔다.
+if (/mac/i.test(navigator.platform)) document.body.classList.add('mac-glass');
+
 async function refresh() {
   const [engine, stats, metrics] = await Promise.all([
     t.getEngineStatus(), t.getStats(), t.getMetrics(),
@@ -21,17 +26,18 @@ function paintEngine(engine, stats) {
   $('#sec-label').textContent = enabledIntent ? 'Security ON' : 'Security OFF';
 
   const models = (stats && stats.models) || {};
-  setPill('#t-pii-pill', '#t-pii-dot', '#t-pii-label', models.pii, running);
-  setPill('#t-inj-pill', '#t-inj-dot', '#t-inj-label', models.injection, running);
+  setPill('#t-pii-pill', models.pii, running);
+  setPill('#t-inj-pill', models.injection, running);
 
   $('#t-pii-today').textContent = stats && stats.pii ? stats.pii.today ?? '0' : '0';
   $('#t-inj-today').textContent = stats && stats.injection ? stats.injection.today ?? '0' : '0';
 }
 
-function setPill(pillSel, dotSel, labelSel, model, running) {
+// Figma 디자인은 라벨이 항상 "PII model"/"INJECTION model" 고정 텍스트다(index.html 의
+// 홈 화면 모델 pill 도 동일한 관례) — 상태는 라벨 문구가 아니라 점(dot) 색으로만 표현한다.
+function setPill(pillSel, model, running) {
   const ready = model && model.ready && running;
   $(pillSel).classList.toggle('on', !!ready);
-  $(labelSel).textContent = model ? model.label : (running ? '작동 중' : '중지됨');
 }
 
 const RES_ICON_EXT = { cpu: 'png', ram: 'png', gpu: 'png', vram: 'svg' };
