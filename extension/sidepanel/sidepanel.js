@@ -39,6 +39,7 @@ const PROGRESS_STEP_ORDER = [1, 2, 4, 5];
 
 let state = {
   sessionId: null,
+  myTabId: null,    // 이 패널 인스턴스가 속한 탭 — 다른 탭 대상 브로드캐스트를 걸러내는 데 씀
   kind: null,       // 'file' | 'prompt'
   result: null,
   meta: null,
@@ -46,6 +47,14 @@ let state = {
   unmasked: new Set(),   // 마스킹 제외(=원본 유지) 항목 인덱스
   decided: false,
 };
+
+// chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
+// 전역으로 도달한다 — 내 탭 ID를 최대한 빨리 알아둬야, 아직 세션이 미확정인
+// 상태에서 "다른 탭"의 이벤트를 내 것으로 잘못 채택하는 걸 막을 수 있다.
+chrome.runtime.sendMessage({ type: 'GET_TAB_ID' }, (res) => {
+  if (chrome.runtime.lastError) return;
+  if (res?.tabId != null) state.myTabId = res.tabId;
+});
 
 // ── 세그먼트 빌드 ────────────────────────────────────────────────────────────
 function buildSegments(text, piiItems, injectionItems) {
@@ -282,11 +291,13 @@ el.btnSend.addEventListener('click', async () => {
 
 // ── SW 메시지 수신 ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId)) {
-    // 다른 세션의 이벤트는 무시 (단, 아직 세션 미확정이면 채택)
-    if (msg?.sessionId && !state.sessionId) state.sessionId = msg.sessionId;
-    else return;
-  }
+  if (!msg) return;
+  // 최우선 필터: 다른 탭 대상 브로드캐스트는 세션 확정 여부와 무관하게 무조건 무시.
+  // (이게 없으면, 아직 세션이 없는 상태의 패널이 다른 탭의 이벤트를 "내 것"으로
+  // 잘못 채택해버린다 — 탭 스코핑이 안 먹히는 것처럼 보인 실제 원인 중 하나.)
+  if (msg.tabId != null && state.myTabId != null && msg.tabId !== state.myTabId) return;
+  // 이미 다른 세션을 추적 중인데 이번 이벤트가 그 세션이 아니면 무시.
+  if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) return;
   if (msg.type === 'PANEL_PROGRESS') {
     state.sessionId = msg.sessionId;
     applyProgress(msg.event);
@@ -303,6 +314,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 function pullSnapshot() {
   chrome.runtime.sendMessage({ type: 'PANEL_READY' }, (res) => {
     if (chrome.runtime.lastError) return;
+    if (res?.tabId != null) state.myTabId = res.tabId;
     if (!res?.session) { renderProgress(null); return; }
     state.sessionId = res.sessionId;
     const s = res.session;
