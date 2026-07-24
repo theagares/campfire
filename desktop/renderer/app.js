@@ -62,7 +62,6 @@ function renderConnections() {
   const extBadge = $('#conn-ext-badge');
   extBadge.className = extOn ? 'badge-pill' : 'badge-plain';
   extBadge.textContent = extOn ? '연결됨' : '미연결';
-  $('#conn-ext-note').textContent = c.extension.note || '';
 }
 $('#conn-ext-install').addEventListener('click', () => {
   const url = (state.connections && state.connections.extension.helpUrl) || '';
