@@ -51,7 +51,6 @@ function renderConnections() {
   const mcpBadge = $('#conn-mcp-badge');
   mcpBadge.className = mcpOn ? 'badge-pill' : 'badge-plain';
   mcpBadge.textContent = mcpOn ? '연결됨' : '미연결';
-  $('#conn-mcp-note').textContent = c.mcp.note || '';
 
   // 확장의 최근 /health 요청(Origin: chrome-extension://...)을 엔진이 감지해 알려주는
   // extensionLastSeenSecondsAgo 기준 — MCP 카드와 동일한 패턴(§connections.js 참고).
