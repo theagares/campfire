@@ -1,0 +1,44 @@
+name: macOS UI check (manual)
+
+# 수동 실행 전용(workflow_dispatch) — 트레이 아이콘(setTemplateImage)과 트레이 팝오버가
+# 실제 macOS 메뉴바에서 어떻게 보이는지 스크린샷으로 확인하기 위한 일회성 검증 워크플로.
+# 개발 환경(Windows)에는 Mac 이 없어 코드/에셋 레벨 검증만 가능했던 부분을 실제 macOS
+# 러너에서 눈으로 확인하는 용도 — 매 푸시마다 자동 실행되지 않는다.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  tray-screenshot:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Launch app and capture menu bar + tray popover
+        working-directory: desktop
+        run: |
+          set -x
+          mkdir -p ../mac-screenshots
+          SECUREDOC_E2E_OPEN_TRAY=1 npx electron . --dev &
+          APP_PID=$!
+          sleep 4
+          screencapture -x ../mac-screenshots/01-launch.png
+          sleep 2
+          screencapture -x ../mac-screenshots/02-tray-popover.png
+          kill "$APP_PID" 2>/dev/null || true
+          sleep 1
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-screenshots
+          path: mac-screenshots/*.png
+          if-no-files-found: warn
