@@ -173,7 +173,7 @@ img { display:block; }
    꽉 차 있어(PII 로고는 흰 여백이 있어 안 보였다) 이 초과분과 mc-photo 상단이 겹쳐 로고가
    글자 아래쪽을 가렸다. stat-box 와 동일한 원인이라 동일하게 명시적으로 좁힌다. */
 .model-card .mc-title { position:absolute; left:4.643%; top:9.559%; font-size:15px; line-height:16px; font-weight:600; color:#000; }
-.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
+.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out, border-color .8s ease-in-out; }
 .model-card .mc-dot.on { background:var(--purple); }
 .model-card .mc-dot.off { background:var(--grey-400); }
 .model-card .mc-photo { position:absolute; border-radius:9999px; object-fit:cover; }
@@ -290,7 +290,7 @@ img { display:block; }
    정확히 맞춘다. */
 .pipe-card .pc-divider { position:absolute; left:4.655%; right:4.655%; bottom:8.6%; height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); }
 .pipe-card .pc-status { position:absolute; right:5.862%; bottom:3%; display:flex; align-items:center; gap:8px; }
-.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
+.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out, border-color .8s ease-in-out; }
 .pipe-card .pc-status.idle .ps-dot { background:var(--grey-500); }
 .pipe-card .pc-status.idle .ps-label { color:var(--grey-500); }
 .pipe-card .pc-status.running .ps-dot { background:var(--purple); }
@@ -413,6 +413,11 @@ img { display:block; }
 .dot.on {
   color:var(--green);
   animation:ambient-glow-a 5.8s ease-in-out infinite;
+  /* mc-dot/ps-dot 는 core 바깥에 흰 테두리(border:1px solid #fff)가 있는데, 이 테두리는
+     glow와 무관하게 항상 그대로 남아 있어서 core와 halo 사이에 "절대 안 변하는 흰 띠"가
+     생겨 자연스러운 가우시안 확산처럼 안 보였다(실측). glow가 켜져 있는 동안은 이
+     테두리를 투명하게 없애 halo가 core 가장자리에서 바로 시작하도록 한다. */
+  border-color:transparent;
   will-change:box-shadow;
 }
 .model-pill.on .mp-dot,
