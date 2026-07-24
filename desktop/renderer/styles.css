@@ -162,9 +162,6 @@ img { display:block; }
 .conn-link { font-size:10px; letter-spacing:-.0186em; color:#000; text-decoration:underline; background:none; border:none; padding:0; align-self:flex-start; }
 .conn-divider { height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); margin:2px 0; }
 .conn-footnote { margin:0; font-size:10px; color:rgba(0,0,0,.5); text-align:center; }
-.install-cmd-block { display:flex; flex-direction:column; gap:7px; margin-top:20px; }
-.install-cmd-block .muted { margin:0; }
-.install-cmd-block .codeblock-row code { font-size:10px; }
 
 /* ── 대시보드 ── */
 .dash-row + .dash-row { margin-top:13px; }

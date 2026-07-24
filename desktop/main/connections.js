@@ -3,19 +3,20 @@
  * main/connections.js
  * "연결" 화면(PLAN §8) 상태 판정 — 판정 기준은 "활성 세션".
  *
- * 한계 (정직히 기록): 현재 엔진 REST 계약(/health, /jobs, /jobs/prompt, /jobs/{id}/events)에는
- *   - 활성 MCP 세션 목록
- *   - 익스텐션 background 활성 연결
- * 을 조회하는 엔드포인트가 없다. 엔진 수정은 금지이므로, 앱은 관측 가능한 신호만으로
- * best-effort 판정한다:
  *   - MCP: 엔진이 실행 중이면 /mcp 엔드포인트가 마운트되어 "연결 가능" 상태. 다만 실제
  *          활성 세션 유무는 엔진에 sessions 조회 API 가 추가돼야 정확히 알 수 있다(gap).
- *   - Extension: 앱에서 직접 관측 불가. 설치 안내만 제공하고 활성 연결은 unknown.
- * → UI 는 이 한계를 그대로 표기한다(허위 "연결됨" 금지).
+ *   - Extension: 확장의 background(service worker)가 /health 를 GET 할 때 브라우저가
+ *          cross-origin fetch 에 자동으로 붙이는 Origin 헤더가 "chrome-extension://<id>"
+ *          형태다 — 엔진이 이 값을 보고 마지막으로 확장에서 요청이 온 시각을
+ *          extensionLastSeenSecondsAgo 로 /health 응답에 실어준다(engine/app/adapters/
+ *          http_api/health.py). 이 값이 EXTENSION_ACTIVE_WINDOW_SEC 이내면 "연결됨" —
+ *          MCP 와 마찬가지로 "설치돼 있음"이 아니라 "최근에 활성 연결이 확인됨" 기준.
  */
 
 const http = require('http');
 const constants = require('./constants');
+
+const EXTENSION_ACTIVE_WINDOW_SEC = 60;
 
 /** /mcp 가 응답하는지(마운트 여부) 가벼운 확인. 세션 유무는 판정하지 않는다. */
 function probeMcpMounted(port) {
@@ -36,12 +37,39 @@ function probeMcpMounted(port) {
   });
 }
 
+/** /health 전체 응답(JSON) 조회 — extensionLastSeenSecondsAgo 포함. */
+function fetchHealth(port) {
+  return new Promise((resolve) => {
+    if (!port) return resolve(null);
+    const req = http.request(
+      { host: constants.HOST, port, path: '/health', method: 'GET', timeout: 500 },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch { resolve(null); }
+        });
+      }
+    );
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
 /**
  * @param {ReturnType<import('./engine-manager').EngineManager['getStatus']>} engineStatus
  */
 async function getConnections(engineStatus) {
   const running = engineStatus.state === 'running' && !!engineStatus.port;
-  const mcpMounted = running ? await probeMcpMounted(engineStatus.port) : false;
+  const [mcpMounted, health] = running
+    ? await Promise.all([probeMcpMounted(engineStatus.port), fetchHealth(engineStatus.port)])
+    : [false, null];
+
+  const extAgoSec = health && typeof health.extensionLastSeenSecondsAgo === 'number'
+    ? health.extensionLastSeenSecondsAgo
+    : null;
+  const extActive = extAgoSec !== null && extAgoSec <= EXTENSION_ACTIVE_WINDOW_SEC;
 
   return {
     mcp: {
@@ -54,10 +82,13 @@ async function getConnections(engineStatus) {
       command: 'npx upsecurity-mcp connect', // PLAN §8: 1줄만 확정, 나머지는 Figma 플레이스홀더
     },
     extension: {
-      // 앱에서 익스텐션 활성 연결을 직접 관측할 수 없음 → unknown
-      status: 'unknown',
-      activeConnection: null,
-      note: '익스텐션 활성 연결은 앱에서 직접 관측할 수 없습니다. 설치 후 브라우저에서 확인하세요.',
+      status: extActive ? 'available' : 'unavailable',
+      activeConnection: extActive,
+      note: !running
+        ? '엔진이 실행 중이 아닙니다'
+        : extActive
+          ? `브라우저 확장이 ${Math.round(extAgoSec)}초 전 엔진과 통신했습니다`
+          : '최근 확장 프로그램의 활성 연결이 확인되지 않았습니다. 확장을 설치한 브라우저에서 지원 사이트를 열어보세요',
       helpUrl: constants.EXTENSION_HELP_URL,
     },
   };
