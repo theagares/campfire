@@ -394,13 +394,18 @@ img { display:block; }
       0 0 62.1px color-mix(in srgb, currentColor 4.2%, transparent);
   }
 }
+/* delay는 일부러 안 준다 — 이 점들은 상태(엔진 health/파이프라인 실행 여부)가 바뀔 때마다
+   런타임에 on/off 클래스가 켜졌다 꺼졌다 한다. 음수 delay로 "시작 위상"을 어긋나게 하면
+   클래스가 켜지는 그 순간 애니메이션이 중간 밝기값으로 곧장 스냅되어(음수 delay는
+   "그만큼 이미 재생된 것"으로 간주되어 순간이동한다) 부드러운 페이드인 대신 "색이 갑자기
+   팍 나오는" 것처럼 보였다(실측). duration만 서로 다르게 둬도 시간이 지나며 자연히
+   위상이 어긋나므로, 켜지는 순간은 항상 0% 기준값(가장 차분한 상태)에서 시작하게 한다. */
 .model-card .mc-dot.on,
 .model-pill.on .mp-dot,
 .pipe-card .pc-status.running .ps-dot,
 .dot.on {
   color:var(--green);
   animation:ambient-glow-a 5.8s ease-in-out infinite;
-  animation-delay:-.5s;
   will-change:box-shadow;
 }
 .model-pill.on .mp-dot,
@@ -408,10 +413,8 @@ img { display:block; }
   color:var(--purple);
   animation-name:ambient-glow-c;
   animation-duration:6.3s;
-  animation-delay:-3.6s;
 }
 .pipe-card .pc-status.running .ps-dot {
   animation-name:ambient-glow-b;
   animation-duration:4.7s;
-  animation-delay:-2.4s;
 }
