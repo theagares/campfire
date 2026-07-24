@@ -99,8 +99,11 @@ jobs:
           $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
           if (-not $setupExe) { Write-Error "설치 파일을 찾지 못했습니다"; exit 1 }
           Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait
-          Start-Sleep -Seconds 3
+          # NSIS /S 는 -Wait 로 잡히는 런처 프로세스가 실제 설치 작업을 마치기 전에 먼저
+          # 끝나버릴 때가 있어(관측된 간헐적 실패) 고정 3초 대기 대신 최대 20초 폴링한다.
           $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
+          $deadline = (Get-Date).AddSeconds(20)
+          while (-not (Test-Path $appExe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
           if (-not (Test-Path $appExe)) { Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"; exit 1 }
           Start-Process -FilePath $appExe
           Start-Sleep -Seconds 10
