@@ -209,10 +209,25 @@ const sessions = new Map();
 let activeSessionId = null;   // 사이드패널이 PANEL_READY 로 물어볼 최신 세션
 
 // ════════════════════════════════════════════════════════════════════════════
-// 사이드패널 탭 스코핑 — 기본적으로 manifest side_panel.default_path 는 모든 탭에
-// 전역으로 열려 있어서, 검사를 요청한 탭이 아닌 다른 탭으로 넘어가도 같은 패널이
-// 그대로 유지되는 문제가 있다. 검사를 요청한 탭에서만 보이도록, 그 탭만 명시적으로
-// enabled:true 로 켜고 나머지 탭은 활성화되는 시점에 꺼서 "탭 전용" 패널로 만든다.
+// 사이드패널 탭 스코핑
+//
+// manifest의 side_panel.default_path를 두면 "모든 탭에 기본으로 열려 있는 전역
+// 패널 인스턴스"가 되어(크롬 공식 side panel 가이드 및 커뮤니티에서 확인된 동작 —
+// https://pmds.info/blog/chrome-extension-side-panel-per-tab), 탭별 enabled:false
+// 로 막으려는 시도와 충돌한다. 그래서 manifest에서 default_path를 아예 제거하고,
+// 서비스 워커 시작 시 전역으로 setOptions({enabled:false})를 걸어 "기본은 어떤
+// 탭에도 패널이 없음"을 만든 다음, 검사를 요청한 탭에만 그때그때 enabled:true +
+// path를 부여한다.
+//
+// 다만 이렇게 해도 완전한 "다른 탭으로 넘기면 즉시 닫힘"은 현재 크롬
+// sidePanel API로는 보장되지 않는다 — enabled:false는 "그 탭에서 다시 열 수
+// 없게" 만들 뿐, 이미 창에 도킹되어 열려 있는 패널을 강제로 닫는 sidePanel.close()
+// 같은 API 자체가 아직 없다(W3C webextensions 이슈로 계속 요청 중:
+// https://github.com/w3c/webextensions/issues/521, 크로미움 개발자 그룹 논의:
+// https://groups.google.com/a/chromium.org/g/chromium-extensions/c/YAfMKV-GN4I).
+// 현재 API로 달성 가능한 최선은 "다른 탭에서는 내용이 새지 않고 빈 대기 화면만
+// 보이는 것"까지이고, 실제로 그렇게 동작한다. 패널이 물리적으로 닫히는 것은
+// 크롬이 close()류 API를 추가하기 전까지는 확장 코드만으로 강제할 수 없다.
 //
 // "지금 패널이 켜져 있어야 하는 탭" 추적은 일반 JS 변수가 아니라 chrome.storage.session
 // 에 저장한다 — MV3 서비스 워커는 ~30초 유휴 후 꺼졌다가 다음 이벤트에 다시 깨어나는데,
@@ -275,10 +290,12 @@ chrome.windows.onFocusChanged?.addListener(async (windowId) => {
   } catch (_) {}
 });
 
-// 확장 설치/브라우저 시작 시점엔 이미 열려 있던 다른 탭들도 전부 기본 비활성화로
-// 맞춰준다(그 시점엔 진행 중인 세션이 없으므로 전부 꺼도 안전).
+// 확장 설치/브라우저 시작 시점: 전역 기본값 자체를 비활성화(더 이상 manifest
+// default_path가 없으니 이게 유일한 "기본은 꺼짐" 설정이다) + 이미 열려 있던
+// 개별 탭들도 혹시 이전에 켜진 상태가 남아있을 수 있으니 전부 다시 비활성화.
 async function disableAllExistingTabsPanel() {
   try {
+    await chrome.sidePanel.setOptions({ enabled: false });
     const tabs = await chrome.tabs.query({});
     tabs.forEach((t) => disablePanelForTab(t.id));
     await setCurrentPanelTabId(null);

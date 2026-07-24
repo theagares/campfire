@@ -86,10 +86,6 @@
     }
   },
 
-  "side_panel": {
-    "default_path": "sidepanel/sidepanel.html"
-  },
-
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
