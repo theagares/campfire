@@ -233,15 +233,21 @@ async function setCurrentPanelTabId(tabId) {
 }
 
 function disablePanelForTab(tabId) {
-  if (tabId == null) return;
-  chrome.sidePanel?.setOptions?.({ tabId, enabled: false }).catch(() => {});
+  if (tabId == null) return Promise.resolve();
+  return chrome.sidePanel?.setOptions?.({ tabId, enabled: false }).catch(() => {}) ?? Promise.resolve();
 }
 
-// 요청한 탭을 켜고, 그 전까지 켜져 있던 탭은 끈다 (open() 의 제스처 보존과 무관하므로
-// 비동기로 처리해도 된다 — 아래 OPEN_SIDE_PANEL 핸들러에서 await 없이 fire-and-forget).
+// 요청한 탭만 남기고 "그 순간 열려 있는 다른 모든 탭"을 즉시 비활성화한다.
+// (이전엔 tabs.onActivated 로 "전환되는 순간"에 반응해서 껐는데, 크롬이 그 전환
+// 시점에 이미 예전 상태로 패널을 표시하기로 결정해버리는 타이밍 경합 여지가 있다.
+// 패널을 켜는 바로 그 순간 다른 탭들을 미리 다 꺼두면 그런 경합 자체가 없어진다.
+// open() 의 제스처 보존과 무관하므로 비동기로 처리해도 된다 — OPEN_SIDE_PANEL
+// 핸들러에서 await 없이 fire-and-forget으로 호출한다.)
 async function switchPanelToTab(newTabId) {
-  const prev = await getCurrentPanelTabId();
-  if (prev != null && prev !== newTabId) disablePanelForTab(prev);
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(tabs.filter((t) => t.id !== newTabId).map((t) => disablePanelForTab(t.id)));
+  } catch (_) {}
   await setCurrentPanelTabId(newTabId);
 }
 
