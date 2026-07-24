@@ -231,6 +231,14 @@ function buildPipelineDiagram() {
   drawPipeLines();
 }
 
+// 위/좌/우는 캔버스 가장자리에서 5% 여백을 남기고, 아래쪽은 구분선(.pc-divider) 바로
+// 위까지만 움직이게 한다 — 라벨이 있는 노드(OCR/텍스트 직접 추출 등)는 라벨 높이까지
+// 감안해야 실제로 선과 안 겹친다. 고정 퍼센트를 미리 계산해두는 대신 드래그를 시작할
+// 때마다 캔버스·구분선·라벨의 실측 픽셀 위치를 다시 재서 정확히 맞춘다(창 크기가
+// 달라져도 항상 맞는다).
+const PIPE_EDGE_MARGIN_PCT = 5;
+const PIPE_DIVIDER_GAP_PX = 6;
+
 function makePipeNodeDraggable(el, canvas) {
   el.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -243,12 +251,19 @@ function makePipeNodeDraggable(el, canvas) {
     const w = parseFloat(el.style.width);
     const h = parseFloat(el.style.height);
 
+    const canvasRect = canvas.getBoundingClientRect();
+    const divider = document.querySelector('.pc-divider');
+    const dividerTopPx = divider ? divider.getBoundingClientRect().top - canvasRect.top : canvasRect.height;
+    const label = el.querySelector('.pn-label');
+    const labelReservePx = label ? label.getBoundingClientRect().height + 3 : 0; // 3px = .pn-label margin-top
+    const maxTopPx = dividerTopPx - labelReservePx - PIPE_DIVIDER_GAP_PX - (h / 100) * canvasRect.height;
+    const maxTopPct = Math.max(PIPE_EDGE_MARGIN_PCT, (maxTopPx / canvasRect.height) * 100);
+
     const move = (ev) => {
-      const rect = canvas.getBoundingClientRect();
-      const dxPct = ((ev.clientX - startX) / rect.width) * 100;
-      const dyPct = ((ev.clientY - startY) / rect.height) * 100;
-      el.style.left = clamp(startLeft + dxPct, 0, 100 - w) + '%';
-      el.style.top = clamp(startTop + dyPct, 0, 100 - h) + '%';
+      const dxPct = ((ev.clientX - startX) / canvasRect.width) * 100;
+      const dyPct = ((ev.clientY - startY) / canvasRect.height) * 100;
+      el.style.left = clamp(startLeft + dxPct, PIPE_EDGE_MARGIN_PCT, 100 - PIPE_EDGE_MARGIN_PCT - w) + '%';
+      el.style.top = clamp(startTop + dyPct, PIPE_EDGE_MARGIN_PCT, maxTopPct) + '%';
       drawPipeLines();
     };
     const up = () => {
