@@ -27,12 +27,15 @@ const el = {
   counts: $('counts'),
   vProgress: $('view-progress'), vResult: $('view-result'), vError: $('view-error'),
   progressTitle: $('progress-title'), progressSub: $('progress-sub'),
-  steps: $('steps'), progressWarn: $('progress-warn'),
-  docMeta: $('doc-meta'), diff: $('diff'), items: $('items'),
+  progressFill: $('progress-fill'), progressWarn: $('progress-warn'),
+  docName: $('doc-name'), docType: $('doc-type'), diff: $('diff'), items: $('items'),
   errTitle: $('err-title'), errMsg: $('err-msg'),
   footer: $('footer'), maskSummary: $('mask-summary'),
   btnCancel: $('btn-cancel'), btnSend: $('btn-send'),
 };
+
+// 진행 단계 순서(2번째 인젝션 탐지가 3이 아닌 4인 것은 SW 쪽 단계 정의를 따름)
+const PROGRESS_STEP_ORDER = [1, 2, 4, 5];
 
 let state = {
   sessionId: null,
@@ -115,7 +118,6 @@ function refreshCounts() {
   const pii = state.result?.stats?.piiCount ?? 0;
   const inj = state.result?.stats?.injectionCount ?? 0;
   el.counts.textContent = `PII ${pii}건 | INJECTION ${inj}건 탐지`;
-  el.counts.classList.toggle('has-risk', pii + inj > 0);
 }
 
 function refreshSummary() {
@@ -146,25 +148,29 @@ function applyProgress(event) {
     return;
   }
   if (event.type !== 'step') return;
-  el.steps.querySelectorAll('.step').forEach(li => {
-    const s = parseInt(li.dataset.step, 10);
-    if (s < event.step) { li.classList.add('done'); li.classList.remove('active'); }
-    else if (s === event.step) {
-      li.classList.toggle('done', !!event.done);
-      li.classList.toggle('active', !event.done);
-    }
-  });
+  const order = PROGRESS_STEP_ORDER.indexOf(event.step);
+  if (order >= 0) {
+    const pct = ((order + (event.done ? 1 : 0.5)) / PROGRESS_STEP_ORDER.length) * 100;
+    el.progressFill.style.width = `${Math.max(8, Math.min(100, pct))}%`;
+  }
   if (event.label) el.progressTitle.textContent = event.label;
 }
 
 function renderProgress(session) {
   showView('progress');
   el.counts.textContent = '검사 중…';
-  el.counts.classList.remove('has-risk');
+  el.progressFill.style.width = '8%';
   if (session?.meta?.fileName) {
+    el.docName.textContent = session.meta.fileName;
+    el.docType.textContent = '문서 검사 중';
     el.progressSub.textContent = session.meta.fileName;
   } else if (session?.meta?.textPreview) {
+    el.docName.textContent = 'UpSecurity';
+    el.docType.textContent = '프롬프트 검사 중';
     el.progressSub.textContent = `"${session.meta.textPreview}"`;
+  } else {
+    el.docName.textContent = 'UpSecurity';
+    el.docType.textContent = '문서 검토';
   }
   (session?.progress || []).forEach(applyProgress);
 }
@@ -188,11 +194,14 @@ function renderResult(kind, result, meta) {
   refreshCounts();
 
   if (meta?.fileName) {
-    el.docMeta.innerHTML = `📄 <strong>${esc(meta.fileName)}</strong>`;
+    el.docName.textContent = meta.fileName;
+    el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
   } else if (result.originalLength || result.stats?.originalLength) {
-    el.docMeta.innerHTML = `💬 프롬프트 (${result.stats?.originalLength ?? 0}자)`;
+    el.docName.textContent = 'UpSecurity';
+    el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
   } else {
-    el.docMeta.innerHTML = '💬 프롬프트';
+    el.docName.textContent = 'UpSecurity';
+    el.docType.textContent = '프롬프트 검토';
   }
 
   state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
@@ -214,7 +223,7 @@ function renderError(error, meta) {
   showView('error');
   el.errTitle.textContent = '검사 중 오류가 발생했습니다';
   el.errMsg.textContent = error || '엔진에 연결하지 못했습니다.';
-  if (meta?.fileName) el.docMeta.textContent = meta.fileName;
+  if (meta?.fileName) { el.docName.textContent = meta.fileName; el.docType.textContent = '오류'; }
 }
 
 // ── 결정 전송 ────────────────────────────────────────────────────────────────
