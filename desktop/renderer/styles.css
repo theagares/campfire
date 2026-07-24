@@ -299,9 +299,9 @@ img { display:block; }
 
 /* ── 설정 진입점: 프로필 행 우측 톱니 아이콘만(글자 없음), Figma 미정 영역 — 기존 UX 유지, PLAN §8 ── */
 .gear-btn {
-  flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:34px; height:34px;
-  padding:0; border-radius:9999px; background:none; border:1px solid var(--line-08);
-  color:var(--ink-500); font-size:18px; line-height:1;
+  flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:36px; height:36px;
+  padding:0; border-radius:9999px; background:none; border:none;
+  color:var(--ink-500); font-size:20px; line-height:1;
 }
 .gear-btn:hover { background:var(--line-06); color:var(--ink-900); }
 .modal-backdrop { position:fixed; inset:0; background:rgba(17,24,39,.42); display:none; align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(2px); }
