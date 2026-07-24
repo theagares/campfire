@@ -361,7 +361,7 @@ img { display:block; }
    opacity/transform 애니메이션 조건에서) 문제없이 그려진다 — 렌더링 경로 자체가
    달라서 이 버그를 피해간다.
 
-   그래서 halo는 ::before에 큰(140px) radial-gradient로 그리고, "밝기 변화"는
+   그래서 halo는 ::before의 radial-gradient로 그리고, "밝기 변화"는
    opacity로, "Glow 크기 변화"는 transform:scale로 애니메이션한다 — box-shadow의
    3겹(8/24/60px blur, 32/12/4% opacity) 구조는 그대로 gradient의 색 정지점
    위치(0%/20%/45%/70%)로 옮겨 재현했다.
@@ -385,17 +385,21 @@ img { display:block; }
 .model-pill .mp-dot::before,
 .dot::before {
   content:'';
-  position:absolute; left:50%; top:50%; width:140px; height:140px;
+  position:absolute; left:50%; top:50%; width:56px; height:56px;
   transform:translate(-50%,-50%) scale(1);
   border-radius:9999px;
   pointer-events:none;
   opacity:0;
   transition:opacity .8s ease-in-out;
+  /* 처음엔 140px로 만들었더니 카드/필 테두리를 넘어 밖으로 번져 나가 버렸다(실측) —
+     점 주변으로만 퍼지도록 반경을 좁히고(56px), 점 바로 근처는 더 진하게(0%/25%
+     정지점의 opacity를 55%/22%로 올림), 대신 더 빨리(80%에서) 완전히 투명해지도록
+     조정했다. */
   background:radial-gradient(circle,
-    color-mix(in srgb, currentColor 32%, transparent) 0%,
-    color-mix(in srgb, currentColor 12%, transparent) 20%,
-    color-mix(in srgb, currentColor 4%, transparent) 45%,
-    transparent 70%);
+    color-mix(in srgb, currentColor 55%, transparent) 0%,
+    color-mix(in srgb, currentColor 22%, transparent) 25%,
+    color-mix(in srgb, currentColor 6%, transparent) 55%,
+    transparent 80%);
 }
 .model-card .mc-dot.on,
 .pipe-card .pc-status.running .ps-dot,
