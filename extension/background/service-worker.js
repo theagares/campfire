@@ -286,7 +286,10 @@ async function disableAllExistingTabsPanel() {
 }
 
 function pushToPanel(message) {
-  // 열려 있는 확장 페이지(사이드패널)로 broadcast. 아직 안 열렸으면 조용히 무시.
+  // chrome.runtime.sendMessage는 특정 탭이 아니라 열려 있는 모든 확장 페이지(모든
+  // 탭의 사이드패널 인스턴스 포함)에 전역 broadcast된다 — 그래서 반드시 message.tabId
+  // 를 실어 보내고, 받는 쪽(sidepanel.js)이 자기 탭 것이 아니면 무시하게 해야 한다.
+  // 아직 아무 패널도 안 열렸으면 조용히 무시된다.
   const p = chrome.runtime.sendMessage(message);
   if (p?.catch) p.catch(() => {});
 }
@@ -311,7 +314,7 @@ async function runScan(sessionId, kind, payload, tabId) {
 
   const onProgress = (event) => {
     session.progress.push(event);
-    pushToPanel({ type: 'PANEL_PROGRESS', sessionId, event });
+    pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, event });
   };
 
   try {
@@ -321,12 +324,12 @@ async function runScan(sessionId, kind, payload, tabId) {
     session.status = 'ready';
     session.result = result;
     recordSecurityBadge(result);
-    pushToPanel({ type: 'PANEL_RESULT', sessionId, kind, result, meta: session.meta });
+    pushToPanel({ type: 'PANEL_RESULT', sessionId, tabId, kind, result, meta: session.meta });
   } catch (err) {
     session.status = 'error';
     session.error = err.message;
     setActionBadge('!', BADGE_ERROR);
-    pushToPanel({ type: 'PANEL_ERROR', sessionId, error: err.message, meta: session.meta });
+    pushToPanel({ type: 'PANEL_ERROR', sessionId, tabId, error: err.message, meta: session.meta });
   }
 }
 
@@ -353,10 +356,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // 사이드패널 로드 완료 → 최신 세션 스냅샷 요청
+  // 반드시 "이 요청을 보낸 탭"의 세션만 찾아 돌려준다 — activeSessionId(전역 최신
+  // 세션)로 폴백하면, 탭 B에서 새로 뜬 패널이 탭 A의 검사 결과를 자기 것으로
+  // 잘못 받아버리는 문제가 있었다(탭 스코핑이 안 먹히는 것처럼 보인 실제 원인).
   if (type === 'PANEL_READY') {
-    const sid = message.sessionId || activeSessionId;
-    const session = sid ? sessions.get(sid) : null;
-    sendResponse({ ok: true, sessionId: sid, session: session || null });
+    const requesterTabId = sender?.tab?.id ?? null;
+    let sid = null, session = null;
+    if (requesterTabId != null) {
+      for (const [id, s] of sessions) {
+        if (s.tabId === requesterTabId) { sid = id; session = s; }
+      }
+    }
+    if (!session && requesterTabId == null && message.sessionId) {
+      // sender.tab이 없는(=탭에 종속되지 않은) 특수 컨텍스트에서의 요청만 예외적으로
+      // 명시적 sessionId를 신뢰한다.
+      session = sessions.get(message.sessionId) || null;
+      sid = session ? message.sessionId : null;
+    }
+    sendResponse({ ok: true, sessionId: sid, session, tabId: requesterTabId });
     return false;
   }
 
