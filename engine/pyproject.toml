@@ -24,6 +24,14 @@ dependencies = [
     # 조건부 의존성 처리한다. macOS/Linux에서는 HWPX만 "미지원 통과"로 우아하게
     # 저하되고(app/core/parser/hwpx.py의 ImportError 처리), 나머지 기능은 그대로 동작한다.
     "pyhwpx>=1.7 ; sys_platform == 'win32'",
+    # 인젝션 LLM 실 모델(EXAONE-3.5-2.4B-Instruct + regularized MLP, PLAN §5 llm_mcp).
+    # torch 는 GPU 빌드가 하드웨어(CUDA 버전)마다 달라 --index-url 로 별도 설치
+    # 권장(예: https://download.pytorch.org/whl/cu128) — 여기 버전 제약은 최소 요건만.
+    "torch>=2.3",
+    "transformers>=4.51",
+    "accelerate>=0.30",
+    "numpy>=1.26",
+    "safetensors>=0.4",
 ]
 
 [project.optional-dependencies]
