@@ -143,6 +143,10 @@ body {
 .mark.inj { background: var(--inj); color: var(--text); }
 .mark.kept { opacity: .5; text-decoration: line-through; background: var(--card); color: var(--muted); }
 
+/* ── combined(문서+프롬프트 동시 검토) 모드 — .diff 안에 두 블록을 쌓아 보여준다 ── */
+.combined-block { margin-bottom: 4px; }
+.empty-inline { color: var(--muted-2); font-size: 12px; }
+
 /* ── 탐지 항목 토글 (우측 사이드바) ── */
 .items { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .item {

@@ -165,6 +165,79 @@
   });
 
   // ══════════════════════════════════════════════════════════════════════════
+  // 문서 첨부 보류(pending) — 인젝션 탐지 재설계
+  //
+  // 문서를 첨부한 즉시 스캔하지 않고, 사용자가 프롬프트를 "보낼 때"까지 보류했다가
+  // 프롬프트 텍스트와 함께 한 번에 넘긴다. 인젝션 탐지 모델이 "이 문서가 사용자의
+  // 실제 지시를 무시/변조하려는가"를 판단하려면 진짜 user_prompt 가 필요한데,
+  // 첨부 시점엔 그 프롬프트가 아직 존재하지 않기 때문이다(engine 쪽
+  // orchestrator.run_pipeline(user_prompt=...) / POST /jobs 의 userPrompt 필드 참고).
+  //
+  // MVP 범위: 보류 중인 첨부는 최대 1개만 추적한다(두 번째를 첨부하면 첫 번째를
+  // 교체) — 여러 파일을 동시에 보류·결합하는 건 다음 단계.
+  // ══════════════════════════════════════════════════════════════════════════
+  let pendingAttachment = null; // { file, base64Data, mimeType, fileName, fileSize, inject(finalFile) }
+  let badgeRoot = null;
+
+  function showPendingBadge(fileName) {
+    hidePendingBadge();
+    try {
+      badgeRoot = document.createElement('div');
+      badgeRoot.id = '__ups_pending_badge';
+      badgeRoot.style.cssText = [
+        'all: initial', 'position: fixed', 'right: 16px', 'bottom: 16px',
+        'z-index: 2147483646', 'background: #1f2430', 'color: #fff',
+        'font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif', 'padding: 9px 12px',
+        'border-radius: 10px', 'box-shadow: 0 4px 16px rgba(0,0,0,.25)',
+        'display: flex', 'align-items: center', 'gap: 8px', 'max-width: 320px',
+      ].join(' !important; ') + ' !important;';
+
+      const label = document.createElement('span');
+      label.textContent = `📎 ${fileName} 대기 중 — 프롬프트 전송 시 함께 검사됩니다`;
+      label.style.cssText = 'flex: 1 !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important;';
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '✕';
+      closeBtn.title = '첨부 취소';
+      closeBtn.style.cssText = 'all: unset !important; cursor: pointer !important; opacity: .75 !important; padding: 0 2px !important; flex-shrink: 0 !important;';
+      closeBtn.addEventListener('click', () => { clearPendingAttachment(); });
+
+      badgeRoot.appendChild(label);
+      badgeRoot.appendChild(closeBtn);
+      (document.documentElement || document.body).appendChild(badgeRoot);
+    } catch (_) { /* context invalidated */ }
+  }
+
+  function hidePendingBadge() {
+    try { badgeRoot?.remove(); } catch (_) { /* ignore */ }
+    badgeRoot = null;
+  }
+
+  function clearPendingAttachment() {
+    pendingAttachment = null;
+    hidePendingBadge();
+  }
+
+  /** 파일을 즉시 스캔하지 않고 보류 상태로 저장한다. inject(finalFile)은 나중에
+   *  마스킹된(또는 원본) 파일을 원래 있어야 할 자리(입력창/드롭 타깃)에 넣는 방법을
+   *  호출부가 정의해 넘긴다(input.files 세터 vs 합성 drop/paste 이벤트 등, 첨부
+   *  경로마다 다르므로). */
+  async function stageFileAttachment(file, inject) {
+    if (!isSupportedFile(file) || contentProcessingFiles.has(file) || contentOwnedFiles.has(file)) return;
+    const base64Data = await fileToBase64(file);
+    pendingAttachment = {
+      file,
+      base64Data,
+      mimeType: file.type || 'application/octet-stream',
+      fileName: file.name,
+      fileSize: file.size,
+      inject,
+    };
+    showPendingBadge(file.name);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 패널 세션 — START_SCAN 후 PANEL_DECISION 을 기다린다
   // ══════════════════════════════════════════════════════════════════════════
   const pendingSessions = new Map(); // sessionId -> { resolve, timeout }
@@ -236,7 +309,7 @@
     return null;
   }
 
-  // ── 파일 인풋 change ────────────────────────────────────────────────────────
+  // ── 파일 인풋 change — 즉시 스캔하지 않고 보류(위 "문서 첨부 보류" 참고) ──────
   document.addEventListener('change', async (event) => {
     const path = event.composedPath?.() ?? [];
     const input = path.find(el => el instanceof HTMLInputElement && el.type === 'file')
@@ -248,14 +321,12 @@
 
     event.preventDefault();
     event.stopImmediatePropagation();
+    input.value = ''; // 사이트가 원본 파일을 보지 못하게 즉시 비운다(스캔 전 유출 방지)
 
-    const decision = await reviewFileViaPanel(file);
-    const finalFile = await buildCurrentFileFromDecision(decision, file);
-    if (finalFile) setFileOnInput(input, finalFile);
-    else input.value = '';
+    await stageFileAttachment(file, (finalFile) => setFileOnInput(input, finalFile));
   }, true);
 
-  // ── 드래그앤드롭 ─────────────────────────────────────────────────────────────
+  // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
   document.addEventListener('dragover', (event) => {
     if (Array.from(event.dataTransfer?.items ?? []).some(i => i.kind === 'file')) event.preventDefault();
   }, true);
@@ -267,18 +338,19 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     const target = event.target;
-    const decision = await reviewFileViaPanel(file);
-    const finalFile = await buildCurrentFileFromDecision(decision, file);
-    if (!finalFile) return;
-    const dt = new DataTransfer();
-    dt.items.add(finalFile);
-    target.dispatchEvent(new DragEvent('drop', {
-      bubbles: true, cancelable: true, composed: true,
-      dataTransfer: dt, clientX: event.clientX, clientY: event.clientY,
-    }));
+    const clientX = event.clientX, clientY = event.clientY;
+
+    await stageFileAttachment(file, (finalFile) => {
+      const dt = new DataTransfer();
+      dt.items.add(finalFile);
+      target.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, composed: true,
+        dataTransfer: dt, clientX, clientY,
+      }));
+    });
   }, true);
 
-  // ── 붙여넣기 ─────────────────────────────────────────────────────────────────
+  // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
   document.addEventListener('paste', async (event) => {
     const files = Array.from(event.clipboardData?.files ?? []);
     const file = files.find(f => isSupportedFile(f) && !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
@@ -286,14 +358,14 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     const target = event.target;
-    const decision = await reviewFileViaPanel(file);
-    const finalFile = await buildCurrentFileFromDecision(decision, file);
-    if (!finalFile) return;
-    const dt = new DataTransfer();
-    dt.items.add(finalFile);
-    target.dispatchEvent(new ClipboardEvent('paste', {
-      bubbles: true, cancelable: true, composed: true, clipboardData: dt,
-    }));
+
+    await stageFileAttachment(file, (finalFile) => {
+      const dt = new DataTransfer();
+      dt.items.add(finalFile);
+      target.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, composed: true, clipboardData: dt,
+      }));
+    });
   }, true);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -400,24 +472,55 @@
     event.stopImmediatePropagation();
     promptInProcess = true;
 
+    const staged = pendingAttachment; // 보류 중인 첨부가 있으면 결합 검사(combined)
+    hidePendingBadge();
     openSidePanel(); // 제스처 시점에 먼저 연다
 
     let decision = null;
     try {
-      decision = await startPanelSession('prompt', { text });
+      decision = staged
+        ? await startPanelSession('combined', {
+            text,
+            base64Data: staged.base64Data,
+            mimeType: staged.mimeType,
+            fileName: staged.fileName,
+            fileSize: staged.fileSize,
+          })
+        : await startPanelSession('prompt', { text });
     } catch (_) {
       decision = { action: 'cancel' };
     } finally {
       promptInProcess = false;
     }
 
-    if (!decision || decision.action === 'cancel') return;
-    const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
+    if (!decision || decision.action === 'cancel') {
+      // 취소하면 보류 중이던 첨부도 함께 정리한다(재시도하려면 다시 첨부해야 함).
+      if (staged) clearPendingAttachment();
+      return;
+    }
+
     const latestCfg = getPromptConfig();
     if (!latestCfg) return;
-
     promptApproved = true;
-    setEditorText(latestCfg, finalText);
+
+    if (staged) {
+      // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
+      const finalText = decision.maskedText || text;
+      if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
+        staged.inject(base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName));
+      } else if (decision.file?.action === 'passthrough') {
+        staged.inject(staged.file);
+      }
+      // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
+      clearPendingAttachment();
+      setEditorText(latestCfg, finalText);
+      // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
+      await new Promise((r) => setTimeout(r, 900));
+    } else {
+      const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
+      setEditorText(latestCfg, finalText);
+    }
+
     await resubmitPrompt(latestCfg);
     setTimeout(() => { promptApproved = false; }, 3000);
   }
