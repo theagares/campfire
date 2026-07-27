@@ -1,0 +1,71 @@
+{
+  "model": "LGAI-EXAONE/EXAONE-4.0-1.2B",
+  "model_key": "exaone-1.2b",
+  "tool_msg_mode": "separate",
+  "L": 30,
+  "H": 32,
+  "LH": 960,
+  "hidden": 2048,
+  "max_pairs": 1024,
+  "hs_layer_idxs": [
+    8,
+    15,
+    22,
+    30
+  ],
+  "hs_pools": [
+    "seg0",
+    "seg1",
+    "seg2",
+    "last"
+  ],
+  "hs_cols": [
+    "L8_seg0",
+    "L8_seg1",
+    "L8_seg2",
+    "L8_last",
+    "L15_seg0",
+    "L15_seg1",
+    "L15_seg2",
+    "L15_last",
+    "L22_seg0",
+    "L22_seg1",
+    "L22_seg2",
+    "L22_last",
+    "L30_seg0",
+    "L30_seg1",
+    "L30_seg2",
+    "L30_last"
+  ],
+  "label_to_id": {
+    "misaligned": 0,
+    "aligned": 1,
+    "non_instruction": 2
+  },
+  "cmode_to_id": {
+    "non_instruction": 0,
+    "aligned": 1,
+    "misaligned_append": 2,
+    "misaligned_replace": 3
+  },
+  "limit_per_group": null,
+  "splits": [
+    "train",
+    "test"
+  ],
+  "token_hidden": false,
+  "token_hidden_layer": null,
+  "token_max_len": null,
+  "domains_trained_on": [
+    "cloud",
+    "coding",
+    "finance",
+    "messaging",
+    "project",
+    "shopping",
+    "social_media",
+    "web"
+  ],
+  "lh": 960,
+  "hd": 32768
+}
