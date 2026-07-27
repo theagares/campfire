@@ -30,6 +30,12 @@ Thumbs.db
 # 엔진 로컬 런타임 상태 (탐지 job 메타데이터 store + 감사로그 — 실행할 때마다 생성됨)
 engine/app/store/data/
 
-# 실 모델 아티팩트 (수백MB~수GB, 로컬 배포용 — git 추적 대상 아님. README 참고해 각자 받기)
-engine/app/models/
+# 실 모델 바이너리 아티팩트(가중치/토크나이저/가제티어 등, 수백MB~수GB — MODELS.md
+# 참고해 GitHub Releases로 각자 받기)만 제외한다. app/models/*/runtime/*.py 는 우리가
+# 직접 작성/이식한 추론 러타임 코드라 실제 소스코드이므로 여기 포함되지 않게 주의 —
+# 아래처럼 바이너리가 든 하위 디렉터리 이름으로 콕 집어서 제외한다(디렉터리 전체를
+# 무시하면 그 안의 .py 도 같이 묻혀버리는 실수를 했었음).
+engine/app/models/*/models/
+engine/app/models/*/attn/
+engine/app/models/*/hybrid/
 engine/*.egg-info/
