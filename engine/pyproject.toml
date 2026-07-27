@@ -32,6 +32,8 @@ dependencies = [
     "accelerate>=0.30",
     "numpy>=1.26",
     "safetensors>=0.4",
+    # 인젝션 2단계 세부 위치 특정(Upstage Solar Pro 3 API 호출)용 비동기 HTTP 클라이언트.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
