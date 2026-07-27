@@ -29,3 +29,7 @@ Thumbs.db
 
 # 엔진 로컬 런타임 상태 (탐지 job 메타데이터 store + 감사로그 — 실행할 때마다 생성됨)
 engine/app/store/data/
+
+# 실 모델 아티팩트 (수백MB~수GB, 로컬 배포용 — git 추적 대상 아님. README 참고해 각자 받기)
+engine/app/models/
+engine/*.egg-info/

@@ -87,9 +87,15 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _scan_bytes(file_bytes: bytes, mime_type: str, file_name: str) -> dict[str, Any]:
+async def _scan_bytes(
+    file_bytes: bytes, mime_type: str, file_name: str, *, user_prompt: str = ""
+) -> dict[str, Any]:
     result = await run_pipeline(
-        file_bytes=file_bytes, mime_type=mime_type, file_name=file_name, wrap_file=False
+        file_bytes=file_bytes,
+        mime_type=mime_type,
+        file_name=file_name,
+        wrap_file=False,
+        user_prompt=user_prompt or None,
     )
     _record(file_name, result)
     return result
@@ -107,28 +113,37 @@ def _record(file_name: str, result: dict[str, Any]) -> None:
 
 # ── 도구 1: scan_text ─────────────────────────────────────────────────────────
 @mcp.tool()
-async def scan_text(text: str) -> dict[str, Any]:
+async def scan_text(text: str, user_prompt: str = "") -> dict[str, Any]:
     """텍스트에서 개인정보(PII)와 프롬프트 인젝션을 탐지하고 마스킹본을 반환한다.
 
     사람 확인(HITL) 없이 즉시 탐지 결과를 돌려준다. 신뢰할 수 없는 출처의 텍스트나
     민감정보가 포함될 수 있는 텍스트를 외부 LLM/이메일/다른 문서로 넘기기 전에 먼저 검사하라.
 
+    user_prompt: 이 text 를 검사하게 만든 실제 사용자 요청(있으면). MCP 는 보통
+    사용자 요청이 먼저 있고 나서(예: "이 파일 요약해줘") 그 요청에 따라 파일/텍스트를
+    읽으므로, 그 요청 문구를 넘기면 인젝션 탐지가 placeholder 대신 이걸 근거로
+    "이 텍스트가 사용자의 실제 지시를 무시/변조하려는가"를 판단한다(정확도 향상).
+
     반환: originalText, maskedText, piiItems/injectionItems(각 {type,start,end,text,
     confidence,source}, 좌표는 원문 기준 0-based), stats, hasPii/hasInjection, policy.
     """
-    result = await run_pipeline(text=text, file_name="prompt.txt", wrap_file=False)
+    result = await run_pipeline(
+        text=text, file_name="prompt.txt", wrap_file=False, user_prompt=user_prompt or None
+    )
     _record("prompt.txt", result)
     return _public(result)
 
 
 # ── 도구 2: scan_file ─────────────────────────────────────────────────────────
 @mcp.tool()
-async def scan_file(file_path: str, mime_type: str = "") -> dict[str, Any]:
+async def scan_file(file_path: str, mime_type: str = "", user_prompt: str = "") -> dict[str, Any]:
     """로컬 파일을 파서 경유로 검사한다(PII/인젝션 탐지 + 마스킹본).
 
     TXT/PDF/DOCX 를 지원한다(스캔 PDF 및 HWP/HWPX/XLSX/PPTX 는 v1 미지원 → scanStatus 로
     표시 후 통과, PLAN §9.2). mime_type 을 비우면 확장자로 추정한다. 반환 형식은 scan_text 와
     동일하며 path 필드가 추가된다.
+
+    user_prompt: 이 파일을 읽게 만든 실제 사용자 요청(있으면, scan_text 참고).
     """
     path = _resolve(file_path)
     if not path.is_file():
@@ -139,7 +154,7 @@ async def scan_file(file_path: str, mime_type: str = "") -> dict[str, Any]:
         mime_type = guessed or "application/octet-stream"
 
     file_bytes = path.read_bytes()
-    result = await _scan_bytes(file_bytes, mime_type, path.name)
+    result = await _scan_bytes(file_bytes, mime_type, path.name, user_prompt=user_prompt)
     out = _public(result)
     out["path"] = str(path)
     return out
@@ -217,12 +232,14 @@ async def mask_text(
 
 # ── 도구 5: secure_read_file (§4.2 게이트) ────────────────────────────────────
 @mcp.tool()
-async def secure_read_file(file_path: str) -> dict[str, Any]:
+async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, Any]:
     """정책을 적용해 파일을 읽는다 — 항상 파이프라인을 통과한 마스킹본만 반환(PLAN §4.2).
 
     클라이언트의 기본 Read 도구를 이 도구로 대체하면, 원본이 파이프라인을 우회해
     새어나가는 경로를 없앨 수 있다. 문서/텍스트 파일은 검사 후 maskedText 를 반환하고,
     바이너리는 원본을 반환하지 않는다. decision: masked | clean | blocked.
+
+    user_prompt: 이 파일을 읽게 만든 실제 사용자 요청(있으면, scan_text 참고).
     """
     path = _resolve(file_path)
     if not path.is_file():
@@ -243,7 +260,7 @@ async def secure_read_file(file_path: str) -> dict[str, Any]:
     else:
         mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
-    result = await _scan_bytes(path.read_bytes(), mime, path.name)
+    result = await _scan_bytes(path.read_bytes(), mime, path.name, user_prompt=user_prompt)
     pub = _public(result)
     decision = "masked" if (pub["hasPii"] or pub["hasInjection"]) else "clean"
     return {
