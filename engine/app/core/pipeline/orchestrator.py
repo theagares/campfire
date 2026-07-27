@@ -55,11 +55,16 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
     return out
 
 
-async def _detect_all(detector, text: str, chunks: list[dict]) -> list[Detection]:
+async def _detect_all(
+    detector, text: str, chunks: list[dict], *, user_prompt: str | None = None
+) -> list[Detection]:
     results: list[Detection] = []
     total = len(chunks)
     for idx, ch in enumerate(chunks):
-        dets = await detector.detect(ch["text"], meta={"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]})
+        meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
+        if user_prompt:
+            meta["user_prompt"] = user_prompt
+        dets = await detector.detect(ch["text"], meta=meta)
         for d in dets:
             d["start"] += ch["offset"]
             d["end"] += ch["offset"]
@@ -76,10 +81,19 @@ async def run_pipeline(
     file_name: str = "prompt.txt",
     emit: Emit | None = None,
     wrap_file: bool = False,
+    user_prompt: str | None = None,
 ) -> dict[str, Any]:
     """텍스트(prompt) 또는 파일 파이프라인 공통 실행기.
 
     text 가 주어지면 프롬프트 경로, file_bytes 가 주어지면 파일 경로.
+
+    user_prompt: 문서(파일/텍스트)와 "함께" 사용자가 실제로 보내려는 지시문.
+    확장 프로그램이 문서 첨부를 곧바로 스캔하지 않고 사용자가 프롬프트를 보낼
+    때까지 보류했다가 함께 넘기는 시나리오(§인젝션 탐지 재설계), 또는 MCP 가
+    파일을 읽기 전에 이미 알고 있는 사용자 요청을 넘기는 시나리오에서 쓰인다.
+    주어지면 인젝션 탐지가 이 문자열을 실제 user_prompt 로 사용해(§base.ChunkMeta
+    .user_prompt) placeholder 대신 실제 정렬 판단 근거로 삼는다. 프롬프트 자체도
+    PII 스캔해 결과에 함께 포함한다(아래 _build_result 의 userPrompt* 필드).
     """
     emit = emit or _noop_emit
     scan_status = STATUS_OK
@@ -113,8 +127,18 @@ async def run_pipeline(
 
     # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
     await emit({"type": "step", "step": 4, "label": "인젝션 탐지 중..."})
-    injection_items = await _detect_all(registry.get_injection_detector(), text, chunks)
+    injection_items = await _detect_all(
+        registry.get_injection_detector(), text, chunks, user_prompt=user_prompt
+    )
     await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
+
+    # ── user_prompt 자체도 PII 스캔(문서와 함께 보류됐다가 같이 넘어온 경우) ───
+    user_prompt_masked: str | None = None
+    user_prompt_pii_items: list[Detection] = []
+    if user_prompt:
+        prompt_chunks = _split_chunks(user_prompt, config.CHUNK_SIZE)
+        user_prompt_pii_items = await _detect_all(registry.get_pii_detector(), user_prompt, prompt_chunks)
+        user_prompt_masked = masker.apply_masking(user_prompt, list(user_prompt_pii_items))["masked_text"]
 
     # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
     blocked = bool(injection_items) and config.INJECTION_POLICY == "block"
@@ -143,6 +167,9 @@ async def run_pipeline(
         reason=reason,
         blocked=blocked,
         masked_file=masked_file,
+        user_prompt=user_prompt,
+        user_prompt_masked=user_prompt_masked,
+        user_prompt_pii_items=user_prompt_pii_items,
     )
 
 
@@ -156,6 +183,9 @@ def _build_result(
     reason: str | None,
     blocked: bool,
     masked_file: dict | None,
+    user_prompt: str | None = None,
+    user_prompt_masked: str | None = None,
+    user_prompt_pii_items: list[Detection] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
@@ -176,4 +206,10 @@ def _build_result(
     }
     if masked_file is not None:
         result["maskedFile"] = masked_file
+    if user_prompt is not None:
+        # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
+        # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.
+        result["userPromptOriginal"] = user_prompt
+        result["userPromptMasked"] = user_prompt_masked
+        result["userPromptPiiItems"] = user_prompt_pii_items or []
     return result

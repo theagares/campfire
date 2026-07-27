@@ -6,7 +6,10 @@ app/config.py
 """
 
 import os
+import sys
 from pathlib import Path
+
+APP_DIR: Path = Path(__file__).resolve().parent
 
 # ── 서비스 시그니처 (PLAN §11) ────────────────────────────────────────────────
 # 익스텐션이 포트 스캔 시 "우리 엔진"임을 식별하는 고정 시그니처.
@@ -51,11 +54,50 @@ INJECTION_LLM_IDLE_TIMEOUT_SEC: float = float(
     os.environ.get("SECUREDOC_INJECTION_LLM_IDLE_TIMEOUT_SEC", str(10 * 60))
 )  # 기본 10분 (PLAN §4.1)
 INJECTION_LLM_LOAD_DELAY_SEC: float = float(
-    os.environ.get("SECUREDOC_INJECTION_LLM_LOAD_DELAY_SEC", "1.5")
-)  # 콜드 스타트 지연 흉내(가짜 로드). 실제 모델 도입 시 실제 로드 시간으로 대체.
+    os.environ.get("SECUREDOC_INJECTION_LLM_LOAD_DELAY_SEC", "180")
+)  # 실제 모델(서브프로세스) 로딩 완료를 기다리는 최대 시간(초). 콜드 스타트 시
+   # EXAONE-3.5-2.4B-Instruct 로드에 수십 초가 걸릴 수 있어 넉넉히 잡는다.
+
+# ── 인젝션 LLM 실제 모델 (EXAONE-4.0-1.2B + hybrid(attention token-pair + segment
+#   hidden-state) regularized MLP, ho님의 injection_diag 프로젝트 model_release
+#   exaone-4.0-1.2b_hybrid_segment_v1 번들을 로컬 서브프로세스 sidecar 로 실행).
+#   실측 표준화 통계(norm_stats.pt)가 제대로 저장돼 있어(이전 EXAONE-3.5-2.4B
+#   번들은 identity fallback 이라 사실상 무용했음), 실제로 입력을 구분해 판정한다.
+#   pooled 8도메인 기준: hybrid Acc 99.2%/FPR 0.25%/FNR 0.66%,
+#   attn(hidden 미사용) Acc 97.9%/FPR 1.69%/FNR 0.56% — hybrid 권장(기본값).
+INJECTION_ENGINE_DIR: Path = APP_DIR / "models" / "injection_engine"
+INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")  # "hybrid" | "attn"
+INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "cuda")
+INJECTION_DTYPE: str = os.environ.get("SECUREDOC_INJECTION_DTYPE", "bfloat16")
+INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN", "4096"))
+INJECTION_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_INJECTION_PYTHON_EXECUTABLE", sys.executable)
+# gateway 파이프라인은 문서 청크 텍스트 한 덩어리만 주지만, 이 분류기는 원래
+# system_prompt/user_prompt/tool_response 3필드(간접 인젝션: 에이전트가 도구 응답을
+# 받는 상황)를 전제로 학습됐다. 청크 텍스트를 tool_response 에 넣고, 아래 두
+# placeholder 로 "문서 검토/요약"이라는 gateway 실사용 맥락을 근사한다.
+INJECTION_LLM_SYSTEM_PROMPT: str = os.environ.get(
+    "SECUREDOC_INJECTION_LLM_SYSTEM_PROMPT", "당신은 문서를 검토하고 요약하는 보조 AI입니다."
+)
+INJECTION_LLM_USER_PROMPT: str = os.environ.get(
+    "SECUREDOC_INJECTION_LLM_USER_PROMPT", "아래 문서 내용을 검토하고 핵심을 요약해 주세요."
+)
+
+# ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer, 3-seed 앙상블,
+#   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들을 로컬 서브프로세스
+#   sidecar 로 실행) ────────────────────────────────────────────────────────────
+PII_ENGINE_DIR: Path = APP_DIR / "models" / "pii_engine"
+PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "cpu")  # CPU 로 충분히 가벼움 — GPU 는 인젝션 LLM 전용으로 비워둠
+PII_MIN_VOTES: int = int(os.environ.get("SECUREDOC_PII_MIN_VOTES", "2"))  # 3개 seed 중 과반 투표
+PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "8"))
+PII_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_PII_MAX_LENGTH", "256"))  # 토큰 기준(모델 권장 기본값)
+# 위 PII_MAX_LENGTH(토큰)보다 청크가 길면 뒷부분이 잘리므로, detect() 내부에서
+# 문자 기준 슬라이딩 윈도우로 잘라 여러 건을 한 번에 배치 추론한다.
+PII_WINDOW_SIZE: int = int(os.environ.get("SECUREDOC_PII_WINDOW_SIZE", "200"))
+PII_WINDOW_OVERLAP: int = int(os.environ.get("SECUREDOC_PII_WINDOW_OVERLAP", "30"))
+PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", sys.executable)
+PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
-APP_DIR: Path = Path(__file__).resolve().parent
 RULES_DIR: Path = APP_DIR / "rules"
 STORE_DIR: Path = Path(os.environ.get("SECUREDOC_STORE_DIR", str(APP_DIR / "store" / "data")))
 DB_PATH: Path = STORE_DIR / "securedoc.sqlite3"
