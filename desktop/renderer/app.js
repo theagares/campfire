@@ -136,7 +136,13 @@ function renderTrendChart(svgSel, trend, key, color) {
 }
 function setModelDot(dotSel, labelSel, model, fallbackCaption) {
   const ready = model && model.ready;
-  $(dotSel).className = 'mc-dot ' + (ready ? 'on' : 'off');
+  // classList.toggle(force) 는 이미 그 상태면 DOM을 건드리지 않는다 — className을
+  // 매번 통째로 다시 대입하면(이전 버전) 값이 그대로여도 속성 변경으로 처리되어
+  // glow CSS 애니메이션이 5초 폴링마다 처음부터 재시작해 버렸다(실측: "빛이 생길 때
+  // 사라지기도 함"의 원인). setModelPill과 동일한 관용구로 통일.
+  const dot = $(dotSel);
+  dot.classList.toggle('on', !!ready);
+  dot.classList.toggle('off', !ready);
   $(labelSel).textContent = model ? `${model.name} · ${model.label}` : fallbackCaption;
 }
 
@@ -343,7 +349,8 @@ function renderPipeline() {
   // 실시간 "탐지중" 신호는 엔진 REST 계약(§2)에 없어 idle 고정 표시.
   const running = false;
   const status = $('#pipe-status');
-  status.className = 'pc-status ' + (running ? 'running' : 'idle');
+  status.classList.toggle('running', running);
+  status.classList.toggle('idle', !running);
   $('#pipe-status-label').textContent = running ? '탐지중' : '탐지 종료';
 }
 

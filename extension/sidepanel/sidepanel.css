@@ -77,11 +77,27 @@ body {
 }
 .mp-dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex-shrink: 0;
-  animation: mp-pulse 2s ease-in-out infinite;
+  animation: mp-pulse 5.4s ease-in-out infinite;
 }
+/* Core(점)는 고정하고 바깥 halo 3겹(8/24/60px blur)만 변화시킨다 — 세 겹 모두
+   정확히 같은 비율(밝기 ×1.04, 크기 ×1.03 안팎)로 동시에 커졌다 작아져야
+   "숨쉬는" 느낌이 난다. 겹마다 증가폭이 다르면(예: 이전 버전처럼 바깥쪽만 훨씬
+   크게 밝아지면) 겹들이 서로 어긋나 보여 반짝이는 것처럼 읽힌다. spread-radius를
+   0에서부터 애니메이션하는 것도 고리가 "팍" 튀어나오는 것처럼 보여 반짝임의
+   원인이었으므로 spread는 아예 쓰지 않고 blur/opacity만 움직인다. */
 @keyframes mp-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(88, 76, 220, .1); }
-  50% { box-shadow: 0 0 0 7px rgba(88, 76, 220, .18); }
+  0%, 100% {
+    box-shadow:
+      0 0 8px rgba(88, 76, 220, .32),
+      0 0 24px rgba(88, 76, 220, .12),
+      0 0 60px rgba(88, 76, 220, .04);
+  }
+  50% {
+    box-shadow:
+      0 0 8.24px rgba(88, 76, 220, .334),
+      0 0 24.72px rgba(88, 76, 220, .125),
+      0 0 61.8px rgba(88, 76, 220, .042);
+  }
 }
 .agent-title { font-size: 19px; font-weight: 700; letter-spacing: -.02em; color: #0a0a0a; margin-top: 4px; }
 .progress-title { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
