@@ -24,7 +24,10 @@ HOST: str = os.environ.get("SECUREDOC_HOST", "127.0.0.1")
 BOUND_PORT: int | None = None
 
 # ── 파이프라인 (PLAN §6) ──────────────────────────────────────────────────────
-CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1500"))  # 청크 분할 1,500자
+# 실측(인젝션 LLM, 6,000자 문서 기준): 1,500자 청크(5개)=0.36초/3.67GB peak vs
+# 1,000자 청크(7개)=0.34초/3.09GB peak — 1,000자가 속도·VRAM 둘 다 더 나은
+# 유일한 지점(그 이하로 더 쪼개면 청크당 고정 오버헤드가 누적돼 총 시간이 늘어남).
+CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1000"))
 
 # ── 요청 제한 ─────────────────────────────────────────────────────────────────
 MAX_UPLOAD_BYTES: int = int(os.environ.get("SECUREDOC_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
