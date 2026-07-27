@@ -179,11 +179,11 @@ class InjectionLlmMcpDetector:
                 self.residency.state = "unloaded"
                 return
 
-    async def _infer(self, text: str) -> dict[str, Any]:
+    async def _infer(self, text: str, user_prompt: str | None = None) -> dict[str, Any]:
         request = {
             "id": str(self._next_id),
             "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
-            "user_prompt": config.INJECTION_LLM_USER_PROMPT,
+            "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
             "tool_response": text,
         }
         self._next_id += 1
@@ -211,8 +211,11 @@ class InjectionLlmMcpDetector:
         if not text.strip():
             return []
         await self._ensure_process()
+        # 실제 사용자 프롬프트가 있으면(meta.user_prompt) 그걸 쓰고, 없으면(예: MCP
+        # scan_text 등 호출 맥락이 없는 경로) config 의 일반 placeholder 로 대체한다.
+        user_prompt = (meta or {}).get("user_prompt")
         try:
-            result = await self._infer(text)
+            result = await self._infer(text, user_prompt=user_prompt)
         finally:
             self.residency.touch()
 

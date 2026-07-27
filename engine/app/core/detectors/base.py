@@ -22,6 +22,10 @@ class ChunkMeta(TypedDict, total=False):
     total_chunks: int
     offset: int  # 원문 내 이 청크의 시작 오프셋
     file_name: str
+    # 실제 사용자 프롬프트(있으면). 인젝션 LLM(llm_mcp)이 "이 문서/청크가 사용자의
+    # 실제 지시를 무시/변조하려는가"를 판단할 때 placeholder 대신 사용한다.
+    # PII detector 는 이 필드를 사용하지 않는다.
+    user_prompt: str
 
 
 class Detection(TypedDict):
