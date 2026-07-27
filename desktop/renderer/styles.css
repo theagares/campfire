@@ -124,9 +124,14 @@ img { display:block; }
   background:#fff; font-weight:500; font-size:13px; line-height:19.5px;
   box-shadow:0 0 14px rgba(120,120,120,.18), inset 0 0 8px rgba(120,120,120,.18);
 }
-.model-pill .mp-dot { width:6px; height:6px; border-radius:9999px; }
+.model-pill .mp-dot { position:relative; width:6px; height:6px; border-radius:9999px; transition:background-color .8s ease-in-out; }
 .model-pill.on { border:1px solid var(--purple); }
-.model-pill.on .mp-dot { background:var(--purple); }
+/* 트레이 팝업(tray.html)의 .model-pill.on .mp-dot 규칙과 값 그대로 한 블록으로 통일 —
+   여기저기(배경/색/애니메이션)로 나뉘어 있으면 트레이와 미묘하게 갈릴 수 있어
+   트레이 쪽을 기준으로 맞춘다. glow 자체는 ::before 의 opacity/transform 애니메이션
+   (아래 "Ambient Glow" 섹션 주석 참고, box-shadow를 직접 animation으로 바꾸지 않는 이유
+   설명됨) — 여기선 색/on 여부만 지정한다. */
+.model-pill.on .mp-dot { background:var(--purple); color:var(--purple); }
 .model-pill.on .mp-text { color:var(--purple); }
 .model-pill.off { border:1px solid rgba(120,120,120,.18); }
 .model-pill.off .mp-dot { background:var(--grey-500); }
@@ -173,7 +178,7 @@ img { display:block; }
    꽉 차 있어(PII 로고는 흰 여백이 있어 안 보였다) 이 초과분과 mc-photo 상단이 겹쳐 로고가
    글자 아래쪽을 가렸다. stat-box 와 동일한 원인이라 동일하게 명시적으로 좁힌다. */
 .model-card .mc-title { position:absolute; left:4.643%; top:9.559%; font-size:15px; line-height:16px; font-weight:600; color:#000; }
-.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out, border-color .8s ease-in-out; }
 .model-card .mc-dot.on { background:var(--purple); }
 .model-card .mc-dot.off { background:var(--grey-400); }
 .model-card .mc-photo { position:absolute; border-radius:9999px; object-fit:cover; }
@@ -290,7 +295,7 @@ img { display:block; }
    정확히 맞춘다. */
 .pipe-card .pc-divider { position:absolute; left:4.655%; right:4.655%; bottom:8.6%; height:1px; background:var(--line-08); border-top:1px solid var(--line-stroke); }
 .pipe-card .pc-status { position:absolute; right:5.862%; bottom:3%; display:flex; align-items:center; gap:8px; }
-.pipe-card .pc-status .ps-dot { width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
+.pipe-card .pc-status .ps-dot { position:relative; width:13px; height:14px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out, border-color .8s ease-in-out; }
 .pipe-card .pc-status.idle .ps-dot { background:var(--grey-500); }
 .pipe-card .pc-status.idle .ps-label { color:var(--grey-500); }
 .pipe-card .pc-status.running .ps-dot { background:var(--purple); }
@@ -328,7 +333,7 @@ img { display:block; }
 .divider { height:1px; background:var(--line-06); margin:2px 0; }
 .tabnum { font-variant-numeric:tabular-nums; }
 .pill { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:9999px; font-size:12px; font-weight:600; background:#f5f5f5; border:1px solid var(--line-08); }
-.dot { width:8px; height:8px; border-radius:9999px; background:var(--grey-500); }
+.dot { position:relative; width:8px; height:8px; border-radius:9999px; background:var(--grey-500); transition:box-shadow .8s ease-in-out, background-color .8s ease-in-out; }
 .dot.on { background:var(--green); box-shadow:0 0 0 3px rgba(9,174,75,.15); }
 .dot.off { background:var(--danger); box-shadow:0 0 0 3px var(--danger-soft); }
 .dot.warn { background:var(--warn); box-shadow:0 0 0 3px var(--warn-soft); }
@@ -342,24 +347,97 @@ img { display:block; }
 .seg button.active { background:#fff; color:var(--ink-900); box-shadow:var(--card-shadow); }
 .muted { color:var(--ink-500); font-size:12px; }
 
-/* ── 네온 글로우: 활성화("불이 켜진") 상태 표시 주변으로 빛이 퍼지는 효과 ──
-   케이스마다 색이 달라 currentColor 로 상속받아 재사용한다. 반짝이는 스파클이 아니라
-   네온사인처럼 부드러운 빛 번짐이 커졌다 작아졌다 하는 단순한 pulse — 중간 정지 없이
-   끝까지 부드럽게 이어지도록 대칭 cubic-bezier 이징을 쓰고, 주기를 조금 늘려 숨쉬듯
-   천천히 커졌다 작아지게 한다. */
-@keyframes neon-glow {
-  0%, 100% { box-shadow:0 0 2px 0 currentColor, 0 0 4px 0 currentColor; }
-  50% { box-shadow:0 0 8px 2px currentColor, 0 0 16px 5px currentColor; }
+/* ── Ambient Glow: 활성화("불이 켜진") 상태 표시 점 주변으로 빛이 은은하게 번지는 효과 ──
+   중요한 실측 결과 (오래 걸려서 여기 자세히 남긴다 — 다시 이 삽질 하지 말 것):
+   box-shadow는 이 환경(앱 전반에서 계속 보이는 GPU 캐시/컴포지터 에러와 같은 근본
+   원인으로 추정)에서 "값이 바뀌는" 모든 경우에 페인트가 안 된다 — keyframes로
+   애니메이션해도, ::before에 넣어도, JS로 매 프레임 style.boxShadow를 새로 대입해도
+   전부 실패했다(getComputedStyle 상으론 값이 정확한데 화면엔 아무것도 안 그려짐).
+   심지어 box-shadow 값 자체는 고정이어도 그 요소에 opacity<1을 주거나(정적 값이어도!)
+   transform을 애니메이션만 걸어도(opacity는 항상 1인데도) 역시 box-shadow가 안
+   그려졌다 — 즉 box-shadow는 "완전히 그대로, 처음 페인트된 뒤로 그 요소에 어떤
+   변화도 없을 때"만 그려진다. 실측으로 검증된 대안: box-shadow 대신
+   background:radial-gradient() 로 halo를 표현하면(같은 ::before, 같은
+   opacity/transform 애니메이션 조건에서) 문제없이 그려진다 — 렌더링 경로 자체가
+   달라서 이 버그를 피해간다.
+
+   그래서 halo는 ::before의 radial-gradient로 그리고, "밝기 변화"는
+   opacity로, "Glow 크기 변화"는 transform:scale로 애니메이션한다 — box-shadow의
+   3겹(8/24/60px blur, 32/12/4% opacity) 구조는 그대로 gradient의 색 정지점
+   위치(0%/20%/45%/70%)로 옮겨 재현했다.
+
+   ::before를 항상 존재시키고(opacity:0 기본) transition으로 켜지고/꺼지는 걸
+   처리한다 — animation은 .on/.running 일 때만 붙는데, 이게 사라지는 순간 opacity가
+   기본값(0)으로 즉시 스냅되는 게 아니라 transition이 부드럽게 이어받는다("꺼지는
+   순간만 깜빡이는 것처럼" 보이는 걸 막기 위함, 실측).
+
+   delay는 일부러 안 준다 — 이 점들은 상태(엔진 health/파이프라인 실행 여부)가 바뀔 때마다
+   런타임에 on/off 클래스가 켜졌다 꺼졌다 한다. 음수 delay를 쓰면 클래스가 켜지는 순간
+   애니메이션이 중간 값으로 곧장 스냅된다(실측: "색이 갑자기 팍 나오는" 것처럼 보였다).
+   duration만 서로 다르게 둬도 시간이 지나며 자연히 위상이 어긋난다.
+
+   이 keyframes/::before 구조는 트레이 팝업(tray.html)에도 토씨 하나 안 틀리고 그대로
+   복사돼 있다 — 별도 파일로 분리했더니 이 환경에서 그 두 번째 스타일시트가 안정적으로
+   안 불려와 glow가 통째로 안 보이는 회귀가 있었어서(실측), 각 파일에 직접 넣는 채로
+   둔다. 한쪽만 고치면 트레이/앱 glow가 다시 갈리니 항상 같이 수정할 것. */
+.model-card .mc-dot::before,
+.pipe-card .pc-status .ps-dot::before,
+.model-pill .mp-dot::before,
+.dot::before {
+  content:'';
+  position:absolute; left:50%; top:50%; width:56px; height:56px;
+  transform:translate(-50%,-50%) scale(1);
+  border-radius:9999px;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity .8s ease-in-out;
+  /* 처음엔 140px로 만들었더니 카드/필 테두리를 넘어 밖으로 번져 나가 버렸다(실측) —
+     점 주변으로만 퍼지도록 반경을 좁히고(56px), 점 바로 근처는 더 진하게(0%/25%
+     정지점의 opacity를 55%/22%로 올림), 대신 더 빨리(80%에서) 완전히 투명해지도록
+     조정했다. */
+  background:radial-gradient(circle,
+    color-mix(in srgb, currentColor 55%, transparent) 0%,
+    color-mix(in srgb, currentColor 22%, transparent) 25%,
+    color-mix(in srgb, currentColor 6%, transparent) 55%,
+    transparent 80%);
 }
 .model-card .mc-dot.on,
-.model-pill.on .mp-dot,
 .pipe-card .pc-status.running .ps-dot,
 .dot.on {
   color:var(--green);
-  animation:neon-glow 2.8s cubic-bezier(.45,0,.55,1) infinite;
-  will-change:box-shadow;
+  /* mc-dot/ps-dot 는 core 바깥에 흰 테두리(border:1px solid #fff)가 있는데, 이 테두리는
+     glow와 무관하게 항상 그대로 남아 있어서 core와 halo 사이에 "절대 안 변하는 흰 띠"가
+     생겨 자연스러운 가우시안 확산처럼 안 보였다(실측). glow가 켜져 있는 동안은 이
+     테두리를 투명하게 없애 halo가 core 가장자리에서 바로 시작하도록 한다. */
+  border-color:transparent;
 }
-.model-pill.on .mp-dot,
-.model-card .mc-dot.on {
-  color:var(--purple);
+.model-card .mc-dot.on { color:var(--purple); }
+.model-card .mc-dot.on::before,
+.pipe-card .pc-status.running .ps-dot::before,
+.dot.on::before,
+.model-pill.on .mp-dot::before {
+  opacity:1;
+  will-change:opacity, transform;
+  animation:ambient-glow-a 5.8s ease-in-out infinite;
+}
+.model-card .mc-dot.on::before,
+.model-pill.on .mp-dot::before {
+  animation-name:ambient-glow-c;
+  animation-duration:6.3s;
+}
+.pipe-card .pc-status.running .ps-dot::before {
+  animation-name:ambient-glow-b;
+  animation-duration:4.7s;
+}
+@keyframes ambient-glow-a {
+  0%, 100% { opacity:.94; transform:translate(-50%,-50%) scale(1); }
+  50% { opacity:1; transform:translate(-50%,-50%) scale(1.03); }
+}
+@keyframes ambient-glow-b {
+  0%, 100% { opacity:.95; transform:translate(-50%,-50%) scale(1); }
+  50% { opacity:1; transform:translate(-50%,-50%) scale(1.02); }
+}
+@keyframes ambient-glow-c {
+  0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
+  50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
 }
