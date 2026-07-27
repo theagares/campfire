@@ -85,6 +85,46 @@ INJECTION_LLM_USER_PROMPT: str = os.environ.get(
     "SECUREDOC_INJECTION_LLM_USER_PROMPT", "아래 문서 내용을 검토하고 핵심을 요약해 주세요."
 )
 
+
+def _load_dotenv_value(key: str) -> str:
+    """프로젝트 루트 .env(엔진 전용이 아니라 여러 컴포넌트가 공유하는 파일)에서
+    key=value 한 줄을 읽는다. python-dotenv 등 별도 의존성 없이 최소한만 지원."""
+    dotenv_path = APP_DIR.parent.parent / ".env"  # engine/app -> engine -> securedoc-gateway/.env
+    if not dotenv_path.exists():
+        return ""
+    for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return ""
+
+
+# ── 인젝션 2단계 세부 위치 특정 (Upstage Solar Pro 3) ─────────────────────────
+# EXAONE hybrid 분류기는 청크 전체를 misaligned/aligned/non_instruction 로만
+# 판정하고 청크 내 구체적 위치는 모르는 구조라(어텐션/hidden state 를 청크 전체에
+# 걸쳐 풀링해서 분류), misaligned 판정 시 청크 전체가 통째로 마스킹된다. Solar
+# Pro 3 에 "이 청크에서 실제 인젝션 지시문이 정확히 어느 부분이냐"를 다시 물어
+# 그 부분만 정밀하게 마스킹하기 위한 2단계 호출. 1단계(EXAONE)가 이미
+# misaligned 라고 판정한 청크에 대해서만 호출하므로 비용/지연이 항상 붙지 않는다.
+# 실패/애매하면(빈 응답, API 오류, 응답이 원문과 정확히 일치하지 않음) 기존처럼
+# 청크 전체를 마스킹하는 fail-safe 로 되돌아간다(검사 자체를 생략하지 않음).
+UPSTAGE_API_KEY: str = (
+    os.environ.get("UPSTAGE_API_KEY")
+    or os.environ.get("SECUREDOC_UPSTAGE_API_KEY")
+    or _load_dotenv_value("upstage_key")
+)
+UPSTAGE_API_BASE: str = os.environ.get(
+    "SECUREDOC_UPSTAGE_API_BASE", "https://api.upstage.ai/v1/solar/chat/completions"
+)
+UPSTAGE_MODEL: str = os.environ.get("SECUREDOC_UPSTAGE_MODEL", "solar-pro3")
+UPSTAGE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_UPSTAGE_TIMEOUT_SEC", "20"))
+# API 키가 없으면(로컬 전용 배포 등) 자동으로 비활성화 — 2단계 없이 기존 청크
+# 전체 마스킹 동작 그대로 유지.
+INJECTION_LOCALIZE_ENABLED: bool = bool(UPSTAGE_API_KEY)
+
 # ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer, 3-seed 앙상블,
 #   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들을 로컬 서브프로세스
 #   sidecar 로 실행) ────────────────────────────────────────────────────────────
