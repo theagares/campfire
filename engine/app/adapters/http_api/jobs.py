@@ -44,10 +44,20 @@ async def create_job(
     file: UploadFile = File(...),
     mimeType: str = Form(""),
     fileName: str = Form(""),
+    userPrompt: str = Form(""),
 ):
+    """userPrompt: 문서와 함께 사용자가 실제로 보내려는 프롬프트(선택).
+
+    확장 프로그램이 문서 첨부를 곧바로 스캔하지 않고 사용자가 프롬프트를 보낼
+    때까지 보류했다가, 전송 시점에 파일과 함께 넘기는 시나리오에서 채워진다.
+    주어지면 인젝션 탐지가 placeholder 대신 이 실제 프롬프트를 근거로 판단하고,
+    프롬프트 자체도 PII 스캔해 결과에 포함한다(userPromptMasked/PiiItems).
+    """
     file_bytes = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(file_bytes) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file too large")
+    if userPrompt and len(userPrompt) > config.MAX_PROMPT_CHARS:
+        raise HTTPException(status_code=413, detail="prompt too long")
 
     name = fileName or file.filename or "upload.bin"
     mime = mimeType or file.content_type or ""
@@ -57,7 +67,12 @@ async def create_job(
     emit = job_registry.make_emit(job_id)
 
     result = await run_pipeline(
-        file_bytes=file_bytes, mime_type=mime, file_name=name, emit=emit, wrap_file=True
+        file_bytes=file_bytes,
+        mime_type=mime,
+        file_name=name,
+        emit=emit,
+        wrap_file=True,
+        user_prompt=userPrompt or None,
     )
     await emit({"type": "done", "result": _public(result)})
 
