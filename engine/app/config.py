@@ -24,7 +24,10 @@ HOST: str = os.environ.get("SECUREDOC_HOST", "127.0.0.1")
 BOUND_PORT: int | None = None
 
 # ── 파이프라인 (PLAN §6) ──────────────────────────────────────────────────────
-CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1500"))  # 청크 분할 1,500자
+# 실측(인젝션 LLM, 6,000자 문서 기준): 1,500자 청크(5개)=0.36초/3.67GB peak vs
+# 1,000자 청크(7개)=0.34초/3.09GB peak — 1,000자가 속도·VRAM 둘 다 더 나은
+# 유일한 지점(그 이하로 더 쪼개면 청크당 고정 오버헤드가 누적돼 총 시간이 늘어남).
+CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1000"))
 
 # ── 요청 제한 ─────────────────────────────────────────────────────────────────
 MAX_UPLOAD_BYTES: int = int(os.environ.get("SECUREDOC_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
@@ -86,14 +89,19 @@ INJECTION_LLM_USER_PROMPT: str = os.environ.get(
 #   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들을 로컬 서브프로세스
 #   sidecar 로 실행) ────────────────────────────────────────────────────────────
 PII_ENGINE_DIR: Path = APP_DIR / "models" / "pii_engine"
-PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "cpu")  # CPU 로 충분히 가벼움 — GPU 는 인젝션 LLM 전용으로 비워둠
+# GPU 실측(1,500자 청크 기준): CPU 1.69초 vs GPU 0.43초(~4배), VRAM 피크 1.74GB —
+# 인젝션 LLM(피크 3.8GB)과 동시 로드해도 합계 ~5.5GB 로 6GB+ VRAM 환경에선 여유 있음.
+PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "cuda")
 PII_MIN_VOTES: int = int(os.environ.get("SECUREDOC_PII_MIN_VOTES", "2"))  # 3개 seed 중 과반 투표
 PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "8"))
 PII_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_PII_MAX_LENGTH", "256"))  # 토큰 기준(모델 권장 기본값)
 # 위 PII_MAX_LENGTH(토큰)보다 청크가 길면 뒷부분이 잘리므로, detect() 내부에서
 # 문자 기준 슬라이딩 윈도우로 잘라 여러 건을 한 번에 배치 추론한다.
-PII_WINDOW_SIZE: int = int(os.environ.get("SECUREDOC_PII_WINDOW_SIZE", "200"))
-PII_WINDOW_OVERLAP: int = int(os.environ.get("SECUREDOC_PII_WINDOW_OVERLAP", "30"))
+# 실측: 숫자/기호가 조밀한 PII 텍스트(최악의 경우)도 400자가 209토큰이라
+# 256토큰 한도에 여유(~18%)가 있다 — 200자였을 때보다 청크당 윈도우 수가
+# 거의 절반으로 줄어 그만큼 forward pass 횟수가 줄어든다(속도 최적화).
+PII_WINDOW_SIZE: int = int(os.environ.get("SECUREDOC_PII_WINDOW_SIZE", "400"))
+PII_WINDOW_OVERLAP: int = int(os.environ.get("SECUREDOC_PII_WINDOW_OVERLAP", "60"))
 PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", sys.executable)
 PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
 
