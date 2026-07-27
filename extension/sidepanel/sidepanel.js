@@ -40,11 +40,13 @@ const PROGRESS_STEP_ORDER = [1, 2, 4, 5];
 let state = {
   sessionId: null,
   myTabId: null,    // 이 패널 인스턴스가 속한 탭 — 다른 탭 대상 브로드캐스트를 걸러내는 데 씀
-  kind: null,       // 'file' | 'prompt'
+  kind: null,       // 'file' | 'prompt' | 'combined'
   result: null,
   meta: null,
-  segments: [],
-  unmasked: new Set(),   // 마스킹 제외(=원본 유지) 항목 인덱스
+  segments: [],          // kind: 'file' | 'prompt'
+  docSegments: [],        // kind: 'combined' — 문서 쪽
+  promptSegments: [],     // kind: 'combined' — 프롬프트 쪽
+  unmasked: new Set(),   // 마스킹 제외(=원본 유지) 항목 인덱스(문서/프롬프트 idx 공유 — buildSegments 의 offset 으로 겹치지 않게 함)
   decided: false,
 };
 
@@ -57,14 +59,16 @@ chrome.runtime.sendMessage({ type: 'GET_TAB_ID' }, (res) => {
 });
 
 // ── 세그먼트 빌드 ────────────────────────────────────────────────────────────
-function buildSegments(text, piiItems, injectionItems) {
+// idxOffset: combined 모드에서 문서/프롬프트 두 세그먼트 배열의 idx 가 서로 겹치지
+// 않게(체크박스 data-idx 유일성, state.unmasked Set 공유) 시작 번호를 밀어준다.
+function buildSegments(text, piiItems, injectionItems, idxOffset = 0) {
   const all = [
     ...(piiItems || []).map(i => ({ ...i, cat: 'pii' })),
     ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
   ].sort((a, b) => a.start - b.start);
 
   const segs = [];
-  let cursor = 0, idx = 0;
+  let cursor = 0, idx = idxOffset;
   for (const it of all) {
     if (it.end <= cursor) continue;
     const start = Math.max(it.start, cursor);
@@ -81,8 +85,8 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function renderDiff() {
-  el.diff.innerHTML = state.segments.map(seg => {
+function segmentsToHtml(segments) {
+  return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
     const kept = state.unmasked.has(seg.idx);
     const cls = seg.cat === 'inj' ? 'inj' : 'pii';
@@ -90,8 +94,28 @@ function renderDiff() {
   }).join('');
 }
 
+function renderDiff() {
+  if (state.kind === 'combined') {
+    el.diff.innerHTML = `
+      <div class="section-label"><span>📄 문서</span></div>
+      <div class="combined-block">${segmentsToHtml(state.docSegments) || '<span class="empty-inline">(빈 문서)</span>'}</div>
+      <div class="section-label" style="margin-top:16px"><span>💬 프롬프트</span></div>
+      <div class="combined-block">${segmentsToHtml(state.promptSegments) || '<span class="empty-inline">(빈 프롬프트)</span>'}</div>
+    `;
+    return;
+  }
+  el.diff.innerHTML = segmentsToHtml(state.segments);
+}
+
+function allItemSegments() {
+  if (state.kind === 'combined') {
+    return [...state.docSegments, ...state.promptSegments].filter(s => s.type === 'item');
+  }
+  return state.segments.filter(s => s.type === 'item');
+}
+
 function renderItems() {
-  const items = state.segments.filter(s => s.type === 'item');
+  const items = allItemSegments();
   if (items.length === 0) {
     el.items.innerHTML = '<div class="empty">탐지된 항목이 없습니다. 원본을 그대로 전송할 수 있습니다.</div>';
     return;
@@ -130,7 +154,7 @@ function refreshCounts() {
 }
 
 function refreshSummary() {
-  const total = state.segments.filter(s => s.type === 'item').length;
+  const total = allItemSegments().length;
   const maskCount = total - state.unmasked.size;
   if (maskCount > 0) {
     el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송`;
@@ -202,18 +226,27 @@ function renderResult(kind, result, meta) {
 
   refreshCounts();
 
-  if (meta?.fileName) {
+  if (kind === 'combined') {
+    el.docName.textContent = meta?.fileName || 'UpSecurity';
+    el.docType.textContent = '문서 + 프롬프트 검토';
+    state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 0);
+    state.promptSegments = buildSegments(
+      result.userPromptOriginal || '', result.userPromptPiiItems, [], state.docSegments.length,
+    );
+  } else if (meta?.fileName) {
     el.docName.textContent = meta.fileName;
     el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else if (result.originalLength || result.stats?.originalLength) {
     el.docName.textContent = 'UpSecurity';
     el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else {
     el.docName.textContent = 'UpSecurity';
     el.docType.textContent = '프롬프트 검토';
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   }
 
-  state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   renderDiff();
   renderItems();
   refreshSummary();
@@ -250,18 +283,60 @@ function sendDecision(decision) {
   }, 150);
 }
 
-function buildFinalText() {
-  return state.segments.map(seg => {
+function buildFinalTextFrom(segments) {
+  return segments.map(seg => {
     if (seg.type === 'text') return seg.text;
     return state.unmasked.has(seg.idx) ? seg.original : `[${seg.label} 마스킹]`;
   }).join('');
 }
 
+function buildFinalText() {
+  return buildFinalTextFrom(state.segments);
+}
+
 el.btnCancel.addEventListener('click', () => sendDecision({ action: 'cancel' }));
 el.btnClose.addEventListener('click', () => sendDecision({ action: 'cancel' }));
 
+function wrapMaskedFileAsync(text, mimeType, fileName) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: 'WRAP_MASKED_TEXT', payload: { text, mimeType: mimeType || '', fileName: fileName || 'document' } },
+      (res) => resolve(res?.success ? res : null),
+    );
+  });
+}
+
 el.btnSend.addEventListener('click', async () => {
-  const total = state.segments.filter(s => s.type === 'item').length;
+  if (state.kind === 'combined') {
+    const docItems = state.docSegments.filter(s => s.type === 'item');
+    const docUnmaskedCount = docItems.filter(s => state.unmasked.has(s.idx)).length;
+    const finalPromptText = buildFinalTextFrom(state.promptSegments);
+
+    let file;
+    if (docItems.length === 0) {
+      file = { action: 'passthrough' };
+    } else if (docUnmaskedCount === 0 && state.result.maskedFile) {
+      // 문서 쪽 토글 변경이 전혀 없고(모두 마스킹 유지) 엔진이 만든 완전 마스킹본이 있으면 그대로 사용
+      const mf = state.result.maskedFile;
+      file = { action: 'upload', maskedBase64: mf.base64, mimeType: mf.mimeType, fileName: mf.fileName };
+    } else if (docUnmaskedCount === docItems.length) {
+      // 문서 쪽 항목을 전부 마스킹 해제(원본 그대로) 했으면 파일도 원본 그대로 전달
+      file = { action: 'passthrough' };
+    } else {
+      el.btnSend.disabled = true;
+      el.btnSend.textContent = '준비 중…';
+      const finalDocText = buildFinalTextFrom(state.docSegments);
+      const wrapped = await wrapMaskedFileAsync(finalDocText, state.meta?.mimeType, state.meta?.fileName);
+      file = wrapped
+        ? { action: 'upload', maskedBase64: wrapped.base64, mimeType: wrapped.mime, fileName: wrapped.name }
+        : { action: 'cancel' };
+    }
+
+    sendDecision({ action: 'send', maskedText: finalPromptText, file });
+    return;
+  }
+
+  const total = allItemSegments().length;
   const maskCount = total - state.unmasked.size;
 
   if (state.kind === 'prompt') {
@@ -284,16 +359,12 @@ el.btnSend.addEventListener('click', async () => {
   el.btnSend.disabled = true;
   el.btnSend.textContent = '준비 중…';
   const finalText = buildFinalText();
-  chrome.runtime.sendMessage(
-    { type: 'WRAP_MASKED_TEXT', payload: { text: finalText, mimeType: state.meta?.mimeType || '', fileName: state.meta?.fileName || 'document' } },
-    (res) => {
-      if (res?.success) {
-        sendDecision({ action: 'upload', maskedBase64: res.base64, mimeType: res.mime, fileName: res.name });
-      } else {
-        sendDecision({ action: 'cancel' });
-      }
-    },
-  );
+  const wrapped = await wrapMaskedFileAsync(finalText, state.meta?.mimeType, state.meta?.fileName);
+  if (wrapped) {
+    sendDecision({ action: 'upload', maskedBase64: wrapped.base64, mimeType: wrapped.mime, fileName: wrapped.name });
+  } else {
+    sendDecision({ action: 'cancel' });
+  }
 });
 
 // ── SW 메시지 수신 ───────────────────────────────────────────────────────────

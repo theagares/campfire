@@ -198,6 +198,33 @@ async function scanPrompt({ text }, onProgress) {
   return pollJobEvents(data.jobId, onProgress);
 }
 
+// 문서 첨부를 곧바로 스캔하지 않고 보류했다가, 사용자가 프롬프트를 보낼 때 함께
+// 넘기는 경로(인젝션 탐지가 실제 user_prompt 를 근거로 판단할 수 있게). 엔진의
+// POST /jobs 에 파일 + userPrompt 를 한 번에 보낸다 — 문서/프롬프트 양쪽 결과가
+// 한 응답(result.piiItems/injectionItems = 문서, result.userPromptPiiItems = 프롬프트)
+// 에 함께 담겨 온다(engine/app/core/pipeline/orchestrator.py 참고).
+async function scanCombined({ text, base64Data, mimeType, fileName }, onProgress) {
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mimeType });
+
+  const form = new FormData();
+  form.append('file', blob, fileName);
+  form.append('mimeType', mimeType);
+  form.append('fileName', fileName);
+  form.append('userPrompt', text);
+
+  const { res } = await fetchServer('/jobs', { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`엔진 업로드 실패 (${res.status})`);
+  const data = await res.json();
+  if (data.done && data.result) {
+    try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
+    return data.result;
+  }
+  return pollJobEvents(data.jobId, onProgress);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 세션 상태 — 사이드패널이 열리는 타이밍과 무관하게 스냅샷을 pull 할 수 있게 저장
 // ════════════════════════════════════════════════════════════════════════════
@@ -229,7 +256,12 @@ async function runScan(sessionId, kind, payload, tabId) {
     tabId, kind, status: 'scanning', progress: [], result: null, error: null,
     meta: kind === 'file'
       ? { fileName: payload.fileName, fileSize: payload.fileSize, mimeType: payload.mimeType }
-      : { textPreview: (payload.text || '').slice(0, 120) },
+      : kind === 'combined'
+        ? {
+            fileName: payload.fileName, fileSize: payload.fileSize, mimeType: payload.mimeType,
+            textPreview: (payload.text || '').slice(0, 120),
+          }
+        : { textPreview: (payload.text || '').slice(0, 120) },
   };
   sessions.set(sessionId, session);
   activeSessionId = sessionId;
@@ -242,7 +274,9 @@ async function runScan(sessionId, kind, payload, tabId) {
   try {
     const result = kind === 'file'
       ? await scanFile(payload, onProgress)
-      : await scanPrompt(payload, onProgress);
+      : kind === 'combined'
+        ? await scanCombined(payload, onProgress)
+        : await scanPrompt(payload, onProgress);
     session.status = 'ready';
     session.result = result;
     recordSecurityBadge(result);
