@@ -1,12 +1,14 @@
 """
 app/core/detectors/injection/llm_mcp.py
-인젝션 LLM+MCP 슬롯 실 구현 — EXAONE-3.5-2.4B-Instruct 백본 + regularized MLP
-분류기(hwan님 GPU 서버(123.37.28.197)에서 학습, injection_exaone_regularized_mlp_engine
-번들을 app/models/injection_engine/ 에 이식). AlignSentinel 논문의 attention-feature
-기반 간접 인젝션 탐지 방식을 그대로 쓴다(pooled Enc-first: Acc 96.56% / FPR 1.72% /
-FNR 1.41%, hwan님 서버 평가 기준).
+인젝션 LLM+MCP 슬롯 실 구현 — EXAONE-4.0-1.2B 백본 + hybrid(attention 토큰쌍 +
+segment hidden-state) regularized MLP 분류기(ho님 GPU 서버(123.37.28.197)
+injection_diag 프로젝트, model_release/exaone-4.0-1.2b_hybrid_segment_v1 번들을
+app/models/injection_engine/ 에 이식). 이전에 연결했던 EXAONE-3.5-2.4B 번들은
+z-score 표준화 통계(mu/sd)가 저장 안 돼 identity fallback 이라 사실상 입력을
+구분 못 했는데, 이 번들은 표준화 통계(norm_stats.pt)가 제대로 저장돼 있어 실제로
+동작한다(pooled 8도메인 기준: hybrid Acc 99.2% / FPR 0.25% / FNR 0.66%).
 
-로컬 서브프로세스(runtime/local_injection_inference.py --stdio)를 GPU 상주 정책의
+로컬 서브프로세스(runtime/local_injection_hybrid_inference.py --stdio)를 GPU 상주 정책의
 "로드"에 대응시킨다:
     - ensure_loaded 역할(_ensure_process): 서브프로세스가 없거나 죽어 있으면 새로
       띄우고 ready 라인을 기다린다 — fail-closed 로 실제 모델 로딩이 끝날 때까지
@@ -49,7 +51,7 @@ from ..gpu_residency import GpuResidency
 
 
 class InjectionLlmMcpDetector:
-    """EXAONE-3.5-2.4B-Instruct + regularized MLP 인젝션 탐지기 — Detector Protocol 구현체."""
+    """EXAONE-4.0-1.2B + hybrid regularized MLP 인젝션 탐지기 — Detector Protocol 구현체."""
 
     name = "injection_llm_mcp"
     kind = "injection"
@@ -68,7 +70,7 @@ class InjectionLlmMcpDetector:
         self._watcher_task: asyncio.Task | None = None
 
     def _runtime_script(self) -> Path:
-        return config.INJECTION_ENGINE_DIR / "runtime" / "local_injection_inference.py"
+        return config.INJECTION_ENGINE_DIR / "runtime" / "local_injection_hybrid_inference.py"
 
     async def _spawn_process(self) -> None:
         script = self._runtime_script()
@@ -76,11 +78,8 @@ class InjectionLlmMcpDetector:
             config.INJECTION_PYTHON_EXECUTABLE,
             str(script),
             "--engine-dir", str(config.INJECTION_ENGINE_DIR),
-            "--backend-key", config.INJECTION_BACKEND_KEY,
             "--variant", config.INJECTION_VARIANT,
-            "--detector-name", config.INJECTION_DETECTOR_NAME,
             "--device", config.INJECTION_DEVICE,
-            "--device-map", config.INJECTION_DEVICE_MAP,
             "--dtype", config.INJECTION_DTYPE,
             "--max-seq-len", str(config.INJECTION_MAX_SEQ_LEN),
             "--stdio",

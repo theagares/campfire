@@ -58,18 +58,16 @@ INJECTION_LLM_LOAD_DELAY_SEC: float = float(
 )  # 실제 모델(서브프로세스) 로딩 완료를 기다리는 최대 시간(초). 콜드 스타트 시
    # EXAONE-3.5-2.4B-Instruct 로드에 수십 초가 걸릴 수 있어 넉넉히 잡는다.
 
-# ── 인젝션 LLM 실제 모델 (EXAONE-3.5-2.4B-Instruct + regularized MLP, hwan님 GPU
-#   서버에서 학습한 injection_exaone_regularized_mlp_engine 번들을 로컬 서브프로세스
-#   sidecar 로 실행) ────────────────────────────────────────────────────────────
+# ── 인젝션 LLM 실제 모델 (EXAONE-4.0-1.2B + hybrid(attention token-pair + segment
+#   hidden-state) regularized MLP, ho님의 injection_diag 프로젝트 model_release
+#   exaone-4.0-1.2b_hybrid_segment_v1 번들을 로컬 서브프로세스 sidecar 로 실행).
+#   실측 표준화 통계(norm_stats.pt)가 제대로 저장돼 있어(이전 EXAONE-3.5-2.4B
+#   번들은 identity fallback 이라 사실상 무용했음), 실제로 입력을 구분해 판정한다.
+#   pooled 8도메인 기준: hybrid Acc 99.2%/FPR 0.25%/FNR 0.66%,
+#   attn(hidden 미사용) Acc 97.9%/FPR 1.69%/FNR 0.56% — hybrid 권장(기본값).
 INJECTION_ENGINE_DIR: Path = APP_DIR / "models" / "injection_engine"
-INJECTION_BACKEND_KEY: str = os.environ.get("SECUREDOC_INJECTION_BACKEND_KEY", "exaone_3_5_2_4b_instruct")
-INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "enc")
-INJECTION_DETECTOR_NAME: str = os.environ.get("SECUREDOC_INJECTION_DETECTOR_NAME", "pooled")
+INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")  # "hybrid" | "attn"
 INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "cuda")
-# "auto"(accelerate device_map)는 Windows 에서 safetensors 의 device-mapped
-# fast-load 경로가 페이지 파일 크기에 따라 "OS error 1455"로 실패하는 경우가
-# 있어(로컬 실측), 기본값을 "none"(전체 CPU 로드 후 .to(device))으로 둔다.
-INJECTION_DEVICE_MAP: str = os.environ.get("SECUREDOC_INJECTION_DEVICE_MAP", "none")
 INJECTION_DTYPE: str = os.environ.get("SECUREDOC_INJECTION_DTYPE", "bfloat16")
 INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN", "4096"))
 INJECTION_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_INJECTION_PYTHON_EXECUTABLE", sys.executable)
