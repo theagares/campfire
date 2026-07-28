@@ -47,9 +47,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,18 @@ from ..gpu_residency import GpuResidency
 # 태워 이 비용을 첫 실사용자 요청이 아니라 로딩 단계에서 미리 지불한다.
 _WARMUP_TEXT = "오늘 날씨는 맑습니다."
 _WARMUP_USER_PROMPT = "날씨를 요약해줘."
+
+# Solar 응답 캐시 상한(청크 텍스트 exact-match 기준 LRU) — 동일 문서 재검사·재시도
+# 시 Solar API 호출 자체를 건너뛴다. temperature=0 이라 같은 입력이면 결과가
+# 사실상 결정적이므로 exact-match 캐시가 안전하다(의미적으로 "비슷한" 청크까지
+# 매칭하는 semantic cache 는 위치 특정 작업 특성상 오히려 위험해 쓰지 않는다).
+_SOLAR_CACHE_MAX = 256
+
+# Upstage Solar 자체 프롬프트 캐싱 키 — _SOLAR_SYSTEM_PROMPT 가 모든 호출에서
+# 완전히 동일하므로, 고정된 키를 계속 재사용하면 Upstage 쪽에서 이 공통
+# 시스템 프롬프트 프리픽스를 캐싱해 매번 새 문서를 검사할 때도(우리 쪽
+# exact-match 캐시가 못 잡는 경우) 지연시간/비용을 줄일 수 있다.
+_SOLAR_PROMPT_CACHE_KEY = "securedoc-gateway-injection-localize-v1"
 
 
 class InjectionLlmMcpDetector:
@@ -87,6 +101,7 @@ class InjectionLlmMcpDetector:
         self._next_id = 0
         self._watcher_task: asyncio.Task | None = None
         self._http_client: httpx.AsyncClient | None = None
+        self._solar_cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 
     def _runtime_script(self) -> Path:
         return config.INJECTION_ENGINE_DIR / "runtime" / "local_injection_hybrid_inference.py"
@@ -265,6 +280,11 @@ class InjectionLlmMcpDetector:
         기존 청크 전체 마스킹으로 폴백한다."""
         if not config.INJECTION_LOCALIZE_ENABLED:
             return []
+        cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cached = self._solar_cache.get(cache_key)
+        if cached is not None:
+            self._solar_cache.move_to_end(cache_key)
+            return cached
         try:
             if self._http_client is None:
                 self._http_client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
@@ -281,6 +301,7 @@ class InjectionLlmMcpDetector:
                         {"role": "user", "content": f"[검사 대상 텍스트]\n{text}"},
                     ],
                     "temperature": 0,
+                    "prompt_cache_key": _SOLAR_PROMPT_CACHE_KEY,
                 },
             )
             resp.raise_for_status()
@@ -299,6 +320,11 @@ class InjectionLlmMcpDetector:
                 continue
             seen.add(rng)
             spans.append(rng)
+
+        self._solar_cache[cache_key] = spans
+        self._solar_cache.move_to_end(cache_key)
+        if len(self._solar_cache) > _SOLAR_CACHE_MAX:
+            self._solar_cache.popitem(last=False)
         return spans
 
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
