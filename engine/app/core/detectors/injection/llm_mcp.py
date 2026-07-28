@@ -60,6 +60,13 @@ from app import config
 from ..base import ChunkMeta, Detection
 from ..gpu_residency import GpuResidency
 
+# 모델 로딩 직후 실제 forward pass 를 한 번도 안 돌린 상태에서는 CUDA 커널
+# 선택/캐싱 등 1회성 초기화 비용이 첫 요청에 그대로 들러붙는다(실측: 0.33s →
+# 0.08s 로 4배 이상 차이). 실제 문서/프롬프트와 무관한 더미 텍스트로 미리 한 번
+# 태워 이 비용을 첫 실사용자 요청이 아니라 로딩 단계에서 미리 지불한다.
+_WARMUP_TEXT = "오늘 날씨는 맑습니다."
+_WARMUP_USER_PROMPT = "날씨를 요약해줘."
+
 
 class InjectionLlmMcpDetector:
     """EXAONE-4.0-1.2B + hybrid regularized MLP 인젝션 탐지기 — Detector Protocol 구현체."""
@@ -170,9 +177,17 @@ class InjectionLlmMcpDetector:
             await self._kill_process()
             self.residency.state = "loading"
             await self._spawn_process()
+            await self._warmup()
             self.residency.mark_loaded_immediately()
             if self._watcher_task is None or self._watcher_task.done():
                 self._watcher_task = asyncio.create_task(self._idle_watcher())
+
+    async def _warmup(self) -> None:
+        """CUDA 커널 선택/캐싱 1회성 비용을 로딩 단계에서 미리 지불(best-effort —
+        실패해도 로딩 자체를 실패시키지 않는다. 실패 시 그 비용은 첫 실요청이
+        떠안을 뿐, 기능적으로 달라지는 건 없다)."""
+        with contextlib.suppress(Exception):
+            await self._infer(_WARMUP_TEXT, user_prompt=_WARMUP_USER_PROMPT)
 
     async def _idle_watcher(self) -> None:
         """유휴 타임아웃이 지나면 실제로 서브프로세스를 죽여 VRAM 을 회수한다."""
