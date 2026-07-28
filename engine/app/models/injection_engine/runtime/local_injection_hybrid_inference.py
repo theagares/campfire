@@ -129,6 +129,7 @@ class InjectionDetector:
         trust_remote_code: bool = True,
         sampling: str = "stable",
         dropout: float = 0.2,
+        quantization_config: Any | None = None,
     ):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -172,8 +173,7 @@ class InjectionDetector:
 
         torch_dtype = getattr(torch, dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(self.backend_model, trust_remote_code=trust_remote_code)
-        self.backend = AutoModelForCausalLM.from_pretrained(
-            self.backend_model,
+        backend_kwargs: dict[str, Any] = dict(
             dtype=torch_dtype,
             attn_implementation="eager",
             trust_remote_code=trust_remote_code,
@@ -182,7 +182,16 @@ class InjectionDetector:
             # EXAONE-3.5-2.4B 연결 때 실측), CPU 전체 로드 후 .to(device) 하는 경로를 쓴다.
             low_cpu_mem_usage=False,
         )
-        self.backend.to(self.device)
+        if quantization_config is not None:
+            # bitsandbytes 양자화 로드는 CPU 풀로드 후 .to(device) 경로와 호환되지 않고
+            # 로드 시점에 device_map 으로 바로 배치해야 한다 — 정확도 비교(§ eval_quantization
+            # _drift.py)용 경로에서만 쓰이며 기본 운영 경로(quantization_config=None)는 그대로다.
+            backend_kwargs["quantization_config"] = quantization_config
+            backend_kwargs["low_cpu_mem_usage"] = True
+            backend_kwargs["device_map"] = {"": self.device}
+        self.backend = AutoModelForCausalLM.from_pretrained(self.backend_model, **backend_kwargs)
+        if quantization_config is None:
+            self.backend.to(self.device)
         self.backend.eval()
 
     @staticmethod
