@@ -90,6 +90,11 @@ LABEL_MAP: dict[str, str] = {
 
 _SINGLE_MODEL_CONFIDENCE = 0.9
 
+# 모델 로딩 직후 첫 forward pass 가 CUDA 커널 선택/캐싱 1회성 비용을 떠안는
+# 문제(injection_llm_mcp 와 동일 이슈, 실측: 콜당 ~0.3s → ~0.07s)를 피하려고,
+# 실제 요청과 무관한 더미 텍스트로 로딩 단계에서 미리 한 번 태운다.
+_WARMUP_TEXT = "오늘 날씨는 맑습니다."
+
 
 def _split_windows(text: str, size: int, overlap: int) -> list[tuple[str, int]]:
     """문자 기준 슬라이딩 윈도우. (윈도우 텍스트, 청크 내 시작 오프셋) 리스트 반환."""
@@ -218,7 +223,14 @@ class EncoderPiiDetector:
             if alive:
                 await self._kill_process()
             await self._spawn_process()
+            await self._warmup()
             self.residency.mark_loaded_immediately()
+
+    async def _warmup(self) -> None:
+        """CUDA 커널 선택/캐싱 등 1회성 초기화 비용을 로딩 단계에서 미리 지불
+        (best-effort — 실패해도 로딩 자체를 실패시키지 않는다)."""
+        with contextlib.suppress(Exception):
+            await self._infer_batch([_WARMUP_TEXT])
 
     async def _infer_batch(self, texts: list[str]) -> list[list[dict[str, Any]]]:
         request = {"id": str(self._next_id), "texts": texts}
