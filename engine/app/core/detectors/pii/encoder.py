@@ -124,6 +124,13 @@ class EncoderPiiDetector:
             idle_timeout_sec=None,
             load_delay_sec=config.PII_LOAD_TIMEOUT_SEC,
         )
+        # always_on: residency.state 는 실제 서브프로세스 준비 여부와 무관하게 생성
+        # 즉시 "loaded" 로 취급한다(GpuResidency 문서의 always_on 계약 — 상태 플래그는
+        # 실제 GPU/프로세스를 다루지 않는 순수 표시용 fiction). 실제 준비는 아래
+        # _process/alive 로 별도 추적되고, detect() 가 필요시 _ensure_process() 로
+        # fail-closed 대기한다 — 이 둘을 혼동해 mark_loaded_immediately() 를 실제 웜업
+        # 완료 시점에만 호출하면(과거 버그) "즉시 loaded" 계약이 깨진다.
+        self.residency.mark_loaded_immediately()
         self._process: asyncio.subprocess.Process | None = None
         self._proc_lock = asyncio.Lock()
         self._request_lock = asyncio.Lock()  # stdio 프로토콜은 요청을 1개씩 직렬 처리
