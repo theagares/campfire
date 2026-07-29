@@ -93,6 +93,13 @@ class EngineManager extends EventEmitter {
       ...process.env,
       // PLAN §4/§8: 인젝션 정책을 spawn 시점에 반영. 엔진 config.py 가 이 env 를 읽는다.
       SECUREDOC_INJECTION_POLICY: this.config.get('injectionPolicy') || 'mask',
+      // config-store 의 piiDetector/injectionDetector 를 실제로 엔진에 반영(과거엔
+      // 저장만 되고 spawn env 에 안 실려 항상 rule_based 로 고정되던 죽은 설정이었음).
+      // 기본값은 여전히 rule_based — encoder/llm_mcp 는 모델 가중치가 함께 배포되어야
+      // 의미가 있으므로(현재 설치 파일엔 가중치 미포함, MODELS.md 참고) 별도로 값을
+      // 바꿀 때만 적용된다.
+      SECUREDOC_PII_DETECTOR: this.config.get('piiDetector') || 'rule_based',
+      SECUREDOC_INJECTION_DETECTOR: this.config.get('injectionDetector') || 'rule_based',
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
     };
