@@ -14,6 +14,7 @@ const api = {
   getMetrics: () => ipcRenderer.invoke('metrics:get'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getConnections: () => ipcRenderer.invoke('connections:get'),
+  getModelsStatus: () => ipcRenderer.invoke('models:status'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
@@ -21,12 +22,14 @@ const api = {
   restartEngine: () => ipcRenderer.invoke('engine:restart'),
   setSecurityEnabled: (enabled) => ipcRenderer.invoke('engine:setSecurity', enabled),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
+  fetchModels: () => ipcRenderer.invoke('models:fetch'),
 
   // 실시간 push 구독
   onEngineStatus: (cb) => subscribe('engine:status', cb),
   onMetrics: (cb) => subscribe('metrics:tick', cb),
   onStats: (cb) => subscribe('stats:tick', cb),
   onNavigate: (cb) => subscribe('nav:goto', cb),
+  onModelsFetchProgress: (cb) => subscribe('models:fetchProgress', cb),
 };
 
 function subscribe(channel, cb) {
