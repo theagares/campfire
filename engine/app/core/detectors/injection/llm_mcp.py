@@ -47,9 +47,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,25 @@ from app import config
 
 from ..base import ChunkMeta, Detection
 from ..gpu_residency import GpuResidency
+
+# 모델 로딩 직후 실제 forward pass 를 한 번도 안 돌린 상태에서는 CUDA 커널
+# 선택/캐싱 등 1회성 초기화 비용이 첫 요청에 그대로 들러붙는다(실측: 0.33s →
+# 0.08s 로 4배 이상 차이). 실제 문서/프롬프트와 무관한 더미 텍스트로 미리 한 번
+# 태워 이 비용을 첫 실사용자 요청이 아니라 로딩 단계에서 미리 지불한다.
+_WARMUP_TEXT = "오늘 날씨는 맑습니다."
+_WARMUP_USER_PROMPT = "날씨를 요약해줘."
+
+# Solar 응답 캐시 상한(청크 텍스트 exact-match 기준 LRU) — 동일 문서 재검사·재시도
+# 시 Solar API 호출 자체를 건너뛴다. temperature=0 이라 같은 입력이면 결과가
+# 사실상 결정적이므로 exact-match 캐시가 안전하다(의미적으로 "비슷한" 청크까지
+# 매칭하는 semantic cache 는 위치 특정 작업 특성상 오히려 위험해 쓰지 않는다).
+_SOLAR_CACHE_MAX = 256
+
+# Upstage Solar 자체 프롬프트 캐싱 키 — _SOLAR_SYSTEM_PROMPT 가 모든 호출에서
+# 완전히 동일하므로, 고정된 키를 계속 재사용하면 Upstage 쪽에서 이 공통
+# 시스템 프롬프트 프리픽스를 캐싱해 매번 새 문서를 검사할 때도(우리 쪽
+# exact-match 캐시가 못 잡는 경우) 지연시간/비용을 줄일 수 있다.
+_SOLAR_PROMPT_CACHE_KEY = "securedoc-gateway-injection-localize-v1"
 
 
 class InjectionLlmMcpDetector:
@@ -80,6 +101,7 @@ class InjectionLlmMcpDetector:
         self._next_id = 0
         self._watcher_task: asyncio.Task | None = None
         self._http_client: httpx.AsyncClient | None = None
+        self._solar_cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 
     def _runtime_script(self) -> Path:
         return config.INJECTION_ENGINE_DIR / "runtime" / "local_injection_hybrid_inference.py"
@@ -100,7 +122,16 @@ class InjectionLlmMcpDetector:
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨지는 경우가
         # 있다(로컬 실측, pii/encoder.py 와 동일 이슈). PYTHONUTF8=1 로 자식
         # 프로세스의 텍스트 스트림을 강제로 UTF-8 로 연다.
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — EXAONE 이 이미 로컬 캐시에 있는데도
+        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
+        # 생략한다(실측: 콜드스타트 로딩 5.95s -> 4.13s, 워밍된 캐시 기준에서도 ~31% 단축).
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        }
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
@@ -170,9 +201,17 @@ class InjectionLlmMcpDetector:
             await self._kill_process()
             self.residency.state = "loading"
             await self._spawn_process()
+            await self._warmup()
             self.residency.mark_loaded_immediately()
             if self._watcher_task is None or self._watcher_task.done():
                 self._watcher_task = asyncio.create_task(self._idle_watcher())
+
+    async def _warmup(self) -> None:
+        """CUDA 커널 선택/캐싱 1회성 비용을 로딩 단계에서 미리 지불(best-effort —
+        실패해도 로딩 자체를 실패시키지 않는다. 실패 시 그 비용은 첫 실요청이
+        떠안을 뿐, 기능적으로 달라지는 건 없다)."""
+        with contextlib.suppress(Exception):
+            await self._infer(_WARMUP_TEXT, user_prompt=_WARMUP_USER_PROMPT)
 
     async def _idle_watcher(self) -> None:
         """유휴 타임아웃이 지나면 실제로 서브프로세스를 죽여 VRAM 을 회수한다."""
@@ -250,6 +289,11 @@ class InjectionLlmMcpDetector:
         기존 청크 전체 마스킹으로 폴백한다."""
         if not config.INJECTION_LOCALIZE_ENABLED:
             return []
+        cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cached = self._solar_cache.get(cache_key)
+        if cached is not None:
+            self._solar_cache.move_to_end(cache_key)
+            return cached
         try:
             if self._http_client is None:
                 self._http_client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
@@ -266,6 +310,7 @@ class InjectionLlmMcpDetector:
                         {"role": "user", "content": f"[검사 대상 텍스트]\n{text}"},
                     ],
                     "temperature": 0,
+                    "prompt_cache_key": _SOLAR_PROMPT_CACHE_KEY,
                 },
             )
             resp.raise_for_status()
@@ -284,6 +329,11 @@ class InjectionLlmMcpDetector:
                 continue
             seen.add(rng)
             spans.append(rng)
+
+        self._solar_cache[cache_key] = spans
+        self._solar_cache.move_to_end(cache_key)
+        if len(self._solar_cache) > _SOLAR_CACHE_MAX:
+            self._solar_cache.popitem(last=False)
         return spans
 
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:

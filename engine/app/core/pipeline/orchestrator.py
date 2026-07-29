@@ -10,6 +10,7 @@ app/core/pipeline/orchestrator.py
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any, Awaitable, Callable
 
@@ -58,13 +59,25 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
 async def _detect_all(
     detector, text: str, chunks: list[dict], *, user_prompt: str | None = None
 ) -> list[Detection]:
-    results: list[Detection] = []
+    """청크별 detect() 를 동시에 실행한다. 각 detector 는 GPU 추론 구간을 자체
+    _request_lock 으로 이미 직렬화하므로(서브프로세스 하나 공유) 동시 호출해도
+    그 구간은 그대로 순서대로 처리되지만, 인젝션 detector 의 Solar API 호출처럼
+    락 밖에서 일어나는 네트워크 대기는 청크끼리 겹쳐서 진행된다 — 청크 2개가
+    각각 Solar 를 부르는 문서에서 총 대기시간이 (콜1+콜2) 대신 max(콜1,콜2) 에
+    가까워진다(실측)."""
     total = len(chunks)
-    for idx, ch in enumerate(chunks):
+
+    async def _run(idx: int, ch: dict) -> tuple[dict, list[Detection]]:
         meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
         if user_prompt:
             meta["user_prompt"] = user_prompt
         dets = await detector.detect(ch["text"], meta=meta)
+        return ch, dets
+
+    pairs = await asyncio.gather(*(_run(idx, ch) for idx, ch in enumerate(chunks)))
+
+    results: list[Detection] = []
+    for ch, dets in pairs:
         for d in dets:
             d["start"] += ch["offset"]
             d["end"] += ch["offset"]
