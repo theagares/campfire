@@ -156,7 +156,16 @@ class EncoderPiiDetector:
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨져 tokenizers
         # 가 "TextEncodeInput must be Union[...]" 로 실패하는 경우가 있다(로컬 실측).
         # PYTHONUTF8=1 로 자식 프로세스의 텍스트 스트림을 강제로 UTF-8 로 연다.
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — 모델이 이미 로컬에 번들되어 있는데도
+        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
+        # 생략한다(실측: 콜드스타트 로딩 시간 단축, 특히 인젝션 쪽에서 효과 큼).
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        }
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
