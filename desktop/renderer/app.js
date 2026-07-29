@@ -357,15 +357,25 @@ function renderPipeline() {
 // ── 설정 모달 (PLAN §8) ───────────────────────────────────────────────────────
 const modal = $('#settings-modal');
 let draftPolicy = 'mask';
+let draftDetectorMode = 'rule_based'; // 'rule_based' | 'advanced'(encoder+llm_mcp)
+let detectorBusy = false;
+
+function detectorModeOf(s) {
+  return s.piiDetector === 'encoder' && s.injectionDetector === 'llm_mcp' ? 'advanced' : 'rule_based';
+}
+
 function openSettings() {
   const s = state.settings || {};
   draftPolicy = s.injectionPolicy || 'mask';
+  draftDetectorMode = detectorModeOf(s);
   $$('#policy-seg button').forEach((b) => b.classList.toggle('active', b.dataset.policy === draftPolicy));
+  $$('#detector-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === draftDetectorMode));
+  $('#detector-progress').style.display = 'none';
   $('#remote-url').value = s.remoteUrl || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
 }
-function closeSettings() { modal.classList.remove('open'); }
+function closeSettings() { if (!detectorBusy) modal.classList.remove('open'); }
 $('#open-settings').addEventListener('click', openSettings);
 $('#close-settings').addEventListener('click', closeSettings);
 $('#settings-cancel').addEventListener('click', closeSettings);
@@ -376,13 +386,63 @@ $$('#policy-seg button').forEach((b) =>
     $$('#policy-seg button').forEach((x) => x.classList.toggle('active', x === b));
   })
 );
+$$('#detector-seg button').forEach((b) =>
+  b.addEventListener('click', () => {
+    if (detectorBusy) return;
+    draftDetectorMode = b.dataset.mode;
+    $$('#detector-seg button').forEach((x) => x.classList.toggle('active', x === b));
+  })
+);
+
+function setDetectorProgress(label) {
+  const el = $('#detector-progress');
+  if (label == null) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = 'block';
+  el.textContent = label;
+}
+
+api.onModelsFetchProgress?.((ev) => {
+  if (ev.type === 'progress') {
+    const pct = ev.pct != null ? ` ${ev.pct}%` : '';
+    setDetectorProgress(`${ev.label || ''}${pct}`);
+  }
+});
+
 $('#settings-save').addEventListener('click', async () => {
+  if (detectorBusy) return;
   const remoteUrl = $('#remote-url').value.trim() || undefined;
   const patch = { injectionPolicy: draftPolicy };
   if (remoteUrl) patch.remoteUrl = remoteUrl;
+
+  if (draftDetectorMode === 'advanced') {
+    detectorBusy = true;
+    $('#settings-save').disabled = true;
+    try {
+      const status = await api.getModelsStatus();
+      const needsDownload = !(status.pii?.ready && status.injection?.ready);
+      if (needsDownload) {
+        setDetectorProgress('모델 가중치 확인 중...');
+        await api.fetchModels(); // 진행률은 onModelsFetchProgress 구독으로 갱신됨
+      }
+      patch.piiDetector = 'encoder';
+      patch.injectionDetector = 'llm_mcp';
+    } catch (err) {
+      setDetectorProgress(`다운로드 실패: ${err.message || err} — 설정이 적용되지 않았습니다.`);
+      detectorBusy = false;
+      $('#settings-save').disabled = false;
+      return;
+    }
+  } else {
+    patch.piiDetector = 'rule_based';
+    patch.injectionDetector = 'rule_based';
+  }
+
   state.settings = await api.setSettings(patch);
+  detectorBusy = false;
+  $('#settings-save').disabled = false;
+  setDetectorProgress(null);
   closeSettings();
-  // 정책 변경 시 엔진 재시작이 트리거됨 → 상태는 push 로 갱신됨
+  // 정책/detector 변경 시 엔진 재시작이 트리거됨 → 상태는 push 로 갱신됨
 });
 
 // ── 사이드바 접기 토글 (Figma 30:487 상단 버튼 — 인터랙션 미확정, 시각 요소만 반영) ──
