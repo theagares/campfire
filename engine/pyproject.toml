@@ -16,7 +16,9 @@ dependencies = [
     "pdfplumber>=0.11",
     "pymupdf>=1.24",
     "python-docx>=1.1",
-    "mcp>=1.2",
+    # 2.0.0 부터 mcp.server.fastmcp 가 제거/재구성돼(mcpserver 등으로 대체) 우리
+    # FastMCP 사용 코드가 깨진다(실측: 신선한 CI 설치에서 처음 발견) — 상한 고정.
+    "mcp>=1.2,<2.0",
     "openpyxl>=3.1",
     "python-pptx>=1.0",
     # pyhwpx는 한/글(한컴오피스) 프로그램을 COM(pywin32)으로 자동화하는 방식이라
