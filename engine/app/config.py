@@ -125,14 +125,17 @@ UPSTAGE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_UPSTAGE_TIMEOUT_SEC
 # 전체 마스킹 동작 그대로 유지.
 INJECTION_LOCALIZE_ENABLED: bool = bool(UPSTAGE_API_KEY)
 
-# ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer, 3-seed 앙상블,
-#   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들을 로컬 서브프로세스
-#   sidecar 로 실행) ────────────────────────────────────────────────────────────
+# ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer 단일 모델,
+#   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들의 seed42 를 로컬
+#   서브프로세스 sidecar 로 실행) ─────────────────────────────────────────────
+# 원래 3-seed(seed42/43/44) 앙상블로 구동했으나, 번들의 세 seed 가 실제로는
+# 완전히 동일한 가중치(하드링크)로 패키징된 버그가 확인되어 앙상블의 다양성
+# 이득이 전혀 없었음 — 단일 seed 로 전환하기로 결정(연산량 3배 낭비 제거).
 PII_ENGINE_DIR: Path = APP_DIR / "models" / "pii_engine"
+PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # GPU 실측(1,500자 청크 기준): CPU 1.69초 vs GPU 0.43초(~4배), VRAM 피크 1.74GB —
 # 인젝션 LLM(피크 3.8GB)과 동시 로드해도 합계 ~5.5GB 로 6GB+ VRAM 환경에선 여유 있음.
 PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "cuda")
-PII_MIN_VOTES: int = int(os.environ.get("SECUREDOC_PII_MIN_VOTES", "2"))  # 3개 seed 중 과반 투표
 PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "8"))
 PII_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_PII_MAX_LENGTH", "256"))  # 토큰 기준(모델 권장 기본값)
 # 위 PII_MAX_LENGTH(토큰)보다 청크가 길면 뒷부분이 잘리므로, detect() 내부에서

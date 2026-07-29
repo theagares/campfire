@@ -1,12 +1,17 @@
 """
 app/core/detectors/pii/encoder.py
-PII 인코더 슬롯 실 구현 — skt/A.X-Encoder-base 백본 + CRF + gazetteer, 3-seed
-앙상블(seed42/43/44, 동일 라벨·겹치는 스팬 과반 투표 min_votes=2). hwan님이 준비한
+PII 인코더 슬롯 실 구현 — skt/A.X-Encoder-base 백본 + CRF + gazetteer 단일 모델
+(config.PII_MODEL_SEED, 기본 seed42). hwan님이 준비한
 pii_skt_crf_gaz_mix_all_x3_local_app 번들을 app/models/pii_engine/ 에 이식.
-평가 지표(Combined full19, 번들 자체 실측): Precision 99.21% / Recall 95.74% /
-F1 97.45%.
+평가 지표(실 라벨셋 PII_dataset, 3,524문장 기준): Precision 99.71% / Recall 96.13% /
+F1 97.89%.
 
-로컬 서브프로세스(runtime/local_pii_ensemble_inference.py --stdio)를 GPU 상주
+원래 seed42/43/44 3-seed 앙상블(동일 라벨·겹치는 스팬 과반 투표 min_votes=2)로
+구동했으나, 번들의 세 seed 디렉터리가 실제로는 완전히 동일한 가중치(하드링크)로
+패키징된 버그가 확인되어 앙상블의 다양성 이득이 전혀 없었다 — 연산량/VRAM 3배
+낭비만 있고 실질 효과는 없었으므로 단일 모델로 전환하기로 결정.
+
+로컬 서브프로세스(runtime/local_pii_inference.py --stdio)를 GPU 상주
 정책의 "always_on"에 대응시킨다:
     - CPU 로 돌아가는 가벼운 모델이라(GPU 는 인젝션 LLM 전용으로 비워둔다) 앱
       기동 시(build() 호출 시점에 실행 중인 이벤트 루프가 있으면) 백그라운드로
@@ -28,9 +33,9 @@ PII_TYPES 상수(PERSON_NAME, PHONE, ...)로 매핑한다(다대일). 대응하�
 상수가 없는 라벨(CV_POSITION, OGG_EDUCATION, QT_PLATE_NUMBER, QT_AGE, FD_MAJOR)은
 OTHER_PII 로 묶는다.
 
-신뢰도: 앙상블이 라벨별 확률을 주지 않고 "몇 개 모델이 동의했는지(votes)"만
-주므로(--include-votes), votes 수를 신뢰도로 근사한다(3/3 만장일치 → 0.95,
-2/3 최소 동의 → 0.75 — min_votes=2 미만인 엔터티는 앙상블 단계에서 이미 걸러짐).
+신뢰도: 단일 모델(CRF decode)은 엔터티별 확률을 따로 주지 않으므로, 모든 탐지에
+고정 신뢰도(_SINGLE_MODEL_CONFIDENCE)를 부여한다 — 실 라벨셋 기준 P 99.71%로
+정밀도가 매우 높아 고정값으로도 과도한 과신은 아니라고 판단.
 """
 
 from __future__ import annotations
@@ -83,7 +88,12 @@ LABEL_MAP: dict[str, str] = {
     "FD_MAJOR": OTHER_PII,
 }
 
-_VOTES_TO_CONFIDENCE = {3: 0.95, 2: 0.75, 1: 0.5}
+_SINGLE_MODEL_CONFIDENCE = 0.9
+
+# 모델 로딩 직후 첫 forward pass 가 CUDA 커널 선택/캐싱 1회성 비용을 떠안는
+# 문제(injection_llm_mcp 와 동일 이슈, 실측: 콜당 ~0.3s → ~0.07s)를 피하려고,
+# 실제 요청과 무관한 더미 텍스트로 로딩 단계에서 미리 한 번 태운다.
+_WARMUP_TEXT = "오늘 날씨는 맑습니다."
 
 
 def _split_windows(text: str, size: int, overlap: int) -> list[tuple[str, int]]:
@@ -102,7 +112,7 @@ def _split_windows(text: str, size: int, overlap: int) -> list[tuple[str, int]]:
 
 
 class EncoderPiiDetector:
-    """skt/A.X-Encoder-base + CRF + gazetteer 3-seed 앙상블 PII 탐지기 — Detector Protocol 구현체."""
+    """skt/A.X-Encoder-base + CRF + gazetteer 단일 모델 PII 탐지기 — Detector Protocol 구현체."""
 
     name = "pii_encoder"
     kind = "pii"
@@ -126,26 +136,36 @@ class EncoderPiiDetector:
             asyncio.create_task(self._ensure_process())
 
     def _runtime_script(self) -> Path:
-        return config.PII_ENGINE_DIR / "runtime" / "local_pii_ensemble_inference.py"
+        return config.PII_ENGINE_DIR / "runtime" / "local_pii_inference.py"
+
+    def _model_dir(self) -> Path:
+        return config.PII_ENGINE_DIR / "models" / config.PII_MODEL_SEED
 
     async def _spawn_process(self) -> None:
         script = self._runtime_script()
         args = [
             config.PII_PYTHON_EXECUTABLE,
             str(script),
-            "--ensemble-dir", str(config.PII_ENGINE_DIR),
+            "--model-dir", str(self._model_dir()),
             "--device", config.PII_DEVICE,
             "--batch-size", str(config.PII_BATCH_SIZE),
             "--max-length", str(config.PII_MAX_LENGTH),
-            "--min-votes", str(config.PII_MIN_VOTES),
-            "--include-votes",
             "--stdio",
         ]
         # Windows(특히 한국어 로케일)에서 자식 프로세스의 sys.stdin/stdout 이 기본
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨져 tokenizers
         # 가 "TextEncodeInput must be Union[...]" 로 실패하는 경우가 있다(로컬 실측).
         # PYTHONUTF8=1 로 자식 프로세스의 텍스트 스트림을 강제로 UTF-8 로 연다.
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — 모델이 이미 로컬에 번들되어 있는데도
+        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
+        # 생략한다(실측: 콜드스타트 로딩 시간 단축, 특히 인젝션 쪽에서 효과 큼).
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        }
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
@@ -212,7 +232,14 @@ class EncoderPiiDetector:
             if alive:
                 await self._kill_process()
             await self._spawn_process()
+            await self._warmup()
             self.residency.mark_loaded_immediately()
+
+    async def _warmup(self) -> None:
+        """CUDA 커널 선택/캐싱 등 1회성 초기화 비용을 로딩 단계에서 미리 지불
+        (best-effort — 실패해도 로딩 자체를 실패시키지 않는다)."""
+        with contextlib.suppress(Exception):
+            await self._infer_batch([_WARMUP_TEXT])
 
     async def _infer_batch(self, texts: list[str]) -> list[list[dict[str, Any]]]:
         request = {"id": str(self._next_id), "texts": texts}
@@ -262,15 +289,13 @@ class EncoderPiiDetector:
                 if key in seen:
                     continue
                 seen.add(key)
-                votes = int(entity.get("votes", config.PII_MIN_VOTES))
-                confidence = _VOTES_TO_CONFIDENCE.get(votes, 0.6)
                 detections.append(
                     Detection(
                         type=gateway_type,
                         start=start,
                         end=end,
                         text=text[start:end],
-                        confidence=confidence,
+                        confidence=_SINGLE_MODEL_CONFIDENCE,
                         source="encoder",
                     )
                 )
