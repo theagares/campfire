@@ -240,23 +240,29 @@
 
         <div class="divider"></div>
 
-        <!-- v1 no-op: 비활성 표시 (PLAN §4.1/§5/§8) -->
-        <div class="field disabled">
+        <!-- 탐지 모델(encoder/llm_mcp) 전환 — 최초 전환 시 가중치(~600MB) 다운로드 필요 -->
+        <div class="field" id="detector-field">
           <div class="setting-row">
             <div>
-              <label>Detector 선택</label>
-              <div class="hint">모델 교체(encoder / llm_mcp) 이후 활성화됩니다.</div>
+              <label>탐지 모델</label>
+              <div class="hint" id="detector-hint">rule_based: 정규식/키워드 기반, 추가 다운로드 없이 즉시 사용. advanced: PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델(최초 전환 시 가중치 약 600MB 다운로드, GPU 권장). 변경 시 엔진이 재시작됩니다.</div>
             </div>
-            <span class="disabled-tag">v1 룰베이스 · 비활성</span>
+            <div class="seg" id="detector-seg">
+              <button data-mode="rule_based" class="active">rule_based</button>
+              <button data-mode="advanced">advanced</button>
+            </div>
           </div>
+          <div class="hint" id="detector-progress" style="display:none"></div>
         </div>
+
+        <!-- v1 no-op: 비활성 표시 (PLAN §4.1/§8) -->
         <div class="field disabled">
           <div class="setting-row">
             <div>
               <label>GPU 상주 정책 · idle timeout</label>
-              <div class="hint">GPU 모델 상주 방식·유휴 언로드는 모델 교체 이후에만 의미가 있습니다.</div>
+              <div class="hint">GPU 모델 상주 방식·유휴 언로드는 세부 조정 UI가 아직 없습니다(엔진 기본값 사용).</div>
             </div>
-            <span class="disabled-tag">v1 룰베이스 · 비활성</span>
+            <span class="disabled-tag">비활성</span>
           </div>
         </div>
 
