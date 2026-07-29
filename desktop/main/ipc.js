@@ -80,13 +80,54 @@ function register(ctx) {
   ipcMain.handle('settings:set', async (_e, patch) => {
     const prev = config.get();
     const next = config.set(patch || {});
-    // 인젝션 정책 변경 → 엔진 재시작으로 env 반영 (엔진엔 REST 쓰기 없음)
-    if (patch && patch.injectionPolicy && patch.injectionPolicy !== prev.injectionPolicy) {
+    // 인젝션 정책 / detector 선택 변경 → 엔진 재시작으로 env 반영 (엔진엔 REST 쓰기 없음)
+    const policyChanged = patch && patch.injectionPolicy && patch.injectionPolicy !== prev.injectionPolicy;
+    const detectorChanged =
+      patch &&
+      ((patch.piiDetector && patch.piiDetector !== prev.piiDetector) ||
+        (patch.injectionDetector && patch.injectionDetector !== prev.injectionDetector));
+    if (policyChanged || detectorChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }
     }
     return next;
+  });
+
+  // ── 모델 가중치 상태 조회 / 다운로드(엔진 REST 프록시, PLAN 모델 배포 B안) ──────
+  ipcMain.handle('models:status', async () => {
+    const base = engineManager.getStatus().baseUrl;
+    if (!base) return { pii: { ready: false }, injection: { ready: false } };
+    try {
+      const res = await fetch(`${base}/models/status`);
+      return await res.json();
+    } catch {
+      return { pii: { ready: false }, injection: { ready: false } };
+    }
+  });
+
+  ipcMain.handle('models:fetch', async () => {
+    const base = engineManager.getStatus().baseUrl;
+    if (!base) throw new Error('엔진이 실행 중이 아닙니다');
+
+    const startRes = await fetch(`${base}/models/fetch`, { method: 'POST' });
+    if (!startRes.ok) throw new Error(`모델 다운로드 시작 실패 (${startRes.status})`);
+    const { jobId } = await startRes.json();
+
+    let after = 0;
+    for (;;) {
+      const evRes = await fetch(`${base}/jobs/${jobId}/events?after=${after}`);
+      if (!evRes.ok) throw new Error(`진행 상태 조회 실패 (${evRes.status})`);
+      const payload = await evRes.json();
+      for (const ev of payload.events || []) {
+        after = Math.max(after, ev.seq || after);
+        broadcast('models:fetchProgress', ev);
+        if (ev.type === 'done') return ev.result;
+        if (ev.type === 'error') throw new Error(ev.message || '모델 다운로드 실패');
+      }
+      if (payload.done) return null;
+      await new Promise((r) => setTimeout(r, 500));
+    }
   });
 
   ipcMain.handle('settings:setPipelineLayout', (_e, layout) => {
