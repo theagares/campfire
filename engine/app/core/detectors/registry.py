@@ -9,6 +9,7 @@ v1: pii: rule_based, injection: rule_based.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from app import config
@@ -70,8 +71,21 @@ def active_detectors() -> dict[str, str]:
 
 
 def reset_cache() -> None:
-    """캐시된 detector 인스턴스를 비운다 — 설정 전환 테스트/재로드용(PLAN §5, §10 Phase 6)."""
+    """캐시된 detector 인스턴스를 비운다 — 설정 전환 테스트/재로드용(PLAN §5, §10 Phase 6).
+
+    encoder/llm_mcp 는 실제 GPU 서브프로세스를 스폰한다 — 참조만 비우고 그 프로세스를
+    종료하지 않으면, 실 모델을 반복 로드하는 테스트들이 이어서 돌 때 이전 프로세스가
+    GPU 메모리를 계속 점유해 다음 로드가 자원 부족으로 실패하는 문제가 실측됐다.
+    캐시를 비우기 전에 살아있는 서브프로세스가 있으면 종료 신호를 보낸다
+    (Process.terminate() 자체는 동기 호출이라 이벤트 루프 없이도 안전하게 부를 수 있다 —
+    종료 완료까지 기다리지는 않는 best-effort).
+    """
     global _pii_detector, _injection_detector
+    for det in (_pii_detector, _injection_detector):
+        proc = getattr(det, "_process", None)
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(Exception):
+                proc.terminate()
     _pii_detector = None
     _injection_detector = None
 
