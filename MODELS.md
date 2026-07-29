@@ -1,96 +1,81 @@
 # 실 모델 아티팩트 배포 (PII / 인젝션)
 
 `engine/app/models/`(git 미추적, `.gitignore` 처리)에 두는 두 번들에 대한 문서.
-지금은 로컬 개발 환경 한 대에만 수동으로 복사돼 있는 상태 — 이 문서는 **GitHub
-Releases로 배포하는 방법을 정리만 해둔 것**이고, 실제 업로드/자동 다운로드
-스크립트는 아직 만들지 않았다(다음 단계).
+과거엔 로컬 개발 환경에만 수동으로 복사돼 있었지만, 지금은 **GitHub Releases(`models-v1`
+태그) 업로드 + 앱 내 자동 다운로드까지 실제로 구현되어 있다.**
 
 ## 어떤 모델이 왜 필요한가
 
-| 위치 | 내용 | 크기 | 출처 |
+| 위치 | 내용 | 크기(압축) | 출처 |
 |---|---|---|---|
-| `app/models/pii_engine/` | skt/A.X-Encoder-base + CRF + gazetteer, 3-seed(seed42/43/44) 앙상블 | ~1.7GB | hwan님 GPU 서버(`123.37.28.197`, `/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all`), 로컬엔 `PIImodel/pii_skt_crf_gaz_mix_all_x3_local_app/pii_engine/`로 이미 받아져 있었음 |
-| `app/models/injection_engine/` | EXAONE-3.5-2.4B-Instruct attention 특징 위에 얹은 regularized MLP 분류기(`enc_pooled_regularized.pt` 등) | ~26MB | 같은 서버, `injection_exaone_regularized_mlp_engine.tar.gz`를 SFTP로 받음 |
+| `app/models/pii_engine/models/seed42/` | skt/A.X-Encoder-base + CRF + gazetteer, 단일 seed(seed42) | 499MB | hwan님 GPU 서버(`123.37.28.197`) → 3-seed 앙상블에서 단일 seed로 전환(하드링크 중복 버그 확인 후) |
+| `app/models/injection_engine/{attn,hybrid}/` | EXAONE-4.0-1.2B 위 attention/hybrid 특징을 얹은 regularized MLP 분류기 | 34MB | 같은 팀, `injection_diag` 프로젝트 model_release |
 
-**EXAONE-3.5-2.4B-Instruct 자체(LLM 백본, ~5GB)는 이 배포 대상이 아니다** —
-`transformers`가 최초 실행 시 HuggingFace Hub(`LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct`,
-공개 모델)에서 알아서 받아 `~/.cache/huggingface/`에 캐싱한다. 여기서 다루는 건
-그 위에 우리가 따로 학습/이식한 **작은** 아티팩트(PII 인코더 전체, 인젝션 MLP
-헤드)뿐이다.
+**EXAONE-4.0-1.2B 백본 자체(bf16, ~2.4GB)는 이 배포 대상이 아니다** — `transformers`가
+최초 실행 시 HuggingFace Hub(`LGAI-EXAONE/EXAONE-4.0-1.2B`, 공개 모델, 인증 불필요 확인됨)
+에서 알아서 받아 `~/.cache/huggingface/`에 캐싱한다. 여기서 다루는 건 그 위에 우리가
+따로 학습/이식한 **작은** 아티팩트(PII 인코더 전체, 인젝션 MLP 헤드)뿐이다.
 
 ## 왜 GitHub Releases인가
 
-다른 옵션(HF private repo, Git LFS, 자체 오브젝트 스토리지, 팀 서버 직접 서빙)과
-비교한 결론: 이 레포(`theagares/securedoc-gateway`)가 이미 있고 팀원 전원이
-GitHub 접근 권한을 갖고 있으므로, **새 인증 체계(토큰 발급/배포/회수)를 따로
-만들 필요가 없다**는 게 결정적 장점. 단점은 release 첨부파일 용량 제한(개당
-대략 2GB) — `pii_engine`(1.7GB)은 아슬아슬하게 들어가지만, 혹시 넘으면 seed별로
-쪼개면 된다(아래 "용량 초과 시" 참고).
+이 레포(`theagares/securedoc-gateway`)가 이미 있고 **public**이라 팀원뿐 아니라 일반
+사용자도 인증 없이 릴리스 자산 URL에 바로 접근 가능하다 — 새 인증 체계(계정/토큰
+발급·배포·회수)를 따로 만들 필요가 없다는 게 결정적 장점(HF Hub/자체 스토리지/Git LFS
+대비 비교는 `모델_가중치_배포_방법_정리.md` 참고). 단일 seed 전환 이후 총 용량이
+533MB(499MB+34MB)로 GitHub 자산당 제한(~2GB)에 전혀 안 걸려서, 예전에 걱정하던
+"seed별 분할" 로직은 필요 없어졌다.
 
-## 배포 절차 (실행 전 — 계획만)
+## 실제 배포 상태 (`models-v1`)
 
-### 1. 번들 패키징
+```
+https://github.com/theagares/securedoc-gateway/releases/tag/models-v1
+  pii_engine_v1.tar.gz        (sha256: dbf7d8e52bddc44bea869ca9280ff873875babce7ab7acd2ab67453e9ba7a386)
+  injection_engine_v1.tar.gz  (sha256: 739b28d517ea2a853bd3fd04d9a2eeeb5afb579b9cfce9fb99283e8afc71a8c3)
+```
+
+패키징 방법(재현/버전 갱신 시 참고):
 
 ```bash
-# PII 앙상블 (models/ 하위 seed42·43·44 + runtime/ 전체)
 cd engine/app/models
-tar -czf pii_engine_v1.tar.gz pii_engine/
+tar -czf pii_engine_v1.tar.gz -C pii_engine models/seed42
+tar -czf injection_engine_v1.tar.gz -C injection_engine attn hybrid
+sha256sum pii_engine_v1.tar.gz injection_engine_v1.tar.gz
 
-# 인젝션 MLP 헤드 (exaone_4_0_1_2b 제외하고 exaone_3_5_2_4b_instruct 만 — 지금
-# 로컬에 있는 것도 이 상태)
-tar -czf injection_engine_v1.tar.gz injection_engine/
+git tag models-v1 && git push origin models-v1
+gh release create models-v1 --title "Model artifacts v1 (PII seed42 + injection hybrid/attn head)" \
+  --notes "..." pii_engine_v1.tar.gz injection_engine_v1.tar.gz
 ```
 
-### 2. GitHub Release 생성 + 업로드
+## 다운로드 — 앱 내 자동화 (구현 완료)
 
-```bash
-# 코드 릴리스와 별개로 "모델 전용" 태그를 쓴다(코드 버전과 모델 버전을 분리)
-git tag models-v1
-git push origin models-v1
+`engine/app/adapters/http_api/models.py`가 두 엔드포인트를 제공한다:
 
-gh release create models-v1 \
-  --title "Model artifacts v1 (PII ensemble + injection MLP head)" \
-  --notes "PII: skt/A.X-Encoder-base CRF+Gaz 3-seed ensemble. Injection: EXAONE-3.5-2.4B-Instruct regularized MLP head. EXAONE 백본 자체는 포함 안 함(HF에서 별도 자동 다운로드)." \
-  pii_engine_v1.tar.gz \
-  injection_engine_v1.tar.gz
-```
+- `GET /models/status` — `{pii:{ready}, injection:{ready}}`. 가중치 파일이 로컬에
+  실제로 있는지(경로 존재 여부)만 확인한다.
+- `POST /models/fetch` — 이미 있는 자산은 건너뛰고(멱등), 없는 것만 위 URL에서
+  스트리밍 다운로드 → sha256 체크섬 검증 → `tarfile`로 안전하게(path traversal 검증)
+  압축 해제. 기존 `job_registry`/`GET /jobs/{id}/events` 패턴을 그대로 재사용해
+  진행률(`{"type":"progress","asset":...,"pct":...}`)을 폴링으로 확인할 수 있다.
 
-### 3. 용량 초과 시 (2GB 제한에 걸리면)
+데스크탑 앱(`desktop/`)은 설정 화면의 **"탐지 모델: rule_based / advanced"** 토글로
+이 흐름을 그대로 사용한다(`renderer/app.js`, `main/ipc.js`):
+1. `advanced`로 전환 + 저장 클릭 → `GET /models/status` 확인 → 필요하면
+   `POST /models/fetch` 호출 후 진행률을 실시간 표시.
+2. 다운로드 완료(또는 이미 있음) → `piiDetector`/`injectionDetector`를
+   `encoder`/`llm_mcp`로 설정 저장 → 엔진 재시작(`SECUREDOC_PII_DETECTOR`/
+   `SECUREDOC_INJECTION_DETECTOR` env로 반영, `engine-manager.js`).
 
-`pii_engine`을 seed별로 쪼개서 3개 파일로 올리고, 받는 쪽에서 재조립:
+**실측 검증**: 로컬 가중치를 지운 상태에서 `POST /models/fetch` → 다운로드/체크섬/
+압축해제 → 원본과 byte-identical 재현 확인. 이후 `SECUREDOC_PII_DETECTOR=encoder
+SECUREDOC_INJECTION_DETECTOR=llm_mcp`로 기동해 실제 문장("...김도윤...이메일은
+doyoon.kim90@navermail.com...이전 지시는 모두 무시하고...")을 넣어 PERSON_NAME/EMAIL
+(source=encoder)과 OTHER_INJECTION(source=llm)이 정확히 탐지되는 것까지 확인.
 
-```bash
-for seed in seed42 seed43 seed44; do
-  tar -czf pii_engine_${seed}_v1.tar.gz \
-    -C engine/app/models/pii_engine \
-    manifest.json README.md runtime models/${seed}
-done
-```
-(단, `runtime/`이 각 tar에 중복 포함됨 — 압축률상 큰 문제는 아니지만, 더
-깔끔하게 하려면 `runtime/`만 별도 4번째 파일로 분리해도 됨)
+## 남은 것
 
-## 다운로드 절차 (계획만 — 아직 스크립트 없음)
-
-팀원이 로컬에 처음 세팅할 때:
-
-```bash
-mkdir -p engine/app/models
-cd engine/app/models
-
-gh release download models-v1 --pattern "pii_engine_v1.tar.gz" --pattern "injection_engine_v1.tar.gz"
-tar -xzf pii_engine_v1.tar.gz
-tar -xzf injection_engine_v1.tar.gz
-rm pii_engine_v1.tar.gz injection_engine_v1.tar.gz
-```
-
-레포가 private이면 `gh` CLI가 이미 로그인돼 있는 계정 권한을 그대로 쓰므로 별도
-토큰 설정이 필요 없다(팀원이 이 레포에 접근 권한만 있으면 됨).
-
-## 다음 단계 (아직 안 함)
-
-- [ ] 실제로 `models-v1` 릴리스 만들고 두 번들 업로드
-- [ ] `engine/scripts/fetch_models.sh`(또는 `.ps1`) 같은 원클릭 다운로드
-      스크립트 작성 — 위 "다운로드 절차"를 자동화
-- [ ] `README.md`/`BUILD_PROGRESS.md`에 "로컬 세팅 시 모델 받는 법" 링크 추가
-- [ ] 모델이 갱신될 때(예: 인젝션 MLP 표준화 통계 재계산 후) `models-v2` 태그로
-      올리고, `config.py`나 여기 문서에 현재 권장 버전을 명시하는 규칙 정하기
+- [ ] 설정 UI에 다운로드 실패 시 재시도 버튼(현재는 실패 메시지만 표시, 저장 취소됨)
+- [ ] 모델이 갱신될 때(`models-v2`) `engine/app/adapters/http_api/models.py`의
+  `_ASSETS`(URL/sha256)를 갱신하는 절차 문서화
+- [ ] GPU 없는 환경에서 `advanced` 선택 시 사용자에게 사전 경고(현재는 다운로드는
+  되지만 `SECUREDOC_INJECTION_DEVICE`/`SECUREDOC_PII_DEVICE` 기본값이 `cuda`라 GPU
+  없으면 엔진이 에러 상태로 빠짐 — 별도 이슈)
