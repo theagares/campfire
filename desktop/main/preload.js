@@ -23,6 +23,10 @@ const api = {
   setSecurityEnabled: (enabled) => ipcRenderer.invoke('engine:setSecurity', enabled),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   fetchModels: () => ipcRenderer.invoke('models:fetch'),
+  openExtensionFolder: () => ipcRenderer.invoke('extension:openFolder'),
+  detectMcpClients: () => ipcRenderer.invoke('mcp:detectClients'),
+  connectMcpClient: (id) => ipcRenderer.invoke('mcp:connect', id),
+  disconnectMcpClient: (id) => ipcRenderer.invoke('mcp:disconnect', id),
 
   // 실시간 push 구독
   onEngineStatus: (cb) => subscribe('engine:status', cb),

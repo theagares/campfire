@@ -58,12 +58,25 @@ gh release create models-v1 --title "Model artifacts v1 (PII seed42 + injection 
   진행률(`{"type":"progress","asset":...,"pct":...}`)을 폴링으로 확인할 수 있다.
 
 데스크탑 앱(`desktop/`)은 설정 화면의 **"탐지 모델: rule_based / advanced"** 토글로
-이 흐름을 그대로 사용한다(`renderer/app.js`, `main/ipc.js`):
-1. `advanced`로 전환 + 저장 클릭 → `GET /models/status` 확인 → 필요하면
-   `POST /models/fetch` 호출 후 진행률을 실시간 표시.
-2. 다운로드 완료(또는 이미 있음) → `piiDetector`/`injectionDetector`를
-   `encoder`/`llm_mcp`로 설정 저장 → 엔진 재시작(`SECUREDOC_PII_DETECTOR`/
-   `SECUREDOC_INJECTION_DETECTOR` env로 반영, `engine-manager.js`).
+이 흐름을 수동으로도 쓸 수 있고(`renderer/app.js`, `main/ipc.js`), **이제는 advanced가
+설치 직후 자동으로 적용되는 기본값이다**(`main/main.js`의 `ensureAdvancedModelsAutoSetup`):
+
+1. 최초 spawn 은 항상 `rule_based`로 뜬다(가중치가 아직 없어도 100% 기동하는 안전한
+   상태) — 엔진이 `running`이 되는 순간을 기다린다(`waitForEngineRunning`).
+2. `GET /models/status` 확인 → 필요하면 `POST /models/fetch` 자동 호출, 진행률을
+   `models:fetchProgress` 이벤트로 브로드캐스트(설정 모달이 닫혀 있어도 대시보드 상단
+   전역 배너에 표시됨).
+3. 다운로드 완료 → `piiDetector`/`injectionDetector`를 `encoder`/`llm_mcp`로 자동
+   저장하고 엔진 재시작. 성공하면 `advancedAutoSetupDone: true`를 저장해 다음 실행부터
+   재시도하지 않는다(실패 시엔 false로 남겨 다음 실행에서 다시 시도).
+4. **GPU 없는 PC 안전장치**: advanced로 재시작한 뒤 `watchForAdvancedStartupFailure`가
+   20초간 엔진 상태를 지켜본다 — `error` 상태로 떨어지면(GPU/CUDA 미탑재로 실 모델
+   서브프로세스가 못 뜨는 경우 등) 자동으로 `rule_based`로 되돌리고 재시작해, 설치
+   직후 기본값을 advanced로 강제해도 GPU 없는 환경에서 앱이 계속 정상 동작한다.
+
+설정 화면의 토글은 이제 "선택 사항"이 아니라, 이 자동 흐름이 실패했을 때 사용자가
+수동으로 재시도하거나(다시 advanced 선택+저장) 의도적으로 rule_based로 되돌리는
+용도로 남아 있다.
 
 **실측 검증**: 로컬 가중치를 지운 상태에서 `POST /models/fetch` → 다운로드/체크섬/
 압축해제 → 원본과 byte-identical 재현 확인. 이후 `SECUREDOC_PII_DETECTOR=encoder
@@ -73,9 +86,11 @@ doyoon.kim90@navermail.com...이전 지시는 모두 무시하고...")을 넣어
 
 ## 남은 것
 
-- [ ] 설정 UI에 다운로드 실패 시 재시도 버튼(현재는 실패 메시지만 표시, 저장 취소됨)
+- [ ] 설정 UI에 다운로드 실패 시 재시도 버튼(현재는 실패 메시지만 표시, 저장 취소됨.
+  단, 설치 직후 자동 흐름은 다음 실행에서 알아서 재시도한다)
 - [ ] 모델이 갱신될 때(`models-v2`) `engine/app/adapters/http_api/models.py`의
   `_ASSETS`(URL/sha256)를 갱신하는 절차 문서화
-- [ ] GPU 없는 환경에서 `advanced` 선택 시 사용자에게 사전 경고(현재는 다운로드는
-  되지만 `SECUREDOC_INJECTION_DEVICE`/`SECUREDOC_PII_DEVICE` 기본값이 `cuda`라 GPU
-  없으면 엔진이 에러 상태로 빠짐 — 별도 이슈)
+- [x] ~~GPU 없는 환경에서 `advanced` 선택 시 사용자에게 사전 경고~~ → 사전 경고
+  대신 사후 자동 복귀로 해결(`watchForAdvancedStartupFailure`, 위 참고). 다만
+  "사전에 GPU 유무를 감지해 아예 advanced 자동 전환을 건너뛰는" 더 빠른 경로는
+  아직 없음(현재는 항상 한 번 advanced로 시도해보고 실패하면 되돌아감).

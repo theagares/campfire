@@ -7,6 +7,10 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="global-banner" id="global-banner" style="display:none">
+    <span id="global-banner-text"></span>
+    <button class="icon-x" id="global-banner-close">×</button>
+  </div>
   <div class="app-shell">
     <!-- 사이드바 (Figma 30:485 / 31:1587 등, 전 화면 공통) -->
     <aside class="sidebar">
@@ -90,13 +94,13 @@
                 <div class="conn-head">
                   <img class="conn-ico" src="../assets/figma/conn-mcp-icon.png" alt="" />
                   <div class="ch-text">
-                    <h3>MCP CLI</h3>
-                    <p>AI 클라이언트에 UpSecurity를 연결합니다</p>
+                    <h3>MCP</h3>
+                    <p>AI 코딩 도구에 UpSecurity를 MCP 서버로 원클릭 연결합니다</p>
                   </div>
                   <div class="ch-status"><span class="badge-pill" id="conn-mcp-badge">확인 중…</span></div>
                 </div>
-                <div class="codeblock-list">
-                  <div class="codeblock-row"><code>npx upsecurity-mcp connect</code><button class="copy-btn"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
+                <div class="mcp-client-list" id="mcp-client-list">
+                  <div class="hint">확인 중…</div>
                 </div>
               </div>
 
@@ -109,7 +113,8 @@
                   </div>
                   <div class="ch-status"><span class="badge-plain" id="conn-ext-badge">확인 중…</span></div>
                 </div>
-                <button class="conn-link" id="conn-ext-install">확장 프로그램 설치하기 →</button>
+                <div class="hint">설치 파일에 이미 포함되어 있습니다 — 폴더를 열어 chrome://extensions 에서 "압축해제된 확장 프로그램 로드"로 선택하세요.</div>
+                <button class="conn-link" id="conn-ext-install">확장 프로그램 폴더 열기 →</button>
               </div>
             </div>
             <div class="conn-divider" style="margin-top:16px"></div>
@@ -240,16 +245,16 @@
 
         <div class="divider"></div>
 
-        <!-- 탐지 모델(encoder/llm_mcp) 전환 — 최초 전환 시 가중치(~600MB) 다운로드 필요 -->
+        <!-- 탐지 모델(encoder/llm_mcp) — advanced가 기본이며 설치 후 자동으로 준비된다 -->
         <div class="field" id="detector-field">
           <div class="setting-row">
             <div>
               <label>탐지 모델</label>
-              <div class="hint" id="detector-hint">rule_based: 정규식/키워드 기반, 추가 다운로드 없이 즉시 사용. advanced: PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델(최초 전환 시 가중치 약 600MB 다운로드, GPU 권장). 변경 시 엔진이 재시작됩니다.</div>
+              <div class="hint" id="detector-hint">advanced(기본): PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델 — 설치 후 최초 실행 시 가중치(약 600MB)가 자동으로 내려받아집니다(GPU 권장, 없으면 자동으로 rule_based로 전환됨). rule_based: 정규식/키워드 기반, 수동으로 되돌릴 때 사용. 변경 시 엔진이 재시작됩니다.</div>
             </div>
             <div class="seg" id="detector-seg">
-              <button data-mode="rule_based" class="active">rule_based</button>
-              <button data-mode="advanced">advanced</button>
+              <button data-mode="rule_based">rule_based</button>
+              <button data-mode="advanced" class="active">advanced</button>
             </div>
           </div>
           <div class="hint" id="detector-progress" style="display:none"></div>

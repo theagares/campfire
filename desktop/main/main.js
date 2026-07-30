@@ -20,6 +20,7 @@ const { TrayController } = require('./tray');
 const ipc = require('./ipc');
 const systemMetrics = require('./system-metrics');
 const { initAutoUpdater } = require('./updater');
+const models = require('./models');
 
 // 단일 인스턴스 (중복 실행 방지)
 const gotLock = app.requestSingleInstanceLock();
@@ -103,6 +104,87 @@ function startBroadcastLoops() {
   }, 5000);
 }
 
+/** engineManager 가 'running' 상태가 될 때까지 대기(타임아웃 시 reject). */
+function waitForEngineRunning(timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    if (engineManager.getStatus().state === 'running') return resolve();
+    const timer = setTimeout(() => {
+      engineManager.off('status', onStatus);
+      reject(new Error('엔진 기동 대기 시간 초과'));
+    }, timeoutMs);
+    function onStatus(s) {
+      if (s.state === 'running') {
+        clearTimeout(timer);
+        engineManager.off('status', onStatus);
+        resolve();
+      }
+    }
+    engineManager.on('status', onStatus);
+  });
+}
+
+/**
+ * advanced 전환 직후 잠깐 지켜보다가, 엔진이 'error' 로 떨어지면(예: GPU/CUDA 미탑재로
+ * 실 모델 서브프로세스가 뜨지 못하는 경우) rule_based 로 자동 복귀시킨다 — 설치 직후
+ * 기본값을 advanced 로 강제하는 대신, 이 안전장치로 GPU 없는 PC에서도 앱이 계속
+ * 정상 동작하게 한다(브릭 방지).
+ */
+function watchForAdvancedStartupFailure() {
+  const timer = setTimeout(() => engineManager.off('status', onStatus), 20000);
+  function onStatus(s) {
+    if (s.state === 'running') {
+      clearTimeout(timer);
+      engineManager.off('status', onStatus);
+    } else if (s.state === 'error') {
+      clearTimeout(timer);
+      engineManager.off('status', onStatus);
+      console.error('[main] advanced 모드 기동 실패 → rule_based 로 자동 복귀:', s.message);
+      config.set({ piiDetector: 'rule_based', injectionDetector: 'rule_based' });
+      ipc.broadcast('models:fetchProgress', {
+        type: 'fallback',
+        message:
+          `고급 탐지 모델 기동에 실패해 기본(rule_based) 모드로 되돌아갔습니다` +
+          `(GPU/CUDA 환경을 확인하세요): ${s.message || ''}`,
+      });
+      engineManager.restart().catch((err) => console.error('[main] 복귀 재시작 실패:', err.message));
+    }
+  }
+  engineManager.on('status', onStatus);
+}
+
+/**
+ * 설치 직후 자동으로 실제 ML 모델(advanced)을 준비해 기본값으로 승격시킨다.
+ * 최초 spawn 은 항상 rule_based(가중치 없이도 항상 뜨는 안전한 상태) — 엔진이
+ * running 이 되면 가중치를 확인/다운로드하고, advanced 로 설정을 바꾼 뒤 재시작한다.
+ * 인터넷이 없거나 다운로드가 실패하면 advancedAutoSetupDone 을 true 로 만들지 않아
+ * 다음 실행에서 다시 시도한다.
+ */
+async function ensureAdvancedModelsAutoSetup() {
+  if (config.get('advancedAutoSetupDone')) return;
+  if (!config.get('securityEnabled')) return; // 보안 보호가 꺼져 있으면 엔진 자체가 안 뜬다
+
+  try {
+    await waitForEngineRunning();
+    const status = await models.getStatus(engineManager);
+    if (!(status.pii?.ready && status.injection?.ready)) {
+      ipc.broadcast('models:fetchProgress', {
+        type: 'progress',
+        label: '필수 보안 모델(약 600MB)을 처음 한 번 내려받는 중...',
+      });
+      await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
+    }
+    config.set({ piiDetector: 'encoder', injectionDetector: 'llm_mcp', advancedAutoSetupDone: true });
+    await engineManager.restart();
+    watchForAdvancedStartupFailure();
+  } catch (err) {
+    console.error('[main] 고급 모델 자동 설치 실패(다음 실행에서 재시도):', err.message);
+    ipc.broadcast('models:fetchProgress', {
+      type: 'error',
+      message: `필수 모델 자동 설치 실패: ${err.message} — 인터넷 연결을 확인하면 다음 실행 시 다시 시도합니다.`,
+    });
+  }
+}
+
 app.on('second-instance', () => showDashboard());
 
 app.whenReady().then(async () => {
@@ -137,6 +219,9 @@ app.whenReady().then(async () => {
 
   // 엔진 사이드카 기동 (securityEnabled=false 면 disabled 로 남음)
   engineManager.start().catch((err) => console.error('[main] 엔진 start 실패:', err.message));
+
+  // 설치 직후 자동으로 실 ML 모델(advanced)을 준비 — 엔진 기동과 별도로 백그라운드 진행.
+  ensureAdvancedModelsAutoSetup().catch((err) => console.error('[main] 자동 모델 설치 오류:', err.message));
 
   initAutoUpdater(app);
 

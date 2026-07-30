@@ -9,7 +9,14 @@
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
  *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
  *   - piiDetector/injectionDetector: 저장값이 엔진 spawn env 로 반영됨(engine-manager.js).
- *     다만 값을 바꿀 UI 컨트롤은 아직 없음.
+ *     설정 화면에서 수동으로도 바꿀 수 있지만, 이제는 advanced(encoder/llm_mcp)가
+ *     기본 목표 상태다 — main.js 의 자동 설치 루틴이 최초 실행 시 rule_based 로
+ *     한 번 기동한 뒤(가중치 없이도 항상 뜨는 안전한 상태) 조용히 가중치를 내려받아
+ *     advanced 로 자동 전환한다. GPU/CUDA 가 없어 advanced 기동이 실패하면 같은
+ *     루틴이 rule_based 로 자동 복귀시킨다(브릭 방지).
+ *   - advancedAutoSetupDone: 위 자동 설치 루틴을 이미 (성공적으로) 한 번 수행했는지
+ *     표시 — 매 실행마다 재시도하지 않기 위한 플래그. 실패 시엔 false 로 남겨 다음
+ *     실행에서 다시 시도한다.
  *   - gpu 항목: v1 no-op → UI 에서 비활성. 저장은 하되 엔진에 반영 안 함.
  */
 
@@ -22,12 +29,11 @@ const DEFAULTS = {
   remoteUrl: constants.DEFAULT_REMOTE_URL,
   securityEnabled: true,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
-  // 엔진 spawn env(SECUREDOC_PII_DETECTOR/SECUREDOC_INJECTION_DETECTOR)로 반영됨
-  // (engine-manager.js). 다만 이 값을 바꿀 UI 컨트롤은 아직 없고, 설치 파일에
-  // encoder/llm_mcp 가 쓸 모델 가중치도 아직 번들되지 않아 실질적으로는 기본값
-  // rule_based 로만 동작한다(MODELS.md 참고).
+  // 최초 spawn 은 항상 rule_based 로 시작한다(가중치가 아직 없어도 100% 뜨는 안전한
+  // 상태) — main.js 의 자동 설치 루틴이 여기서 advanced 로 승격시킨다.
   piiDetector: 'rule_based',
   injectionDetector: 'rule_based',
+  advancedAutoSetupDone: false,
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
 };
 
