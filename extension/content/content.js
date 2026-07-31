@@ -165,79 +165,6 @@
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 문서 첨부 보류(pending) — 인젝션 탐지 재설계
-  //
-  // 문서를 첨부한 즉시 스캔하지 않고, 사용자가 프롬프트를 "보낼 때"까지 보류했다가
-  // 프롬프트 텍스트와 함께 한 번에 넘긴다. 인젝션 탐지 모델이 "이 문서가 사용자의
-  // 실제 지시를 무시/변조하려는가"를 판단하려면 진짜 user_prompt 가 필요한데,
-  // 첨부 시점엔 그 프롬프트가 아직 존재하지 않기 때문이다(engine 쪽
-  // orchestrator.run_pipeline(user_prompt=...) / POST /jobs 의 userPrompt 필드 참고).
-  //
-  // MVP 범위: 보류 중인 첨부는 최대 1개만 추적한다(두 번째를 첨부하면 첫 번째를
-  // 교체) — 여러 파일을 동시에 보류·결합하는 건 다음 단계.
-  // ══════════════════════════════════════════════════════════════════════════
-  let pendingAttachment = null; // { file, base64Data, mimeType, fileName, fileSize, inject(finalFile) }
-  let badgeRoot = null;
-
-  function showPendingBadge(fileName) {
-    hidePendingBadge();
-    try {
-      badgeRoot = document.createElement('div');
-      badgeRoot.id = '__ups_pending_badge';
-      badgeRoot.style.cssText = [
-        'all: initial', 'position: fixed', 'right: 16px', 'bottom: 16px',
-        'z-index: 2147483646', 'background: #1f2430', 'color: #fff',
-        'font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif', 'padding: 9px 12px',
-        'border-radius: 10px', 'box-shadow: 0 4px 16px rgba(0,0,0,.25)',
-        'display: flex', 'align-items: center', 'gap: 8px', 'max-width: 320px',
-      ].join(' !important; ') + ' !important;';
-
-      const label = document.createElement('span');
-      label.textContent = `📎 ${fileName} 대기 중 — 프롬프트 전송 시 함께 검사됩니다`;
-      label.style.cssText = 'flex: 1 !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important;';
-
-      const closeBtn = document.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.textContent = '✕';
-      closeBtn.title = '첨부 취소';
-      closeBtn.style.cssText = 'all: unset !important; cursor: pointer !important; opacity: .75 !important; padding: 0 2px !important; flex-shrink: 0 !important;';
-      closeBtn.addEventListener('click', () => { clearPendingAttachment(); });
-
-      badgeRoot.appendChild(label);
-      badgeRoot.appendChild(closeBtn);
-      (document.documentElement || document.body).appendChild(badgeRoot);
-    } catch (_) { /* context invalidated */ }
-  }
-
-  function hidePendingBadge() {
-    try { badgeRoot?.remove(); } catch (_) { /* ignore */ }
-    badgeRoot = null;
-  }
-
-  function clearPendingAttachment() {
-    pendingAttachment = null;
-    hidePendingBadge();
-  }
-
-  /** 파일을 즉시 스캔하지 않고 보류 상태로 저장한다. inject(finalFile)은 나중에
-   *  마스킹된(또는 원본) 파일을 원래 있어야 할 자리(입력창/드롭 타깃)에 넣는 방법을
-   *  호출부가 정의해 넘긴다(input.files 세터 vs 합성 drop/paste 이벤트 등, 첨부
-   *  경로마다 다르므로). */
-  async function stageFileAttachment(file, inject) {
-    if (!isSupportedFile(file) || contentProcessingFiles.has(file) || contentOwnedFiles.has(file)) return;
-    const base64Data = await fileToBase64(file);
-    pendingAttachment = {
-      file,
-      base64Data,
-      mimeType: file.type || 'application/octet-stream',
-      fileName: file.name,
-      fileSize: file.size,
-      inject,
-    };
-    showPendingBadge(file.name);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
   // 패널 세션 — START_SCAN 후 PANEL_DECISION 을 기다린다
   // ══════════════════════════════════════════════════════════════════════════
   const pendingSessions = new Map(); // sessionId -> { resolve, timeout }
@@ -309,7 +236,23 @@
     return null;
   }
 
-  // ── 파일 인풋 change — 즉시 스캔하지 않고 보류(위 "문서 첨부 보류" 참고) ──────
+  // ── 파일 인풋 change ────────────────────────────────────────────────────────
+  //
+  // (2026-07-31 재정정) 이전엔 스캔을 "프롬프트 전송 시점"까지 보류했다가 파일+
+  // 프롬프트를 결합 검사했다(§변경1 최초 설계, 인젝션 탐지가 실제 user_prompt를
+  // 근거로 판단할 수 있게). 하지만 이 방식은 원본 drop/paste 이벤트를 막아둔 뒤
+  // 승인 시점(수 초~수십 초, 길게는 사용자가 프롬프트를 다 쓸 때까지)에야 합성
+  // drop/paste 이벤트를 재디스패치하는 구조라, ChatGPT 등 SPA가 그 사이 내부
+  // 드래그/드롭 상태를 흘려버려(실사용자 재현: "this.drop is not a function" 크래시
+  // + 드롭 오버레이가 안 닫힘) 첨부가 깨지는 문제가 있었다. 지연 없이 즉시
+  // 재주입하는 이전 방식(레퍼런스 구현 비교로 크래시 미재현 확인됨)으로 되돌린다.
+  //
+  // 트레이드오프: 문서와 프롬프트를 한 모델 호출로 묶어 보는 "결합 검사"는 더 이상
+  // 이 경로로는 일어나지 않는다 — 문서는 첨부되는 즉시 그 문서 하나만으로
+  // PII/인젝션 검사되어 마스킹되고, 프롬프트는 전송 시점에 프롬프트 텍스트만으로
+  // 별도 검사된다(문서가 전혀 첨부되지 않았을 때와 동일). "이 문서가 실제
+  // 프롬프트의 의도를 무시/변조하려는가"라는 문맥적 판단만 못 하게 될 뿐,
+  // 각 PII/인젝션 마스킹 보장 자체는 전혀 약화되지 않는다.
   document.addEventListener('change', async (event) => {
     const path = event.composedPath?.() ?? [];
     const input = path.find(el => el instanceof HTMLInputElement && el.type === 'file')
@@ -323,10 +266,12 @@
     event.stopImmediatePropagation();
     input.value = ''; // 사이트가 원본 파일을 보지 못하게 즉시 비운다(스캔 전 유출 방지)
 
-    await stageFileAttachment(file, (finalFile) => setFileOnInput(input, finalFile));
+    const decision = await reviewFileViaPanel(file);
+    const finalFile = await buildCurrentFileFromDecision(decision, file);
+    if (finalFile) setFileOnInput(input, finalFile);
   }, true);
 
-  // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
+  // ── 드래그앤드롭 ─────────────────────────────────────────────────────────────
   document.addEventListener('dragover', (event) => {
     if (Array.from(event.dataTransfer?.items ?? []).some(i => i.kind === 'file')) event.preventDefault();
   }, true);
@@ -340,32 +285,27 @@
     const target = event.target;
     const clientX = event.clientX, clientY = event.clientY;
 
-    await stageFileAttachment(file, (finalFile) => {
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      // target(원래 드롭 지점 엘리먼트)은 검토 패널에서 사용자가 승인할 때까지
-      // 수 초~수십 초가 지난 뒤에야 이 콜백에 도달한다 — 그 사이 SPA가
-      // 리렌더링해서 이 참조가 detached(더 이상 라이브 DOM 트리에 없음)일 수
-      // 있다. detached 노드에 dispatchEvent 해도 예외 없이 "성공"하지만, 사이트의
-      // 내부 상태(React 등)가 이미 그 노드를 갱신 대상에서 놓쳐 반응하지
-      // 않거나(실측: ChatGPT에서 "this.drop is not a function"로 사이트 자체
-      // 핸들러가 죽으며 전송 버튼이 끝내 활성화되지 않는 사례 확인), 예외를 던질
-      // 수 있다. isConnected 로 확인해 detached면 document.body로 폴백하고,
-      // 사이트 쪽 핸들러 예외가 우리 흐름(뒤이은 전송 재시도)까지 끊지 않도록
-      // try/catch로 감싼다.
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new DragEvent('drop', {
-          bubbles: true, cancelable: true, composed: true,
-          dataTransfer: dt, clientX, clientY,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 drop 디스패치 실패:', e);
-      }
-    });
+    const decision = await reviewFileViaPanel(file);
+    const finalFile = await buildCurrentFileFromDecision(decision, file);
+    if (!finalFile) return;
+
+    const dt = new DataTransfer();
+    dt.items.add(finalFile);
+    // target(원래 드롭 지점 엘리먼트)이 검토 패널이 열려 있던 짧은 시간 동안 SPA
+    // 리렌더링으로 detached 될 가능성에 대비해 isConnected 폴백 + try/catch는
+    // 유지한다(즉시 재주입으로 지연 자체는 최소화됐지만 0은 아니므로 방어적으로 유지).
+    const dispatchTarget = target.isConnected ? target : document.body;
+    try {
+      dispatchTarget.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, composed: true,
+        dataTransfer: dt, clientX, clientY,
+      }));
+    } catch (e) {
+      console.error('[SecureDoc] 마스킹본 재주입 drop 디스패치 실패:', e);
+    }
   }, true);
 
-  // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
+  // ── 붙여넣기 ─────────────────────────────────────────────────────────────────
   document.addEventListener('paste', async (event) => {
     const files = Array.from(event.clipboardData?.files ?? []);
     const file = files.find(f => isSupportedFile(f) && !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
@@ -374,19 +314,20 @@
     event.stopImmediatePropagation();
     const target = event.target;
 
-    await stageFileAttachment(file, (finalFile) => {
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      // drop 재주입과 동일한 이유(위 주석 참고)로 detached 폴백 + try/catch.
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, composed: true, clipboardData: dt,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 paste 디스패치 실패:', e);
-      }
-    });
+    const decision = await reviewFileViaPanel(file);
+    const finalFile = await buildCurrentFileFromDecision(decision, file);
+    if (!finalFile) return;
+
+    const dt = new DataTransfer();
+    dt.items.add(finalFile);
+    const dispatchTarget = target.isConnected ? target : document.body;
+    try {
+      dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, composed: true, clipboardData: dt,
+      }));
+    } catch (e) {
+      console.error('[SecureDoc] 마스킹본 재주입 paste 디스패치 실패:', e);
+    }
   }, true);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -493,54 +434,25 @@
     event.stopImmediatePropagation();
     promptInProcess = true;
 
-    const staged = pendingAttachment; // 보류 중인 첨부가 있으면 결합 검사(combined)
-    hidePendingBadge();
     openSidePanel(); // 제스처 시점에 먼저 연다
 
     let decision = null;
     try {
-      decision = staged
-        ? await startPanelSession('combined', {
-            text,
-            base64Data: staged.base64Data,
-            mimeType: staged.mimeType,
-            fileName: staged.fileName,
-            fileSize: staged.fileSize,
-          })
-        : await startPanelSession('prompt', { text });
+      decision = await startPanelSession('prompt', { text });
     } catch (_) {
       decision = { action: 'cancel' };
     } finally {
       promptInProcess = false;
     }
 
-    if (!decision || decision.action === 'cancel') {
-      // 취소하면 보류 중이던 첨부도 함께 정리한다(재시도하려면 다시 첨부해야 함).
-      if (staged) clearPendingAttachment();
-      return;
-    }
+    if (!decision || decision.action === 'cancel') return;
 
     const latestCfg = getPromptConfig();
     if (!latestCfg) return;
     promptApproved = true;
 
-    if (staged) {
-      // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
-      const finalText = decision.maskedText || text;
-      if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
-        staged.inject(base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName));
-      } else if (decision.file?.action === 'passthrough') {
-        staged.inject(staged.file);
-      }
-      // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
-      clearPendingAttachment();
-      setEditorText(latestCfg, finalText);
-      // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
-      await new Promise((r) => setTimeout(r, 900));
-    } else {
-      const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
-      setEditorText(latestCfg, finalText);
-    }
+    const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
+    setEditorText(latestCfg, finalText);
 
     await resubmitPrompt(latestCfg);
     setTimeout(() => { promptApproved = false; }, 3000);
