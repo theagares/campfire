@@ -442,6 +442,7 @@ function openSettings() {
   $$('#detector-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === draftDetectorMode));
   $('#detector-progress').style.display = 'none';
   $('#remote-url').value = s.remoteUrl || '';
+  $('#upstage-api-key').value = s.upstageApiKey || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
 }
@@ -490,6 +491,9 @@ $('#settings-save').addEventListener('click', async () => {
   const remoteUrl = $('#remote-url').value.trim() || undefined;
   const patch = { injectionPolicy: draftPolicy };
   if (remoteUrl) patch.remoteUrl = remoteUrl;
+  // remoteUrl 과 달리 API 키는 사용자가 "완전히 비워서 지우기"도 할 수 있어야 하므로
+  // 빈 문자열도 patch 에 포함시킨다(trim() 만 하고 빈 값이어도 그대로 실어보냄).
+  patch.upstageApiKey = $('#upstage-api-key').value.trim();
 
   if (draftDetectorMode === 'advanced') {
     detectorBusy = true;

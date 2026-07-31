@@ -98,7 +98,12 @@ function register(ctx) {
       patch &&
       ((patch.piiDetector && patch.piiDetector !== prev.piiDetector) ||
         (patch.injectionDetector && patch.injectionDetector !== prev.injectionDetector));
-    if (policyChanged || detectorChanged) {
+    // upstageApiKey 는 사용자가 빈 문자열로 "지우기"도 할 수 있어야 하므로(patch 에 값이
+    // undefined 가 아니라 '' 로 명시적으로 실려온 경우도 변경으로 간주) 다른 필드처럼
+    // truthy 체크만 하면 "키 지우기"가 재시작을 못 일으켜 이전 env 가 그대로 남는다.
+    const apiKeyChanged =
+      patch && patch.upstageApiKey !== undefined && patch.upstageApiKey !== prev.upstageApiKey;
+    if (policyChanged || detectorChanged || apiKeyChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }
