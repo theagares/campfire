@@ -225,8 +225,14 @@ img { display:block; }
 .dc-footer { position:absolute; left:5%; top:84.091%; width:89.286%; text-align:right; font-size:13px; font-weight:500; letter-spacing:.005em; color:var(--ink-500); }
 .dc-footer b { color:var(--purple); font-weight:500; }
 
-/* 시스템 리소스 카드 (Figma 63:258 좌표를 573×250 기준 %로 환산 — 카드 폭이 줄어도 비율 유지) */
-.res-card { position:relative; height:250px; }
+/* 시스템 리소스 카드 (Figma 63:258 좌표를 573×250 기준 %로 환산 — 카드 폭이 줄어도 비율 유지).
+   높이는 250 → 270 으로 늘렸다: RAM 하위 항목이 Windows(사용 중/여유, 2줄)와 macOS
+   (앱/와이어드/압축됨, 3줄)에서 개수가 다른데(system-metrics.js ramBreakdown 참고),
+   원래 250px 는 top:60.8% 인 RAM 블록 아래 여백이 98px 밖에 안 남아 macOS 의 3줄이
+   카드 바닥까지 꽉 차 보였다(실측: Windows 는 2줄이라 그 밑에 여유가 보였음).
+   270px 로 늘리면 그 여백이 ~106px 로 늘어 CPU(3줄, top:18.8%)~RAM(top:60.8%) 사이
+   간격(~113px)과 비슷해져 두 OS 모두 RAM 블록 아래에 동일하게 여유가 생긴다. */
+.res-card { position:relative; height:270px; }
 /* 제목 왼쪽 게이지 장식 아이콘(Figma #83:1074, x=14,y=13.39,30×20.32) — 처음엔 놓쳤던 요소 */
 .res-card .rc-title { position:absolute; left:2.443%; top:5.356%; display:flex; align-items:center; gap:8px; font-size:15px; font-weight:600; color:#000; }
 .res-card .rc-deco { width:24px; height:16px; object-fit:contain; }
