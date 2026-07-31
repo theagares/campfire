@@ -631,6 +631,18 @@
     event.stopImmediatePropagation();
     debugLog('[SecureDoc] 📁 [1-DROP] 드래그앤드롭 가로챔:', file.name);
 
+    // 사이트 자체의 "여기에 드롭하세요" 오버레이는 보통 dragenter에서 뜨고
+    // drop/dragleave/dragend에서 닫힌다 — 방금 실제 drop을 stopImmediatePropagation으로
+    // 죽여버려 사이트가 그 이벤트를 못 보므로, 검사(스캔+검토)가 끝날 때까지 오버레이가
+    // 화면에 그대로 남아 가려버린다(실측: ChatGPT 등에서 재현됨). dragleave/dragend를
+    // 대신 흘려보내 사이트의 오버레이 숨김 로직이 정상적으로 실행되게 한다 — 실제 파일
+    // 전달은 여전히 우리가 가로챈 뒤 검사 완료 후 별도의 새 DragEvent('drop', ...)로
+    // 재디스패치한다(위 §변경1 참고).
+    const resetTarget = event.target || document;
+    resetTarget.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
+    document.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
+    window.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+
     _inProcess.add(file);
     const id = nextRequestId('sd');
     _pending.set(id, {
