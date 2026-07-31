@@ -196,8 +196,16 @@ jobs:
           find "$HOME/Library/Logs/DiagnosticReports" -iname "*upsecurity*" -o -iname "*electron*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
           echo "--- unified log (last 1 min, mentions UpSecurity) ---"
           log show --predicate 'eventMessage contains "UpSecurity" OR processImagePath contains "UpSecurity"' --style compact --last 1m 2>&1 | tail -100 || true
+          # 실측: 이 시점에 앱이 모델 자동 설치(설치 직후 advanced 모드로 전환)를 이미
+          # 끝내고 엔진을 재시작하는 중일 수 있다 — 로그상 /health 는 여러 번 200 OK로
+          # 응답했는데도 이 마지막 단발성 확인에서만 하필 재시작 사이 짧은 공백에 걸려
+          # 실패한 사례가 있었다. 60초간 5초 간격으로 재시도해 그 공백을 흡수한다.
           ok=0
-          for port in $(seq 48200 48209); do
-            if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
+          deadline=$((SECONDS + 60))
+          while [ "$ok" -ne 1 ] && [ "$SECONDS" -lt "$deadline" ]; do
+            for port in $(seq 48200 48209); do
+              if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
+            done
+            if [ "$ok" -ne 1 ]; then sleep 5; fi
           done
-          if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209)"; exit 1; fi
+          if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
