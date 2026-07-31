@@ -132,6 +132,19 @@ async function checkEngineHealth() {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/** FastAPI HTTPException 응답 본문({"detail": "..."})에서 실제 원인 문구를 뽑는다.
+ * 엔진이 500을 던져도 지금까지는 상태코드만 보여줬는데(예: "엔진 업로드 실패 (500)"),
+ * 실제로 뭐가 문제인지 알 수 없어 디버깅이 안 됐다 — jobs.py 가 이제 detail 에
+ * 예외 메시지를 실어주므로(app/adapters/http_api/jobs.py의 _fail 참고) 그걸 그대로
+ * 보여준다. JSON 파싱이 안 되면(엔진이 아예 안 뜬 경우 등) 상태코드만 보여준다. */
+async function errorDetail(res) {
+  try {
+    const data = await res.clone().json();
+    if (data && typeof data.detail === 'string') return data.detail;
+  } catch (_) { /* JSON 이 아니면 무시 */ }
+  return `HTTP ${res.status}`;
+}
+
 async function pollJobEvents(jobId, onProgress) {
   let after = 0;
   while (true) {
@@ -175,7 +188,7 @@ async function scanFile({ base64Data, mimeType, fileName }, onProgress) {
   form.append('fileName', fileName);
 
   const { res } = await fetchServer('/jobs', { method: 'POST', body: form });
-  if (!res.ok) throw new Error(`엔진 업로드 실패 (${res.status})`);
+  if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
     // 인라인 결과가 있어도 진행 단계 재생을 위해 이벤트를 한 번 훑어준다.
@@ -189,7 +202,7 @@ async function scanPrompt({ text }, onProgress) {
   const form = new FormData();
   form.append('text', text);
   const { res } = await fetchServer('/jobs/prompt', { method: 'POST', body: form });
-  if (!res.ok) throw new Error(`엔진 업로드 실패 (${res.status})`);
+  if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
     try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
@@ -216,7 +229,7 @@ async function scanCombined({ text, base64Data, mimeType, fileName }, onProgress
   form.append('userPrompt', text);
 
   const { res } = await fetchServer('/jobs', { method: 'POST', body: form });
-  if (!res.ok) throw new Error(`엔진 업로드 실패 (${res.status})`);
+  if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
     try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
