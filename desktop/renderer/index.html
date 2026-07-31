@@ -243,6 +243,13 @@
           <input type="url" id="remote-url" placeholder="https://api.airookieupsecurity.com" />
         </div>
 
+        <!-- Upstage Solar API 키 — 인젝션 2단계 localize 용(PLAN 근본원인 대응) -->
+        <div class="field">
+          <label for="upstage-api-key">Upstage Solar API 키</label>
+          <div class="hint">인젝션 탐지 시 정확한 위치를 찾는 데 사용됩니다(Upstage Solar). 비워두면 전체 문단을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
+          <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
+        </div>
+
         <div class="divider"></div>
 
         <!-- 탐지 모델(encoder/llm_mcp) — advanced가 기본이며 설치 후 자동으로 준비된다 -->
