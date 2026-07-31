@@ -14,9 +14,11 @@
  *     한 번 기동한 뒤(가중치 없이도 항상 뜨는 안전한 상태) 조용히 가중치를 내려받아
  *     advanced 로 자동 전환한다. GPU/CUDA 가 없어 advanced 기동이 실패하면 같은
  *     루틴이 rule_based 로 자동 복귀시킨다(브릭 방지).
- *   - advancedAutoSetupDone: 위 자동 설치 루틴을 이미 (성공적으로) 한 번 수행했는지
- *     표시 — 매 실행마다 재시도하지 않기 위한 플래그. 실패 시엔 false 로 남겨 다음
- *     실행에서 다시 시도한다.
+ *     (과거엔 advancedAutoSetupDone 플래그로 "이미 한 번 했음"을 기억해 재확인을
+ *     건너뛰었는데, 이 플래그는 userData 에 남아 재설치를 해도 안 지워지는 반면
+ *     실제 가중치 파일은 resources/engine 에 있어 재설치하면 다시 사라진다 — 그래서
+ *     재설치 후 advanced 로 설정은 돼 있는데 가중치는 없는 상태가 재현됐다. 지금은
+ *     플래그 없이 매번 실제 /models/status 로 확인한다.)
  *   - gpu 항목: v1 no-op → UI 에서 비활성. 저장은 하되 엔진에 반영 안 함.
  */
 
@@ -33,7 +35,6 @@ const DEFAULTS = {
   // 상태) — main.js 의 자동 설치 루틴이 여기서 advanced 로 승격시킨다.
   piiDetector: 'rule_based',
   injectionDetector: 'rule_based',
-  advancedAutoSetupDone: false,
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
 };
 

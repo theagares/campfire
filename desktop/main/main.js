@@ -156,24 +156,37 @@ function watchForAdvancedStartupFailure() {
  * 설치 직후 자동으로 실제 ML 모델(advanced)을 준비해 기본값으로 승격시킨다.
  * 최초 spawn 은 항상 rule_based(가중치 없이도 항상 뜨는 안전한 상태) — 엔진이
  * running 이 되면 가중치를 확인/다운로드하고, advanced 로 설정을 바꾼 뒤 재시작한다.
- * 인터넷이 없거나 다운로드가 실패하면 advancedAutoSetupDone 을 true 로 만들지 않아
- * 다음 실행에서 다시 시도한다.
+ *
+ * 이전엔 "이미 성공적으로 한 번 했는지"를 config 플래그(advancedAutoSetupDone)로만
+ * 기억해 두고 그게 true 면 아예 재확인도 안 했는데 — 이 플래그는 설치 디렉터리
+ * (resources/engine)가 아니라 별도의 userData 설정 파일에 저장돼 재설치/업데이트를
+ * 해도 그대로 남아 있다. 재설치는 실제 다운로드된 가중치 파일이 있는 resources/engine
+ * 을 통째로 새로 깔기 때문에(가중치는 설치 파일에 포함되지 않고 설치 후 별도 다운로드,
+ * MODELS.md 참고) 가중치는 다시 사라지는데 플래그만 true 로 남아, 재설치 후 advanced로
+ * 설정돼 있어도 실제로는 가중치가 없어 탐지가 죽는 상태가 재현됐다(실측: v0.1.5 재설치
+ * 직후 /models/status 가 pii/injection 모두 ready:false 인데도 auto-setup 이 스킵됨).
+ * 그래서 이제 플래그에 의존하지 않고 매번 실제 /models/status 를 확인해, 진짜 준비된
+ * 경우에만 건너뛴다(파일 존재 확인이라 비용은 거의 없음).
  */
 async function ensureAdvancedModelsAutoSetup() {
-  if (config.get('advancedAutoSetupDone')) return;
   if (!config.get('securityEnabled')) return; // 보안 보호가 꺼져 있으면 엔진 자체가 안 뜬다
 
   try {
     await waitForEngineRunning();
     const status = await models.getStatus(engineManager);
-    if (!(status.pii?.ready && status.injection?.ready)) {
+    const modelsReady = !!(status.pii?.ready && status.injection?.ready);
+    const alreadyAdvanced =
+      config.get('piiDetector') === 'encoder' && config.get('injectionDetector') === 'llm_mcp';
+    if (modelsReady && alreadyAdvanced) return; // 이미 완전히 준비된 상태 — 재다운로드/재시작 불필요
+
+    if (!modelsReady) {
       ipc.broadcast('models:fetchProgress', {
         type: 'progress',
-        label: '필수 보안 모델(약 600MB)을 처음 한 번 내려받는 중...',
+        label: '필수 보안 모델(약 600MB)을 준비하는 중...',
       });
       await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
     }
-    config.set({ piiDetector: 'encoder', injectionDetector: 'llm_mcp', advancedAutoSetupDone: true });
+    config.set({ piiDetector: 'encoder', injectionDetector: 'llm_mcp' });
     await engineManager.restart();
     watchForAdvancedStartupFailure();
   } catch (err) {
