@@ -107,15 +107,21 @@ jobs:
           while (-not (Test-Path $appExe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
           if (-not (Test-Path $appExe)) { Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"; exit 1 }
           Start-Process -FilePath $appExe
-          Start-Sleep -Seconds 10
+          # 최초 실행 시 Windows Defender 실시간 검사가 방금 설치된 대용량 엔진 번들
+          # (torch 등 수천 개 파일)을 스캔하느라 /health 가 뜨기까지 몇 분씩 걸리는
+          # 경우가 실측 확인됐다(짧은 단발성 스캔 대신 5분간 5초 간격으로 재시도).
           $ok = $false
-          foreach ($port in 48200..48209) {
-            try {
-              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
-              if ($resp.StatusCode -eq 200) { Write-Output "엔진 정상: 포트 $port, $($resp.Content)"; $ok = $true; break }
-            } catch {}
+          $healthDeadline = (Get-Date).AddSeconds(300)
+          while (-not $ok -and (Get-Date) -lt $healthDeadline) {
+            foreach ($port in 48200..48209) {
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
+                if ($resp.StatusCode -eq 200) { Write-Output "엔진 정상: 포트 $port, $($resp.Content)"; $ok = $true; break }
+              } catch {}
+            }
+            if (-not $ok) { Start-Sleep -Seconds 5 }
           }
-          if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209)"; exit 1 }
+          if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 5분 대기)"; exit 1 }
 
       - name: Verify packaged app can start the bundled engine (macOS)
         if: matrix.os == 'macos-latest'
