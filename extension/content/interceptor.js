@@ -631,17 +631,28 @@
     event.stopImmediatePropagation();
     debugLog('[SecureDoc] 📁 [1-DROP] 드래그앤드롭 가로챔:', file.name);
 
-    // 사이트 자체의 "여기에 드롭하세요" 오버레이는 보통 dragenter에서 뜨고
-    // drop/dragleave/dragend에서 닫힌다 — 방금 실제 drop을 stopImmediatePropagation으로
-    // 죽여버려 사이트가 그 이벤트를 못 보므로, 검사(스캔+검토)가 끝날 때까지 오버레이가
-    // 화면에 그대로 남아 가려버린다(실측: ChatGPT 등에서 재현됨). dragleave/dragend를
-    // 대신 흘려보내 사이트의 오버레이 숨김 로직이 정상적으로 실행되게 한다 — 실제 파일
-    // 전달은 여전히 우리가 가로챈 뒤 검사 완료 후 별도의 새 DragEvent('drop', ...)로
-    // 재디스패치한다(위 §변경1 참고).
+    // 사이트 자체의 "여기에 드롭하세요" 오버레이는 보통 dragenter에서 뜨고 drop에서
+    // 닫힌다 — 방금 실제 drop을 stopImmediatePropagation으로 죽여버려 사이트가 그
+    // 이벤트를 못 보므로, 검사(스캔+검토)가 끝날 때까지 오버레이가 화면에 남는다
+    // (실측: ChatGPT 등에서 재현됨).
+    //
+    // 처음엔 dragleave/dragend 합성 이벤트를 대신 흘려보내는 방식으로 고쳤었는데
+    // (이전 커밋), 실측 결과 오버레이가 여전히 안 사라졌고 — 오히려 사이트가 dragenter
+    // 시점에 시작한 내부 "드래그 진행 중" 상태를 이 시점에 미리 리셋시켜버려서,
+    // 검사 완료 후 마스킹본을 재주입하는 새 DragEvent('drop', ...)(아래, §변경1)을
+    // 사이트가 무시하는 부작용까지 생겼다(추정 원인: dragenter 카운트만큼 dragleave가
+    // 안 맞으면 오버레이가 안 꺼지는 카운터 기반 구현이거나, drop 이 아닌 dragleave로는
+    // 애초에 오버레이를 안 닫는 구현). "파일이 없는 진짜 drop 이벤트"를 그대로
+    // 흘려보내는 쪽이 더 안전하다 — drop 은 대부분의 구현에서 dragenter 카운터와
+    // 무관하게 무조건 "드래그 종료"로 처리되고, 아래 이 함수 자신의 early-return
+    // (`if (!file) return`) 덕분에 이 빈 drop 은 우리 로직을 다시 타지 않고 그대로
+    // 사이트 핸들러까지 전파된다(같은 async 함수가 재귀 호출되지만 file 없음 분기라
+    // 즉시 반환 — 무한루프 없음).
     const resetTarget = event.target || document;
-    resetTarget.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
-    document.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
-    window.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+    const emptyDataTransfer = new DataTransfer();
+    resetTarget.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: emptyDataTransfer })
+    );
 
     _inProcess.add(file);
     const id = nextRequestId('sd');
