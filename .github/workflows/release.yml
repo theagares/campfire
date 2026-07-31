@@ -98,14 +98,26 @@ jobs:
         run: |
           $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
           if (-not $setupExe) { Write-Error "설치 파일을 찾지 못했습니다"; exit 1 }
-          Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait
+          $installProc = Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait -PassThru
+          Write-Output "설치 프로세스 종료 코드: $($installProc.ExitCode)"
+          Write-Output "--- %LOCALAPPDATA%\Programs 내용(설치 직후) ---"
+          Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
           # NSIS /S 는 -Wait 로 잡히는 런처 프로세스가 실제 설치 작업을 마치기 전에 먼저
           # 끝나버릴 때가 있다(관측된 간헐적 실패 — 러너별 부하에 따라 60초로도 부족한
-          # 경우가 실측 확인됨). 180초로 더 여유를 둔다.
+          # 경우가 실측 확인됨). 180초로 더 여유를 둔다. 그래도 못 찾으면 설치 프로세스
+          # 종료 코드/디렉터리 목록을 위에서 이미 남겼으니 설치 자체가 실패했는지
+          # 단순히 느린 건지 로그로 구분할 수 있다.
           $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
           $deadline = (Get-Date).AddSeconds(180)
           while (-not (Test-Path $appExe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-          if (-not (Test-Path $appExe)) { Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"; exit 1 }
+          if (-not (Test-Path $appExe)) {
+            Write-Output "--- %LOCALAPPDATA%\Programs 내용(대기 종료 시점) ---"
+            Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+            Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"
+            exit 1
+          }
           Start-Process -FilePath $appExe
           # 최초 실행 시 Windows Defender 실시간 검사가 방금 설치된 대용량 엔진 번들
           # (torch 등 수천 개 파일)을 스캔하느라 /health 가 뜨기까지 몇 분씩 걸리는
