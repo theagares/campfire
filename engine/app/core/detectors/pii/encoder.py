@@ -127,11 +127,23 @@ class EncoderPiiDetector:
         # always_on: residency.state 는 실제 서브프로세스 준비 여부와 무관하게 생성
         # 즉시 "loaded" 로 취급한다(GpuResidency 문서의 always_on 계약 — 상태 플래그는
         # 실제 GPU/프로세스를 다루지 않는 순수 표시용 fiction). 실제 준비는 아래
-        # _process/alive 로 별도 추적되고, detect() 가 필요시 _ensure_process() 로
+        # _process_ready 로 별도 추적되고, detect() 가 필요시 _ensure_process() 로
         # fail-closed 대기한다 — 이 둘을 혼동해 mark_loaded_immediately() 를 실제 웜업
         # 완료 시점에만 호출하면(과거 버그) "즉시 loaded" 계약이 깨진다.
         self.residency.mark_loaded_immediately()
         self._process: asyncio.subprocess.Process | None = None
+        # _process(비어있지 않음)만으로는 "요청을 받을 준비가 됐다"를 보장 못 한다 —
+        # create_subprocess_exec() 가 반환하는 즉시 _process 는 non-None 이 되지만,
+        # 모델 로딩(_read_ready_line())은 그 뒤로도 한참(수 초~수십 초) 더 걸린다.
+        # 예전엔 이 구간에서 residency.state(always_on 이라 항상 "loaded")와 _process
+        # 존재 여부만으로 "이미 로드됨"을 판정해, 동시에 들어온 다른 detect() 호출이
+        # _proc_lock 을 거치지 않고 곧장 _infer_batch() 로 진입해 같은 stdout 을
+        # _read_ready_line() 과 동시에 읽어버렸다(실측: "readuntil() called while
+        # another coroutine is already waiting for incoming data" — 여러 청크를
+        # asyncio.gather 로 동시 탐지하는 콜드스타트/재기동 직후 재현됨). _process_ready
+        # 는 _read_ready_line() 이 실제로 끝난 뒤에만 True 가 되는, residency.state 와
+        # 완전히 분리된 진짜 준비 신호다.
+        self._process_ready = False
         self._proc_lock = asyncio.Lock()
         self._request_lock = asyncio.Lock()  # stdio 프로토콜은 요청을 1개씩 직렬 처리
         self._next_id = 0
@@ -230,17 +242,18 @@ class EncoderPiiDetector:
 
     async def _ensure_process(self) -> None:
         alive = self._process is not None and self._process.returncode is None
-        if self.residency.state == "loaded" and alive:
+        if self._process_ready and alive:
             return
         async with self._proc_lock:
             alive = self._process is not None and self._process.returncode is None
-            if self.residency.state == "loaded" and alive:
+            if self._process_ready and alive:
                 return
             if alive:
                 await self._kill_process()
+            self._process_ready = False
             await self._spawn_process()
             await self._warmup()
-            self.residency.mark_loaded_immediately()
+            self._process_ready = True
 
     async def _warmup(self) -> None:
         """CUDA 커널 선택/캐싱 등 1회성 초기화 비용을 로딩 단계에서 미리 지불
