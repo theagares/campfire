@@ -8,6 +8,9 @@ const { ipcMain, BrowserWindow, shell, app } = require('electron');
 const systemMetrics = require('./system-metrics');
 const engineStats = require('./engine-stats');
 const { getConnections } = require('./connections');
+const models = require('./models');
+const mcpClients = require('./mcp-clients');
+const paths = require('./paths');
 
 /** 모든 창(대시보드+트레이)에 이벤트 push */
 function broadcast(channel, payload) {
@@ -95,39 +98,37 @@ function register(ctx) {
   });
 
   // ── 모델 가중치 상태 조회 / 다운로드(엔진 REST 프록시, PLAN 모델 배포 B안) ──────
-  ipcMain.handle('models:status', async () => {
-    const base = engineManager.getStatus().baseUrl;
-    if (!base) return { pii: { ready: false }, injection: { ready: false } };
-    try {
-      const res = await fetch(`${base}/models/status`);
-      return await res.json();
-    } catch {
-      return { pii: { ready: false }, injection: { ready: false } };
-    }
+  ipcMain.handle('models:status', () => models.getStatus(engineManager));
+
+  ipcMain.handle('models:fetch', () =>
+    models.fetchModels(engineManager, (ev) => broadcast('models:fetchProgress', ev))
+  );
+
+  // ── 확장 프로그램 폴더(설치 파일에 함께 번들됨 — chrome://extensions 에서 그대로 로드) ──
+  ipcMain.handle('extension:openFolder', async () => {
+    const dir = paths.resolveExtensionDir(app);
+    const err = await shell.openPath(dir);
+    if (err) throw new Error(`폴더를 열 수 없습니다: ${err}`);
+    return dir;
   });
 
-  ipcMain.handle('models:fetch', async () => {
+  // ── MCP 클라이언트 원클릭 연결(연결 화면) ──────────────────────────────────
+  ipcMain.handle('mcp:detectClients', async () => {
+    const base = engineManager.getStatus().baseUrl;
+    const mcpUrl = base ? `${base}/mcp` : null;
+    return { mcpUrl, clients: mcpUrl ? await mcpClients.detectClients(app, mcpUrl) : [] };
+  });
+
+  ipcMain.handle('mcp:connect', async (_e, clientId) => {
     const base = engineManager.getStatus().baseUrl;
     if (!base) throw new Error('엔진이 실행 중이 아닙니다');
+    await mcpClients.connect(app, clientId, `${base}/mcp`);
+    return true;
+  });
 
-    const startRes = await fetch(`${base}/models/fetch`, { method: 'POST' });
-    if (!startRes.ok) throw new Error(`모델 다운로드 시작 실패 (${startRes.status})`);
-    const { jobId } = await startRes.json();
-
-    let after = 0;
-    for (;;) {
-      const evRes = await fetch(`${base}/jobs/${jobId}/events?after=${after}`);
-      if (!evRes.ok) throw new Error(`진행 상태 조회 실패 (${evRes.status})`);
-      const payload = await evRes.json();
-      for (const ev of payload.events || []) {
-        after = Math.max(after, ev.seq || after);
-        broadcast('models:fetchProgress', ev);
-        if (ev.type === 'done') return ev.result;
-        if (ev.type === 'error') throw new Error(ev.message || '모델 다운로드 실패');
-      }
-      if (payload.done) return null;
-      await new Promise((r) => setTimeout(r, 500));
-    }
+  ipcMain.handle('mcp:disconnect', async (_e, clientId) => {
+    await mcpClients.disconnect(app, clientId);
+    return true;
   });
 
   ipcMain.handle('settings:setPipelineLayout', (_e, layout) => {

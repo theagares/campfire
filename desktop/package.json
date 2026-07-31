@@ -52,6 +52,11 @@
           "!**/.pytest_cache/**",
           "!.venv/**/__pycache__/**"
         ]
+      },
+      {
+        "from": "../extension",
+        "to": "extension",
+        "filter": ["**/*", "!tests/**"]
       }
     ],
     "win": {
