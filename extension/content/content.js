@@ -343,10 +343,25 @@
     await stageFileAttachment(file, (finalFile) => {
       const dt = new DataTransfer();
       dt.items.add(finalFile);
-      target.dispatchEvent(new DragEvent('drop', {
-        bubbles: true, cancelable: true, composed: true,
-        dataTransfer: dt, clientX, clientY,
-      }));
+      // target(원래 드롭 지점 엘리먼트)은 검토 패널에서 사용자가 승인할 때까지
+      // 수 초~수십 초가 지난 뒤에야 이 콜백에 도달한다 — 그 사이 SPA가
+      // 리렌더링해서 이 참조가 detached(더 이상 라이브 DOM 트리에 없음)일 수
+      // 있다. detached 노드에 dispatchEvent 해도 예외 없이 "성공"하지만, 사이트의
+      // 내부 상태(React 등)가 이미 그 노드를 갱신 대상에서 놓쳐 반응하지
+      // 않거나(실측: ChatGPT에서 "this.drop is not a function"로 사이트 자체
+      // 핸들러가 죽으며 전송 버튼이 끝내 활성화되지 않는 사례 확인), 예외를 던질
+      // 수 있다. isConnected 로 확인해 detached면 document.body로 폴백하고,
+      // 사이트 쪽 핸들러 예외가 우리 흐름(뒤이은 전송 재시도)까지 끊지 않도록
+      // try/catch로 감싼다.
+      const dispatchTarget = target.isConnected ? target : document.body;
+      try {
+        dispatchTarget.dispatchEvent(new DragEvent('drop', {
+          bubbles: true, cancelable: true, composed: true,
+          dataTransfer: dt, clientX, clientY,
+        }));
+      } catch (e) {
+        console.error('[SecureDoc] 마스킹본 재주입 drop 디스패치 실패:', e);
+      }
     });
   }, true);
 
@@ -362,9 +377,15 @@
     await stageFileAttachment(file, (finalFile) => {
       const dt = new DataTransfer();
       dt.items.add(finalFile);
-      target.dispatchEvent(new ClipboardEvent('paste', {
-        bubbles: true, cancelable: true, composed: true, clipboardData: dt,
-      }));
+      // drop 재주입과 동일한 이유(위 주석 참고)로 detached 폴백 + try/catch.
+      const dispatchTarget = target.isConnected ? target : document.body;
+      try {
+        dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true, cancelable: true, composed: true, clipboardData: dt,
+        }));
+      } catch (e) {
+        console.error('[SecureDoc] 마스킹본 재주입 paste 디스패치 실패:', e);
+      }
     });
   }, true);
 
