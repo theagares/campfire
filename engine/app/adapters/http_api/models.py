@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import shutil
 import tarfile
 import tempfile
 import uuid
@@ -48,13 +49,27 @@ _ASSETS: dict[str, dict[str, Any]] = {
 # fire-and-forget 백그라운드 태스크가 GC 되지 않도록 참조를 들고 있는다.
 _background_tasks: set[asyncio.Task] = set()
 
+# local_pii_inference.py(PIIDetector.__init__)/gazetteer.py 가 실제로 읽는 파일들.
+# model.safetensors 하나만 확인하던 예전 체크는, 다운로드/압축해제가 중간에
+# 끊겨도(엔진 프로세스가 재시작되는 등) model.safetensors 는 있고 label_map.json
+# 등은 없는 "일부만 있는" 상태를 그대로 "ready" 로 오판했다(실측: 서브프로세스가
+# label_map.json FileNotFoundError 로 즉시 죽음). 필요한 파일을 전부 확인해야
+# "정말 완전하게 받아졌다"를 신뢰할 수 있다.
+_PII_REQUIRED_FILES = (
+    "model.safetensors", "config.json", "label_map.json",
+    "gazetteer.json", "tokenizer.json", "tokenizer_config.json",
+)
+_INJECTION_REQUIRED_FILES = ("model.pt", "calibration.json", "norm_stats.pt")
+
 
 def _pii_weights_present() -> bool:
-    return (config.PII_ENGINE_DIR / "models" / config.PII_MODEL_SEED / "model.safetensors").is_file()
+    seed_dir = config.PII_ENGINE_DIR / "models" / config.PII_MODEL_SEED
+    return all((seed_dir / f).is_file() for f in _PII_REQUIRED_FILES)
 
 
 def _injection_weights_present() -> bool:
-    return (config.INJECTION_ENGINE_DIR / config.INJECTION_VARIANT / "model.pt").is_file()
+    variant_dir = config.INJECTION_ENGINE_DIR / config.INJECTION_VARIANT
+    return all((variant_dir / f).is_file() for f in _INJECTION_REQUIRED_FILES)
 
 
 def _status() -> dict[str, Any]:
@@ -117,8 +132,25 @@ async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable)
         await emit({"type": "progress", "asset": name, "label": f"{spec['label']} 압축 해제 중...", "pct": 100.0})
         dest_dir: Path = spec["extract_to"]()
         dest_dir.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(tmp_path, "r:gz") as tar:
-            _safe_extract(tar, dest_dir)
+
+        # 압축 해제를 dest_dir 에 바로 하지 않고 임시 디렉터리에 전부 끝낸 뒤 옮긴다 —
+        # 그래야 중간에 프로세스가 죽어도(엔진 재시작 등) dest_dir 자체는 이전 상태
+        # 그대로 남고, "일부 파일만 있는" 상태가 생기지 않는다(위 _pii/_injection
+        # _weights_present() 가 이 불변식에 의존한다).
+        extract_tmp_dir = Path(tempfile.mkdtemp(prefix=f"securedoc_{name}_extract_"))
+        try:
+            with tarfile.open(tmp_path, "r:gz") as tar:
+                _safe_extract(tar, extract_tmp_dir)
+            for item in extract_tmp_dir.iterdir():
+                target = dest_dir / item.name
+                if target.exists():
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                shutil.move(str(item), str(target))
+        finally:
+            shutil.rmtree(extract_tmp_dir, ignore_errors=True)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
