@@ -11,13 +11,25 @@ const state = {
   stats: null,
   metrics: null,
   connections: null,
+  mcpInfo: null,
 };
+
+// ── 전역 배너(설정 모달 밖에서도 보여야 하는 알림 — 설치 직후 자동 모델 설치 진행/실패 등) ──
+function showGlobalBanner(text) {
+  const el = $('#global-banner');
+  $('#global-banner-text').textContent = text;
+  el.style.display = 'flex';
+}
+function hideGlobalBanner() {
+  $('#global-banner').style.display = 'none';
+}
+$('#global-banner-close').addEventListener('click', hideGlobalBanner);
 
 // ── 뷰 라우팅 ────────────────────────────────────────────────────────────────
 function goto(view) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
-  if (view === 'connect') refreshConnections();
+  if (view === 'connect') { refreshConnections(); refreshMcpClients(); }
 }
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => goto(b.dataset.view)));
 
@@ -62,16 +74,75 @@ function renderConnections() {
   extBadge.className = extOn ? 'badge-pill' : 'badge-plain';
   extBadge.textContent = extOn ? '연결됨' : '미연결';
 }
-$('#conn-ext-install').addEventListener('click', () => {
-  const url = (state.connections && state.connections.extension.helpUrl) || '';
-  if (url) api.openExternal(url);
+$('#conn-ext-install').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await api.openExtensionFolder();
+  } catch (err) {
+    showGlobalBanner(`확장 프로그램 폴더를 열지 못했습니다: ${err.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
-$$('.codeblock-row .copy-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const code = btn.parentElement.querySelector('code').textContent;
-    navigator.clipboard.writeText(code).catch(() => {});
-  });
+// ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
+async function refreshMcpClients() {
+  const info = await api.detectMcpClients().catch(() => ({ mcpUrl: null, clients: [] }));
+  state.mcpInfo = info;
+  renderMcpClients();
+}
+function renderMcpClients() {
+  const list = $('#mcp-client-list');
+  const info = state.mcpInfo;
+  if (!list) return;
+  if (!info || !info.mcpUrl) {
+    list.innerHTML = `<div class="hint">엔진이 실행 중이어야 MCP 서버 URL을 확인할 수 있습니다.</div>`;
+    return;
+  }
+  list.innerHTML = info.clients.map((c) => {
+    if (c.method === 'manual') {
+      return `
+        <div class="mcp-client-row manual" data-id="${c.id}">
+          <div class="mcp-client-head"><span class="mcp-client-name">${c.name}</span><span class="badge-plain">수동</span></div>
+          <div class="hint">${escapeHtml(c.hint)}</div>
+          <div class="codeblock-row"><code>${escapeHtml(c.snippet)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(c.snippet)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
+        </div>`;
+    }
+    const statusText = !c.available ? '미설치' : c.connected ? '연결됨' : '미연결';
+    const actionLabel = c.connected ? '연결 해제' : '연결하기';
+    return `
+      <div class="mcp-client-row" data-id="${c.id}">
+        <div class="mcp-client-head">
+          <span class="mcp-client-name">${c.name}</span>
+          <span class="badge-plain">${statusText}</span>
+        </div>
+        <button class="conn-link mcp-action-btn" data-id="${c.id}" data-connected="${!!c.connected}" ${c.available ? '' : 'disabled'}>${actionLabel}</button>
+      </div>`;
+  }).join('');
+}
+$('#mcp-client-list').addEventListener('click', async (e) => {
+  const copyBtn = e.target.closest('.copy-btn');
+  if (copyBtn) {
+    const snippet = decodeURIComponent(escape(atob(copyBtn.dataset.copy || '')));
+    navigator.clipboard.writeText(snippet).catch(() => {});
+    return;
+  }
+  const actionBtn = e.target.closest('.mcp-action-btn');
+  if (!actionBtn || actionBtn.disabled) return;
+  const id = actionBtn.dataset.id;
+  const connected = actionBtn.dataset.connected === 'true';
+  actionBtn.disabled = true;
+  const originalLabel = actionBtn.textContent;
+  actionBtn.textContent = '처리 중...';
+  try {
+    if (connected) await api.disconnectMcpClient(id);
+    else await api.connectMcpClient(id);
+  } catch (err) {
+    showGlobalBanner(`MCP 연결 실패(${id}): ${err.message || err}`);
+  }
+  actionBtn.textContent = originalLabel;
+  await refreshMcpClients();
 });
 
 // ── 대시보드 ──────────────────────────────────────────────────────────────────
@@ -404,7 +475,14 @@ function setDetectorProgress(label) {
 api.onModelsFetchProgress?.((ev) => {
   if (ev.type === 'progress') {
     const pct = ev.pct != null ? ` ${ev.pct}%` : '';
-    setDetectorProgress(`${ev.label || ''}${pct}`);
+    const label = `${ev.label || ''}${pct}`;
+    setDetectorProgress(label);
+    // 설정 모달이 닫혀 있어도(설치 직후 자동 설치 루틴) 진행 상황을 보여준다.
+    if (!modal.classList.contains('open')) showGlobalBanner(label);
+  } else if (ev.type === 'error' || ev.type === 'fallback') {
+    showGlobalBanner(ev.message || '모델 설치 중 문제가 발생했습니다.');
+  } else if (ev.type === 'done') {
+    hideGlobalBanner();
   }
 });
 
@@ -479,7 +557,9 @@ async function init() {
 
   // 연결 상태는 주기적으로 갱신
   refreshConnections();
+  refreshMcpClients();
   setInterval(refreshConnections, 5000);
+  setInterval(refreshMcpClients, 5000);
 }
 
 init().catch((err) => console.error('[renderer] init 실패:', err));

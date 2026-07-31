@@ -441,3 +441,24 @@ img { display:block; }
   0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
   50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
 }
+
+/* ── 전역 배너 (설정 모달 밖에서도 떠야 하는 알림 — 설치 직후 자동 모델 설치 진행/실패) ── */
+.global-banner {
+  position:fixed; top:0; left:0; right:0; z-index:300;
+  display:flex; align-items:center; gap:10px; padding:10px 16px;
+  background:var(--warn-soft); color:var(--ink-900); border-bottom:1px solid var(--warn);
+  font-size:12px; line-height:1.4;
+}
+.global-banner span#global-banner-text { flex:1; }
+.global-banner .icon-x { flex:0 0 auto; }
+
+/* ── MCP 클라이언트 목록 (연결 화면) ── */
+.mcp-client-list { display:flex; flex-direction:column; gap:10px; }
+.mcp-client-row {
+  display:flex; flex-direction:column; gap:6px;
+  padding:9px 10px; background:var(--code-bg); border-radius:8px;
+}
+.mcp-client-head { display:flex; align-items:center; gap:8px; }
+.mcp-client-name { font-size:11.5px; font-weight:600; color:var(--ink-850); }
+.mcp-client-row .conn-link { align-self:flex-start; }
+.mcp-client-row.manual .codeblock-row { background:#fff; }

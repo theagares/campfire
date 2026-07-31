@@ -41,6 +41,23 @@ function resolveEngineDir(app) {
   return path.resolve(__dirname, '..', '..', 'engine');
 }
 
+/**
+ * @returns {string} Chrome 확장 프로그램(extension/) 루트 디렉터리.
+ * prod 는 extraResources 로 번들된 사본(resourcesPath/extension), dev 는 소스트리 형제 폴더.
+ * "저장소를 따로 clone/다운로드해야 확장을 로드할 수 있다"는 배포 갭을 없애기 위해
+ * 설치 파일 안에 그대로 함께 담아, 설치만 하면 로컬 디스크에 실제 파일이 존재하게 한다.
+ */
+function resolveExtensionDir(app) {
+  const override = process.env.SECUREDOC_EXTENSION_DIR;
+  if (override && override.trim()) {
+    return path.resolve(override.trim());
+  }
+  if (app && app.isPackaged) {
+    return path.join(process.resourcesPath, 'extension');
+  }
+  return path.resolve(__dirname, '..', '..', 'extension');
+}
+
 /** venv python 실행파일 경로 (플랫폼별) — stdlib venv 레이아웃과 portable 레이아웃 둘 다 확인 */
 function resolvePythonExe(engineDir) {
   const override = process.env.SECUREDOC_PYTHON;
@@ -91,6 +108,7 @@ function safeExists(p) {
 
 module.exports = {
   resolveEngineDir,
+  resolveExtensionDir,
   resolvePythonExe,
   resolveStoreDbPath,
   diagnose,
