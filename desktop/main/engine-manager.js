@@ -100,6 +100,10 @@ class EngineManager extends EventEmitter {
       // 바꿀 때만 적용된다.
       SECUREDOC_PII_DETECTOR: this.config.get('piiDetector') || 'rule_based',
       SECUREDOC_INJECTION_DETECTOR: this.config.get('injectionDetector') || 'rule_based',
+      // Upstage Solar API 키. 설정 화면(#upstage-api-key)에서 저장한 값을 그대로
+      // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
+      // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).
+      SECUREDOC_UPSTAGE_API_KEY: this.config.get('upstageApiKey') || '',
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
     };

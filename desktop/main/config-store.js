@@ -1,11 +1,19 @@
 'use strict';
 /**
  * main/config-store.js
- * 앱 설정 영속화 (Electron userData 에 JSON). 비밀값 저장 금지.
+ * 앱 설정 영속화 (Electron userData 에 JSON). 비밀값 저장 금지가 원칙이나,
+ * upstageApiKey 는 예외다 — 사용자 본인의 Upstage Solar API 키를 로컬에 저장하는
+ * 것 외에 다른 실용적 방법이 없어 의도적으로 예외 처리했다. 이 값은 암호화되지
+ * 않은 평문 JSON(settings.json)에 그대로 저장된다는 점에 유의할 것.
  *
  * 저장 항목 (PLAN §8 설정 팝업 v1):
  *   - injectionPolicy: 'mask' | 'block'   (엔진 spawn env 로 반영)
  *   - remoteUrl: string                    (익스텐션엔 없고 앱에만 존재, PLAN §3)
+ *   - upstageApiKey: string                (Upstage Solar Pro API 키. 인젝션 탐지 2단계
+ *     localize 에 사용됨 — engine/app/core/detectors/injection/llm_mcp.py 의
+ *     _localize_with_solar(). 비어 있으면 엔진이 INJECTION_LOCALIZE_ENABLED=False 로
+ *     동작해 인젝션 청크 전체를 마스킹하는 fail-safe 로 빠진다. 평문 저장(비암호화)임에
+ *     유의 — settings.json 은 암호화되지 않는다.)
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
  *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
  *   - piiDetector/injectionDetector: 저장값이 엔진 spawn env 로 반영됨(engine-manager.js).
@@ -29,6 +37,9 @@ const constants = require('./constants');
 const DEFAULTS = {
   injectionPolicy: constants.INJECTION_POLICY_DEFAULT,
   remoteUrl: constants.DEFAULT_REMOTE_URL,
+  // Upstage Solar API 키(평문 저장, settings.json 비암호화). 비어 있으면 엔진이
+  // 인젝션 localize 를 못 하고 청크 전체 마스킹 fail-safe 로 동작한다.
+  upstageApiKey: '',
   securityEnabled: true,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
   // 최초 spawn 은 항상 rule_based 로 시작한다(가중치가 아직 없어도 100% 뜨는 안전한
