@@ -70,7 +70,12 @@ INJECTION_LLM_LOAD_DELAY_SEC: float = float(
 #   attn(hidden 미사용) Acc 97.9%/FPR 1.69%/FNR 0.56% — hybrid 권장(기본값).
 INJECTION_ENGINE_DIR: Path = APP_DIR / "models" / "injection_engine"
 INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")  # "hybrid" | "attn"
-INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "cuda")
+# 기본값 "auto" — local_injection_hybrid_inference.py 의 _resolve_device() 가
+# torch.cuda.is_available()/mps 를 실제로 확인해 cuda/mps/cpu 를 고른다. 예전엔
+# "cuda" 로 하드코딩돼 있어, GPU가 있어도 배포판 torch 가 CPU 전용 빌드면(CI에서
+# 실측 확인됨: pip install torch 기본이 CPU 휠) AssertionError("Torch not compiled
+# with CUDA enabled")로 무조건 죽었다 — "auto" 는 그 경우에도 안전하게 CPU 로 폴백한다.
+INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "auto")
 INJECTION_DTYPE: str = os.environ.get("SECUREDOC_INJECTION_DTYPE", "bfloat16")
 INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN", "4096"))
 INJECTION_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_INJECTION_PYTHON_EXECUTABLE", sys.executable)
@@ -135,7 +140,9 @@ PII_ENGINE_DIR: Path = APP_DIR / "models" / "pii_engine"
 PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # GPU 실측(1,500자 청크 기준): CPU 1.69초 vs GPU 0.43초(~4배), VRAM 피크 1.74GB —
 # 인젝션 LLM(피크 3.8GB)과 동시 로드해도 합계 ~5.5GB 로 6GB+ VRAM 환경에선 여유 있음.
-PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "cuda")
+# 기본값 "auto" — INJECTION_DEVICE와 동일한 이유(위 주석 참고): CPU 전용 torch가
+# 배포됐을 때도 죽지 않고 CPU로 폴백하게 한다.
+PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "auto")
 PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "8"))
 PII_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_PII_MAX_LENGTH", "256"))  # 토큰 기준(모델 권장 기본값)
 # 위 PII_MAX_LENGTH(토큰)보다 청크가 길면 뒷부분이 잘리므로, detect() 내부에서
