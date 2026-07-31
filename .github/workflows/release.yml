@@ -98,17 +98,31 @@ jobs:
         run: |
           $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
           if (-not $setupExe) { Write-Error "설치 파일을 찾지 못했습니다"; exit 1 }
-          $installProc = Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait -PassThru
-          Write-Output "설치 프로세스 종료 코드: $($installProc.ExitCode)"
-          Write-Output "--- %LOCALAPPDATA%\Programs 내용(설치 직후) ---"
-          Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
-            Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+          # 실측: 설치 프로세스가 종료 코드 -1073741819(0xC0000005, ACCESS_VIOLATION)로
+          # 즉시 크래시하는 경우가 있었다(설치 폴더가 완전히 빈 채로 남음 — 단순 지연이
+          # 아니라 진짜 크래시). 방금 signtool 로 서명이 끝난 EXE 를 Defender 가 아직
+          # 스캔 중일 때 실행하면 발생하는 것으로 추정되는 CI 러너 특유의 문제라, 짧게
+          # 쉬었다가 재시도하면 통과하는 경우가 많다 — 최대 3회 재시도한다.
+          $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Output "설치 시도 $attempt/3..."
+            $installProc = Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait -PassThru
+            Write-Output "설치 프로세스 종료 코드: $($installProc.ExitCode)"
+            if ($installProc.ExitCode -eq 0 -and (Test-Path $appExe)) { $installed = $true; break }
+            Write-Output "--- %LOCALAPPDATA%\Programs 내용(시도 $attempt 직후) ---"
+            Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            Write-Output "설치 프로세스는 성공(exit 0)했지만 실행파일이 아직 없을 수 있어 추가 대기한다."
+          }
           # NSIS /S 는 -Wait 로 잡히는 런처 프로세스가 실제 설치 작업을 마치기 전에 먼저
           # 끝나버릴 때가 있다(관측된 간헐적 실패 — 러너별 부하에 따라 60초로도 부족한
           # 경우가 실측 확인됨). 180초로 더 여유를 둔다. 그래도 못 찾으면 설치 프로세스
           # 종료 코드/디렉터리 목록을 위에서 이미 남겼으니 설치 자체가 실패했는지
           # 단순히 느린 건지 로그로 구분할 수 있다.
-          $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
           $deadline = (Get-Date).AddSeconds(180)
           while (-not (Test-Path $appExe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
           if (-not (Test-Path $appExe)) {
