@@ -273,22 +273,20 @@ function subRow(items) {
 // "탐지 종류 부분이 힌트 문구에 붙어 보인다"는 피드백을 반영해 y를 전체적으로 +15 내렸다.
 const PIPE_NODES = [
   { id:'receive', src:'receive', label:null, left:0,      top:25.45, w:9.53, h:19.93 },
-  { id:'varco',   src:'varco',   label:null, left:34.13,  top:25,    w:18.91, h:20 },
+  { id:'parse',   src:'parse', ext:'svg', label:null, left:34.13, top:25, w:18.91, h:20 },
   { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:62.77, top:6.82, w:9.53, h:19.93 },
   { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:62.77, top:44.88, w:9.53, h:19.93 },
   { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:88.81, top:6.82, w:9.53, h:19.93 },
   { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:88.77, top:45.64, w:9.53, h:19.93 },
-  { id:'ocr', src:'ocr', label:'OCR\n텍스트 추출', left:31.46, top:64.2, w:9.78, h:20.45 },
-  { id:'text-extract', src:'text-extract', label:'텍스트\n직접 추출', left:47.15, top:64.2, w:9.78, h:20.45 },
+  { id:'text-extract', src:'text-extract', label:'텍스트\n직접 추출', left:39.3, top:64.2, w:9.78, h:20.45 },
 ];
 const PIPE_EDGES = [
-  { from:'receive', to:'varco' },
-  { from:'varco', to:'pii-detect' },
-  { from:'varco', to:'inj-detect' },
+  { from:'receive', to:'parse' },
+  { from:'parse', to:'pii-detect' },
+  { from:'parse', to:'inj-detect' },
   { from:'pii-detect', to:'pii-done' },
   { from:'inj-detect', to:'inj-done' },
-  { from:'ocr', to:'varco', dashed:true },
-  { from:'text-extract', to:'varco', dashed:true },
+  { from:'text-extract', to:'parse', dashed:true },
 ];
 const pipeNodeEls = {};
 let pipeDiagramBuilt = false;
@@ -306,14 +304,15 @@ function buildPipelineDiagram() {
   PIPE_NODES.forEach((n) => {
     const pos = saved[n.id] || { left: n.left, top: n.top };
     const el = document.createElement('div');
-    el.className = 'pipe-node' + (n.id === 'varco' ? ' varco' : '');
+    el.className = 'pipe-node';
     el.dataset.id = n.id;
     el.style.left = pos.left + '%';
     el.style.top = pos.top + '%';
     el.style.width = n.w + '%';
     el.style.height = n.h + '%';
     const label = n.label ? `<div class="pn-label">${n.label}</div>` : '';
-    el.innerHTML = `<img class="pn-icon" src="../assets/figma/pipe-node-${n.src}.png" alt="${n.label || n.id}" />${label}`;
+    const ext = n.ext || 'png';
+    el.innerHTML = `<img class="pn-icon" src="../assets/figma/pipe-node-${n.src}.${ext}" alt="${n.label || n.id}" />${label}`;
     canvas.appendChild(el);
     pipeNodeEls[n.id] = el;
     makePipeNodeDraggable(el, canvas);
@@ -324,7 +323,7 @@ function buildPipelineDiagram() {
 }
 
 // 위/좌/우는 카드(.pipe-card) 전체 기준 5% 여백만 남기고, 아래쪽은 구분선(.pc-divider)
-// 바로 위까지만 움직이게 한다 — 라벨이 있는 노드(OCR/텍스트 직접 추출 등)는 라벨 높이까지
+// 바로 위까지만 움직이게 한다 — 라벨이 있는 노드(텍스트 직접 추출 등)는 라벨 높이까지
 // 감안해야 실제로 선과 안 겹친다. 고정 퍼센트를 미리 계산해두는 대신 드래그를 시작할
 // 때마다 카드·캔버스·구분선·라벨의 실측 픽셀 위치를 다시 재서 정확히 맞춘다(창 크기가
 // 달라져도 항상 맞는다). 노드 좌표(left/top)는 캔버스(.pipe-diagram) 기준 %라서, "카드
