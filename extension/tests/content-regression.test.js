@@ -91,6 +91,7 @@ class SendButtonStub extends EventTargetStub {
 
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
+const dispatchedWindowEvents = [];
 let decisionListener = null;
 let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 즉시 회신한다
 
@@ -100,6 +101,8 @@ const windowStub = {
     const arr = windowListeners.get(t);
     if (arr) windowListeners.set(t, arr.filter(x => x !== l));
   },
+  // 사이트 레이아웃 재계산을 유도하는 가짜 resize 발송을 검증하기 위해 기록한다.
+  dispatchEvent(ev) { dispatchedWindowEvents.push(ev?.type); return true; },
   postMessage(data) {
     if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
       actionLog.push({ kind: 'approve-msg', meta: data.meta });
@@ -204,7 +207,8 @@ const sandbox = {
   DataTransfer: DataTransferStub,
   HTMLInputElement: HTMLInputElementStub,
   HTMLTextAreaElement: HTMLTextAreaElementStub,
-  Event: class {},
+  Event: class { constructor(type) { this.type = type; } },
+  requestAnimationFrame: (cb) => setTimeout(cb, 0),
   InputEvent: class {},
   KeyboardEvent: class {},
   DragEvent: DragEventStub,
@@ -427,6 +431,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (htmlStyle.getPropertyValue('overflow-x') !== 'hidden') {
     throw new Error('html overflow-x:hidden 이 없다 — 가로 스크롤이 생긴다');
+  }
+  // CSS 로만 좁히면 창 크기는 그대로라 resize 가 안 난다 → JS 로 폭을 재서 배치하는
+  // SPA 는 예전 폭 그대로 있고 본문이 다시 줄바꿈되지 않아 글자가 잘린다(실사용자
+  // 스크린샷에서 확인). 가짜 resize 로 재계산을 유도해야 한다.
+  if (!dispatchedWindowEvents.includes('resize')) {
+    throw new Error('밀어낸 뒤 resize 를 쏘지 않았다 — 사이트가 레이아웃을 다시 계산하지 않는다');
   }
 
   // 패널 닫기: 실제 iframe 의 contentWindow 에서 온 메시지만 content.js 가 받아들인다
