@@ -504,6 +504,55 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error('UPS_CLOSE_OVERLAY 를 받고도 폴백 오버레이가 페이지에 남아있다');
   }
 
+  // (9) 검사가 진행 중일 때 들어온 전송 시도는 사이트로 새어나가면 안 된다.
+  //
+  // 예전엔 promptInProcess 면 리스너가 preventDefault 없이 그냥 return 해서, 그 이벤트가
+  // 사이트로 흘러가 검사가 끝나기도 전에 원본 프롬프트가 전송됐다(실사용자 macOS 재현:
+  // "보안 분석 중" 에서 안 넘어가는데 메시지만 먼저 들어감). 마스킹 전 원본이 나가는
+  // 것이므로 이 제품에서 가장 치명적인 실패다.
+  // 앞 테스트들이 남긴 상태를 둘 다 정리해야 이 테스트가 자기 상태에서 시작한다:
+  //   promptApproved  — 승인 직후 3초간 남아 있다(우리 재전송을 통과시키려고).
+  //   promptInProcess — 결정이 안 온 검사가 아직 진행 중일 수 있다.
+  // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
+  // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
+  await new Promise(r => setTimeout(r, 4500));
+  const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+
+  promptEditorStub.value = '주민번호 900101-1234567 포함된 프롬프트';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = null;          // 결정을 회신하지 않아 검사가 계속 진행 중인 상태를 만든다
+  const beforeScan = runtimeMessages.length;
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  if (!runtimeMessages.slice(beforeScan).some(m => m.type === 'START_SCAN')) {
+    throw new Error('첫 전송에서 검사가 시작되지 않았다 — 이 테스트의 전제가 깨졌다');
+  }
+  const afterFirstScan = runtimeMessages.length;
+
+  // 검사가 아직 안 끝난 상태에서 사용자가 한 번 더 Enter 를 누른다.
+  let leaked = true;  // 막히면 preventDefault 가 불려 false 로 바뀐다
+  let propagated = true;
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() { leaked = false; },
+    stopImmediatePropagation() { propagated = false; },
+  });
+  await flush();
+
+  if (leaked || propagated) {
+    throw new Error('검사 중 눌린 전송이 사이트로 새어나갔다 — 마스킹 전 원본이 전송된다');
+  }
+  if (runtimeMessages.slice(afterFirstScan).some(m => m.type === 'START_SCAN')) {
+    throw new Error('검사가 이미 진행 중인데 또 다른 검사를 시작했다');
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
