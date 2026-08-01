@@ -282,13 +282,27 @@
   }
 
   /** 패널은 max-width:92vw 라 창 크기에 따라 실제 폭이 달라진다 — 실측해서 그만큼만 민다. */
-  function syncPageShiftToPanel() {
-    if (!overlayRoot) return;
+  function measureAndShift() {
+    if (!overlayRoot) return false;
     const w = overlayRoot.getBoundingClientRect?.().width;
-    if (w > 0) {
-      applyPageShift(w);
-      notifyViewportChanged();
-    }
+    if (!(w > 0)) return false;
+    applyPageShift(w);
+    return true;
+  }
+
+  /** 창 크기가 바뀌었을 때: 밀어내기 폭만 다시 맞춘다.
+   *
+   *  여기서 notifyViewportChanged() 를 부르면 안 된다 — 우리가 쏜 resize 가 바로 이
+   *  리스너를 다시 깨워 무한 재귀에 빠지고 탭이 멎는다(실사용자 리포트: 0.1.8 로
+   *  업데이트한 뒤 페이지가 아예 동작을 멈춤). 사이트에 재계산을 요청하는 건 패널을
+   *  열고/닫는 시점에만 한다. */
+  function onWindowResize() {
+    measureAndShift();
+  }
+
+  /** 패널을 열 때: 밀어낸 뒤 사이트에 레이아웃 재계산까지 요청한다. */
+  function syncPageShiftToPanel() {
+    if (measureAndShift()) notifyViewportChanged();
   }
 
   function openSidePanel() {
@@ -313,12 +327,12 @@
 
       // 패널이 사이트를 덮지 않도록 그 폭만큼 본문을 밀어낸다(위 주석 참고).
       syncPageShiftToPanel();
-      window.addEventListener('resize', syncPageShiftToPanel);
+      window.addEventListener('resize', onWindowResize);
     } catch (_) { /* context invalidated */ }
   }
 
   function closeSidePanel() {
-    try { window.removeEventListener('resize', syncPageShiftToPanel); } catch (_) { /* ignore */ }
+    try { window.removeEventListener('resize', onWindowResize); } catch (_) { /* ignore */ }
     revertPageShift(); // 패널보다 먼저 되돌려 본문이 원래 폭으로 돌아오게 한다
     notifyViewportChanged(); // 원래 폭으로도 사이트가 다시 배치하도록
     try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
