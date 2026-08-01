@@ -102,7 +102,20 @@ const windowStub = {
     if (arr) windowListeners.set(t, arr.filter(x => x !== l));
   },
   // 사이트 레이아웃 재계산을 유도하는 가짜 resize 발송을 검증하기 위해 기록한다.
-  dispatchEvent(ev) { dispatchedWindowEvents.push(ev?.type); return true; },
+  //
+  // 등록된 리스너를 실제로 호출해야 한다 — 기록만 하면 "우리가 쏜 resize 가 우리
+  // resize 리스너를 다시 깨우는" 무한 재귀를 재현하지 못한다(실제로 그 결함이
+  // 0.1.8 로 나가 탭이 멎었고, 리스너를 호출하지 않던 이 스텁이 놓쳤다).
+  // 재귀를 예외로 알리면 안 된다 — content.js 의 notifyViewportChanged 가 try/catch 로
+  // 감싸고 있어 그 예외를 삼켜버리고 테스트가 통과해 버린다(실제로 이 결함이 0.1.8 로
+  // 나갔다). 대신 발송 횟수만 세고, 폭주가 테스트 자체를 멎게 하지 않도록 상한에서
+  // 전파만 멈춘 뒤 아래 (7)에서 횟수로 판정한다.
+  dispatchEvent(ev) {
+    dispatchedWindowEvents.push(ev?.type);
+    if (dispatchedWindowEvents.length > 50) return true;
+    for (const l of windowListeners.get(ev?.type) || []) l(ev);
+    return true;
+  },
   postMessage(data) {
     if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
       actionLog.push({ kind: 'approve-msg', meta: data.meta });
@@ -437,6 +450,13 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 스크린샷에서 확인). 가짜 resize 로 재계산을 유도해야 한다.
   if (!dispatchedWindowEvents.includes('resize')) {
     throw new Error('밀어낸 뒤 resize 를 쏘지 않았다 — 사이트가 레이아웃을 다시 계산하지 않는다');
+  }
+  // 그 resize 가 우리 resize 리스너를 다시 깨우면 무한 재귀가 되어 탭이 멎는다
+  // (0.1.8 로 실제 배포된 결함). 창 크기 변경 처리는 밀어내기 폭만 다시 맞추고,
+  // 재계산 요청은 열고/닫을 때만 해야 한다.
+  const resizeCount = dispatchedWindowEvents.filter(t => t === 'resize').length;
+  if (resizeCount > 10) {
+    throw new Error(`resize 무한 재귀 (${resizeCount}회 발송) — 우리가 쏜 resize 가 우리 리스너를 다시 깨운다 (탭 멈춤)`);
   }
 
   // 패널 닫기: 실제 iframe 의 contentWindow 에서 온 메시지만 content.js 가 받아들인다
