@@ -10,11 +10,9 @@
  *      (제스처 불필요 흐름이라 SW 경유해도 무방 — PLAN §변경1).
  *   4) 설정 popup 지원: GET_CONNECTION_INFO 로 현재 연결 대상/포트/엔진 상태 제공.
  *   5) 마스킹 조정 파일 재생성: WRAP_MASKED_TEXT.
- *
- * ※ 검토 패널 자체는 더 이상 chrome.sidePanel API로 열지 않는다(2026-07-24
- *   재정정) — content.js 가 이 탭의 페이지 DOM에 직접 iframe으로 주입한다
- *   (content.js의 "검토 패널 열기" 섹션 주석 참고). SW는 그 이후의 검사 오케스트레이션
- *   (START_SCAN/PANEL_READY/PANEL_DECISION)만 담당한다.
+ *   6) 검토 패널 열기/닫기: content.js 의 OPEN_PANEL/CLOSE_PANEL 을 받아 브라우저
+ *      네이티브 사이드패널을 해당 탭에만 띄운다(2026-08-01 재정정 — content.js 의
+ *      "검토 패널 열기" 섹션 주석에 iframe 오버레이에서 되돌아온 경위가 있다).
  */
 
 import { wrapMaskedFile } from '../utils/docwrapper.js';
@@ -303,15 +301,91 @@ async function runScan(sessionId, kind, payload, tabId) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 검토 패널(브라우저 네이티브 사이드패널) 열기/닫기
+//
+// manifest 에 side_panel.default_path 는 일부러 두지 않는다 — 그걸 선언하는 순간
+// "모든 탭에 기본으로 존재하는 전역 패널"이 생겨 탭별 스코핑과 정면으로 충돌한다.
+// 대신 열어야 하는 그 순간에 그 탭에만 path 를 심고 enabled 를 켠다. path 가 없는
+// 탭에는 패널이 애초에 존재하지 않으므로 다른 탭으로 새어나갈 여지가 없다.
+//
+// path 에 tabId 를 붙이는 이유: 네이티브 사이드패널에서 보낸 메시지에는 sender.tab
+// 이 없다(확장 페이지라 탭에 종속되지 않은 컨텍스트로 취급된다). 패널이 자기가 어느
+// 탭의 것인지 알 방법이 URL 밖에 없어서, SW 가 직접 만든 값을 그렇게 실어 보낸다
+// (sidepanel.js 의 myTabId 주석 참고).
+// ════════════════════════════════════════════════════════════════════════════
+
+function panelPathFor(tabId) {
+  return `sidepanel/sidepanel.html?tabId=${tabId}`;
+}
+
+/** 패널이 URL 에서 읽어 보낸 tabId 를 정수로만 받아들인다.
+ *  빈 문자열이 Number('') === 0 으로 통과해 엉뚱한 탭 0 을 만드는 걸 막으려고
+ *  숫자/숫자문자열만 명시적으로 통과시킨다. */
+function asTabId(value) {
+  if (typeof value === 'number') return Number.isInteger(value) ? value : null;
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+/** 그 탭에서 패널이 다시 뜨지 않게 끈다. 이미 열려 있는 패널을 강제로 닫지는
+ *  못하지만(그건 close() 담당), 검토가 끝난 뒤 그 탭으로 돌아왔을 때 빈 패널이
+ *  되살아나는 걸 막는다. */
+function disablePanelForTab(tabId) {
+  if (tabId == null) return;
+  try { chrome.sidePanel?.setOptions({ tabId, enabled: false })?.catch?.(() => {}); } catch (_) { /* ignore */ }
+}
+
+/** 열려 있는 패널까지 닫는다. close() 는 Chrome 141+ 이므로 없을 수 있고, 그때는
+ *  비활성화만 남는다 — 정상 흐름에선 패널이 스스로 window.close() 로 닫히므로
+ *  이 경로는 타임아웃 등 예외 상황용이다. */
+function closePanelForTab(tabId) {
+  if (tabId == null) return;
+  try { chrome.sidePanel?.close?.({ tabId })?.catch?.(() => {}); } catch (_) { /* ignore */ }
+  disablePanelForTab(tabId);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // 메시지 핸들러
 // ════════════════════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const type = message?.type;
 
-  // content.js 가 자신의 tabId 를 (제스처 이전에) 캐싱하기 위해 요청
+  // content.js 가 자신의 tabId 를 (제스처 이전에) 캐싱하기 위해 요청.
+  // 네이티브 사이드패널에서 물어보면 sender.tab 이 없으므로, 패널이 자기 URL 에서
+  // 읽어 실어 보낸 tabId 를 그대로 되돌려준다(SW 가 만든 값이라 신뢰 가능).
   if (type === 'GET_TAB_ID') {
-    sendResponse({ tabId: sender?.tab?.id ?? null });
+    sendResponse({ tabId: sender?.tab?.id ?? asTabId(message.tabId) });
+    return false;
+  }
+
+  // content.js: 사용자 제스처 시점에 검토 패널을 열어달라는 요청.
+  //
+  // open() 은 사용자 제스처에 대한 응답으로만 허용되고, 그 제스처는 content 의
+  // sendMessage 를 타고 이 리스너까지 전파된다. 다만 앞에 await 를 하나라도 끼우면
+  // 그 시점에 소실되므로(Chromium issue 355266358), setOptions 도 결과를 기다리지
+  // 않고 던지기만 한다 — 같은 채널로 순서대로 처리되므로 open() 은 방금 심은 path 를
+  // 본다. 그래도 거부되면 content 가 예전 iframe 오버레이로 폴백할 수 있게
+  // ok:false 를 돌려준다.
+  if (type === 'OPEN_PANEL') {
+    const tabId = sender?.tab?.id ?? null;
+    if (tabId == null) { sendResponse({ ok: false, reason: 'no-tab' }); return false; }
+    try {
+      chrome.sidePanel.setOptions({ tabId, path: panelPathFor(tabId), enabled: true })?.catch?.(() => {});
+      chrome.sidePanel.open({ tabId })
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, reason: 'rejected', error: String(err?.message || err) }));
+      return true; // 응답이 비동기 — 채널을 열어둔다
+    } catch (err) {
+      // sidePanel API 자체가 없는 구버전 Chrome 등
+      sendResponse({ ok: false, reason: 'unavailable', error: String(err?.message || err) });
+      return false;
+    }
+  }
+
+  if (type === 'CLOSE_PANEL') {
+    closePanelForTab(sender?.tab?.id ?? asTabId(message.tabId));
+    sendResponse({ ok: true });
     return false;
   }
 
@@ -328,8 +402,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 반드시 "이 요청을 보낸 탭"의 세션만 찾아 돌려준다 — activeSessionId(전역 최신
   // 세션)로 폴백하면, 탭 B에서 새로 뜬 패널이 탭 A의 검사 결과를 자기 것으로
   // 잘못 받아버리는 문제가 있었다(탭 스코핑이 안 먹히는 것처럼 보인 실제 원인).
+  //
+  // 네이티브 사이드패널에는 sender.tab 이 없으므로 그 스코핑 기준을 잃지 않으려면
+  // 패널이 자기 URL(?tabId=)에서 읽어 보낸 값을 써야 한다 — 그 URL 은 SW 가
+  // setOptions 할 때 직접 만든 것이라 패널이 임의의 탭을 사칭할 수 없다.
   if (type === 'PANEL_READY') {
-    const requesterTabId = sender?.tab?.id ?? null;
+    const requesterTabId = sender?.tab?.id ?? asTabId(message.tabId);
     let sid = null, session = null;
     if (requesterTabId != null) {
       for (const [id, s] of sessions) {
@@ -355,6 +433,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
       }).catch(() => {});
     }
+    // 검토가 끝났으니 그 탭의 패널을 꺼둔다 — 패널은 스스로 window.close() 로
+    // 닫지만, 옵션을 켠 채로 두면 나중에 그 탭으로 돌아왔을 때 빈 패널이 되살아난다.
+    disablePanelForTab(session?.tabId);
     sessions.delete(sessionId);
     if (activeSessionId === sessionId) activeSessionId = null;
     sendResponse({ ok: true });
