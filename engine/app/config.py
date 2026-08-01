@@ -11,6 +11,29 @@ from pathlib import Path
 
 APP_DIR: Path = Path(__file__).resolve().parent
 
+# ── 모델 보관 위치 ────────────────────────────────────────────────────────────
+# 내려받은 가중치는 **앱 설치 폴더 밖**에 둔다. 설치 폴더(prod 기준
+# resources/engine) 는 재설치·업데이트 때 통째로 교체되므로, 거기 두면 앱을 다시
+# 받을 때마다 이미 갖고 있는 600MB 를 또 받게 된다(실사용자 리포트).
+#
+# 앱과 함께 배포되는 건 런타임 스크립트·설정 같은 작은 파일들뿐이고(BUNDLED_MODELS_DIR),
+# 엔진 기동 시 그것들을 이 보관 위치로 복사해 맞춘다(models_sync.py). 그래서 이 두
+# 디렉터리는 "앱이 주는 코드" 와 "사용자 기기에 쌓이는 가중치" 를 나누는 경계다.
+BUNDLED_MODELS_DIR: Path = APP_DIR / "models"
+
+
+def _default_models_root() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "UpSecurity" / "models"
+
+
+MODELS_ROOT: Path = Path(os.environ.get("SECUREDOC_MODELS_DIR", str(_default_models_root())))
+
 # ── 서비스 시그니처 (PLAN §11) ────────────────────────────────────────────────
 # 익스텐션이 포트 스캔 시 "우리 엔진"임을 식별하는 고정 시그니처.
 SERVICE_NAME: str = "securedoc-gateway"
@@ -68,7 +91,7 @@ INJECTION_LLM_LOAD_DELAY_SEC: float = float(
 #   번들은 identity fallback 이라 사실상 무용했음), 실제로 입력을 구분해 판정한다.
 #   pooled 8도메인 기준: hybrid Acc 99.2%/FPR 0.25%/FNR 0.66%,
 #   attn(hidden 미사용) Acc 97.9%/FPR 1.69%/FNR 0.56% — hybrid 권장(기본값).
-INJECTION_ENGINE_DIR: Path = APP_DIR / "models" / "injection_engine"
+INJECTION_ENGINE_DIR: Path = MODELS_ROOT / "injection_engine"
 INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")  # "hybrid" | "attn"
 # 기본값 "auto" — local_injection_hybrid_inference.py 의 _resolve_device() 가
 # torch.cuda.is_available()/mps 를 실제로 확인해 cuda/mps/cpu 를 고른다. 예전엔
@@ -136,7 +159,7 @@ INJECTION_LOCALIZE_ENABLED: bool = bool(UPSTAGE_API_KEY)
 # 원래 3-seed(seed42/43/44) 앙상블로 구동했으나, 번들의 세 seed 가 실제로는
 # 완전히 동일한 가중치(하드링크)로 패키징된 버그가 확인되어 앙상블의 다양성
 # 이득이 전혀 없었음 — 단일 seed 로 전환하기로 결정(연산량 3배 낭비 제거).
-PII_ENGINE_DIR: Path = APP_DIR / "models" / "pii_engine"
+PII_ENGINE_DIR: Path = MODELS_ROOT / "pii_engine"
 PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # GPU 실측(1,500자 청크 기준): CPU 1.69초 vs GPU 0.43초(~4배), VRAM 피크 1.74GB —
 # 인젝션 LLM(피크 3.8GB)과 동시 로드해도 합계 ~5.5GB 로 6GB+ VRAM 환경에선 여유 있음.

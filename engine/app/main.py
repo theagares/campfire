@@ -27,8 +27,12 @@ logger = logging.getLogger("securedoc.engine")
 async def lifespan(app: FastAPI):
     from app.adapters.mcp import mcp_session_context
     from app.core.detectors import registry
+    from app.models_sync import sync_bundled_model_files
     from app.store import db
 
+    # detector 를 로드하기 전에 해야 한다 — 런타임 스크립트가 보관 위치에 있어야
+    # 서브프로세스를 띄울 수 있다(models_sync 모듈 docstring 참고).
+    sync_bundled_model_files()
     registry.load_detectors()
     db.init_db()
     logger.info(
