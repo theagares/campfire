@@ -17,9 +17,20 @@
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const http = require('http');
+const { app } = require('electron');
 
 const constants = require('./constants');
 const paths = require('./paths');
+
+/**
+ * 엔진 로그를 이 프로세스의 stdout 으로 흘릴지 여부.
+ *
+ * 엔진(uvicorn/파이썬)은 요청마다 접근 로그를 뱉는데, 이걸 그대로 console.log 하면
+ * 설치본을 터미널에서 실행했을 때 그 창에 로그가 계속 쏟아진다(실사용자 리포트:
+ * "앱 실행 로그가 cmd 에 계속 뜬다"). 개발 중에는 필요한 정보라 dev 에서만 남기고,
+ * 배포본에서는 끈다 — ipc.js 의 dev 판정과 같은 기준을 쓴다.
+ */
+const DEV = process.argv.includes('--dev') || !app?.isPackaged;
 
 /**
  * @typedef {Object} EngineStatus
@@ -133,6 +144,7 @@ class EngineManager extends EventEmitter {
   }
 
   _onEngineLog(buf) {
+    if (!DEV) return; // 배포본에서는 터미널로 흘리지 않는다(위 DEV 주석 참고)
     const line = buf.toString('utf-8').trim();
     if (line) {
       console.log('[engine]', line);
@@ -140,7 +152,7 @@ class EngineManager extends EventEmitter {
   }
 
   _onExit(code, signal) {
-    console.log(`[engine] 종료 (code=${code}, signal=${signal})`);
+    if (DEV) console.log(`[engine] 종료 (code=${code}, signal=${signal})`);
     this.child = null;
     this.boundPort = null;
     this.lastHealth = null;
