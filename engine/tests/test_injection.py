@@ -153,7 +153,7 @@ def test_parse_spans_empty_vs_undecidable_are_distinct():
 # cached files"). 개발 기기엔 캐시가 이미 있어 오래 가려져 있던 결함이다.
 
 import json as _json
-from app.core.detectors.injection import llm_mcp as _llm
+from app.core.detectors.injection import backbone as _bb
 
 
 def _make_cache(tmp_path, model_id, *, with_config=True):
@@ -169,14 +169,14 @@ def _point_engine_dir(monkeypatch, tmp_path, model_id):
     eng = tmp_path / "injection_engine"
     eng.mkdir(exist_ok=True)
     (eng / "extract_config.json").write_text(_json.dumps({"model": model_id}), encoding="utf-8")
-    monkeypatch.setattr(_llm.config, "INJECTION_ENGINE_DIR", eng)
+    monkeypatch.setattr(_bb.config, "INJECTION_ENGINE_DIR", eng)
 
 
 def test_backend_cached_true_when_snapshot_complete(tmp_path, monkeypatch):
     mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
     _point_engine_dir(monkeypatch, tmp_path, mid)
     monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid)))
-    assert _llm._backend_model_cached() is True
+    assert _bb.is_cached() is True
 
 
 def test_backend_cached_false_when_cache_missing(tmp_path, monkeypatch):
@@ -184,7 +184,7 @@ def test_backend_cached_false_when_cache_missing(tmp_path, monkeypatch):
     mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
     _point_engine_dir(monkeypatch, tmp_path, mid)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty"))
-    assert _llm._backend_model_cached() is False
+    assert _bb.is_cached() is False
 
 
 def test_backend_cached_false_when_snapshot_incomplete(tmp_path, monkeypatch):
@@ -192,7 +192,7 @@ def test_backend_cached_false_when_snapshot_incomplete(tmp_path, monkeypatch):
     mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
     _point_engine_dir(monkeypatch, tmp_path, mid)
     monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid, with_config=False)))
-    assert _llm._backend_model_cached() is False
+    assert _bb.is_cached() is False
 
 
 def test_backend_cached_true_for_local_dir_model(tmp_path, monkeypatch):
@@ -200,11 +200,11 @@ def test_backend_cached_true_for_local_dir_model(tmp_path, monkeypatch):
     local = tmp_path / "bundled_base"
     local.mkdir()
     _point_engine_dir(monkeypatch, tmp_path, str(local))
-    assert _llm._backend_model_cached() is True
+    assert _bb.is_cached() is True
 
 
 def test_backend_cached_false_when_config_unreadable(tmp_path, monkeypatch):
     eng = tmp_path / "no_cfg"
     eng.mkdir()
-    monkeypatch.setattr(_llm.config, "INJECTION_ENGINE_DIR", eng)
-    assert _llm._backend_model_cached() is False
+    monkeypatch.setattr(_bb.config, "INJECTION_ENGINE_DIR", eng)
+    assert _bb.is_cached() is False

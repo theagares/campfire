@@ -4,21 +4,25 @@ GET  /models/status  — PII/인젝션 실 모델(encoder/llm_mcp) 가중치가 
 POST /models/fetch   — models-v1 GitHub Release에서 가중치를 내려받아 압축 해제(백그라운드
                        job, 기존 job_registry/`/jobs/{id}/events` 패턴 재사용해 진행 상황 폴링).
 
-실제 추론 백본(EXAONE-4.0-1.2B, 약 2.4GB)은 이 배포 대상이 아니다 — transformers 가
-최초 실행 시 HuggingFace Hub 에서 공개 모델로 알아서 받아 캐싱한다(MODELS.md). 여기서
-받는 건 우리가 직접 학습/이식한 작은 아티팩트(PII 인코더 전체 568MB, 인젝션 MLP 헤드
-36MB)뿐이다.
+우리가 직접 학습/이식한 작은 아티팩트(PII 인코더 568MB, 인젝션 MLP 헤드 36MB)는 우리
+GitHub 릴리스(models-v1)에서 받고, 추론 백본(EXAONE-4.0-1.2B, 약 2.4GB)은 HuggingFace
+에서 받는다 — model.safetensors 하나가 2.4GB 라 GitHub 릴리스 에셋 상한(2 GiB)을 넘어
+우리가 직접 호스팅할 수 없기 때문이다.
 
-주의: 그래서 /models/status 의 injection.ready 는 "MLP 헤드가 있다" 는 뜻이지 "인젝션
-탐지가 실제로 돈다" 는 뜻이 아니다. 백본이 캐시에 없으면 헤드가 있어도 서브프로세스가
-로딩에 실패한다(실사용자 macOS 신규 설치에서 재현 — llm_mcp.py 의 _backend_model_cached
-주석 참고). 백본까지 여기서 배포하려면 model.safetensors 하나가 2.4GB 라 GitHub 릴리스
-에셋 상한(2 GiB)을 넘어 분할 업로드가 필요하다.
+(2026-08-01 재정정) 예전엔 백본을 여기서 다루지 않고 "실제 검사 시점에 transformers 가
+알아서 받겠지" 하고 두었다. 그 결과 두 가지가 깨졌다:
+  1. injection.ready 가 "MLP 헤드가 있다" 는 뜻인데 앱은 "인젝션 탐지가 돈다" 로 믿었다.
+     백본이 없으면 헤드가 있어도 서브프로세스가 로딩에 실패한다(실사용자 macOS 신규
+     설치에서 재현).
+  2. 받더라도 검사 도중 몇 분간 아무 표시 없이 멈춘 것처럼 보였다.
+이제 백본도 이 흐름에서 받고(_download_backbone) 진행 상황을 같은 job 이벤트로 방출하며,
+injection.ready 는 헤드와 백본이 모두 있을 때만 참이다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import shutil
 import tarfile
@@ -31,6 +35,7 @@ import httpx
 from fastapi import APIRouter
 
 from app import config
+from app.core.detectors.injection import backbone
 
 from . import job_registry
 
@@ -74,15 +79,31 @@ def _pii_weights_present() -> bool:
     return all((seed_dir / f).is_file() for f in _PII_REQUIRED_FILES)
 
 
-def _injection_weights_present() -> bool:
+def _injection_head_present() -> bool:
     variant_dir = config.INJECTION_ENGINE_DIR / config.INJECTION_VARIANT
     return all((variant_dir / f).is_file() for f in _INJECTION_REQUIRED_FILES)
+
+
+def _injection_weights_present() -> bool:
+    """인젝션 탐지가 실제로 뜰 수 있는 상태인가.
+
+    MLP 헤드만으로는 부족하다 — 백본(EXAONE 2.4GB)이 없으면 헤드가 있어도 서브프로세스가
+    로딩에 실패한다(실사용자 macOS 신규 설치에서 재현). 예전엔 헤드만 보고 ready 를
+    돌려줘서, 앱은 "준비됨" 이라 믿고 아무것도 안 받았고 정작 검사할 때 죽었다.
+    """
+    return _injection_head_present() and backbone.is_cached()
 
 
 def _status() -> dict[str, Any]:
     return {
         "pii": {"ready": _pii_weights_present()},
-        "injection": {"ready": _injection_weights_present()},
+        # head/backbone 은 어느 쪽이 비었는지 UI·로그가 구분할 수 있게 덧붙인 정보다
+        # (기존 소비자는 ready 만 본다).
+        "injection": {
+            "ready": _injection_weights_present(),
+            "head": _injection_head_present(),
+            "backbone": backbone.is_cached(),
+        },
     }
 
 
@@ -163,13 +184,63 @@ async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable)
             tmp_path.unlink(missing_ok=True)
 
 
+async def _download_backbone(emit: Callable) -> None:
+    """인젝션 백본(EXAONE 약 2.4GB)을 HuggingFace 에서 받으며 진행 상황을 방출한다.
+
+    예전엔 이걸 받지 않고 두었다가, 실제 검사 시점에 서브프로세스 안의
+    from_pretrained() 가 알아서 받게 했다 — 그러면 앱은 아무 표시도 못 하고 그냥
+    몇 분간 멈춘 것처럼 보인다(캐시가 없으면 아예 실패했다). 다른 가중치와 같은
+    /models/fetch 흐름에서 받아 기존 진행 표시 UI 를 그대로 태운다.
+
+    진행률은 다운로드 스레드가 올리는 카운터를 이벤트 루프 쪽에서 주기적으로 읽어
+    방출한다 — 청크마다 스레드에서 코루틴을 깨우지 않기 위해서다.
+    """
+    label = "인젝션 백본(EXAONE)"
+    await emit({"type": "progress", "asset": "backbone", "label": f"{label} 준비 중...", "pct": 0.0})
+
+    total = await asyncio.to_thread(backbone.total_download_bytes)
+    downloaded = 0
+
+    def on_bytes(n: int) -> None:
+        nonlocal downloaded
+        downloaded += n  # GIL 보호 하의 단순 누적 — 스레드에서 여기까지만 한다
+
+    done = asyncio.Event()
+
+    async def report() -> None:
+        while not done.is_set():
+            # 진행 표시는 퍼센트로만 한다(앱 UI 가 label + pct% 를 그린다). 총 크기를
+            # 못 구했으면 pct 는 None 으로 두고 라벨만 보여준다 — 모르는 값을 그럴듯한
+            # 숫자로 지어내지 않는다(system-metrics.js 의 "허위 수치 금지" 와 같은 원칙).
+            pct = min(round(downloaded / total * 100, 1), 100.0) if total else None
+            await emit(
+                {
+                    "type": "progress",
+                    "asset": "backbone",
+                    "label": f"{label} 다운로드 중...",
+                    "pct": pct,
+                }
+            )
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(done.wait(), timeout=1.0)
+
+    reporter = asyncio.create_task(report())
+    try:
+        await asyncio.to_thread(backbone.download, on_bytes)
+    finally:
+        done.set()
+        await reporter
+
+
 async def _fetch_job(job_id: str) -> None:
     emit = job_registry.make_emit(job_id)
     try:
         if not _pii_weights_present():
             await _download_and_extract("pii", _ASSETS["pii"], emit)
-        if not _injection_weights_present():
+        if not _injection_head_present():
             await _download_and_extract("injection", _ASSETS["injection"], emit)
+        if not backbone.is_cached():
+            await _download_backbone(emit)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})
