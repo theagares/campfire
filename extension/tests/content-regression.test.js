@@ -152,7 +152,7 @@ function makeElementStub() {
 
 const documentStub = {
   documentElement: { appendChild() {}, style: makeStyleStub() },
-  body: { dispatchEvent: () => true },
+  body: { dispatchEvent: () => true, style: makeStyleStub() },
   activeElement: null,
   addEventListener: (t, l) => addListener(documentListeners, t, l),
   createElement: () => makeElementStub(),
@@ -408,13 +408,25 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // (실사용자 리포트). 반대로 닫은 뒤 margin 이 남으면 사이트가 계속 찌그러진 채로
   // 남으므로, 원복까지가 한 쌍이다.
   const htmlStyle = documentStub.documentElement.style;
+  const bodyStyle = documentStub.body.style;
 
   // 앞선 테스트에서 이미 패널이 열렸다 → 밀어내기가 적용돼 있어야 한다.
-  if (htmlStyle.getPropertyValue('margin-right') !== '560px') {
-    throw new Error(`패널이 열렸는데 본문 밀어내기가 없다 (margin-right="${htmlStyle.getPropertyValue('margin-right')}")`);
+  if (bodyStyle.getPropertyValue('margin-right') !== '560px') {
+    throw new Error(`패널이 열렸는데 본문 밀어내기가 없다 (margin-right="${bodyStyle.getPropertyValue('margin-right')}")`);
   }
-  if (htmlStyle.getPropertyPriority('margin-right') !== 'important') {
+  if (bodyStyle.getPropertyPriority('margin-right') !== 'important') {
     throw new Error('밀어내기 margin-right 에 !important 가 없다 — 사이트 CSS 에 밀릴 수 있다');
+  }
+  // transform 이 없으면 position:fixed 인 사이트 요소가 그대로 패널 밑으로 들어간다
+  // (ChatGPT 실사용자 재현: <html> margin 만으로는 전혀 변화 없었음).
+  if (!bodyStyle.getPropertyValue('transform')) {
+    throw new Error('body 에 transform 이 없다 — fixed 요소가 여전히 패널에 가려진다');
+  }
+  if (bodyStyle.getPropertyValue('max-width') !== 'calc(100% - 560px)') {
+    throw new Error('body max-width 상한이 없다 — 사이트가 100vw 로 못박아둔 경우 안 좁아진다');
+  }
+  if (htmlStyle.getPropertyValue('overflow-x') !== 'hidden') {
+    throw new Error('html overflow-x:hidden 이 없다 — 가로 스크롤이 생긴다');
   }
 
   // 패널 닫기: 실제 iframe 의 contentWindow 에서 온 메시지만 content.js 가 받아들인다
@@ -426,11 +438,16 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   await flush();
 
-  if (htmlStyle.getPropertyValue('margin-right') !== '') {
-    throw new Error('패널을 닫았는데 본문 밀어내기가 남아있다 — 사이트가 계속 찌그러진다');
-  }
-  if (htmlStyle.getPropertyValue('overflow-x') !== '') {
-    throw new Error('패널을 닫았는데 overflow-x 가 남아있다');
+  for (const [label, style, name] of [
+    ['body margin-right', bodyStyle, 'margin-right'],
+    ['body max-width', bodyStyle, 'max-width'],
+    ['body transform', bodyStyle, 'transform'],
+    ['body overflow-x', bodyStyle, 'overflow-x'],
+    ['html overflow-x', htmlStyle, 'overflow-x'],
+  ]) {
+    if (style.getPropertyValue(name) !== '') {
+      throw new Error(`패널을 닫았는데 ${label} 가 남아있다 — 사이트가 계속 찌그러진다`);
+    }
   }
 
   console.log('content regression ok');

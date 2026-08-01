@@ -206,36 +206,60 @@
   // margin-right 를 줘서 사이트 본문이 남은 폭으로 리플로우되게 하면 가려지지 않고
   // 나란히 놓인다.
   //
-  // 한계(정직하게 적어둔다): position:fixed 이거나 100vw 로 잡힌 사이트 요소는 뷰포트
-  // 기준이라 이 margin 의 영향을 받지 않아 여전히 패널 밑으로 들어갈 수 있다. 그것까지
-  // 막으려면 "뷰포트 자체"를 줄여야 하는데, 콘텐츠 스크립트로는 불가능하고 브라우저
-  // 네이티브 사이드패널(chrome.sidePanel)만 할 수 있는 일이다. 여기서는 최소한 가로
-  // 스크롤이 생기지 않도록 overflow-x:hidden 으로 잘라만 둔다.
-  const PAGE_SHIFT_PROPS = ['margin-right', 'overflow-x'];
-  let pageShiftSaved = null; // [{ name, value, priority }] — 원복용 원본 인라인 스타일
+  // (2026-08-01 재정정) 처음엔 <html> 에 margin-right 만 줬는데 ChatGPT 에서 전혀
+  // 먹지 않았다 — 앱 셸이 뷰포트에 고정(position:fixed)되어 있어 조상의 margin 과
+  // 무관하게 화면 전체를 차지하기 때문. 그래서 body 에 transform 을 걸어 fixed
+  // 자손들의 컨테이닝 블록을 body 로 바꾼 뒤 body 를 좁힌다(applyPageShift 주석 참고).
+  //
+  // 부작용: body 가 fixed 의 기준이 되므로, "스크롤해도 화면에 붙어 있어야 하는"
+  // 사이트 요소가 문서와 함께 스크롤될 수 있다. 우리가 지원하는 6개 AI 챗 사이트는
+  // 모두 화면 높이에 꽉 찬 앱 셸 + 내부 스크롤 구조라 실질적 영향이 없고, 패널이
+  // 열려 있는 동안(검토 중)만 적용되며 닫으면 즉시 원복된다.
+  //
+  // 우리 패널 자체는 <html> 바로 밑에 붙이므로(body 밖) 이 transform 의 영향을
+  // 받지 않는다 — 패널은 계속 뷰포트 오른쪽에 고정된다.
+  let pageShiftSaved = null; // [{ el, name, value, priority }] — 원복용 원본 인라인 스타일
 
   function applyPageShift(px) {
     const html = document.documentElement;
-    if (!html?.style) return;
+    const body = document.body;
+    if (!html?.style || !body?.style) return;
+
     // 원본 저장은 최초 1회만 — 리사이즈로 다시 불려도 우리가 넣은 값을 "원본"으로
     // 덮어써 버리면 안 된다.
     if (!pageShiftSaved) {
-      pageShiftSaved = PAGE_SHIFT_PROPS.map((name) => ({
-        name,
-        value: html.style.getPropertyValue(name),
-        priority: html.style.getPropertyPriority(name),
+      pageShiftSaved = [
+        { el: html, name: 'overflow-x' },
+        { el: body, name: 'margin-right' },
+        { el: body, name: 'max-width' },
+        { el: body, name: 'transform' },
+        { el: body, name: 'overflow-x' },
+      ].map(({ el, name }) => ({
+        el, name,
+        value: el.style.getPropertyValue(name),
+        priority: el.style.getPropertyPriority(name),
       }));
     }
-    html.style.setProperty('margin-right', `${px}px`, 'important');
+
     html.style.setProperty('overflow-x', 'hidden', 'important');
+    body.style.setProperty('margin-right', `${px}px`, 'important');
+    // 사이트가 body 폭을 100vw 로 못박아둔 경우 margin 만으로는 안 좁아진다 → 상한을 건다.
+    body.style.setProperty('max-width', `calc(100% - ${px}px)`, 'important');
+    // 핵심: transform 이 걸린 요소는 position:fixed 자손들의 "컨테이닝 블록"이 된다
+    // (CSS 명세). 이게 없으면 뷰포트 기준으로 붙어 있는 사이트 요소들 — ChatGPT 의
+    // 앱 셸처럼 화면 전체를 차지하는 것들 — 이 body 를 좁혀도 그대로 패널 밑으로
+    // 들어간다(실사용자 재현: <html> margin 만으로는 전혀 변화 없음). translateZ(0)
+    // 은 시각적으로는 아무것도 바꾸지 않으면서 이 컨테이닝 블록 효과만 만든다.
+    body.style.setProperty('transform', 'translateZ(0)', 'important');
+    body.style.setProperty('overflow-x', 'hidden', 'important');
   }
 
   function revertPageShift() {
-    const html = document.documentElement;
-    if (!html?.style || !pageShiftSaved) return;
-    for (const { name, value, priority } of pageShiftSaved) {
-      if (value) html.style.setProperty(name, value, priority);
-      else html.style.removeProperty(name);
+    if (!pageShiftSaved) return;
+    for (const { el, name, value, priority } of pageShiftSaved) {
+      if (!el?.style) continue;
+      if (value) el.style.setProperty(name, value, priority);
+      else el.style.removeProperty(name);
     }
     pageShiftSaved = null;
   }
