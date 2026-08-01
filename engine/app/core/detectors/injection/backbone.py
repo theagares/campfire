@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Callable
 
 from app import config
 
@@ -92,33 +91,51 @@ def total_download_bytes() -> int | None:
         return None
 
 
-def download(on_bytes: Callable[[int], None]) -> None:
-    """백본을 HF 캐시로 내려받는다. 받은 바이트가 생길 때마다 on_bytes(증가분) 호출.
+def repo_cache_dir() -> Path | None:
+    """이 백본이 캐시되는 디렉터리(<cache>/models--org--name). 로컬 경로 모델이면 None."""
+    mid = model_id()
+    if not mid or Path(mid).is_dir():
+        return None
+    return hf_cache_root() / f"models--{mid.replace('/', '--')}"
 
-    블로킹 호출이므로 호출부가 스레드로 돌려야 한다(models.py 는 asyncio.to_thread 사용).
-    on_bytes 는 다운로드 스레드에서 불리므로, 호출부는 거기서 무거운 일을 하지 말 것
-    (카운터만 올리고 실제 이벤트 방출은 이벤트 루프 쪽에서 주기적으로 하는 구조).
+
+def downloaded_bytes() -> int:
+    """지금까지 디스크에 실제로 받아진 바이트.
+
+    진행률을 tqdm 훅이 아니라 디스크 실측으로 구하는 이유: tqdm_class 로 바이트
+    진행바를 가로채는 방식은 huggingface_hub 버전·다운로드 백엔드에 따라 아예 안
+    불린다(실사용자 macOS: 다운로드는 도는데 진행률이 계속 0%). 디스크에 쌓이는
+    양은 어떤 백엔드를 쓰든 똑같이 늘어나므로 이쪽이 훨씬 안정적이다.
+
+    심볼릭 링크는 세지 않는다 — HF 캐시는 blobs/ 에 실제 파일을 두고 snapshots/ 에서
+    그걸 심볼릭 링크로 가리키는데(macOS/Linux), 둘 다 세면 두 배로 잡힌다. 심볼릭
+    링크를 못 만드는 Windows 에서는 snapshots/ 에 실파일이 들어가고 blobs/ 가 비므로
+    같은 계산이 그대로 맞는다(실측 확인).
+    """
+    root = repo_cache_dir()
+    if root is None or not root.is_dir():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            total += path.stat().st_size
+        except OSError:
+            continue  # 다운로드 중 사라지는 임시 파일 등은 건너뛴다
+    return total
+
+
+def download() -> None:
+    """백본을 HF 캐시로 내려받는다(블로킹 — 호출부가 스레드로 돌릴 것).
+
+    진행 상황은 이 함수가 알려주지 않는다. 호출부가 downloaded_bytes() 를 주기적으로
+    읽어 보고한다(위 주석 참고).
     """
     mid = model_id()
     if not mid:
         raise RuntimeError("extract_config.json 에서 백본 모델 id 를 읽지 못했습니다")
 
     from huggingface_hub import snapshot_download
-    from huggingface_hub.utils import tqdm as hf_tqdm
 
-    class _ProgressTqdm(hf_tqdm):
-        def update(self, n=1):
-            # 바이트 진행바만 집계한다 — snapshot_download 는 "파일 개수" 진행바도
-            # 같은 tqdm_class 로 만들기 때문에 그것까지 더하면 총량이 어긋난다.
-            if getattr(self, "unit", None) == "B":
-                try:
-                    on_bytes(int(n))
-                except Exception:
-                    pass
-            return super().update(n)
-
-    snapshot_download(
-        mid,
-        ignore_patterns=IGNORE_PATTERNS,
-        tqdm_class=_ProgressTqdm,
-    )
+    snapshot_download(mid, ignore_patterns=IGNORE_PATTERNS)
