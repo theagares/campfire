@@ -96,6 +96,10 @@ let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 
 
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
+  removeEventListener: (t, l) => {
+    const arr = windowListeners.get(t);
+    if (arr) windowListeners.set(t, arr.filter(x => x !== l));
+  },
   postMessage(data) {
     if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
       actionLog.push({ kind: 'approve-msg', meta: data.meta });
@@ -115,12 +119,43 @@ const domBySelector = new Map([
   ['[data-testid="send-button"]', sendButtonStub],
 ]);
 
+// 인라인 스타일 최소 구현 — 페이지 밀어내기(테스트 7) 검증용.
+function makeStyleStub() {
+  const props = new Map();
+  return {
+    _props: props,
+    getPropertyValue: (k) => props.get(k)?.value ?? '',
+    getPropertyPriority: (k) => props.get(k)?.priority ?? '',
+    setProperty: (k, value, priority = '') => props.set(k, { value, priority }),
+    removeProperty: (k) => props.delete(k),
+  };
+}
+
+// 패널 iframe/호스트 엘리먼트 — 폭 실측과 close 메시지 경로를 흉내낸다.
+const createdElements = [];
+function makeElementStub() {
+  const el = {
+    style: makeStyleStub(),
+    contentWindow: {},
+    appendChild() {},
+    remove() {},
+    attachShadow: () => ({}),
+    addEventListener() {},
+    // 패널 호스트는 max-width:92vw 라 실제 폭을 실측해서 민다
+    getBoundingClientRect: () => ({ width: 560, height: 900 }),
+  };
+  // cssText 를 문자열로 통째로 넣는 코드가 있어 받아만 둔다
+  Object.defineProperty(el.style, 'cssText', { value: '', writable: true });
+  createdElements.push(el);
+  return el;
+}
+
 const documentStub = {
-  documentElement: { appendChild() {} },
+  documentElement: { appendChild() {}, style: makeStyleStub() },
   body: { dispatchEvent: () => true },
   activeElement: null,
   addEventListener: (t, l) => addListener(documentListeners, t, l),
-  createElement: () => ({ style: {}, appendChild() {}, remove() {}, attachShadow: () => ({}), addEventListener() {} }),
+  createElement: () => makeElementStub(),
   querySelector: (sel) => domBySelector.get(sel) ?? null,
   querySelectorAll: () => [],
   execCommand: () => true,
@@ -364,6 +399,38 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   await new Promise(r => setTimeout(r, 800));   // 폴링 주기(200ms) 안에 눌려야 한다
   if (sendButtonStub.clicks !== 1) {
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
+  }
+
+  // (7) 검토 패널이 열려 있는 동안에는 사이트 본문을 그 폭만큼 밀어내야 하고,
+  // 닫으면 원래대로 되돌려야 한다.
+  //
+  // 패널은 position:fixed 오버레이라 밀어내기가 없으면 사이트 오른쪽을 그냥 덮는다
+  // (실사용자 리포트). 반대로 닫은 뒤 margin 이 남으면 사이트가 계속 찌그러진 채로
+  // 남으므로, 원복까지가 한 쌍이다.
+  const htmlStyle = documentStub.documentElement.style;
+
+  // 앞선 테스트에서 이미 패널이 열렸다 → 밀어내기가 적용돼 있어야 한다.
+  if (htmlStyle.getPropertyValue('margin-right') !== '560px') {
+    throw new Error(`패널이 열렸는데 본문 밀어내기가 없다 (margin-right="${htmlStyle.getPropertyValue('margin-right')}")`);
+  }
+  if (htmlStyle.getPropertyPriority('margin-right') !== 'important') {
+    throw new Error('밀어내기 margin-right 에 !important 가 없다 — 사이트 CSS 에 밀릴 수 있다');
+  }
+
+  // 패널 닫기: 실제 iframe 의 contentWindow 에서 온 메시지만 content.js 가 받아들인다
+  // (나머지 후보는 source 불일치로 무시되므로 전부 쏴도 안전하다).
+  for (const el of createdElements) {
+    for (const l of windowListeners.get('message') || []) {
+      l({ source: el.contentWindow, data: { type: 'UPS_CLOSE_OVERLAY' } });
+    }
+  }
+  await flush();
+
+  if (htmlStyle.getPropertyValue('margin-right') !== '') {
+    throw new Error('패널을 닫았는데 본문 밀어내기가 남아있다 — 사이트가 계속 찌그러진다');
+  }
+  if (htmlStyle.getPropertyValue('overflow-x') !== '') {
+    throw new Error('패널을 닫았는데 overflow-x 가 남아있다');
   }
 
   console.log('content regression ok');
