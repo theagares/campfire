@@ -1,8 +1,13 @@
 name: Build desktop installers (draft release)
 
 # 수동 실행(workflow_dispatch)으로 Windows/macOS 설치 파일을 electron-builder 로 빌드해
-# GitHub Releases에 "초안(draft)"으로 올린다 — 초안은 저장소 밖에 공개되지 않으므로
-# 실제로 공개 배포하려면 Releases 페이지에서 사람이 직접 "Publish"를 눌러야 한다.
+# GitHub Releases에 올린다. 흐름은 prepare -> build(matrix) -> publish 3단계다:
+#   prepare : 해당 태그의 릴리스를 draft 로 "한 번만" 만든다(없으면 생성, 이미 공개돼
+#             있으면 draft 로 되돌린다). 두 빌드가 각자 릴리스를 만들려다 충돌하던
+#             경쟁(422 already_exists)을 여기서 없앤다.
+#   build   : 두 플랫폼이 병렬로 빌드해 그 draft 릴리스에 에셋만 업로드한다.
+#   publish : 두 플랫폼이 "모두" 성공하고 설치 파일 에셋이 다 붙었을 때만 공개한다.
+#             한쪽이 실패하면 릴리스는 draft 로 남아 사용자에게 노출되지 않는다.
 #
 # Windows 로컬(개발자 PC, 비관리자 세션)에서는 electron-builder 가 코드사이닝 도구 묶음
 # (winCodeSign, macOS dylib 심볼릭 링크 포함)을 내려받다 "Cannot create symbolic link"로
@@ -22,7 +27,51 @@ permissions:
   contents: write
 
 jobs:
+  # 릴리스를 "먼저, 한 번만" 만들어 둔다.
+  #
+  # 왜: Windows/macOS 잡이 병렬로 돌면서 각자 electron-builder 로 릴리스를 만들려 한다.
+  # 둘 다 "이 태그 릴리스가 있나?" 를 확인하고 둘 다 없다고 판단한 뒤 둘 다 생성하는
+  # 경쟁(TOCTOU)이 있어, 늦게 도착한 쪽이 이렇게 죽는다:
+  #   HttpError: 422 Validation Failed — {"resource":"Release","code":"already_exists"}
+  # 실제로 v0.2.1 에서 macOS 가 이걸로 실패했다. 타이밍에 따라 무작위로 터지므로
+  # (v0.1.7~v0.2.0 은 우연히 피해갔다) 릴리스 "생성" 자체를 단일 잡으로 분리한다.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "이미 존재하는 릴리스를 재사용합니다: $tag"
+            # electron-builder 는 GitHub 상의 실제 릴리스 타입과 package.json 의
+            # releaseType 이 다르면 "호환 안 됨" 으로 보고 업로드를 조용히 건너뛴다
+            # (실측 기록: desktop/package.json 의 _comment_updater 참고 — 빌드는
+            # 전부 "성공" 인데 새 파일이 하나도 안 올라갔다). 우리 설정은 draft 이므로
+            # 이미 공개된 태그로 재빌드하는 경우 draft 로 되돌려 상태를 맞춘다.
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
+              gh release edit "$tag" --draft=true
+              echo "공개돼 있던 릴리스를 draft 로 되돌렸습니다(재빌드 중 업로드 건너뜀 방지): $tag"
+            fi
+          else
+            # draft 로 만든다 — 두 플랫폼이 모두 성공하기 전에는 공개되면 안 된다.
+            # v0.2.1 때 macOS 가 실패해 Windows 에셋만 담긴 릴리스가 Latest 로 공개돼
+            # 버렸다(자동 업데이트가 그걸 보게 되고, mac 사용자는 받을 파일이 없다).
+            gh release create "$tag" --draft --title "$version" --target "$GITHUB_SHA" \
+              --notes "빌드 중입니다. 두 플랫폼 빌드가 모두 끝나면 공개됩니다."
+            echo "릴리스를 draft 로 생성했습니다: $tag"
+          fi
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -209,3 +258,30 @@ jobs:
             if [ "$ok" -ne 1 ]; then sleep 5; fi
           done
           if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
+
+  # 두 플랫폼 빌드가 모두 성공했을 때만 릴리스를 공개한다.
+  #
+  # needs 는 build 매트릭스의 "모든" 잡이 성공해야 통과한다 — fail-fast: false 로 한쪽이
+  # 실패해도 다른 쪽은 계속 돌지만, 그 경우 이 잡은 실행되지 않으므로 릴리스는 draft 로
+  # 남는다. 반쪽짜리 릴리스가 Latest 로 공개되던 문제(v0.2.1)를 이걸로 막는다.
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${{ needs.prepare.outputs.tag }}"
+          # 에셋이 실제로 붙었는지 확인 — 빌드가 "성공" 했는데 업로드가 비어 있으면
+          # 공개해선 안 된다.
+          count=$(gh release view "$tag" --json assets --jq '[.assets[] | select(.name | endswith(".exe") or endswith(".dmg"))] | length')
+          echo "설치 파일 에셋 수: $count"
+          if [ "$count" -lt 3 ]; then
+            echo "에셋이 부족합니다(exe 1 + dmg 2 = 3 기대) — draft 로 둡니다."
+            exit 1
+          fi
+          gh release edit "$tag" --draft=false --latest
+          echo "릴리스를 공개했습니다: $tag"
