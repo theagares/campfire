@@ -74,6 +74,9 @@ _WARMUP_USER_PROMPT = "날씨를 요약해줘."
 # 사실상 결정적이므로 exact-match 캐시가 안전하다(의미적으로 "비슷한" 청크까지
 # 매칭하는 semantic cache 는 위치 특정 작업 특성상 오히려 위험해 쓰지 않는다).
 _SOLAR_CACHE_MAX = 256
+# 캐시 미스 표식 — 캐시에 저장되는 값 자체가 None(판단 불가)일 수 있어 dict.get 의
+# 기본 None 으로는 "저장 안 됨" 과 구분되지 않는다.
+_CACHE_MISS = object()
 
 # Upstage Solar 자체 프롬프트 캐싱 키 — _SOLAR_SYSTEM_PROMPT 가 모든 호출에서
 # 완전히 동일하므로, 고정된 키를 계속 재사용하면 Upstage 쪽에서 이 공통
@@ -270,14 +273,22 @@ class InjectionLlmMcpDetector:
     )
 
     @staticmethod
-    def _parse_solar_spans(content: str) -> list[str]:
+    def _parse_solar_spans(content: str) -> list[str] | None:
+        """Solar 응답에서 구간 문구 목록을 뽑는다.
+
+        반환값을 3가지로 구분한다 — 호출부가 "판단 불가" 와 "없다고 답함" 을 다르게
+        처리해야 하기 때문이다:
+          None : 응답을 해석하지 못함(JSON 없음/파싱 실패/구간 목록을 특정 못 함)
+          []   : Solar 가 "이 조각엔 해당 부분이 없다" 고 명확히 답함
+          [..] : 찾아낸 문구들
+        """
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if not match:
-            return []
+            return None
         try:
             obj = json.loads(match.group(0))
         except json.JSONDecodeError:
-            return []
+            return None
         spans = obj.get("spans")
         if not isinstance(spans, list):
             # Solar 가 키 이름을 틀리게 뱉는 경우가 실제로 있다 — 실측된 응답:
@@ -293,7 +304,7 @@ class InjectionLlmMcpDetector:
                 if isinstance(v, list) and v and all(isinstance(x, str) for x in v)
             ]
             if len(candidates) != 1:
-                return []
+                return None
             spans = candidates[0]
         return [s for s in spans if isinstance(s, str) and s]
 
@@ -326,15 +337,22 @@ class InjectionLlmMcpDetector:
             return None
         return (offsets[j], offsets[j + len(key) - 1] + 1)
 
-    async def _localize_with_solar(self, text: str) -> list[tuple[int, int]]:
+    async def _localize_with_solar(self, text: str) -> list[tuple[int, int]] | None:
         """1차(EXAONE)가 misaligned 로 판정한 청크에서 Solar Pro 3 에게 세부 위치를
-        다시 묻는다. 비활성화·오류·애매(원문과 불일치)하면 빈 리스트 반환 — 호출부가
-        기존 청크 전체 마스킹으로 폴백한다."""
+        다시 묻는다.
+
+        반환값을 3가지로 구분한다 — 호출부의 처리가 완전히 달라지기 때문이다:
+          None : 물어보지 못했거나 답을 해석하지 못함(비활성화·API 오류·파싱 실패)
+                 → 판단 불가이므로 청크 전체 마스킹 fail-safe
+          []   : Solar 가 "이 조각엔 인젝션이 없다" 고 명확히 답함
+                 → 1차 판정의 오탐으로 보고 미탐지 처리
+          [..] : 찾아낸 구간들
+        """
         if not config.INJECTION_LOCALIZE_ENABLED:
-            return []
+            return None
         cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        cached = self._solar_cache.get(cache_key)
-        if cached is not None:
+        cached = self._solar_cache.get(cache_key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
             self._solar_cache.move_to_end(cache_key)
             return cached
         try:
@@ -359,11 +377,15 @@ class InjectionLlmMcpDetector:
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
         except Exception:
-            return []  # 네트워크/API 오류 — fail-safe: 호출부가 청크 전체 마스킹으로 폴백
+            return None  # 네트워크/API 오류 — 판단 불가: 호출부가 청크 전체 마스킹으로 폴백
+
+        phrases = self._parse_solar_spans(content)
+        if phrases is None:
+            return None  # 응답을 해석 못 함 — 판단 불가
 
         spans: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
-        for phrase in self._parse_solar_spans(content):
+        for phrase in phrases:
             rng = self._find_span(text, phrase)
             if rng is None:
                 continue  # 원문에서 위치를 못 찾은 항목만 버린다
@@ -371,6 +393,11 @@ class InjectionLlmMcpDetector:
                 continue
             seen.add(rng)
             spans.append(rng)
+
+        # 문구는 받았는데 하나도 원문에서 찾지 못했다면 "없다" 가 아니라 "못 맞췄다" 다
+        # — 오탐 정정으로 오해하면 진짜 인젝션을 흘려보내게 되므로 판단 불가로 둔다.
+        if phrases and not spans:
+            return None
 
         self._solar_cache[cache_key] = spans
         self._solar_cache.move_to_end(cache_key)
@@ -413,8 +440,19 @@ class InjectionLlmMcpDetector:
                 )
                 for start, end in spans
             ]
-        # Solar 로 세부 위치를 못 찾았거나(비활성화·오류·불일치) — 기존처럼 청크
-        # 전체를 마스킹한다(fail-safe, 검사 생략 아님).
+        if spans is not None:
+            # Solar 가 이 조각을 실제로 보고 "인젝션 해당 부분 없음" 이라고 답한 경우.
+            # 1차 판정은 로컬 1.2B 분류기이고 오탐이 난다 — 실측: 카드분쟁 접수서의
+            # 평범한 업무 문단(494자)이 misaligned 로 잡혔고 Solar 는 {"spans": []} 로
+            # 정정했는데, 예전엔 그 정정을 "실패" 와 똑같이 취급해 494자 전체를
+            # 마스킹했다(실사용자 리포트: 청크 전체가 인젝션으로 잡힘).
+            # 더 강한 모델이 명시적으로 부정한 것이므로 그 판단을 따른다.
+            #
+            # 주의: "판단 불가"(None)와 반드시 구분해야 한다. 응답을 못 받았거나 해석
+            # 못 했거나 받은 문구를 원문에서 못 찾은 경우는 아래 fail-safe 로 간다.
+            return []
+        # Solar 에 물어보지 못했거나 답을 해석하지 못함(비활성화·오류·파싱 실패) —
+        # 판단 불가이므로 기존처럼 청크 전체를 마스킹한다(fail-safe, 검사 생략 아님).
         return [
             Detection(
                 type="OTHER_INJECTION",
