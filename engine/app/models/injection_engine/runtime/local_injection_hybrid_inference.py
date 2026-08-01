@@ -171,7 +171,7 @@ class InjectionDetector:
         self.detector.to(self.device)
         self.detector.eval()
 
-        torch_dtype = getattr(torch, dtype)
+        torch_dtype = self._resolve_dtype(dtype, self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(self.backend_model, trust_remote_code=trust_remote_code)
         backend_kwargs: dict[str, Any] = dict(
             dtype=torch_dtype,
@@ -191,14 +191,52 @@ class InjectionDetector:
             backend_kwargs["device_map"] = {"": self.device}
         self.backend = AutoModelForCausalLM.from_pretrained(self.backend_model, **backend_kwargs)
         if quantization_config is None:
-            self.backend.to(self.device)
+            try:
+                self.backend.to(self.device)
+            except Exception:
+                # MPS 로 올리다 실패하면(지원 안 되는 연산/dtype, 메모리 등) CPU 로 되돌린다.
+                # 이 런타임은 Apple Silicon 실기기에서 검증하지 못했으므로, 가속을 못 받는
+                # 것보다 아예 안 뜨는 게 훨씬 나쁘다 — 느려도 동작하는 쪽을 택한다.
+                # (CUDA 는 원래 되던 경로라 폴백 대상에서 제외한다.)
+                if self.device != "mps":
+                    raise
+                self.device = "cpu"
+                self.detector.to("cpu")
+                self.backend = AutoModelForCausalLM.from_pretrained(
+                    self.backend_model, **{**backend_kwargs, "dtype": getattr(torch, dtype)}
+                )
+                self.backend.to("cpu")
         self.backend.eval()
 
     @staticmethod
     def _resolve_device(device: str) -> str:
         if device != "auto":
             return device
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        # Apple Silicon: PII 런타임(local_pii_inference.py)과 같은 순서로 MPS 를 본다.
+        # 예전엔 이 분기가 없어 arm64 Mac 에서 1.2B 백본이 통째로 CPU 로 돌았다 —
+        # 정작 가벼운 PII 모델만 MPS 가속을 받고 무거운 쪽이 못 받는 비대칭이었다.
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    @staticmethod
+    def _resolve_dtype(dtype: str, device: str):
+        """MPS 에서 안전한 dtype 으로 낮춘다.
+
+        bfloat16 은 MPS 에서 macOS 14 이전이거나 일부 연산에서 지원되지 않아, 그대로
+        쓰면 로드나 첫 forward 에서 죽는다. MPS 에서 bf16 을 못 쓰면 float16 으로
+        내린다(둘 다 16비트라 메모리/대역폭 이득은 같다).
+        """
+        resolved = getattr(torch, dtype)
+        if device != "mps" or resolved is not torch.bfloat16:
+            return resolved
+        try:
+            torch.zeros(1, dtype=torch.bfloat16, device="mps") + 1
+            return torch.bfloat16
+        except Exception:
+            return torch.float16
 
     @torch.inference_mode()
     def extract_feature(self, record: dict[str, str]) -> tuple[torch.Tensor, torch.Tensor]:
