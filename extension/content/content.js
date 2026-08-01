@@ -101,6 +101,17 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  /** 사이트가 파일 선택(📎) 버튼용으로 이미 갖고 있는 숨은 input[type=file]을 찾는다
+   *  — drop/paste로 들어온 파일도 이 input을 통해 "새로 파일을 선택한 것"처럼
+   *  흘려보내기 위함(아래 "드래그앤드롭/붙여넣기 재주입" 섹션 참고). target이 속했던
+   *  form을 먼저 보고(재주입 시점엔 target이 detached일 수 있어 best-effort), 없으면
+   *  문서 전체에서 찾는다. */
+  function findFileInput(target) {
+    return target?.closest?.('form')?.querySelector?.('input[type="file"]')
+      ?? document.querySelector('input[type="file"]')
+      ?? null;
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // 검토 패널 열기 — 페이지 DOM에 직접 iframe 오버레이 주입 (2026-07-24 재정정)
   //
@@ -341,18 +352,23 @@
     const clientX = event.clientX, clientY = event.clientY;
 
     await stageFileAttachment(file, (finalFile) => {
+      // (2026-08-01 재정정) 원래는 드롭 지점(target)에 합성 drop 이벤트를 재생해
+      // 재주입했다. 하지만 target은 검토 패널에서 승인될 때까지(수 초~수십 초, 길게는
+      // 프롬프트를 다 입력할 때까지) 지난 뒤에야 이 콜백에 도달하는데, 그 사이 SPA가
+      // 컴포저 주변을 다시 그려버리면 드롭 재생이 의존하는 사이트의 내부 드래그
+      // 상태 머신 자체가 사라져 있을 수 있다(실측: ChatGPT에서 "this.drop is not a
+      // function" 크래시 + 드롭 오버레이 고착 재현). 드래그 제스처를 흉내내는 대신,
+      // 아예 원래 drop 이벤트를 취소해버리고 사이트가 이미 갖고 있는 파일 선택
+      // input[type=file]에 "새로 파일을 선택한 것"처럼 흘려보낸다 — 이 경로는
+      // change 이벤트 하나로 끝나며 드래그 상태와 전혀 무관하다.
+      const input = findFileInput(target);
+      if (input) { setFileOnInput(input, finalFile); return; }
+
+      // 폴백: 이 사이트에 파일 선택 input이 따로 없는 경우에만 기존 방식(합성 drop
+      // 재생)을 시도한다. isConnected로 detached 여부를 확인해 document.body로
+      // 폴백하고, 사이트 쪽 핸들러 예외가 우리 흐름을 끊지 않도록 try/catch로 감싼다.
       const dt = new DataTransfer();
       dt.items.add(finalFile);
-      // target(원래 드롭 지점 엘리먼트)은 검토 패널에서 사용자가 승인할 때까지
-      // 수 초~수십 초가 지난 뒤에야 이 콜백에 도달한다 — 그 사이 SPA가
-      // 리렌더링해서 이 참조가 detached(더 이상 라이브 DOM 트리에 없음)일 수
-      // 있다. detached 노드에 dispatchEvent 해도 예외 없이 "성공"하지만, 사이트의
-      // 내부 상태(React 등)가 이미 그 노드를 갱신 대상에서 놓쳐 반응하지
-      // 않거나(실측: ChatGPT에서 "this.drop is not a function"로 사이트 자체
-      // 핸들러가 죽으며 전송 버튼이 끝내 활성화되지 않는 사례 확인), 예외를 던질
-      // 수 있다. isConnected 로 확인해 detached면 document.body로 폴백하고,
-      // 사이트 쪽 핸들러 예외가 우리 흐름(뒤이은 전송 재시도)까지 끊지 않도록
-      // try/catch로 감싼다.
       const dispatchTarget = target.isConnected ? target : document.body;
       try {
         dispatchTarget.dispatchEvent(new DragEvent('drop', {
@@ -375,9 +391,13 @@
     const target = event.target;
 
     await stageFileAttachment(file, (finalFile) => {
+      // drop 재주입과 동일한 이유(위 주석 참고)로 파일 선택 input을 우선 사용한다.
+      const input = findFileInput(target);
+      if (input) { setFileOnInput(input, finalFile); return; }
+
+      // 폴백: 파일 선택 input이 없는 경우에만 기존 합성 paste 재생을 시도한다.
       const dt = new DataTransfer();
       dt.items.add(finalFile);
-      // drop 재주입과 동일한 이유(위 주석 참고)로 detached 폴백 + try/catch.
       const dispatchTarget = target.isConnected ? target : document.body;
       try {
         dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
