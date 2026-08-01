@@ -199,20 +199,24 @@ async def _download_backbone(emit: Callable) -> None:
     await emit({"type": "progress", "asset": "backbone", "label": f"{label} 준비 중...", "pct": 0.0})
 
     total = await asyncio.to_thread(backbone.total_download_bytes)
-    downloaded = 0
-
-    def on_bytes(n: int) -> None:
-        nonlocal downloaded
-        downloaded += n  # GIL 보호 하의 단순 누적 — 스레드에서 여기까지만 한다
-
     done = asyncio.Event()
 
     async def report() -> None:
         while not done.is_set():
-            # 진행 표시는 퍼센트로만 한다(앱 UI 가 label + pct% 를 그린다). 총 크기를
-            # 못 구했으면 pct 는 None 으로 두고 라벨만 보여준다 — 모르는 값을 그럴듯한
-            # 숫자로 지어내지 않는다(system-metrics.js 의 "허위 수치 금지" 와 같은 원칙).
-            pct = min(round(downloaded / total * 100, 1), 100.0) if total else None
+            # 진행률은 디스크에 실제로 쌓인 양으로 계산한다 — tqdm 훅을 가로채는 방식은
+            # huggingface_hub 버전·다운로드 백엔드에 따라 아예 안 불려서 진행률이 계속
+            # 0% 로 머물렀다(실사용자 macOS 재현).
+            #
+            # 퍼센트로만 보고한다(앱 UI 가 label + pct% 를 그린다). 총 크기를 못 구했으면
+            # pct 는 None 으로 두고 라벨만 보여준다 — 모르는 값을 그럴듯한 숫자로 지어내지
+            # 않는다(system-metrics.js 의 "허위 수치 금지" 와 같은 원칙).
+            # "받아야 할 전체 대비 지금 디스크에 있는 양" 으로 잡는다. 중단 후 재시도라
+            # 일부가 이미 있으면 그만큼에서 시작해 100% 로 간다(0 부터 다시 세면 끝까지
+            # 채워도 100% 에 못 미친다).
+            pct = None
+            if total:
+                got = await asyncio.to_thread(backbone.downloaded_bytes)
+                pct = min(round(got / total * 100, 1), 100.0)
             await emit(
                 {
                     "type": "progress",
@@ -226,10 +230,11 @@ async def _download_backbone(emit: Callable) -> None:
 
     reporter = asyncio.create_task(report())
     try:
-        await asyncio.to_thread(backbone.download, on_bytes)
+        await asyncio.to_thread(backbone.download)
     finally:
         done.set()
         await reporter
+    await emit({"type": "progress", "asset": "backbone", "label": f"{label} 완료", "pct": 100.0})
 
 
 async def _fetch_job(job_id: str) -> None:
