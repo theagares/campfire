@@ -142,3 +142,69 @@ def test_parse_spans_empty_vs_undecidable_are_distinct():
     assert _parse('{"spans": []}') == []      # 명시적 '없음'
     assert _parse("깨진 응답") is None          # 판단 불가
     assert _parse('{"spans": []}') is not None
+
+
+# ── 백본(EXAONE) 캐시 감지 (_backend_model_cached) ────────────────────────────
+#
+# 백본 2.4GB 는 설치 파일에도 모델 자동 다운로드에도 없고, transformers 가 최초 실행
+# 때 HuggingFace 에서 받아 캐싱한다. 그런데 서브프로세스에 오프라인 플래그를 무조건
+# 걸면 캐시가 없는 기기에서는 받아올 길이 막혀 실패한다(실사용자 macOS 신규 설치:
+# "We couldn't connect to 'https://huggingface.co' ... couldn't find them in the
+# cached files"). 개발 기기엔 캐시가 이미 있어 오래 가려져 있던 결함이다.
+
+import json as _json
+from app.core.detectors.injection import backbone as _bb
+
+
+def _make_cache(tmp_path, model_id, *, with_config=True):
+    root = tmp_path / "hub"
+    snap = root / f"models--{model_id.replace('/', '--')}" / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    if with_config:
+        (snap / "config.json").write_text("{}", encoding="utf-8")
+    return root
+
+
+def _point_engine_dir(monkeypatch, tmp_path, model_id):
+    eng = tmp_path / "injection_engine"
+    eng.mkdir(exist_ok=True)
+    (eng / "extract_config.json").write_text(_json.dumps({"model": model_id}), encoding="utf-8")
+    monkeypatch.setattr(_bb.config, "INJECTION_ENGINE_DIR", eng)
+
+
+def test_backend_cached_true_when_snapshot_complete(tmp_path, monkeypatch):
+    mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+    _point_engine_dir(monkeypatch, tmp_path, mid)
+    monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid)))
+    assert _bb.is_cached() is True
+
+
+def test_backend_cached_false_when_cache_missing(tmp_path, monkeypatch):
+    """캐시가 없으면 오프라인을 걸면 안 된다 — macOS 실패의 직접 원인."""
+    mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+    _point_engine_dir(monkeypatch, tmp_path, mid)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty"))
+    assert _bb.is_cached() is False
+
+
+def test_backend_cached_false_when_snapshot_incomplete(tmp_path, monkeypatch):
+    """받다 만 스냅샷(config.json 없음)을 캐시로 치면 다시 오프라인 실패가 난다."""
+    mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+    _point_engine_dir(monkeypatch, tmp_path, mid)
+    monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid, with_config=False)))
+    assert _bb.is_cached() is False
+
+
+def test_backend_cached_true_for_local_dir_model(tmp_path, monkeypatch):
+    """extract_config.json 이 로컬 경로를 가리키면 hub 조회 자체가 불필요하다."""
+    local = tmp_path / "bundled_base"
+    local.mkdir()
+    _point_engine_dir(monkeypatch, tmp_path, str(local))
+    assert _bb.is_cached() is True
+
+
+def test_backend_cached_false_when_config_unreadable(tmp_path, monkeypatch):
+    eng = tmp_path / "no_cfg"
+    eng.mkdir()
+    monkeypatch.setattr(_bb.config, "INJECTION_ENGINE_DIR", eng)
+    assert _bb.is_cached() is False
