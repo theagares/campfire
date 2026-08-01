@@ -4,9 +4,16 @@ GET  /models/status  — PII/인젝션 실 모델(encoder/llm_mcp) 가중치가 
 POST /models/fetch   — models-v1 GitHub Release에서 가중치를 내려받아 압축 해제(백그라운드
                        job, 기존 job_registry/`/jobs/{id}/events` 패턴 재사용해 진행 상황 폴링).
 
-실제 추론 백본(EXAONE-4.0-1.2B)은 이 배포 대상이 아니다 — transformers 가 최초 실행 시
-HuggingFace Hub 에서 공개 모델로 알아서 받아 캐싱한다(MODELS.md). 여기서 받는 건 우리가
-직접 학습/이식한 작은 아티팩트(PII 인코더 전체 568MB, 인젝션 MLP 헤드 36MB)뿐이다.
+실제 추론 백본(EXAONE-4.0-1.2B, 약 2.4GB)은 이 배포 대상이 아니다 — transformers 가
+최초 실행 시 HuggingFace Hub 에서 공개 모델로 알아서 받아 캐싱한다(MODELS.md). 여기서
+받는 건 우리가 직접 학습/이식한 작은 아티팩트(PII 인코더 전체 568MB, 인젝션 MLP 헤드
+36MB)뿐이다.
+
+주의: 그래서 /models/status 의 injection.ready 는 "MLP 헤드가 있다" 는 뜻이지 "인젝션
+탐지가 실제로 돈다" 는 뜻이 아니다. 백본이 캐시에 없으면 헤드가 있어도 서브프로세스가
+로딩에 실패한다(실사용자 macOS 신규 설치에서 재현 — llm_mcp.py 의 _backend_model_cached
+주석 참고). 백본까지 여기서 배포하려면 model.safetensors 하나가 2.4GB 라 GitHub 릴리스
+에셋 상한(2 GiB)을 넘어 분할 업로드가 필요하다.
 """
 
 from __future__ import annotations

@@ -73,6 +73,55 @@ _WARMUP_USER_PROMPT = "날씨를 요약해줘."
 # 시 Solar API 호출 자체를 건너뛴다. temperature=0 이라 같은 입력이면 결과가
 # 사실상 결정적이므로 exact-match 캐시가 안전하다(의미적으로 "비슷한" 청크까지
 # 매칭하는 semantic cache 는 위치 특정 작업 특성상 오히려 위험해 쓰지 않는다).
+def _hf_cache_root() -> Path:
+    """transformers/huggingface_hub 이 실제로 보는 캐시 경로(우선순위 동일)."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"])
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _backend_model_id() -> str | None:
+    """인젝션 런타임이 로드할 백본 모델 id(예: "LGAI-EXAONE/EXAONE-4.0-1.2B").
+
+    런타임 스크립트가 extract_config.json 의 "model" 을 그대로
+    AutoModelForCausalLM.from_pretrained 에 넘기므로 같은 값을 본다.
+    """
+    try:
+        cfg = json.loads((config.INJECTION_ENGINE_DIR / "extract_config.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    model = cfg.get("model")
+    return model if isinstance(model, str) and model else None
+
+
+def _backend_model_cached() -> bool:
+    """백본(EXAONE)이 이미 로컬에 있으면 True.
+
+    왜 이걸 보는가: 백본 2.4GB 는 설치 파일에도 모델 자동 다운로드에도 들어있지
+    않고, transformers 가 최초 실행 때 HuggingFace 에서 받아 캐싱하는 구조다
+    (models.py 의 모듈 docstring 참고). 그런데 서브프로세스에 오프라인 플래그를
+    무조건 걸면 캐시가 없는 기기에서는 받아올 길이 막혀 그대로 실패한다 —
+    실사용자 macOS 신규 설치에서 재현:
+      OSError: We couldn't connect to 'https://huggingface.co' to load the files,
+      and couldn't find them in the cached files.
+    개발 기기에는 캐시가 이미 있고, 그 캐시는 사용자 홈(~/.cache/huggingface)에
+    있어 앱을 재설치해도 지워지지 않는다 — 그래서 이 결함이 오래 가려져 있었다.
+    """
+    model_id = _backend_model_id()
+    if not model_id:
+        return False
+    # extract_config.json 이 로컬 경로를 직접 가리키는 경우(향후 번들 전환 대비)
+    if Path(model_id).is_dir():
+        return True
+    snapshots = _hf_cache_root() / f"models--{model_id.replace('/', '--')}" / "snapshots"
+    if not snapshots.is_dir():
+        return False
+    # 스냅샷 폴더만 있고 config.json 이 없으면 받다 만 상태다 — 캐시로 치지 않는다.
+    return any((s / "config.json").is_file() for s in snapshots.iterdir() if s.is_dir())
+
+
 _SOLAR_CACHE_MAX = 256
 # 캐시 미스 표식 — 캐시에 저장되는 값 자체가 None(판단 불가)일 수 있어 dict.get 의
 # 기본 None 으로는 "저장 안 됨" 과 구분되지 않는다.
@@ -125,16 +174,23 @@ class InjectionLlmMcpDetector:
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨지는 경우가
         # 있다(로컬 실측, pii/encoder.py 와 동일 이슈). PYTHONUTF8=1 로 자식
         # 프로세스의 텍스트 스트림을 강제로 UTF-8 로 연다.
-        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — EXAONE 이 이미 로컬 캐시에 있는데도
-        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
-        # 생략한다(실측: 콜드스타트 로딩 5.95s -> 4.13s, 워밍된 캐시 기준에서도 ~31% 단축).
         env = {
             **os.environ,
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
-            "HF_HUB_OFFLINE": "1",
-            "TRANSFORMERS_OFFLINE": "1",
         }
+        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — EXAONE 이 이미 로컬 캐시에 있는데도
+        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
+        # 생략한다(실측: 콜드스타트 로딩 5.95s -> 4.13s, 워밍된 캐시 기준에서도 ~31% 단축).
+        #
+        # 단, "이미 캐시에 있을 때만" 건다. 백본은 설치 파일에도 모델 자동 다운로드에도
+        # 들어있지 않고 최초 실행 때 HuggingFace 에서 받아오는데, 캐시가 없는 기기에서
+        # 오프라인을 강제하면 받아올 길이 막혀 그대로 실패한다(실사용자 macOS 신규
+        # 설치에서 재현 — _backend_model_cached 주석 참고). 최초 1회만 온라인으로
+        # 받아오고 그 다음부터는 캐시가 잡히므로 위 단축 효과는 그대로 얻는다.
+        if _backend_model_cached():
+            env["HF_HUB_OFFLINE"] = "1"
+            env["TRANSFORMERS_OFFLINE"] = "1"
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
