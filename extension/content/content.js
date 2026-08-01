@@ -143,6 +143,33 @@
       ?? null;
   }
 
+  /** 사이트의 드래그 상태(= "무엇이든 추가하세요" 같은 드롭 오버레이)를 즉시 정리한다.
+   *
+   *  우리는 원본 파일이 사이트로 새어나가지 않도록 진짜 drop 이벤트를 캡처 단계에서
+   *  stopImmediatePropagation() 으로 완전히 삼켜버린다. 그런데 사이트의 오버레이를
+   *  내리는 로직은 바로 그 drop(또는 dragleave) 리스너 안에 들어 있다 — dragenter 로
+   *  올라간 카운터를 내려줄 이벤트가 영영 오지 않으니 오버레이가 화면에 그대로 남는다
+   *  (실사용자 재현: 첨부 후 "무엇이든 추가하세요"가 안 사라짐).
+   *
+   *  그래서 "파일이 하나도 없는" 합성 dragleave/drop/dragend 를 흘려보낸다. 파일이
+   *  없으므로 사이트는 아무것도 첨부하지 않지만, 드래그 상태를 정리하는 코드는 정상적으로
+   *  돈다. 우리 drop 캡처 리스너도 파일이 없으면 그냥 통과시키므로 재귀하지 않는다.
+   *
+   *  진짜 drop 과 같은 tick 에 보내므로 target 이 아직 살아 있다 — 승인 시점까지
+   *  미뤘다가 보내면 그 사이 SPA 가 DOM 을 다시 그려 "this.drop is not a function"
+   *  크래시로 이어졌던 과거 방식과 다르다. */
+  function clearSiteDragState(target, clientX, clientY) {
+    const el = target?.isConnected ? target : document.body;
+    for (const type of ['dragleave', 'drop', 'dragend']) {
+      try {
+        el.dispatchEvent(new DragEvent(type, {
+          bubbles: true, cancelable: true, composed: true,
+          dataTransfer: new DataTransfer(), clientX, clientY,
+        }));
+      } catch (_) { /* 사이트 핸들러 예외가 우리 흐름을 끊지 않게 */ }
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // 검토 패널 열기 — 페이지 DOM에 직접 iframe 오버레이 주입 (2026-07-24 재정정)
   //
@@ -382,6 +409,10 @@
     const target = event.target;
     const clientX = event.clientX, clientY = event.clientY;
 
+    // 원본 drop 을 삼켜버린 대가로 사이트의 드롭 오버레이가 남는다 — 파일 없는
+    // 합성 이벤트로 드래그 상태만 즉시 정리해준다(clearSiteDragState 주석 참고).
+    clearSiteDragState(target, clientX, clientY);
+
     await stageFileAttachment(file, (finalFile) => {
       // (2026-08-01 재정정) 원래는 드롭 지점(target)에 합성 drop 이벤트를 재생해
       // 재주입했다. 하지만 target은 검토 패널에서 승인될 때까지(수 초~수십 초, 길게는
@@ -536,12 +567,28 @@
     };
   }
 
-  async function resubmitPrompt(cfg) {
-    await new Promise(r => setTimeout(r, 200));
-    for (const sel of (cfg.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean)) {
-      const btn = document.querySelector(sel);
-      if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') { btn.click(); return; }
+  /** 전송 버튼이 활성화될 때까지 기다렸다가 누른다.
+   *
+   *  첨부가 있는 경우 사이트는 그 파일을 다 업로드할 때까지 전송 버튼을 비활성으로
+   *  둔다(ChatGPT 확인). 예전엔 재주입 후 고정 900ms 만 기다리고 한 번만 눌러봤는데,
+   *  그 시점엔 업로드가 아직 진행 중이라 버튼이 비활성 → 클릭이 먹지 않고 그대로
+   *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
+   *  않고 버튼이 활성화될 때까지 폴링한다. */
+  async function resubmitPrompt(cfg, waitMs = 15000) {
+    await new Promise(r => setTimeout(r, 200)); // setEditorText 후 React 상태 반영 대기
+    const sels = (cfg.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean);
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      for (const sel of sels) {
+        const btn = document.querySelector(sel);
+        if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+          btn.click();
+          return true;
+        }
+      }
+      await new Promise(r => setTimeout(r, 200));
     }
+    // 끝내 활성화되지 않으면 Enter 로 한 번 시도해본다.
     const editor = cfg.editorSel && document.querySelector(cfg.editorSel);
     if (editor) {
       editor.focus();
@@ -549,6 +596,7 @@
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
       }));
     }
+    return false;
   }
 
   async function interceptPromptSubmit(event, cfg) {
