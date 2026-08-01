@@ -264,11 +264,31 @@
     pageShiftSaved = null;
   }
 
+  /** 사이트(React 등)가 자기 레이아웃을 다시 계산하게 만든다.
+   *
+   *  CSS 로 body 를 좁혀도 "창 크기"는 그대로라 resize 이벤트가 나지 않는다. 그래서
+   *  JS 로 폭을 재서 배치하는 SPA 는 예전 폭 기준 레이아웃을 그대로 들고 있고, 결과적
+   *  으로 본문이 다시 줄바꿈되지 않아 패널 경계에서 글자가 잘린 것처럼 보인다(실사용자
+   *  스크린샷: body 는 좁혀졌는데 ChatGPT 본문이 "가장 많", "자동 마스" 에서 잘림).
+   *  가짜 resize 를 쏴서 재계산을 유도한다. 레이아웃이 실제로 반영되는 시점이 프레임
+   *  뒤일 수 있어 다음 프레임에 한 번 더 보낸다. */
+  function notifyViewportChanged() {
+    try {
+      window.dispatchEvent(new Event('resize'));
+      requestAnimationFrame(() => {
+        try { window.dispatchEvent(new Event('resize')); } catch (_) { /* ignore */ }
+      });
+    } catch (_) { /* ignore */ }
+  }
+
   /** 패널은 max-width:92vw 라 창 크기에 따라 실제 폭이 달라진다 — 실측해서 그만큼만 민다. */
   function syncPageShiftToPanel() {
     if (!overlayRoot) return;
     const w = overlayRoot.getBoundingClientRect?.().width;
-    if (w > 0) applyPageShift(w);
+    if (w > 0) {
+      applyPageShift(w);
+      notifyViewportChanged();
+    }
   }
 
   function openSidePanel() {
@@ -300,6 +320,7 @@
   function closeSidePanel() {
     try { window.removeEventListener('resize', syncPageShiftToPanel); } catch (_) { /* ignore */ }
     revertPageShift(); // 패널보다 먼저 되돌려 본문이 원래 폭으로 돌아오게 한다
+    notifyViewportChanged(); // 원래 폭으로도 사이트가 다시 배치하도록
     try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
     overlayRoot = null;
     overlayIframe = null;
