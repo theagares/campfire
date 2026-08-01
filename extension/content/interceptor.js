@@ -47,6 +47,10 @@
       _bridgeToken = String(event.data.token || '');
       return;
     }
+    if (event.data.type === 'UPS_CONTENT_APPROVED_FILE') {
+      _rememberContentApproved(event.data.meta);
+      return;
+    }
     if (event.data.type !== 'UPS_PROTECTION_STATE') return;
     _protectionEnabled = Boolean(event.data.enabled);
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}`);
@@ -54,6 +58,63 @@
 
   function isProtectionEnabled() {
     return _protectionEnabled;
+  }
+
+  // ─── content.js(isolated world)가 이미 검토를 마치고 주입한 파일 ─────────────
+  //
+  // content.js 가 만든 마스킹본 File 은 isolated world 소속이라 아래 _approvedFiles
+  // WeakSet 으로는 원리적으로 인식할 수 없다 — 두 world 는 DOM 은 공유하지만 JS 렘이
+  // 별개라 같은 파일이라도 서로 다른 JS 객체로 보이기 때문. 그 결과 사이트가 그
+  // 마스킹본을 업로드할 때 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토 패널을 한 번
+  // 더 띄웠다(실사용자 재현: 전송 직후 이미 마스킹된 내용으로 패널 재등장). 객체
+  // 동일성을 쓸 수 없으니 name+size+type 메타로 기억해뒀다가 통과시킨다.
+  //
+  // 한 번 쓰고 버리지 않는 이유: 사이트가 등록(fetch POST /files)과 실제 업로드
+  // (XHR PUT)로 같은 파일을 두 번 이상 만지기 때문 — TTL 로만 만료시킨다.
+  const _CONTENT_APPROVED_TTL_MS = 10 * 60 * 1000;
+  const _CONTENT_APPROVED_MAX = 16;
+  // [{ name, size, type, expiresAt }] — 파일명에 어떤 문자가 들어와도 안전하도록
+  // 문자열 키 하나로 합치지 않고 필드를 그대로 들고 비교한다.
+  const _contentApproved = [];
+
+  function _pruneContentApproved() {
+    const now = Date.now();
+    for (let i = _contentApproved.length - 1; i >= 0; i--) {
+      if (_contentApproved[i].expiresAt <= now) _contentApproved.splice(i, 1);
+    }
+  }
+
+  function _rememberContentApproved(meta) {
+    if (!meta?.name) return;
+    _pruneContentApproved();
+    while (_contentApproved.length >= _CONTENT_APPROVED_MAX) _contentApproved.shift();
+    _contentApproved.push({
+      name: String(meta.name),
+      size: Number(meta.size),
+      type: meta.type || 'application/octet-stream',
+      expiresAt: Date.now() + _CONTENT_APPROVED_TTL_MS,
+    });
+    debugLog('[SecureDoc] content 검토 완료 파일 등록:', meta.name);
+  }
+
+  /** 이름만으로 대조 — 사이트가 등록 요청 JSON 에 size/mime 를 자기 방식대로 채워
+   *  보내는 경우가 있어, 등록 단계에서는 이름 일치만으로 판단한다. */
+  function _isContentApprovedName(name) {
+    if (!name) return false;
+    _pruneContentApproved();
+    return _contentApproved.some(e => e.name === name);
+  }
+
+  /** Blob/File 대조 — 사이트가 File 을 이름 없는 Blob 으로 다시 감싸 업로드하는
+   *  경우가 있어(예: new Blob([file])), 이름이 없으면 size+type 만으로 본다. */
+  function _isContentApprovedBlob(blob) {
+    if (!blob) return false;
+    _pruneContentApproved();
+    const type = blob.type || 'application/octet-stream';
+    if (blob.name) {
+      return _contentApproved.some(e => e.name === blob.name && e.size === blob.size && e.type === type);
+    }
+    return _contentApproved.some(e => e.size === blob.size && e.type === type);
   }
 
   debugLog('[SecureDoc] ✅ Interceptor 로드됨 (MAIN world)');
@@ -783,6 +844,13 @@
       return _origXHRSend.call(this, body);
     }
 
+    // ── content.js 가 이미 검토를 마치고 주입한 파일: 통과 ──────────────────────
+    // (위 _approvedFiles 는 MAIN world 소속 File 만 알아본다 — 파일 목록 주석 참고)
+    if (body instanceof Blob && _isContentApprovedBlob(body)) {
+      debugLog('[SecureDoc] ✅ content 검토 완료 파일 업로드 통과 (XHR)');
+      return _origXHRSend.call(this, body);
+    }
+
     // ── 자동감지: XHR Blob PUT → xhr-put, XHR FormData → xhr-formdata ────────
     if (body instanceof Blob && isSupportedFile(body)) _autoDetectUploadLayer('xhr-put');
     if (body instanceof FormData) {
@@ -864,7 +932,7 @@
     // ── FormData ──────────────────────────────────────────────────────────────
     if (body instanceof FormData) {
       const file = findFileInFD(body);
-      if (file && !_inProcess.has(file) && !_approvedFiles.has(file)) {
+      if (file && !_inProcess.has(file) && !_approvedFiles.has(file) && !_isContentApprovedBlob(file)) {
         const self = this;
         debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${file.name}`);
         requestProcessing(file).then((result) => {
@@ -966,9 +1034,19 @@
         }
         console.warn('[SecureDoc] ⚠️ 파일 등록 — 원본 body 통과 (마스킹본 없음)');
       } else if (!_lastApprovedFile) {
+        // content.js 가 이미 검토를 마치고 주입한 파일이면 이건 "원본"이 아니라
+        // 승인본이다 — 여기서 file_id 를 원본으로 기록해두면 뒤이은 upload_complete
+        // 가 위 분기에서 400 으로 차단되어 첨부 자체가 실패한다.
+        let approvedByContent = false;
+        if (typeof init?.body === 'string') {
+          try {
+            const o = JSON.parse(init.body);
+            approvedByContent = _isContentApprovedName(o.file_name ?? o.name);
+          } catch (_) { /* JSON 이 아니면 원래대로 원본 취급 */ }
+        }
         // 원본 파일 등록 요청 -> 통과시키되 file_id 기록
         const resp = await _origFetch(input, init);
-        if (resp.ok) {
+        if (resp.ok && !approvedByContent) {
           resp.clone().json().then(data => {
             if (data.file_id) {
               _originalFileId = data.file_id;
@@ -988,6 +1066,10 @@
     if (body instanceof FormData) {
       const file = findFileInFD(body);
       if (file && isSupportedFile(file)) _autoDetectUploadLayer('fetch-formdata');
+      if (file && _isContentApprovedBlob(file)) {
+        debugLog(`[SecureDoc] ✅ content 검토 완료 파일 업로드 통과 (fetch FormData): ${file.name}`);
+        return _origFetch(input, init);
+      }
       if (file) {
         const approved = _approvedFiles.has(file);
         const inProc   = _inProcess.has(file);
@@ -1037,7 +1119,7 @@
         }
       }
     }
-    if (body instanceof Blob && isSupportedFile(body) && !_inProcess.has(body)) {
+    if (body instanceof Blob && isSupportedFile(body) && !_inProcess.has(body) && !_isContentApprovedBlob(body)) {
       const file = body instanceof File ? body : new File([body], 'upload', { type: body.type });
       debugLog(`[SecureDoc] 📁 [3] fetch Blob: ${file.name}`);
       const result = await requestProcessing(file);
