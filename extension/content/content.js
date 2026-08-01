@@ -644,7 +644,11 @@
   }
 
   async function interceptPromptSubmit(event, cfg) {
-    if (!protectionEnabled || promptApproved || promptInProcess) return;
+    // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
+    // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
+    // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
+    if (!protectionEnabled || promptApproved) return;
+    if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
 
@@ -716,30 +720,49 @@
     setTimeout(() => { promptApproved = false; }, 3000);
   }
 
+  /** 검사가 진행 중일 때 들어온 전송 시도를 삼킨다.
+   *
+   *  예전엔 promptInProcess 면 리스너가 그냥 return 했는데, preventDefault 를 하지
+   *  않으니 그 이벤트가 사이트로 그대로 흘러가 **검사가 끝나기도 전에 원본 프롬프트가
+   *  전송**됐다(실사용자 macOS 재현: "보안 분석 중" 에서 안 넘어가는데 메시지만 먼저
+   *  들어감). 검사 중에는 아무것도 나가면 안 되므로 이벤트를 확실히 막는다.
+   *
+   *  promptApproved 는 반대로 그냥 통과시켜야 한다 — 그건 검토를 마치고 우리가 직접
+   *  다시 보내는 중이라는 표시라, 막으면 우리 재전송까지 막힌다. */
+  function blockedWhileScanning(event) {
+    if (!promptInProcess) return false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return true;
+  }
+
   document.addEventListener('click', async (event) => {
     const cfg = getPromptConfig();
-    if (!cfg?.sendBtnSel || promptApproved || promptInProcess) return;
+    if (!cfg?.sendBtnSel || promptApproved) return;
     const isSendButton = cfg.sendBtnSel.split(',').map(s => s.trim()).some(sel => event.target.closest?.(sel));
     if (!isSendButton) return;
     const btn = event.target.closest?.('button, [role="button"]');
     if (btn?.disabled || btn?.getAttribute?.('aria-disabled') === 'true') return;
+    if (blockedWhileScanning(event)) return;
     await interceptPromptSubmit(event, cfg);
   }, true);
 
   document.addEventListener('keydown', async (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
     const cfg = getPromptConfig();
-    if (!cfg?.editorSel || promptApproved || promptInProcess) return;
+    if (!cfg?.editorSel || promptApproved) return;
     const editor = document.querySelector(cfg.editorSel);
     if (!editor) return;
     const active = document.activeElement;
     if (!editor.contains?.(active) && active !== editor) return;
+    if (blockedWhileScanning(event)) return;
     await interceptPromptSubmit(event, cfg);
   }, true);
 
   document.addEventListener('submit', async (event) => {
     const cfg = getPromptConfig();
-    if (!cfg || promptApproved || promptInProcess) return;
+    if (!cfg || promptApproved) return;
+    if (blockedWhileScanning(event)) return;
     await interceptPromptSubmit(event, cfg);
   }, true);
 
