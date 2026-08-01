@@ -73,6 +73,21 @@ class FileStub {
 class DataTransferStub {
   constructor() { this.files = []; this.items = { add: f => this.files.push(f) }; }
 }
+// 합성 이벤트의 type/dataTransfer 를 검사할 수 있게 init 을 그대로 보관한다.
+class DragEventStub {
+  constructor(type, init = {}) { this.type = type; Object.assign(this, init); }
+}
+// 드롭 지점 엘리먼트 — 우리가 어떤 합성 이벤트를 쐈는지 기록한다.
+class DropTargetStub extends EventTargetStub {
+  constructor() { super(); this.isConnected = true; this.dispatched = []; }
+  dispatchEvent(event) { this.dispatched.push(event); return true; }
+}
+// 전송 버튼 — 비활성 상태를 흉내내고 클릭 횟수를 센다.
+class SendButtonStub extends EventTargetStub {
+  constructor() { super(); this.disabled = true; this.clicks = 0; }
+  getAttribute() { return null; }
+  click() { this.clicks++; }
+}
 
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
@@ -92,12 +107,21 @@ const windowStub = {
 // 테스트 (3)에서 .value 를 채워 프롬프트 제출을 시뮬레이션한다.
 const promptEditorStub = new HTMLTextAreaElementStub('');
 
+// chatgpt.com 의 PROMPT_CONFIGS.sendBtnSel 로 조회되는 stub 전송 버튼(테스트 6).
+const sendButtonStub = new SendButtonStub();
+
+const domBySelector = new Map([
+  ['#prompt-textarea', promptEditorStub],
+  ['[data-testid="send-button"]', sendButtonStub],
+]);
+
 const documentStub = {
   documentElement: { appendChild() {} },
+  body: { dispatchEvent: () => true },
   activeElement: null,
   addEventListener: (t, l) => addListener(documentListeners, t, l),
   createElement: () => ({ style: {}, appendChild() {}, remove() {}, attachShadow: () => ({}), addEventListener() {} }),
-  querySelector: (sel) => (sel === '#prompt-textarea' ? promptEditorStub : null),
+  querySelector: (sel) => domBySelector.get(sel) ?? null,
   querySelectorAll: () => [],
   execCommand: () => true,
 };
@@ -148,7 +172,7 @@ const sandbox = {
   Event: class {},
   InputEvent: class {},
   KeyboardEvent: class {},
-  DragEvent: class {},
+  DragEvent: DragEventStub,
   ClipboardEvent: class {},
   atob: v => Buffer.from(v, 'base64').toString('binary'),
   btoa: v => Buffer.from(v, 'binary').toString('base64'),
@@ -282,6 +306,64 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (actionLog[approveIdx].meta?.name !== 'report.pdf') {
     throw new Error(`알림 메타의 파일명이 다르다: ${actionLog[approveIdx].meta?.name}`);
+  }
+
+  // (5) 드롭한 문서를 가로챌 때, 사이트의 드래그 상태를 즉시 정리해줘야 한다.
+  //
+  // 우리는 원본이 새어나가지 않게 진짜 drop 을 stopImmediatePropagation() 으로 삼킨다.
+  // 그런데 사이트의 드롭 오버레이("무엇이든 추가하세요")를 내리는 코드가 바로 그
+  // drop/dragleave 리스너 안에 있어서, 그대로 두면 오버레이가 화면에 영영 남는다
+  // (실사용자 재현). 파일이 하나도 없는 합성 dragleave/drop/dragend 를 흘려보내
+  // 첨부는 일으키지 않으면서 드래그 상태만 정리한다.
+  const dropTarget = new DropTargetStub();
+  const dropFile = new FileStub(['pdf bytes'], 'dropped.pdf', { type: 'application/pdf' });
+  dispatchDocumentEvent('drop', {
+    target: dropTarget,
+    dataTransfer: { files: [dropFile] },
+    clientX: 10, clientY: 20,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+
+  const clearedTypes = dropTarget.dispatched.map(e => e.type);
+  for (const t of ['dragleave', 'drop', 'dragend']) {
+    if (!clearedTypes.includes(t)) {
+      throw new Error(`드롭 가로챈 뒤 사이트 드래그 상태 정리용 '${t}' 가 발생하지 않았다 (오버레이 고착)`);
+    }
+  }
+  const syntheticDrop = dropTarget.dispatched.find(e => e.type === 'drop');
+  if ((syntheticDrop.dataTransfer?.files ?? []).length !== 0) {
+    throw new Error('드래그 상태 정리용 합성 drop 에 파일이 실려 있다 — 원본이 사이트로 새어나간다');
+  }
+  await flush();
+
+  // (6) 첨부 업로드가 끝나 전송 버튼이 활성화될 때까지 기다렸다가 눌러야 한다.
+  //
+  // 사이트는 첨부 파일을 다 업로드할 때까지 전송 버튼을 비활성으로 둔다. 예전엔
+  // 고정 시간만 기다리고 한 번만 눌러봐서, 그 시점에 아직 업로드 중이면 클릭이 먹지
+  // 않고 그대로 끝났다(실사용자 재현: 검토는 되는데 전송이 안 됨).
+  await new Promise(r => setTimeout(r, 3100)); // 테스트 4가 세운 promptApproved 해제 대기
+
+  sendButtonStub.disabled = true;
+  sendButtonStub.clicks = 0;
+  promptEditorStub.value = '주민번호 없이 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = { action: 'masked', maskedText: '주민번호 없이 요약해줘' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+
+  await new Promise(r => setTimeout(r, 600)); // 버튼이 비활성인 동안
+  if (sendButtonStub.clicks !== 0) {
+    throw new Error('전송 버튼이 비활성인데도 클릭했다 (업로드 완료 전 전송 시도)');
+  }
+
+  sendButtonStub.disabled = false;              // 업로드 완료 → 활성화
+  await new Promise(r => setTimeout(r, 800));   // 폴링 주기(200ms) 안에 눌려야 한다
+  if (sendButtonStub.clicks !== 1) {
+    throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
 
   console.log('content regression ok');
