@@ -61,6 +61,7 @@ from app import config
 
 from ..base import ChunkMeta, Detection
 from ..gpu_residency import GpuResidency
+from . import backbone
 
 # 모델 로딩 직후 실제 forward pass 를 한 번도 안 돌린 상태에서는 CUDA 커널
 # 선택/캐싱 등 1회성 초기화 비용이 첫 요청에 그대로 들러붙는다(실측: 0.33s →
@@ -125,16 +126,23 @@ class InjectionLlmMcpDetector:
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨지는 경우가
         # 있다(로컬 실측, pii/encoder.py 와 동일 이슈). PYTHONUTF8=1 로 자식
         # 프로세스의 텍스트 스트림을 강제로 UTF-8 로 연다.
-        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — EXAONE 이 이미 로컬 캐시에 있는데도
-        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
-        # 생략한다(실측: 콜드스타트 로딩 5.95s -> 4.13s, 워밍된 캐시 기준에서도 ~31% 단축).
         env = {
             **os.environ,
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
-            "HF_HUB_OFFLINE": "1",
-            "TRANSFORMERS_OFFLINE": "1",
         }
+        # HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1 — EXAONE 이 이미 로컬 캐시에 있는데도
+        # from_pretrained() 가 매번 HuggingFace Hub 에 업데이트 확인 요청을 보내던 것을
+        # 생략한다(실측: 콜드스타트 로딩 5.95s -> 4.13s, 워밍된 캐시 기준에서도 ~31% 단축).
+        #
+        # 단, "이미 캐시에 있을 때만" 건다. 백본은 설치 파일에도 모델 자동 다운로드에도
+        # 들어있지 않고 최초 실행 때 HuggingFace 에서 받아오는데, 캐시가 없는 기기에서
+        # 오프라인을 강제하면 받아올 길이 막혀 그대로 실패한다(실사용자 macOS 신규
+        # 설치에서 재현 — backbone.is_cached 주석 참고). 최초 1회만 온라인으로
+        # 받아오고 그 다음부터는 캐시가 잡히므로 위 단축 효과는 그대로 얻는다.
+        if backbone.is_cached():
+            env["HF_HUB_OFFLINE"] = "1"
+            env["TRANSFORMERS_OFFLINE"] = "1"
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
