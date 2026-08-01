@@ -489,6 +489,22 @@
     return true;
   }
 
+  /** 마스킹된 텍스트가 채팅 입력창에 채워졌다가 전송되기까지의 짧은 순간, 입력창을
+   *  시각적으로 숨긴다. 사용자는 이미 검토 패널에서 마스킹 결과를 확인/승인했으므로
+   *  실제 채팅 입력창에 마스킹 텍스트가 한 번 더 노출될 필요가 없다 — opacity만
+   *  0으로 감출 뿐 값 자체는 그대로 세팅되어 사이트는 정상적으로 읽어 전송한다. */
+  function hideEditorDuringSubmit(cfg) {
+    const editor = cfg?.editorSel && document.querySelector(cfg.editorSel);
+    if (!editor) return () => {};
+    const prevOpacity = editor.style.getPropertyValue('opacity');
+    const prevPriority = editor.style.getPropertyPriority('opacity');
+    editor.style.setProperty('opacity', '0', 'important');
+    return () => {
+      if (prevOpacity) editor.style.setProperty('opacity', prevOpacity, prevPriority);
+      else editor.style.removeProperty('opacity');
+    };
+  }
+
   async function resubmitPrompt(cfg) {
     await new Promise(r => setTimeout(r, 200));
     for (const sel of (cfg.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean)) {
@@ -544,25 +560,30 @@
     if (!latestCfg) return;
     promptApproved = true;
 
-    if (staged) {
-      // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
-      const finalText = decision.maskedText || text;
-      if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
-        staged.inject(base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName));
-      } else if (decision.file?.action === 'passthrough') {
-        staged.inject(staged.file);
+    const restoreEditor = hideEditorDuringSubmit(latestCfg);
+    try {
+      if (staged) {
+        // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
+        const finalText = decision.maskedText || text;
+        if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
+          staged.inject(base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName));
+        } else if (decision.file?.action === 'passthrough') {
+          staged.inject(staged.file);
+        }
+        // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
+        clearPendingAttachment();
+        setEditorText(latestCfg, finalText);
+        // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
+        await new Promise((r) => setTimeout(r, 900));
+      } else {
+        const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
+        setEditorText(latestCfg, finalText);
       }
-      // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
-      clearPendingAttachment();
-      setEditorText(latestCfg, finalText);
-      // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
-      await new Promise((r) => setTimeout(r, 900));
-    } else {
-      const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
-      setEditorText(latestCfg, finalText);
-    }
 
-    await resubmitPrompt(latestCfg);
+      await resubmitPrompt(latestCfg);
+    } finally {
+      restoreEditor();
+    }
     setTimeout(() => { promptApproved = false; }, 3000);
   }
 
