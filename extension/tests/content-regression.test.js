@@ -40,12 +40,22 @@ class HTMLInputElementStub extends EventTargetStub {
     this.files = file ? [file] : [];
     this.value = '';
   }
+  // setFileOnInput 이 마스킹본을 넣고 input/change 를 쏘는 시점을 순서 로그에 남긴다.
+  dispatchEvent() { actionLog.push({ kind: 'inject' }); return true; }
 }
 class HTMLTextAreaElementStub extends EventTargetStub {
   constructor(value = '') {
     super();
     this.tagName = 'TEXTAREA';
     this.value = value;
+    // hideEditorDuringSubmit 이 전송 직전 입력창을 잠깐 감출 때 쓰는 최소 CSSOM stub.
+    const props = new Map();
+    this.style = {
+      getPropertyValue: (k) => props.get(k)?.value ?? '',
+      getPropertyPriority: (k) => props.get(k)?.priority ?? '',
+      setProperty: (k, value, priority = '') => props.set(k, { value, priority }),
+      removeProperty: (k) => props.delete(k),
+    };
   }
   focus() {}
 }
@@ -64,9 +74,18 @@ class DataTransferStub {
   constructor() { this.files = []; this.items = { add: f => this.files.push(f) }; }
 }
 
+// content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
+const actionLog = [];
+let decisionListener = null;
+let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 즉시 회신한다
+
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
-  postMessage() {},
+  postMessage(data) {
+    if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
+      actionLog.push({ kind: 'approve-msg', meta: data.meta });
+    }
+  },
 };
 
 // chatgpt.com 의 PROMPT_CONFIGS.editorSel('#prompt-textarea')로 조회되는 stub 에디터.
@@ -92,11 +111,21 @@ const chromeStub = {
   runtime: {
     lastError: null,
     getURL: (p) => `chrome-extension://test-id/${p}`,
-    onMessage: { addListener() {}, removeListener() {} },
+    onMessage: {
+      addListener: (l) => { decisionListener = l; },
+      removeListener() {},
+    },
     sendMessage(message, cb) {
       runtimeMessages.push(message);
       if (message.type === 'GET_TAB_ID') { cb?.({ tabId: 1 }); return; }
-      // START_SCAN 등은 응답 없이 세션 대기 (테스트에선 decision 미도착)
+      // 테스트 4에서만 결정을 회신한다(그 전까지는 세션 대기 = decision 미도착).
+      if (message.type === 'START_SCAN' && nextDecision) {
+        const decision = nextDecision;
+        nextDecision = null;
+        queueMicrotask(() => decisionListener?.({
+          type: 'PANEL_DECISION', sessionId: message.sessionId, decision,
+        }));
+      }
     },
   },
 };
@@ -194,6 +223,65 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (!combinedScan.payload?.base64Data || combinedScan.payload.text !== '이 문서를 요약해줘') {
     throw new Error('combined scan payload missing staged file data or prompt text');
+  }
+
+  // (4) 결합 검토가 승인되면, 마스킹본을 페이지에 주입하기 "전에" MAIN world 로
+  // UPS_CONTENT_APPROVED_FILE 을 먼저 알려야 한다.
+  //
+  // 안 그러면 interceptor.js(MAIN world)의 Layer 2/3 업로드 훅이 그 마스킹본을
+  // "처음 보는 원본"으로 오인해 검토 패널을 한 번 더 띄운다 — content.js 가 만든
+  // File 은 isolated world 소속이라 MAIN world 의 _approvedFiles WeakSet 으로는
+  // 인식할 수 없기 때문(실사용자 재현: 전송 직후 이미 마스킹된 내용으로 패널 재등장).
+  // 주입(dispatchEvent)은 동기인데 postMessage 는 태스크 큐를 거치므로 순서가 뒤집힐
+  // 수 있어, content.js 는 알림 후 한 매크로태스크 양보한 뒤 주입해야 한다.
+  // 테스트 (3)은 결정을 회신하지 않고 끝났으므로 그 세션이 아직 대기 중이다
+  // (promptInProcess=true). 취소로 정리하고, 새 문서를 다시 보류시켜 놓는다.
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: combinedScan.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+
+  const file2 = new FileStub(['pdf bytes'], 'report.pdf', { type: 'application/pdf' });
+  const input2 = new HTMLInputElementStub(file2);
+  dispatchDocumentEvent('change', {
+    target: input2,
+    composedPath: () => [input2, documentStub],
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await flush();
+
+  actionLog.length = 0;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload',
+      maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf',
+      fileName: 'report.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await flush();
+
+  const approveIdx = actionLog.findIndex(e => e.kind === 'approve-msg');
+  const injectIdx = actionLog.findIndex(e => e.kind === 'inject');
+  if (approveIdx < 0) {
+    throw new Error('마스킹본 주입 전 UPS_CONTENT_APPROVED_FILE 알림이 없었다');
+  }
+  if (injectIdx < 0) throw new Error('승인된 마스킹본이 페이지에 주입되지 않았다');
+  if (approveIdx > injectIdx) {
+    throw new Error('UPS_CONTENT_APPROVED_FILE 알림이 주입보다 늦게 나갔다 (순서 역전)');
+  }
+  if (actionLog[approveIdx].meta?.name !== 'report.pdf') {
+    throw new Error(`알림 메타의 파일명이 다르다: ${actionLog[approveIdx].meta?.name}`);
   }
 
   console.log('content regression ok');

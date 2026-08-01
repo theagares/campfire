@@ -45,6 +45,37 @@
     }, '*');
   }
 
+  /** MAIN world(interceptor.js)에 "이 파일은 content.js가 사용자 검토까지 이미
+   *  마쳤다"고 알린다.
+   *
+   *  왜 필요한가: interceptor.js의 Layer 2/3(XHR/fetch) 업로드 훅은 여전히 살아
+   *  있고, 그쪽은 "이미 승인된 파일"을 _approvedFiles WeakSet 으로 판별한다. 그런데
+   *  content.js가 만든 마스킹본 File 은 isolated world 소속이라 MAIN world 의 그
+   *  WeakSet 에는 원리적으로 들어갈 수 없다 — 두 world 는 DOM 은 공유하지만 JS 렘이
+   *  별개라, 같은 파일이라도 각 world 에서 서로 다른 JS 객체로 보인다. 그래서 우리가
+   *  마스킹본을 페이지에 주입하면 사이트가 그걸 업로드할 때 Layer 2 가 "처음 보는
+   *  원본"으로 오인해 검토 패널을 한 번 더 띄웠다(실사용자 재현: 전송 직후 이미
+   *  마스킹된 내용으로 패널이 재등장). 객체 동일성을 쓸 수 없으니 name+size+type
+   *  메타로 알린다.
+   *
+   *  주입(dispatchEvent)은 동기 실행인데 postMessage 는 태스크 큐를 거치므로, 알림이
+   *  MAIN world 에 먼저 도달하도록 한 매크로태스크 양보한 뒤 주입해야 한다(그래서
+   *  async 이며, 호출부는 반드시 await 한 뒤 주입해야 한다). */
+  async function announceContentApprovedFile(file) {
+    if (!file) return;
+    window.postMessage({
+      __upsecurity_config: true,
+      direction: 'isolated-to-main',
+      type: 'UPS_CONTENT_APPROVED_FILE',
+      meta: {
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+      },
+    }, '*');
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
   sendBridgeTokenToMain();
 
   chrome.storage?.local?.get?.({ protectionEnabled: true }, ({ protectionEnabled: enabled }) => {
@@ -565,9 +596,15 @@
       if (staged) {
         // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
         const finalText = decision.maskedText || text;
+        // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
+        // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
+        // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
-          staged.inject(base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName));
+          const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
+          await announceContentApprovedFile(maskedFile);
+          staged.inject(maskedFile);
         } else if (decision.file?.action === 'passthrough') {
+          await announceContentApprovedFile(staged.file);
           staged.inject(staged.file);
         }
         // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
