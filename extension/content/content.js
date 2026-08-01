@@ -199,6 +199,54 @@
   let overlayRoot = null;
   let overlayIframe = null;
 
+  // ── 페이지 밀어내기 ─────────────────────────────────────────────────────────
+  //
+  // 검토 패널은 position:fixed 오버레이라, 그대로 두면 사이트 오른쪽을 그냥 덮어버린다
+  // (실사용자 리포트: "사이드바가 원본 사이트를 가린다"). 패널 폭만큼 <html> 에
+  // margin-right 를 줘서 사이트 본문이 남은 폭으로 리플로우되게 하면 가려지지 않고
+  // 나란히 놓인다.
+  //
+  // 한계(정직하게 적어둔다): position:fixed 이거나 100vw 로 잡힌 사이트 요소는 뷰포트
+  // 기준이라 이 margin 의 영향을 받지 않아 여전히 패널 밑으로 들어갈 수 있다. 그것까지
+  // 막으려면 "뷰포트 자체"를 줄여야 하는데, 콘텐츠 스크립트로는 불가능하고 브라우저
+  // 네이티브 사이드패널(chrome.sidePanel)만 할 수 있는 일이다. 여기서는 최소한 가로
+  // 스크롤이 생기지 않도록 overflow-x:hidden 으로 잘라만 둔다.
+  const PAGE_SHIFT_PROPS = ['margin-right', 'overflow-x'];
+  let pageShiftSaved = null; // [{ name, value, priority }] — 원복용 원본 인라인 스타일
+
+  function applyPageShift(px) {
+    const html = document.documentElement;
+    if (!html?.style) return;
+    // 원본 저장은 최초 1회만 — 리사이즈로 다시 불려도 우리가 넣은 값을 "원본"으로
+    // 덮어써 버리면 안 된다.
+    if (!pageShiftSaved) {
+      pageShiftSaved = PAGE_SHIFT_PROPS.map((name) => ({
+        name,
+        value: html.style.getPropertyValue(name),
+        priority: html.style.getPropertyPriority(name),
+      }));
+    }
+    html.style.setProperty('margin-right', `${px}px`, 'important');
+    html.style.setProperty('overflow-x', 'hidden', 'important');
+  }
+
+  function revertPageShift() {
+    const html = document.documentElement;
+    if (!html?.style || !pageShiftSaved) return;
+    for (const { name, value, priority } of pageShiftSaved) {
+      if (value) html.style.setProperty(name, value, priority);
+      else html.style.removeProperty(name);
+    }
+    pageShiftSaved = null;
+  }
+
+  /** 패널은 max-width:92vw 라 창 크기에 따라 실제 폭이 달라진다 — 실측해서 그만큼만 민다. */
+  function syncPageShiftToPanel() {
+    if (!overlayRoot) return;
+    const w = overlayRoot.getBoundingClientRect?.().width;
+    if (w > 0) applyPageShift(w);
+  }
+
   function openSidePanel() {
     if (overlayIframe) return; // 이미 열려 있으면 그대로 재사용
     try {
@@ -218,10 +266,16 @@
 
       overlayRoot.appendChild(overlayIframe);
       (document.documentElement || document.body).appendChild(overlayRoot);
+
+      // 패널이 사이트를 덮지 않도록 그 폭만큼 본문을 밀어낸다(위 주석 참고).
+      syncPageShiftToPanel();
+      window.addEventListener('resize', syncPageShiftToPanel);
     } catch (_) { /* context invalidated */ }
   }
 
   function closeSidePanel() {
+    try { window.removeEventListener('resize', syncPageShiftToPanel); } catch (_) { /* ignore */ }
+    revertPageShift(); // 패널보다 먼저 되돌려 본문이 원래 폭으로 돌아오게 한다
     try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
     overlayRoot = null;
     overlayIframe = null;
