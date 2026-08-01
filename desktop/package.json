@@ -1,7 +1,7 @@
 {
   "name": "upsecurity-desktop",
   "productName": "UpSecurity",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "securedoc-gateway 데스크탑 앱 — 로컬 Python 엔진 사이드카 + 대시보드 + 트레이 (PLAN §8, Build Unit U4)",
   "author": "securedoc-gateway",
   "license": "UNLICENSED",
