@@ -116,9 +116,7 @@ body {
 }
 
 /* ── 결과: Figma #45:951 그대로 — 문서(좌, 화면 전체 높이) + 탐지 항목(우) 2컬럼.
-   Figma 실측 비율(469:195 ≈ 70.6:29.4)을 그대로 따르는 비율 분할. 이제 이 패널은
-   페이지에 직접 주입하는 iframe(폭 560px 고정, content.js에서 지정)이라 브라우저
-   사이드패널처럼 폭이 임의로 좁아질 걱정이 없다 — min-width는 안전망 정도로만. */
+   Figma 실측 비율(469:195 ≈ 70.6:29.4)을 그대로 따르는 비율 분할. */
 .view-result { display: flex; flex-direction: column; padding: 0; }
 .result-layout { flex: 1; display: flex; min-height: 0; }
 .result-main {
@@ -130,6 +128,17 @@ body {
   display: flex; flex-direction: column;
   padding: 16px 12px; border-left: 1px solid var(--border);
   overflow-y: auto;
+}
+
+/* 네이티브 사이드패널은 폭을 브라우저/사용자가 정한다(기본 ≈400px, 드래그로 가변) —
+   페이지에 iframe 을 주입하던 시절처럼 560px 를 전제할 수 없다. 그 폭에서 위 비율을
+   유지하면 문서 쪽이 200px대로 쪼그라들어 양쪽 다 못 읽는다. 좁을 땐 세로로 쌓는다. */
+@media (max-width: 480px) {
+  .result-layout { flex-direction: column; }
+  .result-side {
+    flex: 0 1 auto; max-height: 42%; min-width: 0;
+    border-left: 0; border-top: 1px solid var(--border);
+  }
 }
 
 .section-label {

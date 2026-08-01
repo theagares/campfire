@@ -1,12 +1,12 @@
 /**
  * content.js  ─  isolated world
  *
- * 역할 (PLAN §변경1 — 검토 패널 HITL, 2026-07-24 재정정):
+ * 역할 (PLAN §변경1 — 검토 패널 HITL, 2026-08-01 재정정):
  *   1. 사용자 제스처(전송 버튼 클릭 / Enter / 파일 선택·드롭·붙여넣기)를 캡처 단계에서
  *      가로챈다.
- *   2. 그 자리에서 검토 패널을 **직접 이 탭의 페이지 DOM에 iframe으로 주입**한다
- *      (아래 "검토 패널 열기" 섹션 참고 — chrome.sidePanel API 대신 이 방식을 쓰는
- *      이유는 그 섹션의 주석에 정리돼 있다).
+ *   2. 그 제스처가 살아 있는 동안 SW 에 OPEN_PANEL 을 보내 **브라우저 네이티브
+ *      사이드패널**을 연다(아래 "검토 패널 열기" 섹션 참고 — iframe 주입으로
+ *      갔다가 다시 네이티브로 돌아온 경위가 그 섹션에 정리돼 있다).
  *   3. 패널을 연 "이후에" SW(START_SCAN)를 거쳐 엔진 REST 로 PII/인젝션 검사를 수행한다.
  *   4. 검토 패널의 승인 결과(PANEL_DECISION)를 SW→content 로 받아, 파일 인풋 재주입
  *      또는 interceptor(MAIN world)로의 SECUREDOC_RESULT / SECUREDOC_PROMPT_RESULT
@@ -171,141 +171,51 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 검토 패널 열기 — 페이지 DOM에 직접 iframe 오버레이 주입 (2026-07-24 재정정)
+  // 검토 패널 열기 — 브라우저 네이티브 사이드패널 (2026-08-01 재정정)
   //
-  // (정정 경위) chrome.sidePanel API로 구현했었는데, 실사용 중 두 가지가 API 자체의
-  // 구조적 한계로 확인됐다:
-  //   1) 탭 스코핑이 불완전함 — 그 탭의 활성 상태를 setOptions({enabled:false})로
-  //      끄더라도, "이미 창에 도킹되어 열린 패널"을 강제로 닫는 API가 없다
-  //      (sidePanel.close() 자체가 없음 — W3C webextensions #521에서 계속 요청
-  //      중인 미구현 기능: https://github.com/w3c/webextensions/issues/521).
-  //   2) manifest의 side_panel.default_path가 "모든 탭에 기본으로 열린 전역 패널
-  //      인스턴스"를 만들어버려 탭별 차단과 근본적으로 충돌한다
-  //      (https://pmds.info/blog/chrome-extension-side-panel-per-tab).
+  // (정정 경위) 한동안 패널을 이 탭의 페이지 DOM에 position:fixed iframe 으로
+  // 직접 주입했었다. 그러면 패널이 사이트 오른쪽을 그냥 덮어버리는데, 이걸 CSS 로
+  // 비켜가려는 시도를 세 번 하고 전부 실패했다:
+  //   - <html> 에 margin-right → ChatGPT 에 전혀 안 먹음(앱 셸이 뷰포트 고정이라
+  //     조상의 margin 과 무관).
+  //   - body 에 transform:translateZ(0) + max-width 로 fixed 컨테이닝 블록을
+  //     바꿔치기 → body 는 실제로 좁아졌는데(실측 491px) 앱 셸이 100vw 기준이라
+  //     폭이 안 줄고 overflow-x:hidden 에 "잘리기만" 했다(실사용자 스크린샷에서
+  //     본문 글자가 중간에 잘림).
+  //   - 가짜 resize 로 재계산 유도 → 우리 resize 리스너를 우리가 다시 깨워 무한
+  //     재귀, 탭이 멎는 회귀를 냈다.
+  // 100vw 는 정의상 뷰포트 기준이라, 콘텐츠 스크립트가 페이지 CSS 로 건드릴 수
+  // 있는 범위 안에는 답이 없다. **뷰포트 자체를 줄일 수 있는 건 브라우저뿐**이고,
+  // 그게 네이티브 사이드패널이다.
   //
-  // 대신 검토 패널을 이 탭의 페이지 DOM에 직접 iframe으로 주입하는 방식으로
-  // 바꿨다 — 이러면:
-  //   - iframe은 물리적으로 "이 탭의 DOM 안"에만 존재하므로 다른 탭엔 애초에
-  //     나타날 수 없다(탭 스코핑 문제 자체가 소멸, 별도 enabled/disabled 관리 불요).
-  //   - 폭/높이를 우리가 완전히 통제한다(브라우저가 정하는 사이드패널 독 폭에
-  //     종속되지 않음).
-  //   - DOM에서 제거하면 확실하게 닫힌다(닫기 API 부재 문제가 없음).
-  //   - iframe의 src는 chrome-extension:// 오리진이라 그 안에서 로드되는
-  //     sidepanel.html은 여전히 chrome.runtime 메시징 등 확장 권한을 그대로 쓴다
-  //     (manifest web_accessible_resources에 sidepanel/* 노출 필요).
-  //   - DOM 삽입 자체엔 사용자 제스처가 필요 없으므로(사이드패널 API 때와 달리)
-  //     SW를 거칠 필요조차 없어졌다 — 제스처 시점에 바로, 동기적으로 주입한다.
+  // 과거에 네이티브를 포기했던 두 사유는 지금 해소됐다:
+  //   1) "이미 도킹되어 열린 패널을 닫는 API 가 없다" → chrome.sidePanel.close()
+  //      가 Chrome 141 에 추가됐다(W3C webextensions #521 의 결론).
+  //   2) "manifest 의 side_panel.default_path 가 모든 탭에 뜨는 전역 패널을
+  //      만든다" → default_path 를 아예 선언하지 않고, 열어야 하는 그 순간에
+  //      setOptions({ tabId, path, enabled:true }) 로 해당 탭에만 경로를 심는다.
+  //      경로가 없는 탭에는 패널이 존재조차 하지 않으므로 탭 스코핑이 성립한다.
+  //
+  // 남은 제약: sidePanel.open() 은 사용자 제스처에 대한 응답으로만 호출할 수 있고
+  // 콘텐츠 스크립트에서 직접 부를 수 없다. 그래서 제스처 핸들러 안에서 곧바로
+  // SW 로 OPEN_PANEL 을 보내고, SW 가 그 onMessage 안에서 동기적으로 open() 을
+  // 부른다(제스처는 sendMessage 를 타고 전파되지만 await 를 하나라도 끼우면
+  // 소실된다 — service-worker.js 의 OPEN_PANEL 핸들러 주석 참고).
+  //
+  // 그 전파가 깨지는 경로(예: 제스처가 아닌 postMessage 로 시작된 흐름)에 대비해
+  // open() 이 거부되면 예전 iframe 오버레이로 폴백한다 — 사이트를 덮긴 하지만
+  // 검토 없이 원본이 나가는 것보다는 낫다. 폴백 때문에 manifest 의
+  // web_accessible_resources 에 sidepanel/* 노출은 그대로 남겨둔다.
   // ══════════════════════════════════════════════════════════════════════════
   let overlayRoot = null;
   let overlayIframe = null;
 
-  // ── 페이지 밀어내기 ─────────────────────────────────────────────────────────
-  //
-  // 검토 패널은 position:fixed 오버레이라, 그대로 두면 사이트 오른쪽을 그냥 덮어버린다
-  // (실사용자 리포트: "사이드바가 원본 사이트를 가린다"). 패널 폭만큼 <html> 에
-  // margin-right 를 줘서 사이트 본문이 남은 폭으로 리플로우되게 하면 가려지지 않고
-  // 나란히 놓인다.
-  //
-  // (2026-08-01 재정정) 처음엔 <html> 에 margin-right 만 줬는데 ChatGPT 에서 전혀
-  // 먹지 않았다 — 앱 셸이 뷰포트에 고정(position:fixed)되어 있어 조상의 margin 과
-  // 무관하게 화면 전체를 차지하기 때문. 그래서 body 에 transform 을 걸어 fixed
-  // 자손들의 컨테이닝 블록을 body 로 바꾼 뒤 body 를 좁힌다(applyPageShift 주석 참고).
-  //
-  // 부작용: body 가 fixed 의 기준이 되므로, "스크롤해도 화면에 붙어 있어야 하는"
-  // 사이트 요소가 문서와 함께 스크롤될 수 있다. 우리가 지원하는 6개 AI 챗 사이트는
-  // 모두 화면 높이에 꽉 찬 앱 셸 + 내부 스크롤 구조라 실질적 영향이 없고, 패널이
-  // 열려 있는 동안(검토 중)만 적용되며 닫으면 즉시 원복된다.
-  //
-  // 우리 패널 자체는 <html> 바로 밑에 붙이므로(body 밖) 이 transform 의 영향을
-  // 받지 않는다 — 패널은 계속 뷰포트 오른쪽에 고정된다.
-  let pageShiftSaved = null; // [{ el, name, value, priority }] — 원복용 원본 인라인 스타일
-
-  function applyPageShift(px) {
-    const html = document.documentElement;
-    const body = document.body;
-    if (!html?.style || !body?.style) return;
-
-    // 원본 저장은 최초 1회만 — 리사이즈로 다시 불려도 우리가 넣은 값을 "원본"으로
-    // 덮어써 버리면 안 된다.
-    if (!pageShiftSaved) {
-      pageShiftSaved = [
-        { el: html, name: 'overflow-x' },
-        { el: body, name: 'margin-right' },
-        { el: body, name: 'max-width' },
-        { el: body, name: 'transform' },
-        { el: body, name: 'overflow-x' },
-      ].map(({ el, name }) => ({
-        el, name,
-        value: el.style.getPropertyValue(name),
-        priority: el.style.getPropertyPriority(name),
-      }));
-    }
-
-    html.style.setProperty('overflow-x', 'hidden', 'important');
-    body.style.setProperty('margin-right', `${px}px`, 'important');
-    // 사이트가 body 폭을 100vw 로 못박아둔 경우 margin 만으로는 안 좁아진다 → 상한을 건다.
-    body.style.setProperty('max-width', `calc(100% - ${px}px)`, 'important');
-    // 핵심: transform 이 걸린 요소는 position:fixed 자손들의 "컨테이닝 블록"이 된다
-    // (CSS 명세). 이게 없으면 뷰포트 기준으로 붙어 있는 사이트 요소들 — ChatGPT 의
-    // 앱 셸처럼 화면 전체를 차지하는 것들 — 이 body 를 좁혀도 그대로 패널 밑으로
-    // 들어간다(실사용자 재현: <html> margin 만으로는 전혀 변화 없음). translateZ(0)
-    // 은 시각적으로는 아무것도 바꾸지 않으면서 이 컨테이닝 블록 효과만 만든다.
-    body.style.setProperty('transform', 'translateZ(0)', 'important');
-    body.style.setProperty('overflow-x', 'hidden', 'important');
-  }
-
-  function revertPageShift() {
-    if (!pageShiftSaved) return;
-    for (const { el, name, value, priority } of pageShiftSaved) {
-      if (!el?.style) continue;
-      if (value) el.style.setProperty(name, value, priority);
-      else el.style.removeProperty(name);
-    }
-    pageShiftSaved = null;
-  }
-
-  /** 사이트(React 등)가 자기 레이아웃을 다시 계산하게 만든다.
+  /** 폴백 전용 — 네이티브 패널을 열지 못했을 때만 쓰는 페이지 내 iframe 오버레이.
    *
-   *  CSS 로 body 를 좁혀도 "창 크기"는 그대로라 resize 이벤트가 나지 않는다. 그래서
-   *  JS 로 폭을 재서 배치하는 SPA 는 예전 폭 기준 레이아웃을 그대로 들고 있고, 결과적
-   *  으로 본문이 다시 줄바꿈되지 않아 패널 경계에서 글자가 잘린 것처럼 보인다(실사용자
-   *  스크린샷: body 는 좁혀졌는데 ChatGPT 본문이 "가장 많", "자동 마스" 에서 잘림).
-   *  가짜 resize 를 쏴서 재계산을 유도한다. 레이아웃이 실제로 반영되는 시점이 프레임
-   *  뒤일 수 있어 다음 프레임에 한 번 더 보낸다. */
-  function notifyViewportChanged() {
-    try {
-      window.dispatchEvent(new Event('resize'));
-      requestAnimationFrame(() => {
-        try { window.dispatchEvent(new Event('resize')); } catch (_) { /* ignore */ }
-      });
-    } catch (_) { /* ignore */ }
-  }
-
-  /** 패널은 max-width:92vw 라 창 크기에 따라 실제 폭이 달라진다 — 실측해서 그만큼만 민다. */
-  function measureAndShift() {
-    if (!overlayRoot) return false;
-    const w = overlayRoot.getBoundingClientRect?.().width;
-    if (!(w > 0)) return false;
-    applyPageShift(w);
-    return true;
-  }
-
-  /** 창 크기가 바뀌었을 때: 밀어내기 폭만 다시 맞춘다.
-   *
-   *  여기서 notifyViewportChanged() 를 부르면 안 된다 — 우리가 쏜 resize 가 바로 이
-   *  리스너를 다시 깨워 무한 재귀에 빠지고 탭이 멎는다(실사용자 리포트: 0.1.8 로
-   *  업데이트한 뒤 페이지가 아예 동작을 멈춤). 사이트에 재계산을 요청하는 건 패널을
-   *  열고/닫는 시점에만 한다. */
-  function onWindowResize() {
-    measureAndShift();
-  }
-
-  /** 패널을 열 때: 밀어낸 뒤 사이트에 레이아웃 재계산까지 요청한다. */
-  function syncPageShiftToPanel() {
-    if (measureAndShift()) notifyViewportChanged();
-  }
-
-  function openSidePanel() {
+   *  네이티브 패널과 달리 뷰포트를 줄이지 못해 사이트 오른쪽을 덮는다. 그걸 CSS 로
+   *  보정하려던 코드(밀어내기)는 전부 걷어냈다 — 위 섹션 주석대로 원리적으로 안 되고,
+   *  대신 사이트 레이아웃만 두 번 망가뜨렸기 때문. */
+  function openOverlayPanel() {
     if (overlayIframe) return; // 이미 열려 있으면 그대로 재사용
     try {
       overlayRoot = document.createElement('div');
@@ -324,26 +234,43 @@
 
       overlayRoot.appendChild(overlayIframe);
       (document.documentElement || document.body).appendChild(overlayRoot);
-
-      // 패널이 사이트를 덮지 않도록 그 폭만큼 본문을 밀어낸다(위 주석 참고).
-      syncPageShiftToPanel();
-      window.addEventListener('resize', onWindowResize);
     } catch (_) { /* context invalidated */ }
   }
 
-  function closeSidePanel() {
-    try { window.removeEventListener('resize', onWindowResize); } catch (_) { /* ignore */ }
-    revertPageShift(); // 패널보다 먼저 되돌려 본문이 원래 폭으로 돌아오게 한다
-    notifyViewportChanged(); // 원래 폭으로도 사이트가 다시 배치하도록
+  function closeOverlayPanel() {
     try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
     overlayRoot = null;
     overlayIframe = null;
   }
 
-  // 검토 패널(iframe) 자신이 결정 완료 후 닫아달라고 보내는 postMessage 수신.
+  /** 반드시 사용자 제스처 핸들러 안에서, await 없이 동기적으로 호출해야 한다.
+   *  여기서 sendMessage 를 거는 시점의 제스처가 SW 의 open() 까지 전파된다. */
+  function openSidePanel() {
+    if (overlayIframe) return; // 폴백 오버레이가 떠 있으면 그걸 계속 쓴다
+    try {
+      chrome.runtime.sendMessage({ type: 'OPEN_PANEL' }, (res) => {
+        // lastError 를 읽지 않으면 "Unchecked runtime.lastError" 로 콘솔이 시끄럽다.
+        if (chrome.runtime.lastError || !res?.ok) openOverlayPanel();
+      });
+    } catch (_) {
+      openOverlayPanel(); // context invalidated — 오버레이도 실패하면 조용히 포기
+    }
+  }
+
+  /** 정상 흐름에서 패널은 자기가 스스로 닫는다(sidepanel.js 의 window.close()).
+   *  여기는 content 쪽 사정으로 닫아야 할 때만 쓴다. */
+  function closeSidePanel() {
+    if (overlayIframe) { closeOverlayPanel(); return; }
+    try {
+      chrome.runtime.sendMessage({ type: 'CLOSE_PANEL' }, () => { void chrome.runtime.lastError; });
+    } catch (_) { /* ignore */ }
+  }
+
+  // 폴백 오버레이(iframe) 자신이 결정 완료 후 닫아달라고 보내는 postMessage 수신.
+  // 네이티브 패널은 자기 window.close() 로 닫히므로 이 경로를 타지 않는다.
   window.addEventListener('message', (event) => {
-    if (event.source !== overlayIframe?.contentWindow) return;
-    if (event.data?.type === 'UPS_CLOSE_OVERLAY') closeSidePanel();
+    if (!overlayIframe || event.source !== overlayIframe.contentWindow) return;
+    if (event.data?.type === 'UPS_CLOSE_OVERLAY') closeOverlayPanel();
   });
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -436,6 +363,9 @@
       const timeout = setTimeout(() => {
         if (!pendingSessions.has(sessionId)) return;
         pendingSessions.delete(sessionId);
+        // 우리가 기다리길 포기하면 패널도 닫아준다 — 정상 흐름에선 패널이 결정과
+        // 함께 스스로 닫히지만, 이 경로에선 아무도 닫아주지 않아 빈 패널이 남는다.
+        closeSidePanel();
         resolve({ action: 'cancel', reason: 'timeout' });
       }, 10 * 60 * 1000);
       pendingSessions.set(sessionId, { resolve, timeout });
@@ -444,6 +374,7 @@
       } catch (e) {
         clearTimeout(timeout);
         pendingSessions.delete(sessionId);
+        closeSidePanel();
         resolve({ action: 'cancel', reason: 'context' });
       }
     });

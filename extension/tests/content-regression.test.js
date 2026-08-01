@@ -10,6 +10,9 @@
  *      run_pipeline(user_prompt=...) 참고).
  *  (3) 보류된 문서가 있는 상태에서 사용자가 프롬프트를 제출(Enter)하면, 문서+
  *      프롬프트를 함께 넘기는 kind:'combined' START_SCAN 이 발생한다.
+ *  (7) 검토 패널은 SW 에 OPEN_PANEL 을 보내 브라우저 네이티브 사이드패널로 열고,
+ *      페이지 DOM 은 건드리지 않는다(iframe 주입도, 본문 밀어내기도 없음).
+ *  (8) 그 OPEN_PANEL 이 거부되면(제스처 전파 실패 등) iframe 오버레이로 폴백한다.
  *
  * 실행: node tests/content-regression.test.js  (exit 0 = 통과)
  */
@@ -94,6 +97,8 @@ const actionLog = [];
 const dispatchedWindowEvents = [];
 let decisionListener = null;
 let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 즉시 회신한다
+// SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
+let failNextOpenPanel = false;
 
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
@@ -101,15 +106,13 @@ const windowStub = {
     const arr = windowListeners.get(t);
     if (arr) windowListeners.set(t, arr.filter(x => x !== l));
   },
-  // 사이트 레이아웃 재계산을 유도하는 가짜 resize 발송을 검증하기 위해 기록한다.
-  //
-  // 등록된 리스너를 실제로 호출해야 한다 — 기록만 하면 "우리가 쏜 resize 가 우리
-  // resize 리스너를 다시 깨우는" 무한 재귀를 재현하지 못한다(실제로 그 결함이
-  // 0.1.8 로 나가 탭이 멎었고, 리스너를 호출하지 않던 이 스텁이 놓쳤다).
-  // 재귀를 예외로 알리면 안 된다 — content.js 의 notifyViewportChanged 가 try/catch 로
-  // 감싸고 있어 그 예외를 삼켜버리고 테스트가 통과해 버린다(실제로 이 결함이 0.1.8 로
-  // 나갔다). 대신 발송 횟수만 세고, 폭주가 테스트 자체를 멎게 하지 않도록 상한에서
-  // 전파만 멈춘 뒤 아래 (7)에서 횟수로 판정한다.
+  // window 로 나가는 합성 이벤트를 기록한다. 특히 resize — 예전엔 사이트 레이아웃
+  // 재계산을 유도하려고 가짜 resize 를 쐈는데, 그게 우리 resize 리스너를 다시 깨워
+  // 무한 재귀로 탭이 멎었다(0.1.8 실배포 결함). 네이티브 사이드패널은 브라우저가
+  // 뷰포트를 진짜로 줄여주므로 그런 유도가 아예 필요 없다 — 아래 (7)에서 우리가
+  // resize 를 단 한 번도 쏘지 않는지 확인해 그 시절 코드가 되살아나는 걸 막는다.
+  // 등록된 리스너를 실제로 호출하되, 폭주가 테스트 자체를 멎게 하지 않도록 상한에서
+  // 전파만 멈춘다.
   dispatchEvent(ev) {
     dispatchedWindowEvents.push(ev?.type);
     if (dispatchedWindowEvents.length > 50) return true;
@@ -135,7 +138,7 @@ const domBySelector = new Map([
   ['[data-testid="send-button"]', sendButtonStub],
 ]);
 
-// 인라인 스타일 최소 구현 — 페이지 밀어내기(테스트 7) 검증용.
+// 인라인 스타일 최소 구현 — 페이지(html/body)를 건드리지 않는지 보는 데 쓴다(테스트 7).
 function makeStyleStub() {
   const props = new Map();
   return {
@@ -147,17 +150,19 @@ function makeStyleStub() {
   };
 }
 
-// 패널 iframe/호스트 엘리먼트 — 폭 실측과 close 메시지 경로를 흉내낸다.
+// 폴백 오버레이의 호스트/iframe 엘리먼트 — 주입·제거 경로를 흉내낸다(테스트 8).
 const createdElements = [];
-function makeElementStub() {
+function makeElementStub(tagName = '') {
   const el = {
+    tagName: String(tagName).toUpperCase(),
+    children: [],
+    removed: false,
     style: makeStyleStub(),
     contentWindow: {},
-    appendChild() {},
-    remove() {},
+    appendChild(child) { this.children.push(child); },
+    remove() { this.removed = true; },
     attachShadow: () => ({}),
     addEventListener() {},
-    // 패널 호스트는 max-width:92vw 라 실제 폭을 실측해서 민다
     getBoundingClientRect: () => ({ width: 560, height: 900 }),
   };
   // cssText 를 문자열로 통째로 넣는 코드가 있어 받아만 둔다
@@ -166,12 +171,20 @@ function makeElementStub() {
   return el;
 }
 
+// <html> 에 실제로 붙은 노드. 첨부 보류 뱃지도 여기로 오므로, 패널 오버레이는
+// id 로 골라낸다(네이티브 경로에선 오버레이가 하나도 없어야 한다).
+const appendedToRoot = [];
+const injectedOverlays = () => appendedToRoot.filter(el => el?.id === '__ups_overlay_host');
+
 const documentStub = {
-  documentElement: { appendChild() {}, style: makeStyleStub() },
+  documentElement: {
+    appendChild(node) { appendedToRoot.push(node); },
+    style: makeStyleStub(),
+  },
   body: { dispatchEvent: () => true, style: makeStyleStub() },
   activeElement: null,
   addEventListener: (t, l) => addListener(documentListeners, t, l),
-  createElement: () => makeElementStub(),
+  createElement: (tag) => makeElementStub(tag),
   querySelector: (sel) => domBySelector.get(sel) ?? null,
   querySelectorAll: () => [],
   execCommand: () => true,
@@ -193,6 +206,13 @@ const chromeStub = {
     sendMessage(message, cb) {
       runtimeMessages.push(message);
       if (message.type === 'GET_TAB_ID') { cb?.({ tabId: 1 }); return; }
+      // SW 의 OPEN_PANEL 핸들러 흉내 — ok:false 면 content 가 iframe 으로 폴백해야 한다.
+      if (message.type === 'OPEN_PANEL') {
+        if (failNextOpenPanel) { failNextOpenPanel = false; cb?.({ ok: false, reason: 'rejected' }); }
+        else cb?.({ ok: true });
+        return;
+      }
+      if (message.type === 'CLOSE_PANEL') { cb?.({ ok: true }); return; }
       // 테스트 4에서만 결정을 회신한다(그 전까지는 세션 대기 = decision 미도착).
       if (message.type === 'START_SCAN' && nextDecision) {
         const decision = nextDecision;
@@ -418,66 +438,70 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
 
-  // (7) 검토 패널이 열려 있는 동안에는 사이트 본문을 그 폭만큼 밀어내야 하고,
-  // 닫으면 원래대로 되돌려야 한다.
+  // (7) 검토 패널은 SW 에 OPEN_PANEL 을 보내 브라우저 네이티브 사이드패널로 열어야
+  // 하고, 페이지 DOM 은 전혀 건드리지 않아야 한다.
   //
-  // 패널은 position:fixed 오버레이라 밀어내기가 없으면 사이트 오른쪽을 그냥 덮는다
-  // (실사용자 리포트). 반대로 닫은 뒤 margin 이 남으면 사이트가 계속 찌그러진 채로
-  // 남으므로, 원복까지가 한 쌍이다.
+  // 예전엔 패널을 position:fixed iframe 으로 페이지에 주입하고, 그게 사이트를 덮는 걸
+  // CSS(html/body 의 margin·max-width·transform + 가짜 resize)로 비켜가려 했다. 세 번
+  // 시도해 전부 실패했다 — ChatGPT 앱 셸이 100vw 기준이라 body 를 좁혀도 폭이 안 줄고
+  // 잘리기만 했고(실사용자 스크린샷: 본문 글자가 중간에서 잘림), 재계산을 유도하려던
+  // 가짜 resize 는 무한 재귀로 탭을 멎게 했다(0.1.8 실배포 결함). 뷰포트 자체를 줄일 수
+  // 있는 건 브라우저뿐이라 네이티브 패널로 돌아왔다. 그 시절 코드가 되살아나지 않도록
+  // "페이지를 안 건드린다"를 불변식으로 못 박는다.
+  if (!runtimeMessages.some(m => m.type === 'OPEN_PANEL')) {
+    throw new Error('검토 패널 열기 요청(OPEN_PANEL)이 SW 로 나가지 않았다 — 패널이 아예 안 뜬다');
+  }
+  if (injectedOverlays().length !== 0) {
+    throw new Error('네이티브 패널이 열렸는데 페이지에 오버레이를 주입했다 — 사이트를 이중으로 덮는다');
+  }
+
   const htmlStyle = documentStub.documentElement.style;
   const bodyStyle = documentStub.body.style;
-
-  // 앞선 테스트에서 이미 패널이 열렸다 → 밀어내기가 적용돼 있어야 한다.
-  if (bodyStyle.getPropertyValue('margin-right') !== '560px') {
-    throw new Error(`패널이 열렸는데 본문 밀어내기가 없다 (margin-right="${bodyStyle.getPropertyValue('margin-right')}")`);
-  }
-  if (bodyStyle.getPropertyPriority('margin-right') !== 'important') {
-    throw new Error('밀어내기 margin-right 에 !important 가 없다 — 사이트 CSS 에 밀릴 수 있다');
-  }
-  // transform 이 없으면 position:fixed 인 사이트 요소가 그대로 패널 밑으로 들어간다
-  // (ChatGPT 실사용자 재현: <html> margin 만으로는 전혀 변화 없었음).
-  if (!bodyStyle.getPropertyValue('transform')) {
-    throw new Error('body 에 transform 이 없다 — fixed 요소가 여전히 패널에 가려진다');
-  }
-  if (bodyStyle.getPropertyValue('max-width') !== 'calc(100% - 560px)') {
-    throw new Error('body max-width 상한이 없다 — 사이트가 100vw 로 못박아둔 경우 안 좁아진다');
-  }
-  if (htmlStyle.getPropertyValue('overflow-x') !== 'hidden') {
-    throw new Error('html overflow-x:hidden 이 없다 — 가로 스크롤이 생긴다');
-  }
-  // CSS 로만 좁히면 창 크기는 그대로라 resize 가 안 난다 → JS 로 폭을 재서 배치하는
-  // SPA 는 예전 폭 그대로 있고 본문이 다시 줄바꿈되지 않아 글자가 잘린다(실사용자
-  // 스크린샷에서 확인). 가짜 resize 로 재계산을 유도해야 한다.
-  if (!dispatchedWindowEvents.includes('resize')) {
-    throw new Error('밀어낸 뒤 resize 를 쏘지 않았다 — 사이트가 레이아웃을 다시 계산하지 않는다');
-  }
-  // 그 resize 가 우리 resize 리스너를 다시 깨우면 무한 재귀가 되어 탭이 멎는다
-  // (0.1.8 로 실제 배포된 결함). 창 크기 변경 처리는 밀어내기 폭만 다시 맞추고,
-  // 재계산 요청은 열고/닫을 때만 해야 한다.
-  const resizeCount = dispatchedWindowEvents.filter(t => t === 'resize').length;
-  if (resizeCount > 10) {
-    throw new Error(`resize 무한 재귀 (${resizeCount}회 발송) — 우리가 쏜 resize 가 우리 리스너를 다시 깨운다 (탭 멈춤)`);
-  }
-
-  // 패널 닫기: 실제 iframe 의 contentWindow 에서 온 메시지만 content.js 가 받아들인다
-  // (나머지 후보는 source 불일치로 무시되므로 전부 쏴도 안전하다).
-  for (const el of createdElements) {
-    for (const l of windowListeners.get('message') || []) {
-      l({ source: el.contentWindow, data: { type: 'UPS_CLOSE_OVERLAY' } });
+  for (const [label, style] of [['html', htmlStyle], ['body', bodyStyle]]) {
+    if (style._props.size !== 0) {
+      throw new Error(`${label} 인라인 스타일을 건드렸다 (${[...style._props.keys()].join(', ')}) — 밀어내기는 원리적으로 안 먹혔고 사이트만 망가뜨린다`);
     }
   }
+  if (dispatchedWindowEvents.includes('resize')) {
+    throw new Error('가짜 resize 를 쐈다 — 무한 재귀로 탭이 멎었던 코드가 되살아났다');
+  }
+
+  // (8) 그 OPEN_PANEL 이 거부되면 iframe 오버레이로 폴백해야 한다.
+  //
+  // sidePanel.open() 은 사용자 제스처에 대한 응답으로만 허용되는데, 그 제스처가
+  // content → SW 메시징을 타고 전파되는 건 Chromium 구현에 달려 있다(issue 355266358).
+  // 전파가 깨지는 경로(예: 제스처가 아닌 postMessage 로 시작되는 흐름)에서 패널이 아예
+  // 안 뜨면 검토 없이 원본이 나가버리므로, 사이트를 덮더라도 오버레이로라도 띄운다.
+  await new Promise(r => setTimeout(r, 3200)); // 테스트 6이 세운 promptApproved 해제 대기
+
+  failNextOpenPanel = true;
+  appendedToRoot.length = 0;
+  promptEditorStub.value = '폴백 확인용 프롬프트';
+  documentStub.activeElement = promptEditorStub;
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
   await flush();
 
-  for (const [label, style, name] of [
-    ['body margin-right', bodyStyle, 'margin-right'],
-    ['body max-width', bodyStyle, 'max-width'],
-    ['body transform', bodyStyle, 'transform'],
-    ['body overflow-x', bodyStyle, 'overflow-x'],
-    ['html overflow-x', htmlStyle, 'overflow-x'],
-  ]) {
-    if (style.getPropertyValue(name) !== '') {
-      throw new Error(`패널을 닫았는데 ${label} 가 남아있다 — 사이트가 계속 찌그러진다`);
-    }
+  const overlayHost = injectedOverlays()[0];
+  if (!overlayHost) {
+    throw new Error('OPEN_PANEL 이 거부됐는데 iframe 오버레이 폴백이 뜨지 않았다 — 검토 없이 원본이 나간다');
+  }
+  const overlayFrame = overlayHost.children.find(c => c.tagName === 'IFRAME');
+  if (!overlayFrame || !String(overlayFrame.src).endsWith('sidepanel/sidepanel.html')) {
+    throw new Error('폴백 오버레이가 검토 패널을 로드하지 않는다');
+  }
+
+  // 폴백 오버레이는 자기 iframe 의 contentWindow 에서 온 UPS_CLOSE_OVERLAY 로만 닫힌다
+  // (네이티브 패널은 자기 window.close() 로 닫으므로 이 경로를 타지 않는다).
+  for (const l of windowListeners.get('message') || []) {
+    l({ source: overlayFrame.contentWindow, data: { type: 'UPS_CLOSE_OVERLAY' } });
+  }
+  await flush();
+  if (!overlayHost.removed) {
+    throw new Error('UPS_CLOSE_OVERLAY 를 받고도 폴백 오버레이가 페이지에 남아있다');
   }
 
   console.log('content regression ok');

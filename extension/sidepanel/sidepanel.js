@@ -53,10 +53,22 @@ let state = {
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
 // 전역으로 도달한다 — 내 탭 ID를 최대한 빨리 알아둬야, 아직 세션이 미확정인
 // 상태에서 "다른 탭"의 이벤트를 내 것으로 잘못 채택하는 걸 막을 수 있다.
-chrome.runtime.sendMessage({ type: 'GET_TAB_ID' }, (res) => {
-  if (chrome.runtime.lastError) return;
-  if (res?.tabId != null) state.myTabId = res.tabId;
-});
+//
+// 네이티브 사이드패널로 열렸을 때는 SW 에 물어봐도 답이 없다 — 사이드패널은 탭에
+// 종속되지 않은 확장 페이지라 sender.tab 이 비어 있기 때문. 그래서 SW 가 패널을
+// 열 때 URL 에 심어준 ?tabId= 를 먼저 읽고, 그게 없을 때(= iframe 오버레이 폴백으로
+// 열린 경우, 그쪽은 페이지의 프레임이라 sender.tab 이 있다) SW 에 물어본다.
+// 파라미터가 없을 때 Number(null) 은 0 이 되어버린다 — 그걸 탭 ID 로 채택하면 모든
+// 브로드캐스트가 "내 탭이 아님"으로 걸러져 패널이 영영 안 그려진다. 원문부터 확인한다.
+const rawTabId = new URLSearchParams(location.search).get('tabId');
+if (/^\d+$/.test(rawTabId ?? '')) state.myTabId = Number(rawTabId);
+
+if (state.myTabId == null) {
+  chrome.runtime.sendMessage({ type: 'GET_TAB_ID' }, (res) => {
+    if (chrome.runtime.lastError) return;
+    if (res?.tabId != null) state.myTabId = res.tabId;
+  });
+}
 
 // ── 세그먼트 빌드 ────────────────────────────────────────────────────────────
 // idxOffset: combined 모드에서 문서/프롬프트 두 세그먼트 배열의 idx 가 서로 겹치지
@@ -274,9 +286,10 @@ function sendDecision(decision) {
   state.decided = true;
   chrome.runtime.sendMessage({ type: 'PANEL_DECISION', sessionId: state.sessionId, decision });
   // 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음).
-  // iframe 오버레이로 열렸을 때는 content.js가 이 postMessage를 받아 DOM에서
-  // 제거한다 — window.close()는 iframe에선 아무 효과가 없어 안전하게 그대로 둔다
-  // (네이티브 sidePanel/독립 탭 등 다른 호스팅 방식으로 열렸을 경우를 위한 폴백).
+  // 두 호스팅 방식을 한 번에 커버한다: 네이티브 사이드패널은 window.close() 로 닫히고
+  // (그때 window.parent 는 자기 자신이라 postMessage 는 아무도 안 받는다), iframe
+  // 오버레이 폴백으로 열렸을 때는 window.close() 가 무효인 대신 content.js 가 이
+  // postMessage 를 받아 DOM 에서 제거한다.
   setTimeout(() => {
     try { window.parent.postMessage({ type: 'UPS_CLOSE_OVERLAY' }, '*'); } catch (_) {}
     window.close();
@@ -390,7 +403,10 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 // ── 로드 시 최신 세션 스냅샷 pull ────────────────────────────────────────────
 function pullSnapshot() {
-  chrome.runtime.sendMessage({ type: 'PANEL_READY' }, (res) => {
+  // tabId 를 같이 보낸다 — SW 는 "요청한 탭의 세션"만 돌려주는데, 네이티브 패널은
+  // sender.tab 이 없어 이걸 안 보내면 그 스코핑이 통째로 무너진다(과거에 탭 A 의
+  // 결과가 탭 B 패널에 뜨던 버그의 방어선).
+  chrome.runtime.sendMessage({ type: 'PANEL_READY', tabId: state.myTabId }, (res) => {
     if (chrome.runtime.lastError) return;
     if (res?.tabId != null) state.myTabId = res.tabId;
     if (!res?.session) { renderProgress(null); return; }
