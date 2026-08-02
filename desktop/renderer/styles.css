@@ -289,6 +289,36 @@ img { display:block; }
 }
 .pipe-node.dragging { cursor:grabbing; z-index:5; }
 .pipe-node .pn-icon { width:100%; height:100%; display:block; object-fit:contain; pointer-events:none; }
+
+/* 실시간 처리 단계 표시 (app.js applyPipelineActivity).
+   아이콘이 PNG/SVG 이미지라 색을 직접 못 바꾸므로, 뒤에 깔리는 후광(::before)과
+   대비/채도로 상태를 준다 — 아이콘 자체는 건드리지 않아 디자인이 유지된다.
+   드래그 중에는 후광이 커서를 따라다니면 산만해서 끈다. */
+.pipe-node::before {
+  content:''; position:absolute; inset:-14%; border-radius:14px;
+  background:var(--purple-soft); opacity:0; transform:scale(.86);
+  transition:opacity .25s ease, transform .25s ease; pointer-events:none; z-index:-1;
+}
+.pipe-node.done::before { opacity:1; transform:scale(1); }
+.pipe-node.active::before {
+  opacity:1; transform:scale(1);
+  animation:pipe-node-pulse 1.5s ease-in-out infinite;
+}
+.pipe-node.dragging::before { animation:none; }
+.pipe-node .pn-icon { transition:filter .25s ease, opacity .25s ease; }
+.pipe-node.done .pn-icon { filter:saturate(1.15); }
+.pipe-node.active .pn-icon { filter:saturate(1.35) drop-shadow(0 0 3px var(--purple-soft)); }
+.pipe-node.active .pn-label { color:var(--purple); }
+
+@keyframes pipe-node-pulse {
+  0%, 100% { opacity:.55; transform:scale(.94); }
+  50%      { opacity:1;   transform:scale(1.06); }
+}
+
+/* 모션을 줄이도록 설정한 사용자에겐 맥동 대신 정적 강조만 남긴다. */
+@media (prefers-reduced-motion: reduce) {
+  .pipe-node.active::before { animation:none; }
+}
 .pipe-node .pn-label {
   position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:3px;
   font-size:9px; font-weight:600; color:#101828; text-align:center; line-height:1.25;
