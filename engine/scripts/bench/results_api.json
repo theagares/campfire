@@ -1,0 +1,52 @@
+{
+  "stage": "B1_api",
+  "model": "solar-pro3",
+  "docs": {
+    "demo_pii_카드분쟁접수서.docx": {
+      "chars": 1394,
+      "chunks": 2,
+      "pii_count": 26,
+      "injection_count": 1,
+      "warm_pii_ms": 4681.5,
+      "warm_injection_ms": 492.0,
+      "warm_total_ms": 5173.6,
+      "warm_pii_all": [
+        4912.6,
+        3624.5,
+        5046.1,
+        4681.5,
+        4172.5
+      ],
+      "warm_injection_all": [
+        492.0,
+        425.4,
+        410.8,
+        854.6,
+        773.9
+      ]
+    },
+    "demo_chatgpt_고객지원리뷰.docx": {
+      "chars": 1839,
+      "chunks": 2,
+      "pii_count": 33,
+      "injection_count": 0,
+      "warm_pii_ms": 5354.5,
+      "warm_injection_ms": 444.8,
+      "warm_total_ms": 5799.2,
+      "warm_pii_all": [
+        5285.4,
+        5363.6,
+        5354.5,
+        4808.8,
+        5678.3
+      ],
+      "warm_injection_all": [
+        998.5,
+        420.8,
+        447.2,
+        444.8,
+        433.6
+      ]
+    }
+  }
+}
