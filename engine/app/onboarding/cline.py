@@ -20,7 +20,7 @@ import platform
 from pathlib import Path
 from typing import Any
 
-from .common import MutationError, SettingsDiff, build_diff
+from .common import MutationError, SettingsDiff, build_diff, is_our_hook
 
 DEFAULT_SETTINGS_PATH = Path.home() / ".cline" / "settings.json"
 
@@ -40,12 +40,12 @@ def _mutate_register_hooks(after: dict) -> tuple[bool, str]:
     if not isinstance(pre_tool_use, list):
         raise MutationError("hooks.PreToolUse 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
 
-    if any(isinstance(e, dict) and e.get("_securedocGateway") for e in pre_tool_use):
+    if any(is_our_hook(e) for e in pre_tool_use):
         return False, "이미 PreToolUse 훅이 등록돼 있습니다."
 
     # TODO: 실제 Cline PreToolUse 훅 커맨드 스펙 확정되면 command 교체.
     pre_tool_use.append(
-        {"matcher": "readFile", "command": "securedoc-gateway-block-read", "_securedocGateway": True}
+        {"matcher": "readFile", "command": "campfire-block-read", "_campfire": True}
     )
     return True, "PreToolUse 훅을 등록해 내장 Read 호출을 실시간 차단합니다(macOS/Linux, PLAN §4.2)."
 

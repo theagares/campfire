@@ -1,5 +1,5 @@
 """
-bench_local.py — securedoc-gateway 로컬 탐지기(PII encoder + 인젝션 EXAONE)의
+bench_local.py — campfire 로컬 탐지기(PII encoder + 인젝션 EXAONE)의
 "탐지 시간"만 재는 벤치마크.
 
 측정에 포함되는 것: 청크별 PII 탐지, 청크별 인젝션 1차 판정(EXAONE hybrid).
@@ -56,7 +56,7 @@ def _clear_stage_runtime(models_dir: Path) -> None:
 
 
 # 가중치 원본(사용자 기기에 설치된 것) — 어느 레이아웃이든 여기를 가리키게 한다.
-REAL_WEIGHTS = Path(os.environ.get("LOCALAPPDATA", "")) / "UpSecurity" / "models"
+REAL_WEIGHTS = Path(os.environ.get("LOCALAPPDATA", "")) / "Campfire" / "models"
 
 # (엔진 하위 경로, 가중치 디렉터리 이름)
 _WEIGHT_LINKS = (

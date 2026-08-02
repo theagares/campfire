@@ -1,5 +1,5 @@
 /**
- * background/service-worker.js  ─  securedoc-gateway 백그라운드 (MV3, module)
+ * background/service-worker.js  ─  campfire 백그라운드 (MV3, module)
  *
  * 역할 (PLAN §3 · §변경1 · §변경2):
  *   1) 서버 선택: 48200~48209 병렬 /health 스캔 → 시그니처 일치 포트 채택(캐싱),
@@ -18,7 +18,7 @@
 import { wrapMaskedFile } from '../utils/docwrapper.js';
 import {
   REMOTE_URL, LOCAL_HOST, BASE_PORT, PORT_SCAN_COUNT,
-  HEALTH_TIMEOUT_MS, SERVICE_SIGNATURE, CACHE_KEY,
+  HEALTH_TIMEOUT_MS, isOurEngine, CACHE_KEY,
 } from './config.js';
 
 const BADGE_OK = '#1fa36d';
@@ -44,7 +44,7 @@ async function probePort(port) {
     });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
-    if (data && data.service === SERVICE_SIGNATURE) {
+    if (data && isOurEngine(data.service)) {
       return { port, health: data };
     }
     return null;

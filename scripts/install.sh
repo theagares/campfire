@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# securedoc-gateway 원커맨드 설치 (macOS / Linux)
-#   curl -fsSL https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.sh | bash
+# campfire 원커맨드 설치 (macOS / Linux)
+#   curl -fsSL https://raw.githubusercontent.com/theagares/campfire/main/scripts/install.sh | bash
 #
 # git clone 없이 GitHub 저장소를 tarball로 받아 엔진(Python venv)과 데스크탑(Electron)
 # 의존성까지 한 번에 설치한다. 실행/패키징은 하지 않고, 마지막에 실행 명령만 안내한다.
@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-REPO="theagares/securedoc-gateway"
-DEST="${SECUREDOC_INSTALL_DIR:-$HOME/securedoc-gateway}"
+REPO="theagares/campfire"
+DEST="${SECUREDOC_INSTALL_DIR:-$HOME/campfire}"
 
 if [ -e "$DEST" ]; then
   echo "설치 대상 폴더가 이미 있습니다: $DEST" >&2
@@ -29,7 +29,7 @@ for cmd in node npm python3 curl tar; do
 done
 
 echo "소스 다운로드 중... ($REPO)"
-TMP_TAR="$(mktemp -t securedoc-gateway.XXXXXX)"
+TMP_TAR="$(mktemp -t campfire.XXXXXX)"
 curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" -o "$TMP_TAR"
 
 mkdir -p "$DEST"

@@ -18,7 +18,7 @@
 
 ## 왜 GitHub Releases인가
 
-이 레포(`theagares/securedoc-gateway`)가 이미 있고 **public**이라 팀원뿐 아니라 일반
+이 레포(`theagares/campfire`)가 이미 있고 **public**이라 팀원뿐 아니라 일반
 사용자도 인증 없이 릴리스 자산 URL에 바로 접근 가능하다 — 새 인증 체계(계정/토큰
 발급·배포·회수)를 따로 만들 필요가 없다는 게 결정적 장점(HF Hub/자체 스토리지/Git LFS
 대비 비교는 `모델_가중치_배포_방법_정리.md` 참고). 단일 seed 전환 이후 총 용량이
@@ -28,7 +28,7 @@
 ## 실제 배포 상태 (`models-v1`)
 
 ```
-https://github.com/theagares/securedoc-gateway/releases/tag/models-v1
+https://github.com/theagares/campfire/releases/tag/models-v1
   pii_engine_v1.tar.gz        (sha256: dbf7d8e52bddc44bea869ca9280ff873875babce7ab7acd2ab67453e9ba7a386)
   injection_engine_v1.tar.gz  (sha256: 739b28d517ea2a853bd3fd04d9a2eeeb5afb579b9cfce9fb99283e8afc71a8c3)
 ```

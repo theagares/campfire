@@ -31,7 +31,7 @@ from app.store import db
 
 # stateless_http: FastAPI 마운트 시 세션 상태를 요청 간 유지하지 않아 마운트가 단순·견고.
 # 각 요청이 독립적이므로 REST 와 프로세스 하나를 공유해도 상태 얽힘이 없다(PLAN §4).
-mcp = FastMCP("securedoc-gateway", stateless_http=True)
+mcp = FastMCP("campfire", stateless_http=True)
 
 # 검색/목록에서 텍스트로 취급할 확장자 (기존 securedoc_mcp 계승)
 _TEXT_EXTS = {

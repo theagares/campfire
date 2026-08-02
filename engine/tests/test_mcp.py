@@ -101,7 +101,7 @@ def test_mcp_tools(server, tmp_path):
 
     # get_status — 시그니처·detector·정책
     gs = result["get_status"]
-    assert gs["service"] == "securedoc-gateway"
+    assert gs["service"] == "campfire"
     assert "pii_encoder" in gs["detectors"]["pii"]
     assert gs["policy"]["injection"] in ("mask", "block")
 

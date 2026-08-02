@@ -15,6 +15,7 @@ app/models_sync.py
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -65,8 +66,47 @@ def _migrate_legacy_weights(bundled: Path, persistent: Path) -> None:
             pass
 
 
+def _migrate_legacy_models_root() -> None:
+    """UpSecurity -> Campfire 리브랜딩으로 보관 위치가 바뀐 것을 이어붙인다.
+
+    옛 경로(%LOCALAPPDATA%/UpSecurity/models 등)에 이미 받아둔 가중치가 약 600MB 라,
+    새 경로만 보고 "없다" 고 판단하면 기존 사용자가 전부 다시 받게 된다. 새 경로가
+    아직 없을 때만 통째로 옮긴다 — 이미 새 경로에 뭔가 있으면 그쪽이 최신이므로
+    건드리지 않는다.
+
+    SECUREDOC_MODELS_DIR 로 위치를 직접 지정한 경우엔 사용자가 정한 경로이므로
+    마이그레이션 대상이 아니다.
+
+    SECUREDOC_SKIP_LEGACY_MIGRATION=1 이면 건너뛴다. 이 함수는 사용자 홈의 실제
+    가중치 폴더를 "옮기는" 유일한 코드라, 개발 체크아웃에서 테스트를 돌리는 것만으로
+    설치된 앱의 모델이 사라지는 사고가 실제로 났다(테스트가 앱을 띄우면 lifespan 이
+    이걸 부른다). 테스트는 conftest 에서 이 값을 켜 실사용자 상태를 건드리지 않는다.
+    """
+    if os.environ.get("SECUREDOC_SKIP_LEGACY_MIGRATION") == "1":
+        return
+    legacy = config.LEGACY_MODELS_ROOT
+    current = config.MODELS_ROOT
+    if current != config._default_models_root():
+        return  # 사용자가 경로를 명시함
+    if current.exists() or not legacy.is_dir():
+        return
+    if not any(legacy.iterdir()):
+        return
+    current.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(legacy), str(current))
+    except OSError:
+        # 볼륨이 다르거나 권한이 없으면 포기한다 — 최악의 경우 다시 받을 뿐이라
+        # 기동을 막을 이유가 없다.
+        pass
+
+
 def sync_bundled_model_files() -> None:
     """엔진 기동 시 1회. 실패해도 기동을 막지 않는다(가중치는 어차피 재다운로드 가능)."""
+    try:
+        _migrate_legacy_models_root()
+    except Exception:  # noqa: BLE001
+        pass
     for bundled_name, persistent in (
         ("pii_engine", config.PII_ENGINE_DIR),
         ("injection_engine", config.INJECTION_ENGINE_DIR),

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .common import MutationError, SettingsDiff, build_diff
+from .common import MutationError, SettingsDiff, build_diff, is_our_hook
 
 # 실 사용 시 참고용 기본 경로 — 확정 전까지는 호출자가 명시적으로 경로를 넘기는
 # 것을 권장한다. 테스트는 이 기본값을 절대 사용하지 않는다.
@@ -36,11 +36,11 @@ def _mutate_register_hooks(after: dict) -> tuple[bool, str]:
         entries = hooks.setdefault(hook_name, [])
         if not isinstance(entries, list):
             raise MutationError(f"hooks.{hook_name} 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
-        if any(isinstance(e, dict) and e.get("_securedocGateway") for e in entries):
+        if any(is_our_hook(e) for e in entries):
             continue  # 이미 등록됨
         # TODO: 실제 Cascade Hooks 커맨드 스펙 확정되면 command 교체. exitCodeBlock=2 로 차단.
         entries.append(
-            {"command": "securedoc-gateway-block-read", "exitCodeBlock": 2, "_securedocGateway": True}
+            {"command": "campfire-block-read", "exitCodeBlock": 2, "_campfire": True}
         )
         added.append(hook_name)
 

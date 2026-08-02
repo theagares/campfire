@@ -152,7 +152,7 @@ jobs:
           # 아니라 진짜 크래시). 방금 signtool 로 서명이 끝난 EXE 를 Defender 가 아직
           # 스캔 중일 때 실행하면 발생하는 것으로 추정되는 CI 러너 특유의 문제라, 짧게
           # 쉬었다가 재시도하면 통과하는 경우가 많다 — 최대 3회 재시도한다.
-          $appExe = "$env:LOCALAPPDATA\Programs\UpSecurity\UpSecurity.exe"
+          $appExe = "$env:LOCALAPPDATA\Programs\Campfire\Campfire.exe"
           $installed = $false
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             Write-Output "설치 시도 $attempt/3..."
@@ -209,7 +209,7 @@ jobs:
           if [ -z "$APP" ]; then APP=$(find desktop/release -maxdepth 3 -iname "*.app" | head -1); fi
           if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
           echo "실행: $APP"
-          file "$APP/Contents/MacOS/UpSecurity" || true
+          file "$APP/Contents/MacOS/Campfire" || true
           RES="$APP/Contents/Resources/engine"
 
           echo "--- codesign/gatekeeper 상태 ---"
@@ -228,23 +228,23 @@ jobs:
           sleep 1
 
           echo "--- Electron 앱 실행 ---"
-          log show --predicate 'eventMessage contains "UpSecurity"' --style compact --last 1m > /tmp/before.log 2>&1 || true
-          "$APP/Contents/MacOS/UpSecurity" > /tmp/upsec-app.log 2>&1 &
+          log show --predicate 'eventMessage contains "Campfire"' --style compact --last 1m > /tmp/before.log 2>&1 || true
+          "$APP/Contents/MacOS/Campfire" > /tmp/upsec-app.log 2>&1 &
           APP_PID=$!
           for i in 1 2 3 4 5 6; do
             sleep 2
             echo "[t=${i}x2s] process tree:"
-            ps -eo pid,ppid,stat,comm | grep -i upsecurity | grep -v grep || echo "  (none)"
+            ps -eo pid,ppid,stat,comm | grep -i campfire | grep -v grep || echo "  (none)"
           done
           echo "--- app stdout/stderr (len=$(wc -c < /tmp/upsec-app.log)) ---"
           cat /tmp/upsec-app.log || true
           echo "--- process check ---"
-          ps aux | grep -i -E "upsecurity|python" | grep -v grep || echo "(no matching process)"
+          ps aux | grep -i -E "campfire|python" | grep -v grep || echo "(no matching process)"
           kill -0 "$APP_PID" 2>/dev/null && echo "electron main pid $APP_PID alive" || echo "electron main pid $APP_PID NOT alive"
           echo "--- crash reports ---"
-          find "$HOME/Library/Logs/DiagnosticReports" -iname "*upsecurity*" -o -iname "*electron*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
-          echo "--- unified log (last 1 min, mentions UpSecurity) ---"
-          log show --predicate 'eventMessage contains "UpSecurity" OR processImagePath contains "UpSecurity"' --style compact --last 1m 2>&1 | tail -100 || true
+          find "$HOME/Library/Logs/DiagnosticReports" -iname "*campfire*" -o -iname "*electron*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
+          echo "--- unified log (last 1 min, mentions Campfire) ---"
+          log show --predicate 'eventMessage contains "Campfire" OR processImagePath contains "Campfire"' --style compact --last 1m 2>&1 | tail -100 || true
           # 실측: 이 시점에 앱이 모델 자동 설치(설치 직후 advanced 모드로 전환)를 이미
           # 끝내고 엔진을 재시작하는 중일 수 있다 — 로그상 /health 는 여러 번 200 OK로
           # 응답했는데도 이 마지막 단발성 확인에서만 하필 재시작 사이 짧은 공백에 걸려

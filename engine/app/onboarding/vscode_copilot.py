@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .common import MutationError, SettingsDiff, build_diff
+from .common import MutationError, SettingsDiff, build_diff, is_our_hook
 
 DEFAULT_SETTINGS_PATH = Path.home() / "AppData" / "Roaming" / "Code" / "User" / "settings.json"
 
@@ -41,12 +41,12 @@ def _mutate_register_agent_hook(after: dict) -> tuple[bool, str]:
     if not isinstance(pre_tool_use, list):
         raise MutationError(f"{_HOOK_ROOT_KEY}.PreToolUse 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
 
-    if any(isinstance(e, dict) and e.get("_securedocGateway") for e in pre_tool_use):
+    if any(is_our_hook(e) for e in pre_tool_use):
         return False, "이미 Agent Hooks(Preview) 등록이 있습니다."
 
     # TODO: 실제 Agent Hooks(Preview) 스펙 확정되면 command/키 구조 교체.
     pre_tool_use.append(
-        {"matcher": "readFile", "command": "securedoc-gateway-block-read", "_securedocGateway": True}
+        {"matcher": "readFile", "command": "campfire-block-read", "_campfire": True}
     )
     return True, "Agent Hooks(Preview) 에 Read 차단을 등록 시도합니다(스펙 변경 가능성 있어 수동 체크리스트 병행 필수)."
 

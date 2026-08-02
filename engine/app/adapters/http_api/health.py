@@ -2,7 +2,7 @@
 app/adapters/http_api/health.py
 GET /health — 시그니처 필드 필수 (PLAN §11).
 
-익스텐션이 포트 스캔 시 service == "securedoc-gateway" 로 우리 엔진을 식별한다.
+익스텐션이 포트 스캔 시 service == "campfire" 로 우리 엔진을 식별한다.
 
 익스텐션 "연결됨" 판정(데스크탑 앱의 연결 화면, PLAN §8 — "활성 세션" 기준)에 쓰라고
 마지막으로 확장에서 온 요청 시각을 같이 내려준다. 브라우저가 cross-origin fetch 에

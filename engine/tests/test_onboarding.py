@@ -202,7 +202,7 @@ def test_claude_desktop_detects_filesystem_server(tmp_home):
                         "command": "npx",
                         "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me"],
                     },
-                    "securedoc-gateway": {"command": "npx", "args": ["upsecurity-mcp", "connect"]},
+                    "campfire": {"command": "npx", "args": ["campfire-mcp", "connect"]},
                 }
             }
         ),
@@ -212,7 +212,7 @@ def test_claude_desktop_detects_filesystem_server(tmp_home):
 
     result = claude_desktop.detect_filesystem_servers(config_path)
     assert "filesystem" in result["servers"]
-    assert "securedoc-gateway" not in result["servers"]
+    assert "campfire" not in result["servers"]
     assert result["warning"] is not None
 
     # 읽기 전용 — 파일 내용이 절대 바뀌지 않아야 한다
@@ -222,7 +222,7 @@ def test_claude_desktop_detects_filesystem_server(tmp_home):
 def test_claude_desktop_no_filesystem_server_no_warning(tmp_home):
     config_path = tmp_home / "claude_desktop_config.json"
     config_path.write_text(
-        json.dumps({"mcpServers": {"securedoc-gateway": {"command": "npx", "args": ["upsecurity-mcp"]}}}),
+        json.dumps({"mcpServers": {"campfire": {"command": "npx", "args": ["campfire-mcp"]}}}),
         encoding="utf-8",
     )
     result = claude_desktop.detect_filesystem_servers(config_path)

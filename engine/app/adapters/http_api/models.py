@@ -42,7 +42,7 @@ from . import job_registry
 
 router = APIRouter()
 
-_RELEASE_BASE = "https://github.com/theagares/securedoc-gateway/releases/download/models-v1"
+_RELEASE_BASE = "https://github.com/theagares/campfire/releases/download/models-v1"
 
 # v2 는 seed42 하나만 담는다. v1 은 seed42/43/44 를 담고 있었는데, 세 seed 가 실제로는
 # 동일한 가중치라 tar 안에서 하드링크로 묶여 있었다 — 그래서 압축본은 476MB 로 작았지만

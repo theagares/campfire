@@ -31,7 +31,7 @@ PII 탐지 + 인젝션 탐지의 **탐지 시간만** 재는 하네스. 개선 �
 ## 전제
 
 - CUDA 가 되는 파이썬 환경(배포 번들의 `torch+cpu` 로도 돌아가지만 GPU 기준 수치와는 다르다).
-- 모델 가중치가 설치돼 있어야 한다(`%LOCALAPPDATA%/UpSecurity/models`).
+- 모델 가중치가 설치돼 있어야 한다(`%LOCALAPPDATA%/Campfire/models`).
 - `bench_local.py` 는 가중치를 건드리지 않는다. 단계별 런타임 코드만 스테이징
   디렉터리(`--models-dir`)로 복사하고, 가중치는 junction 으로 연결해 쓴다 —
   사용자가 설치해 둔 앱의 런타임 파일을 과거 버전으로 덮어쓰지 않기 위해서다.
