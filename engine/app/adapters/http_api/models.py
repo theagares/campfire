@@ -35,6 +35,7 @@ import httpx
 from fastapi import APIRouter
 
 from app import config
+from app.core import model_status
 from app.core.detectors.injection import backbone
 
 from . import job_registry
@@ -67,37 +68,18 @@ _ASSETS: dict[str, dict[str, Any]] = {
 # fire-and-forget 백그라운드 태스크가 GC 되지 않도록 참조를 들고 있는다.
 _background_tasks: set[asyncio.Task] = set()
 
-# local_pii_inference.py(PIIDetector.__init__)/gazetteer.py 가 실제로 읽는 파일들.
-# model.safetensors 하나만 확인하던 예전 체크는, 다운로드/압축해제가 중간에
-# 끊겨도(엔진 프로세스가 재시작되는 등) model.safetensors 는 있고 label_map.json
-# 등은 없는 "일부만 있는" 상태를 그대로 "ready" 로 오판했다(실측: 서브프로세스가
-# label_map.json FileNotFoundError 로 즉시 죽음). 필요한 파일을 전부 확인해야
-# "정말 완전하게 받아졌다"를 신뢰할 수 있다.
-_PII_REQUIRED_FILES = (
-    "model.safetensors", "config.json", "label_map.json",
-    "gazetteer.json", "tokenizer.json", "tokenizer_config.json",
-)
-_INJECTION_REQUIRED_FILES = ("model.pt", "calibration.json", "norm_stats.pt")
-
-
+# 실제 판정 로직은 app.core.model_status 에 있다(파이프라인의 미검사 통과 게이트와
+# 공유) — 여기서는 이 라우터의 기존 이름으로 얇게 위임만 한다.
 def _pii_weights_present() -> bool:
-    seed_dir = config.PII_ENGINE_DIR / "models" / config.PII_MODEL_SEED
-    return all((seed_dir / f).is_file() for f in _PII_REQUIRED_FILES)
+    return model_status.pii_ready()
 
 
 def _injection_head_present() -> bool:
-    variant_dir = config.INJECTION_ENGINE_DIR / config.INJECTION_VARIANT
-    return all((variant_dir / f).is_file() for f in _INJECTION_REQUIRED_FILES)
+    return model_status.injection_head_ready()
 
 
 def _injection_weights_present() -> bool:
-    """인젝션 탐지가 실제로 뜰 수 있는 상태인가.
-
-    MLP 헤드만으로는 부족하다 — 백본(EXAONE 2.4GB)이 없으면 헤드가 있어도 서브프로세스가
-    로딩에 실패한다(실사용자 macOS 신규 설치에서 재현). 예전엔 헤드만 보고 ready 를
-    돌려줘서, 앱은 "준비됨" 이라 믿고 아무것도 안 받았고 정작 검사할 때 죽었다.
-    """
-    return _injection_head_present() and backbone.is_cached()
+    return model_status.injection_ready()
 
 
 def _status() -> dict[str, Any]:
