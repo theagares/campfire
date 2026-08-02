@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
     db.close_db()
 
 
-app = FastAPI(title="securedoc-gateway engine", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Campfire engine", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

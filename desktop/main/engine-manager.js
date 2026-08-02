@@ -7,7 +7,7 @@
  *   - spawn:  <engineDir>/.venv/Scripts/python.exe -m app.main  (cwd=engineDir)
  *             인젝션 정책은 SECUREDOC_INJECTION_POLICY env 로 반영(엔진엔 REST 쓰기 없음).
  *   - 포트 탐지: 엔진이 스스로 48200~48209 중 하나에 바인딩 → 앱은 그 범위를 병렬
- *             GET /health 스캔해 service=="securedoc-gateway" 인 포트를 찾는다(PLAN §11).
+ *             GET /health 스캔해 service=="campfire" 인 포트를 찾는다(PLAN §11).
  *   - 상태 폴링: 주기적으로 /health → {running, port, detectors, injectionPolicy...} 브로드캐스트.
  *   - restart/stop: 정책 변경·재시작 요청 시. Windows 는 자식(uvicorn) 트리까지 종료.
  *
@@ -245,7 +245,8 @@ class EngineManager extends EventEmitter {
             try {
               const json = JSON.parse(body);
               // 반드시 시그니처 일치해야 "우리 엔진" (PLAN §11: 우연히 뜬 다른 서버 오판 방지)
-              if (json && json.service === constants.SERVICE_NAME) {
+              if (json && (json.service === constants.SERVICE_NAME
+                || constants.LEGACY_SERVICE_NAMES.includes(json.service))) {
                 return resolve(json);
               }
             } catch {

@@ -255,6 +255,38 @@ function encodePng(img) {
   ]);
 }
 
+/** 투명 여백을 잘라내고 정사각으로 맞춘다.
+ *
+ *  앱 아이콘 마스터는 macOS Dock 규칙상 캔버스의 80% 만 아트고 나머지는 투명 여백이다.
+ *  그 여백째로 줄이면 브라우저 툴바(확장 아이콘)나 화면 안 로고에서 혼자 작아 보인다 —
+ *  Dock 여백은 macOS 만의 관례라 그 밖에서는 프레임을 꽉 채우는 게 맞다. 잘라낸 뒤엔
+ *  원래 비율이 깨지지 않도록 긴 변 기준 정사각으로 다시 채운다(가운데 정렬).
+ */
+function trimToSquare(img, threshold = 8) {
+  const { width: w, height: h, data } = img;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] > threshold) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return img; // 전부 투명 — 손대지 않는다
+  const cw = x1 - x0 + 1, chh = y1 - y0 + 1;
+  const side = Math.max(cw, chh);
+  const ox = Math.floor((side - cw) / 2), oy = Math.floor((side - chh) / 2);
+  const out = Buffer.alloc(side * side * 4);
+  for (let y = 0; y < chh; y++) {
+    const src = ((y0 + y) * w + x0) * 4;
+    data.copy(out, ((oy + y) * side + ox) * 4, src, src + cw * 4);
+  }
+  return { width: side, height: side, data: out };
+}
+
 /** Vista+ ICO — 각 엔트리를 PNG 로 담는다(비트맵보다 작고 256px 를 지원). */
 function encodeIco(images) {
   const pngs = images.map(encodePng);
@@ -353,14 +385,27 @@ function main() {
   writePng(path.join(DESKTOP, 'assets', 'icon.png'), app, 256);  // BrowserWindow (mac/linux)
   write(path.join(DESKTOP, 'assets', 'icon.ico'),                // BrowserWindow (Windows, 멀티 해상도)
     encodeIco([16, 24, 32, 48, 64, 128, 256].map(s => resize(app, s, s))));
-  for (const s of [16, 32, 48, 128]) {
-    writePng(path.join(REPO, 'extension', 'icons', `icon${s}.png`), app, s);
+
+  // 확장 아이콘과 UI 브랜드 이미지는 여백 없는 mark 에서 뽑는다 — 앱 마스터의 80%
+  // Dock 여백을 그대로 줄이면 브라우저 툴바/화면 안에서 혼자 작아 보인다.
+  const markFile = path.join(SRC, 'app-icon-mark.png');
+  const mark = fs.existsSync(markFile) ? loadImage(markFile, 'app-icon-mark.png', 1024) : app;
+  if (mark === app) {
+    warnings.push('app-icon-mark.png 이 없어 확장/UI 이미지도 앱 마스터에서 뽑았습니다 — '
+      + 'Dock 여백이 함께 줄어들어 작아 보일 수 있습니다.');
   }
+  const markTrimmed = trimToSquare(mark);
+  for (const s of [16, 32, 48, 128]) {
+    writePng(path.join(REPO, 'extension', 'icons', `icon${s}.png`), markTrimmed, s);
+  }
+  // 화면에 보이는 브랜드 이미지 — 표시 크기의 2배로 만든다(CSS 가 줄여서 그린다).
+  writePng(path.join(DESKTOP, 'assets', 'figma', 'home-hero.png'), markTrimmed, 224);        // 표시 104x107
+  writePng(path.join(REPO, 'extension', 'sidepanel', 'assets', 'agent-shield.png'), markTrimmed, 144); // 표시 72
 
   // ── 트레이 (애니메이션 가능 — 프레임 폴더면 프레임별로 생성) ──
   const SPECS = [
-    { name: 'tray-mac', minSize: 88, sizes: [22, 44], base: 'tray-icon', tag: 'mac' },
-    { name: 'tray-win', minSize: 64, sizes: [16, 32], base: 'tray-icon-win', tag: 'win' },
+    { name: 'tray-mac', minSize: 44, sizes: [22, 44], base: 'tray-icon', tag: 'mac' },
+    { name: 'tray-win', minSize: 32, sizes: [16, 32], base: 'tray-icon-win', tag: 'win' },
   ];
   const manifest = { frameIntervalMs: FRAME_INTERVAL_MS };
 

@@ -1,18 +1,18 @@
-# securedoc-gateway 빌드 진행상황 (자동 빌드 추적 파일)
+# campfire 빌드 진행상황 (자동 빌드 추적 파일)
 
 > 이 파일은 서브에이전트 기반 자동 빌드의 **재개용 상태 파일**이다. 컨텍스트가
 > 리셋돼도 이 파일을 읽으면 어디까지 했고 다음에 뭘 할지 알 수 있다.
 > 규칙: 각 유닛 완료 시 상태를 `[ ]`→`[x]`로 바꾸고, "마지막 완료/다음 할 일"을 갱신한다.
 
 ## 기준 문서
-- 계획: `securedoc-gateway/PLAN.md` (이게 유일한 사양 소스)
+- 계획: `campfire/PLAN.md` (이게 유일한 사양 소스)
 - 이식 원본(참고만, 직접 수정 금지): `파이프라인/server/`, `파이프라인/securedoc_mcp/`, `파이프라인/extension/`
 - 참고 문서: `파이프라인/문서_파서_비교.md`, `파이프라인/프롬프트_인젝션_공격_유형.md`
 
 ## 핵심 원칙 (PLAN 요약)
 - v1 탐지 = **룰베이스 한국어만**. 모델(encoder/LLM)은 Detector 인터페이스로 향후 교체(§5).
 - 엔진 구조 §9: `engine/app/{main.py, adapters/{http_api,mcp}, core/{parser,detectors,masker,pipeline}, store, rules}`
-- 포트: 48200부터 48209까지 자동 스캔/바인딩, `/health`에 `{"service":"securedoc-gateway","port":N}` 시그니처(§11).
+- 포트: 48200부터 48209까지 자동 스캔/바인딩, `/health`에 `{"service":"campfire","port":N}` 시그니처(§11).
 - 원본 텍스트 영속 저장 금지, store엔 메타데이터+scan_status만(§9.1/§9.2).
 
 ## 빌드 유닛 (순서대로)
@@ -58,13 +58,13 @@
       pytest 74개 통과(회귀 없음).
       ⚠️ **안전검증**: 온보딩 도구가 이 세션의 실제 `~/.claude/settings.json`을 건드렸는지 직접 대조
       확인 — 내용은 `/model` 명령들로 인한 정상 변경(model/theme/effortLevel)뿐, permissions.deny나
-      _securedocGateway 마커 없음 → **실제 홈 설정 미접촉 확인됨**. 코드도 apply=True 명시 없인
+      _campfire 마커 없음 → **실제 홈 설정 미접촉 확인됨**. 코드도 apply=True 명시 없인
       쓰기 없음 + CLI가 --target-dir 없는 --apply를 구조적으로 차단하는 걸 직접 확인.
       gap: Cursor/Windsurf/Cline/VSCode 훅 스키마는 정확한 API 미확정이라 TODO 골격.
 
 ## 상태 로그
 - 2026-07-23: 빌드 시작. 기존 파이프라인 코드 규모 확인 완료(server/·securedoc_mcp/·extension/ 존재).
-  securedoc-gateway는 아직 git repo 아님.
+  campfire는 아직 git repo 아님.
 - 2026-07-23: U1 완료·검증(pytest 31 통과, 서버 기동+마스킹 반환 실측).
 - 2026-07-23: U2 완료·검증(pytest 33 통과, MCP tools/list+scan_text HTTP·stdio 검증).
 - 2026-07-23: U3 완료·검증(manifest valid, JS 문법+회귀테스트 통과). 하드코딩 토큰 보안조치 완료.

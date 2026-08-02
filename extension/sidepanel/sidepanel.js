@@ -364,11 +364,11 @@ function renderProgress(session) {
     el.docType.textContent = '문서 검사 중';
     el.progressSub.textContent = session.meta.fileName;
   } else if (session?.meta?.textPreview) {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검사 중';
     el.progressSub.textContent = `"${session.meta.textPreview}"`;
   } else {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '문서 검토';
   }
   (session?.progress || []).forEach(applyProgress);
@@ -395,7 +395,7 @@ function renderResult(kind, result, meta) {
   refreshCounts();
 
   if (kind === 'combined') {
-    el.docName.textContent = meta?.fileName || 'UpSecurity';
+    el.docName.textContent = meta?.fileName || 'Campfire';
     el.docType.textContent = '문서 + 프롬프트 검토';
     state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 0);
     state.promptSegments = buildSegments(
@@ -406,11 +406,11 @@ function renderResult(kind, result, meta) {
     el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else if (result.originalLength || result.stats?.originalLength) {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검토';
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   }

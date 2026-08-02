@@ -2,7 +2,7 @@
 /**
  * main/updater.js — 자동 업데이트 (PLAN §8, electron-updater).
  *
- * package.json build.publish 가 GitHub Releases(theagares/securedoc-gateway)를 가리키므로
+ * package.json build.publish 가 GitHub Releases(theagares/campfire)를 가리키므로
  * 그 저장소에 릴리스가 올라가 있으면 그대로 동작한다. 업로드용 인증 토큰(GH_TOKEN)은
  * CI 환경변수로만 주입하고 소스에 넣지 않는다. dev 모드에선 no-op.
  */

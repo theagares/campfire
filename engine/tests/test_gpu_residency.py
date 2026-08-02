@@ -15,7 +15,14 @@ import time
 
 import pytest
 
+from app.core import model_status
 from app.core.detectors.gpu_residency import GpuResidency
+
+_needs_models = pytest.mark.skipif(
+    not model_status.all_ready(),
+    reason="PII/인젝션 모델 가중치가 로컬에 없어 실 모델 경로를 검증할 수 없음",
+)
+
 
 
 def test_always_on_never_waits():
@@ -86,6 +93,7 @@ def test_concurrent_requests_load_only_once():
     assert elapsed < 0.5, "락으로 보호되므로 로드 지연이 중첩(0.6s)되지 않아야 한다"
 
 
+@_needs_models
 def test_llm_mcp_stub_detect_never_skips_during_load_wait():
     """fail-closed: 언로드 상태에서 detect() 를 호출해도 검사를 생략하지 않고
     실제로 로드 대기 후 rule 을 실행해 탐지 결과를 반환해야 한다."""
@@ -113,6 +121,7 @@ def test_llm_mcp_stub_detect_never_skips_during_load_wait():
         detector._process.terminate()
 
 
+@_needs_models
 def test_pii_encoder_stub_is_always_loaded_immediately():
     """always_on: residency.state 는 실제 서브프로세스 준비 여부와 무관하게 생성
     즉시 "loaded" 로 표시된다(GpuResidency 의 always_on 계약 — 상태 플래그는 실제

@@ -5,7 +5,11 @@
  */
 
 module.exports = {
-  SERVICE_NAME: 'securedoc-gateway', // 엔진 /health 시그니처 (PLAN §11)
+  SERVICE_NAME: 'campfire', // 엔진 /health 시그니처 (PLAN §11)
+  // 리브랜딩(UpSecurity/securedoc-gateway -> Campfire) 이전 엔진의 시그니처.
+  // 포트 스캔은 우리가 방금 띄운 엔진만이 아니라 이전 버전이 남긴 좀비 프로세스도
+  // 만날 수 있어서(engine-manager 의 포트 스캔 주석 참고), 옛 값도 우리 것으로 인정한다.
+  LEGACY_SERVICE_NAMES: ['securedoc-gateway'],
   HOST: '127.0.0.1',
   BASE_PORT: 48200,
   PORT_SCAN_COUNT: 10, // 48200~48209 (PLAN §11)

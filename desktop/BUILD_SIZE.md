@@ -5,7 +5,7 @@
 
 ## 용량 구성
 
-Windows 설치 프로그램(`UpSecurity-Setup-*.exe`)은 v0.1.1 이후 계속 **266.9MB** 로
+Windows 설치 프로그램(`Campfire-Setup-*.exe`)은 v0.1.1 이후 계속 **266.9MB** 로
 고정이다. 계속 커진 게 아니라 한 번 뛰고 유지되고 있다:
 
 | 버전 | Setup.exe | 비고 |
@@ -19,7 +19,7 @@ Windows 설치 프로그램(`UpSecurity-Setup-*.exe`)은 v0.1.1 이후 계속 **
 | 항목 | 크기 |
 |---|---:|
 | `resources/engine/.venv` | 890MB (torch 466 · transformers 49 · pymupdf 48 · sympy 39 · pandas 33 …) |
-| `UpSecurity.exe` (Electron 런타임) | 192MB |
+| `Campfire.exe` (Electron 런타임) | 192MB |
 | `locales/` | 42MB |
 | 나머지 Electron 리소스 | 약 50MB |
 
@@ -47,7 +47,7 @@ macOS 는 `*.lproj`, 그 외 플랫폼은 `locales/*.pak` 을 정리한다 — m
 - **pandas(33MB)** — `pyhwpx` 가 요구한다(HWP 파싱). sympy·networkx·jinja2·fsspec 은
   `torch`, cryptography 는 `pdfminer.six`, pillow 는 `pdfplumber`/`python-pptx` 가
   요구한다. 설치된 패키지 중 아무도 요구하지 않는 고아 패키지는 없다.
-- **`UpSecurity.exe` (192MB)** — Electron 런타임 자체라 커스텀 빌드 없이는 못 줄인다.
+- **`Campfire.exe` (192MB)** — Electron 런타임 자체라 커스텀 빌드 없이는 못 줄인다.
 - **`.venv` 안 `__pycache__`(67MB)** — 설치 파일에는 이미 없다(`!**/__pycache__/**`).
   설치 후 파이썬이 임포트하면서 생기는 것이라 배포본과 무관하다.
 

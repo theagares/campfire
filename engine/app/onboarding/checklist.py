@@ -118,7 +118,7 @@ def _print_text_report(report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.onboarding.checklist",
-        description="securedoc-gateway MCP 우회 방지 온보딩 체크리스트(PLAN §4.2)",
+        description="campfire MCP 우회 방지 온보딩 체크리스트(PLAN §4.2)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", default=True,

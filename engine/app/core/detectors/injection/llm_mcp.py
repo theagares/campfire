@@ -83,7 +83,7 @@ _CACHE_MISS = object()
 # 완전히 동일하므로, 고정된 키를 계속 재사용하면 Upstage 쪽에서 이 공통
 # 시스템 프롬프트 프리픽스를 캐싱해 매번 새 문서를 검사할 때도(우리 쪽
 # exact-match 캐시가 못 잡는 경우) 지연시간/비용을 줄일 수 있다.
-_SOLAR_PROMPT_CACHE_KEY = "securedoc-gateway-injection-localize-v1"
+_SOLAR_PROMPT_CACHE_KEY = "campfire-injection-localize-v1"
 
 
 class InjectionLlmMcpDetector:

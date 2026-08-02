@@ -1,13 +1,13 @@
-﻿# securedoc-gateway 원커맨드 설치 (Windows)
-#   irm https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.ps1 | iex
+﻿# campfire 원커맨드 설치 (Windows)
+#   irm https://raw.githubusercontent.com/theagares/campfire/main/scripts/install.ps1 | iex
 #
 # git clone 없이 GitHub 저장소를 zip으로 받아 엔진(Python venv)과 데스크탑(Electron)
 # 의존성까지 한 번에 설치한다. 실행/패키징은 하지 않고, 마지막에 실행 명령만 안내한다.
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'theagares/securedoc-gateway'
-$Dest = if ($env:SECUREDOC_INSTALL_DIR) { $env:SECUREDOC_INSTALL_DIR } else { Join-Path $HOME 'securedoc-gateway' }
+$Repo = 'theagares/campfire'
+$Dest = if ($env:SECUREDOC_INSTALL_DIR) { $env:SECUREDOC_INSTALL_DIR } else { Join-Path $HOME 'campfire' }
 
 if (Test-Path $Dest) {
     Write-Host "설치 대상 폴더가 이미 있습니다: $Dest" -ForegroundColor Yellow
@@ -24,12 +24,12 @@ foreach ($cmd in @('node', 'npm', 'python')) {
 }
 
 Write-Host "소스 다운로드 중... ($Repo)"
-$zipPath = Join-Path ([System.IO.Path]::GetTempPath()) "securedoc-gateway-$([guid]::NewGuid()).zip"
-$extractDir = Join-Path ([System.IO.Path]::GetTempPath()) "securedoc-gateway-$([guid]::NewGuid())"
+$zipPath = Join-Path ([System.IO.Path]::GetTempPath()) "campfire-$([guid]::NewGuid()).zip"
+$extractDir = Join-Path ([System.IO.Path]::GetTempPath()) "campfire-$([guid]::NewGuid())"
 Invoke-WebRequest -Uri "https://github.com/$Repo/archive/refs/heads/main.zip" -OutFile $zipPath
 Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
-$srcRoot = Join-Path $extractDir 'securedoc-gateway-main'
+$srcRoot = Join-Path $extractDir 'campfire-main'
 New-Item -ItemType Directory -Path $Dest -Force | Out-Null
 Copy-Item -Path (Join-Path $srcRoot '*') -Destination $Dest -Recurse -Force
 Remove-Item $zipPath, $extractDir -Recurse -Force
