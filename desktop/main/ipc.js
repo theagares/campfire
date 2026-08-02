@@ -26,27 +26,29 @@ function broadcast(channel, payload) {
 
 /**
  * /health 응답에서 모델 상태 pill(§8) 파생.
- * "ready"는 엔진이 떠 있는지가 아니라 **실제 ML 모델(encoder/llm_mcp)이 활성 detector인지**를
- * 뜻한다 — rule_based(정규식/키워드)로 떠 있는 동안에는 엔진이 정상 기동 중이어도 PII/인젝션
- * 모델 pill은 비활성으로 표시해야 한다(rule_based를 실 모델처럼 보여주면 오해를 준다).
+ * "ready"는 엔진이 떠 있는지가 아니라 **실제 가중치가 준비돼 진짜 탐지가 동작하는지**를
+ * 뜻한다. 룰베이스 폴백을 없앤 뒤에는 detectors 이름이 항상 pii_encoder/injection_llm_mcp
+ * 로 고정이라 이름만으로는 준비 여부를 알 수 없다 — 엔진이 /health 에 실어주는
+ * modelsReady(가중치 파일 존재 여부, app.core.model_status)를 그대로 쓴다. 가중치가 없는
+ * 동안은 엔진이 죽지 않고 검사만 통과 처리하므로(§PLAN 9.2), pill 은 "준비 중"으로
+ * 보여준다.
  */
 function deriveModelStatus(engineStatus) {
   const running = engineStatus.state === 'running';
   const detectors = (engineStatus.health && engineStatus.health.detectors) || {};
-  const piiName = detectors.pii || 'rule_based';
-  const injectionName = detectors.injection || 'rule_based';
-  const piiActive = running && piiName !== 'rule_based';
-  const injectionActive = running && injectionName !== 'rule_based';
+  const modelsReady = (engineStatus.health && engineStatus.health.modelsReady) || {};
+  const piiActive = running && !!modelsReady.pii;
+  const injectionActive = running && !!modelsReady.injection;
   return {
     pii: {
-      name: piiName,
+      name: detectors.pii || 'pii_encoder',
       ready: piiActive,
-      label: !running ? '중지됨' : piiActive ? '작동 중' : '비활성',
+      label: !running ? '중지됨' : piiActive ? '작동 중' : '준비 중',
     },
     injection: {
-      name: injectionName,
+      name: detectors.injection || 'injection_llm_mcp',
       ready: injectionActive,
-      label: !running ? '중지됨' : injectionActive ? '작동 중' : '비활성',
+      label: !running ? '중지됨' : injectionActive ? '작동 중' : '준비 중',
     },
   };
 }

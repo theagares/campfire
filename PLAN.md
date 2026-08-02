@@ -56,8 +56,8 @@
 │  core/                                                   │
 │  ├ parser/      포맷별 분기 (§6)                          │
 │  ├ detectors/   Detector 인터페이스 + 레지스트리 (§5)      │
-│  │  ├ pii/        rule_based → (future) encoder          │
-│  │  └ injection/  rule_based → (future) llm_mcp          │
+│  │  ├ pii/        encoder(룰베이스 폴백 제거됨)            │
+│  │  └ injection/  llm_mcp(룰베이스 폴백 제거됨)           │
 │  ├ masker/      위치검증 · 겹침병합 · 뒤에서부터 치환        │
 │  └ pipeline/    parse → chunk → detect → mask → wrap     │
 │                                                          │
@@ -225,7 +225,7 @@ class Detection(TypedDict):
     end: int
     text: str
     confidence: float
-    source: str        # "rule" | "encoder" | "llm"
+    source: str        # "encoder" | "llm"
 
 class Detector(Protocol):
     name: str
@@ -234,11 +234,12 @@ class Detector(Protocol):
 ```
 
 - `detectors/registry.py`: 설정 파일에서 활성 detector 선택
-  (`pii: rule_based`, `injection: rule_based`).
-- **교체 시나리오**:
-  - PII 인코더 모델 → `detectors/pii/encoder.py` 추가, 같은 `Detection` 반환.
-    설정에서 `pii: encoder`로 전환하면 끝. 코어·어댑터·익스텐션 무변경.
-  - 인젝션 LLM+MCP → `detectors/injection/llm_mcp.py` 추가. LLM 호출·MCP 클라이언트
+  (`pii: encoder`, `injection: llm_mcp`). 룰베이스 폴백은 완전히 제거했다 — 가중치가
+  아직 준비 안 됐으면 detector 자체가 아니라 파이프라인의 `model_status` 게이트가
+  미검사 통과를 처리한다(§9.2).
+- **구현**:
+  - PII 인코더 모델 → `detectors/pii/encoder.py`, `Detection` 반환.
+  - 인젝션 LLM+MCP → `detectors/injection/llm_mcp.py`. LLM 호출·MCP 클라이언트
     로직은 이 파일 안에 캡슐화.
 - 탐지 유형 상수는 기존 파이프라인과 동일하게 유지:
   - PII: `PERSON_NAME / EMAIL / PHONE / ADDRESS / ID_NUMBER / CREDIT_CARD / DATE_OF_BIRTH / ORGANIZATION / BANK_ACCOUNT / OTHER_PII`

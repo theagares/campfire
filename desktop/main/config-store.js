@@ -17,16 +17,14 @@
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
  *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
  *   - piiDetector/injectionDetector: 저장값이 엔진 spawn env 로 반영됨(engine-manager.js).
- *     설정 화면에서 수동으로도 바꿀 수 있지만, 이제는 advanced(encoder/llm_mcp)가
- *     기본 목표 상태다 — main.js 의 자동 설치 루틴이 최초 실행 시 rule_based 로
- *     한 번 기동한 뒤(가중치 없이도 항상 뜨는 안전한 상태) 조용히 가중치를 내려받아
- *     advanced 로 자동 전환한다. GPU/CUDA 가 없어 advanced 기동이 실패하면 같은
- *     루틴이 rule_based 로 자동 복귀시킨다(브릭 방지).
- *     (과거엔 advancedAutoSetupDone 플래그로 "이미 한 번 했음"을 기억해 재확인을
- *     건너뛰었는데, 이 플래그는 userData 에 남아 재설치를 해도 안 지워지는 반면
- *     실제 가중치 파일은 resources/engine 에 있어 재설치하면 다시 사라진다 — 그래서
- *     재설치 후 advanced 로 설정은 돼 있는데 가중치는 없는 상태가 재현됐다. 지금은
- *     플래그 없이 매번 실제 /models/status 로 확인한다.)
+ *     엔진에서 룰베이스 폴백을 완전히 제거한 뒤에는 encoder/llm_mcp 가 유일한 값이라
+ *     사실상 고정 상수다(설정 화면의 선택 UI도 없앴다) — 가중치가 아직 없는 동안은
+ *     엔진의 model_status 게이트가 검사 없이 통과시킨다(§PLAN 9.2). main.js 의
+ *     ensureModelsAutoDownload 가 가중치만 자동으로 내려받고, 엔진 재시작은 필요 없다
+ *     (다음 실제 검사 요청에서 detector 가 알아서 실 모델을 스폰한다).
+ *     예전 설치에서 저장된 'rule_based' 값은 _load()가 encoder/llm_mcp 로 자동
+ *     승격시킨다(아래 _migrateRemovedRuleBased) — 안 그러면 엔진이 알 수 없는
+ *     detector 이름으로 기동 실패한다.
  *   - gpu 항목: v1 no-op → UI 에서 비활성. 저장은 하되 엔진에 반영 안 함.
  */
 
@@ -42,10 +40,10 @@ const DEFAULTS = {
   upstageApiKey: '',
   securityEnabled: true,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
-  // 최초 spawn 은 항상 rule_based 로 시작한다(가중치가 아직 없어도 100% 뜨는 안전한
-  // 상태) — main.js 의 자동 설치 루틴이 여기서 advanced 로 승격시킨다.
-  piiDetector: 'rule_based',
-  injectionDetector: 'rule_based',
+  // 룰베이스 폴백 제거 후 유일한 값 — 가중치가 없어도 엔진 자체는 정상 기동하고,
+  // 검사 시점에 model_status 게이트가 통과 처리한다(§PLAN 9.2).
+  piiDetector: 'encoder',
+  injectionDetector: 'llm_mcp',
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
 };
 
@@ -65,6 +63,17 @@ class ConfigStore {
       // 파일 없음/파싱 실패 → 기본값 사용
       this.data = { ...DEFAULTS };
     }
+    this._migrateRemovedRuleBased();
+  }
+
+  /** 예전 설치에서 저장된 'rule_based' 값을 encoder/llm_mcp 로 승격한다 — 엔진에서
+   * 룰베이스를 완전히 없앴으므로, 이 값을 그대로 spawn env 에 실으면 엔진이 알 수
+   * 없는 detector 이름으로 기동에 실패한다. */
+  _migrateRemovedRuleBased() {
+    let changed = false;
+    if (this.data.piiDetector === 'rule_based') { this.data.piiDetector = 'encoder'; changed = true; }
+    if (this.data.injectionDetector === 'rule_based') { this.data.injectionDetector = 'llm_mcp'; changed = true; }
+    if (changed) this._save();
   }
 
   _save() {

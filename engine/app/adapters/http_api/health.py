@@ -17,6 +17,7 @@ import time
 from fastapi import APIRouter, Request
 
 from app import config
+from app.core import model_status
 from app.core.detectors import registry
 
 router = APIRouter()
@@ -42,6 +43,10 @@ async def health(request: Request):
         "status": "ok",
         "version": "0.1.0",
         "detectors": registry.active_detectors(),
+        # 룰베이스 폴백 제거 후 detectors 이름은 항상 encoder/llm_mcp라 "탐지가 실제로
+        # 동작하는지"를 이름만으로 알 수 없다 — 가중치 실제 존재 여부를 따로 내려준다
+        # (데스크탑 앱의 모델 pill 이 이걸로 활성/비활성을 판단한다, ipc.js 참고).
+        "modelsReady": {"pii": model_status.pii_ready(), "injection": model_status.injection_ready()},
         "injectionPolicy": config.INJECTION_POLICY,
         "supportedExtensions": sorted(config.SUPPORTED_EXTENSIONS),
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,

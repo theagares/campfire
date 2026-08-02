@@ -6,8 +6,8 @@ Detector 모듈화 인터페이스 (PLAN §5).
 - Detector Protocol: name, kind, async detect(text, *, meta) -> list[Detection]
 - 탐지 유형 상수: PII / 인젝션
 
-v1 은 rule_based 만 구현하지만, encoder/llm_mcp 교체 시 같은 Detection 을
-반환하도록 인터페이스를 고정한다 — 코어·어댑터 무변경으로 detector 교체.
+encoder(pii)/llm_mcp(injection) 등 구현이 늘어나도 같은 Detection 을 반환하도록
+인터페이스를 고정한다 — 코어·어댑터 무변경으로 detector 교체.
 """
 
 from __future__ import annotations

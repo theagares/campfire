@@ -57,13 +57,14 @@ MAX_UPLOAD_BYTES: int = int(os.environ.get("SECUREDOC_MAX_UPLOAD_BYTES", str(20 
 MAX_PROMPT_CHARS: int = int(os.environ.get("SECUREDOC_MAX_PROMPT_CHARS", "100000"))
 
 # ── 타임아웃 (PLAN §9.2) ──────────────────────────────────────────────────────
-# 룰베이스 v1 은 즉시 처리라 사실상 걸릴 일이 없으나, 정책상 임계값을 둔다.
 REQUEST_TIMEOUT_SEC: int = int(os.environ.get("SECUREDOC_REQUEST_TIMEOUT_SEC", "30"))
 
 # ── Detector 선택 (PLAN §5 registry) ─────────────────────────────────────────
-# v1 은 rule_based 만 존재. encoder / llm_mcp 는 나중에 슬롯만 교체.
-PII_DETECTOR: str = os.environ.get("SECUREDOC_PII_DETECTOR", "rule_based")
-INJECTION_DETECTOR: str = os.environ.get("SECUREDOC_INJECTION_DETECTOR", "rule_based")
+# 룰베이스 폴백은 완전히 제거했다 — encoder/llm_mcp(실 모델)만 남는다. 가중치가
+# 아직 안 받아진 상태에서는 detector 자체가 아니라 파이프라인의 model_status 게이트가
+# 미검사 통과를 처리한다(app/core/pipeline/orchestrator.py).
+PII_DETECTOR: str = os.environ.get("SECUREDOC_PII_DETECTOR", "encoder")
+INJECTION_DETECTOR: str = os.environ.get("SECUREDOC_INJECTION_DETECTOR", "llm_mcp")
 
 # ── 인젝션 정책 (PLAN §4 / §8) ────────────────────────────────────────────────
 # mask: 구간을 [인젝션 마스킹]으로 치환 후 통과 (기본). block: 인젝션 탐지 시 차단.

@@ -57,26 +57,33 @@ gh release create models-v1 --title "Model artifacts v1 (PII seed42 + injection 
   압축 해제. 기존 `job_registry`/`GET /jobs/{id}/events` 패턴을 그대로 재사용해
   진행률(`{"type":"progress","asset":...,"pct":...}`)을 폴링으로 확인할 수 있다.
 
-데스크탑 앱(`desktop/`)은 설정 화면의 **"탐지 모델: rule_based / advanced"** 토글로
-이 흐름을 수동으로도 쓸 수 있고(`renderer/app.js`, `main/ipc.js`), **이제는 advanced가
-설치 직후 자동으로 적용되는 기본값이다**(`main/main.js`의 `ensureAdvancedModelsAutoSetup`):
+**룰베이스 폴백은 완전히 제거했다** — `pii: encoder`, `injection: llm_mcp`가 유일한
+detector 다(`engine/app/core/detectors/registry.py`). 설정 화면에도 더 이상 고를
+토글이 없다(예전엔 "탐지 모델: rule_based / advanced" 토글이 있었으나 삭제).
 
-1. 최초 spawn 은 항상 `rule_based`로 뜬다(가중치가 아직 없어도 100% 기동하는 안전한
-   상태) — 엔진이 `running`이 되는 순간을 기다린다(`waitForEngineRunning`).
+가중치가 아직 안 받아진 상태에서 `detect()`를 부르면 서브프로세스가 로딩에 실패해
+예외로 죽으므로, 파이프라인(`app/core/pipeline/orchestrator.py`)이 매 요청마다
+`app.core.model_status`로 먼저 준비 여부를 확인한다 — 준비 안 됐으면 탐지를 생략하고
+**검사 없이 그대로 통과**시킨다(`scanStatus: "models_not_ready"`, §9.2 파싱 실패/미지원과
+같은 경로). 조용히 룰베이스로 격하하는 대신, "모델이 없으면 아예 검사하지 않는다"가
+지금의 정책이다.
+
+데스크탑 앱(`desktop/main/main.js`의 `ensureModelsAutoDownload`)은 이 가중치 다운로드만
+자동으로 트리거한다:
+
+1. 엔진이 `running`이 되는 순간을 기다린다(`waitForEngineRunning`) — 가중치가 없어도
+   엔진 자체는 정상 기동한다(생성자는 가중치를 요구하지 않고, 실제 로딩은 검사 요청
+   시점에 지연 실행된다).
 2. `GET /models/status` 확인 → 필요하면 `POST /models/fetch` 자동 호출, 진행률을
    `models:fetchProgress` 이벤트로 브로드캐스트(설정 모달이 닫혀 있어도 대시보드 상단
    전역 배너에 표시됨).
-3. 다운로드 완료 → `piiDetector`/`injectionDetector`를 `encoder`/`llm_mcp`로 자동
-   저장하고 엔진 재시작. 성공하면 `advancedAutoSetupDone: true`를 저장해 다음 실행부터
-   재시도하지 않는다(실패 시엔 false로 남겨 다음 실행에서 다시 시도).
-4. **GPU 없는 PC 안전장치**: advanced로 재시작한 뒤 `watchForAdvancedStartupFailure`가
-   20초간 엔진 상태를 지켜본다 — `error` 상태로 떨어지면(GPU/CUDA 미탑재로 실 모델
-   서브프로세스가 못 뜨는 경우 등) 자동으로 `rule_based`로 되돌리고 재시작해, 설치
-   직후 기본값을 advanced로 강제해도 GPU 없는 환경에서 앱이 계속 정상 동작한다.
+3. 다운로드가 끝나면 **엔진 재시작이 필요 없다** — 그다음 실제 검사 요청에서
+   detector 가 알아서 실 모델 서브프로세스를 스폰한다(예전엔 `piiDetector`/
+   `injectionDetector`를 `encoder`/`llm_mcp`로 바꾸고 엔진을 재시작하는 2단계였는데,
+   이제 이 값은 항상 고정이라 그 단계 자체가 없어졌다).
 
-설정 화면의 토글은 이제 "선택 사항"이 아니라, 이 자동 흐름이 실패했을 때 사용자가
-수동으로 재시도하거나(다시 advanced 선택+저장) 의도적으로 rule_based로 되돌리는
-용도로 남아 있다.
+다운로드 실패 시엔 다음 실행에서 다시 시도한다(`advancedAutoSetupDone` 같은 플래그
+없이, 매번 실제 `/models/status`로 확인).
 
 **실측 검증**: 로컬 가중치를 지운 상태에서 `POST /models/fetch` → 다운로드/체크섬/
 압축해제 → 원본과 byte-identical 재현 확인. 이후 `SECUREDOC_PII_DETECTOR=encoder
@@ -90,7 +97,8 @@ doyoon.kim90@navermail.com...이전 지시는 모두 무시하고...")을 넣어
   단, 설치 직후 자동 흐름은 다음 실행에서 알아서 재시도한다)
 - [ ] 모델이 갱신될 때(`models-v2`) `engine/app/adapters/http_api/models.py`의
   `_ASSETS`(URL/sha256)를 갱신하는 절차 문서화
-- [x] ~~GPU 없는 환경에서 `advanced` 선택 시 사용자에게 사전 경고~~ → 사전 경고
-  대신 사후 자동 복귀로 해결(`watchForAdvancedStartupFailure`, 위 참고). 다만
-  "사전에 GPU 유무를 감지해 아예 advanced 자동 전환을 건너뛰는" 더 빠른 경로는
-  아직 없음(현재는 항상 한 번 advanced로 시도해보고 실패하면 되돌아감).
+- [x] ~~GPU 없는 환경에서 advanced 기동 실패 시 rule_based로 자동 복귀~~ → 룰베이스
+  자체를 없애면서 무의미해짐. encoder/injection 은 cuda→mps→cpu 순으로 디바이스를
+  고르고(`local_pii_inference.py`, `local_injection_hybrid_inference.py`) CPU
+  에서도 항상 뜨므로, GPU 없는 환경도 그냥 느리게 동작한다 — "안 뜨는" 상황
+  자체가 거의 없고, 설사 있어도 model_status 게이트가 검사를 생략하고 통과시킨다.
