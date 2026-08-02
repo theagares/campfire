@@ -177,7 +177,11 @@ body {
 .mark:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--purple); }
 .mark.pii { background: var(--pii); color: #fff; }
 .mark.inj { background: var(--inj); color: var(--text); }
-.mark.kept { opacity: .5; text-decoration: line-through; background: var(--card); color: var(--muted); }
+/* 마스킹을 해제한 구간 — 원문이 그대로 보이는 상태다.
+   취소선은 쓰지 않는다: "지워졌다" 로 읽혀서, 해제가 아니라 삭제를 누른 것처럼 보인다.
+   흐리게 두지도 않는다 — 이 상태의 목적이 원문을 확인하는 것이라 오히려 잘 보여야 한다.
+   색을 뺀 회색 칩만으로 마스킹된 구간(빨강/노랑)과 충분히 구분된다. */
+.mark.kept { background: var(--card); color: var(--text); }
 
 /* ── combined(문서+프롬프트 동시 검토) 모드 — .diff 안에 두 블록을 쌓아 보여준다 ── */
 .combined-block { margin-bottom: 4px; }
