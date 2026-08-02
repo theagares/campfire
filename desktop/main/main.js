@@ -28,6 +28,19 @@ if (!gotLock) {
   app.quit();
 }
 
+// upsecurity:// 커스텀 프로토콜 — 확장 프로그램 팝업의 "대시보드 열기"가 엔진 REST(HTML)
+// 대신 이 앱 자체를 열 수 있게 등록한다. OS가 이 스킴을 이 exe로 라우팅하면(이미 떠있는
+// 인스턴스가 있으므로) second-instance 이벤트가 뜨고, 그 핸들러가 대시보드 창을
+// 포그라운드로 띄운다(아래 showDashboard). dev(언패키징) 모드는 electron 런처 자체가
+// 아니라 스크립트 경로까지 execPath 인자로 같이 등록해야 한다(Electron 공식 패턴).
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('upsecurity', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('upsecurity');
+}
+
 let mainWindow = null;
 let tray = null;
 let engineManager = null;
@@ -156,7 +169,18 @@ async function ensureModelsAutoDownload() {
   }
 }
 
-app.on('second-instance', () => showDashboard());
+// 두 번째 실행 시도(트레이 아이콘 재클릭, upsecurity:// 딥링크 등)는 새 창을 띄우는 대신
+// 이미 떠 있는 대시보드를 포그라운드로 가져온다.
+app.on('second-instance', () => showDashboard('dashboard'));
+
+// macOS는 커스텀 프로토콜을 second-instance가 아니라 open-url로 받는다(이미 실행 중이면).
+// 콜드 스타트(앱이 아직 준비 전) 시엔 무시한다 — 어차피 whenReady()의 기본 흐름이 대시보드를
+// 띄우고, showDashboard()가 기대하는 BrowserWindow API는 app.isReady() 전엔 쓸 수 없다.
+app.on('open-url', (event) => {
+  event.preventDefault();
+  if (!app.isReady()) return;
+  showDashboard('dashboard');
+});
 
 app.whenReady().then(async () => {
   // File/Edit/View/Window/Help 기본 메뉴바 제거 (Figma 디자인엔 없음, 대시보드는 자체 nav 사용)
