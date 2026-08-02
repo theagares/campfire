@@ -21,7 +21,7 @@ let lastHeavyRefresh = 0;
 
 let cachedGpu = { percent: null, available: false };
 let cachedVram = { percent: null, available: false };
-let cachedMacRamBreakdown = null; // { wiredGb, compressedGb, appGb } | null
+let cachedMacRam = null; // { appBytes, wiredBytes, compressedBytes } | null
 
 function execFileP(cmd, args, opts) {
   return new Promise((resolve, reject) => {
@@ -72,16 +72,43 @@ function cpuPercent() {
   return { percent, systemPct, userPct, idlePct };
 }
 
+/**
+ * RAM 사용량.
+ *
+ * macOS 에서 os.freemem() 을 그대로 쓰면 안 된다: 이 값은 vm_stat 의 "Pages free"
+ * (완전히 비어 있는 페이지)만 센다. macOS 는 남는 메모리를 파일 캐시로 적극적으로
+ * 채워두기 때문에 free 는 늘 몇백 MB 수준이고, total - free 로 구한 "사용 중"은
+ * 활성 상태 보기(활성 모니터)의 "메모리 사용량"보다 훨씬 크게 나온다 — 앱과 실제
+ * 화면이 다르다는 리포트의 원인이다.
+ *
+ * 활성 모니터의 "메모리 사용량" 정의를 그대로 따른다:
+ *     앱 메모리(= Anonymous - Purgeable) + 와이어드 + 압축됨
+ * 캐시된 파일(File-backed / Purgeable)은 필요하면 즉시 회수되므로 제외한다.
+ *
+ * vm_stat 을 아직 못 읽었거나(첫 tick) 실패하면 기존 방식으로 폴백한다 — 없는 것보다
+ * 낫고, 8초 주기 갱신이 한 번 돌면 바로 정확해진다.
+ */
 function ramPercent() {
   const total = os.totalmem();
-  const free = os.freemem();
-  if (total <= 0) return { percent: 0, usedGb: 0, freeGb: 0, totalGb: 0 };
-  const used = total - free;
+  if (total <= 0) return { percent: 0, usedGb: 0, freeGb: 0, totalGb: 0, source: 'none' };
+
+  let used;
+  let source;
+  if (process.platform === 'darwin' && cachedMacRam) {
+    used = cachedMacRam.appBytes + cachedMacRam.wiredBytes + cachedMacRam.compressedBytes;
+    source = 'vm_stat';
+  } else {
+    used = total - os.freemem();
+    source = 'os.freemem';
+  }
+  used = Math.max(0, Math.min(total, used));
+  const free = total - used;
   return {
     percent: Math.round((used / total) * 100),
     usedGb: +(used / 1024 ** 3).toFixed(1),
     freeGb: +(free / 1024 ** 3).toFixed(1),
     totalGb: +(total / 1024 ** 3).toFixed(1),
+    source,
   };
 }
 
@@ -92,13 +119,12 @@ function ramPercent() {
  *    실측 가능한 사용 중/여유로 대체(§PLAN 원칙: 허위 수치 금지).
  */
 function ramBreakdown(ram) {
-  if (process.platform === 'darwin' && cachedMacRamBreakdown) {
-    const { wiredGb, compressedGb } = cachedMacRamBreakdown;
-    const appGb = Math.max(0, +(ram.usedGb - wiredGb - compressedGb).toFixed(1));
+  if (process.platform === 'darwin' && cachedMacRam) {
+    const gb = (b) => +(b / 1024 ** 3).toFixed(1);
     return [
-      { label: '앱', gb: appGb },
-      { label: '와이어드', gb: wiredGb },
-      { label: '압축됨', gb: compressedGb },
+      { label: '앱', gb: gb(cachedMacRam.appBytes) },
+      { label: '와이어드', gb: gb(cachedMacRam.wiredBytes) },
+      { label: '압축됨', gb: gb(cachedMacRam.compressedBytes) },
     ];
   }
   return [
@@ -107,19 +133,98 @@ function ramBreakdown(ram) {
   ];
 }
 
-/** macOS: vm_stat 파싱 → Wired/Compressed 실측(바이트). 실패 시 null(폴백은 ramBreakdown 이 처리). */
-async function refreshMacRam() {
-  const stdout = await execFileP('vm_stat', []);
+/**
+ * vm_stat 출력 → 활성 모니터와 같은 정의의 메모리 구성(바이트).
+ * 파싱 실패 시 null — 호출부가 폴백을 결정한다.
+ *
+ * 순수 함수로 분리해 둔 이유: macOS 없이도 실제 vm_stat 출력을 고정 입력으로 넣어
+ * 검증할 수 있어야 한다(tests/system-metrics.test.js).
+ */
+function parseVmStat(stdout) {
+  if (!stdout) return null;
   const pageMatch = stdout.match(/page size of (\d+) bytes/);
   const pageSize = pageMatch ? parseInt(pageMatch[1], 10) : 4096;
-  const grab = (label) => {
+  const pages = (label) => {
     const m = stdout.match(new RegExp(label.replace(/\s/g, '\\s+') + ':\\s+(\\d+)\\.'));
-    return m ? (parseInt(m[1], 10) * pageSize) / 1024 ** 3 : 0;
+    return m ? parseInt(m[1], 10) : 0;
   };
-  const wiredGb = +grab('Pages wired down').toFixed(1);
+  const wired = pages('Pages wired down');
   // macOS 버전에 따라 라벨이 다름("occupied by compressor" 구버전 / "stored in compressor" 신버전)
-  const compressedGb = +(grab('Pages occupied by compressor') || grab('Pages stored in compressor')).toFixed(1);
-  cachedMacRamBreakdown = { wiredGb, compressedGb };
+  const compressed = pages('Pages occupied by compressor') || pages('Pages stored in compressor');
+  const anonymous = pages('Anonymous pages');
+  const purgeable = pages('Pages purgeable');
+  // 최소한 이 둘은 있어야 신뢰할 수 있다(형식이 예상과 다르면 폴백).
+  if (!wired && !anonymous) return null;
+  return {
+    appBytes: Math.max(0, anonymous - purgeable) * pageSize,
+    wiredBytes: wired * pageSize,
+    compressedBytes: compressed * pageSize,
+  };
+}
+
+/** macOS: vm_stat 실측 갱신. 실패 시 null(ramPercent/ramBreakdown 이 폴백 처리). */
+async function refreshMacRam() {
+  cachedMacRam = parseVmStat(await execFileP('vm_stat', []));
+}
+
+/**
+ * system_profiler SPDisplaysDataType -json 파싱 → { model, vramGb, unified }.
+ *
+ * Apple Silicon 은 GPU 가 시스템 메모리를 그대로 공유하는 통합 메모리라 "전용 VRAM"
+ * 이라는 값 자체가 없다(그래서 이 필드가 아예 안 나온다). Intel/외장 GPU 는
+ * spdisplays_vram(예: "1536 MB") 또는 sppci_vram(예: "8 GB") 으로 총량이 나온다.
+ *
+ * 사용량(used)은 공개 API 로는 권한 없이 구할 수 없다 — 지어내지 않고 비워둔다.
+ */
+function parseMacDisplays(jsonText) {
+  let data;
+  try { data = JSON.parse(jsonText); } catch { return null; }
+  const list = data?.SPDisplaysDataType;
+  if (!Array.isArray(list) || !list.length) return null;
+  const g = list[0];
+  const model = g.sppci_model || g._name || null;
+  const raw = g.spdisplays_vram || g.sppci_vram || g.spdisplays_vram_shared || null;
+  let vramGb = null;
+  if (typeof raw === 'string') {
+    const m = raw.match(/([\d.]+)\s*(MB|GB)/i);
+    if (m) {
+      const n = parseFloat(m[1]);
+      vramGb = /gb/i.test(m[2]) ? n : +(n / 1024).toFixed(1);
+    }
+  }
+  return { model, vramGb, unified: vramGb == null };
+}
+
+/**
+ * macOS GPU/VRAM.
+ *
+ * 사용률은 powermetrics 가 필요한데 그건 관리자 권한을 요구한다 — 백그라운드 폴링이
+ * 조용히 암호를 묻는 UX 는 넣지 않는다. 대신 권한 없이 가능한 만큼은 채운다:
+ *   - 외장/Intel GPU: VRAM 총량을 표시(사용량은 알 수 없어 비움)
+ *   - Apple Silicon: 통합 메모리라 별도 VRAM 이 존재하지 않는다는 사실을 표시
+ * 예전엔 이 분기가 아무것도 하지 않아 GPU/VRAM 이 이유 없이 "N/A" 로만 남았다.
+ */
+async function refreshMacGpu() {
+  const info = parseMacDisplays(
+    await execFileP('system_profiler', ['SPDisplaysDataType', '-json'], { timeout: 8000 }),
+  );
+  const model = info?.model || null;
+  cachedGpu = {
+    percent: null,
+    available: false,
+    reason: model ? `${model} — 사용률은 관리자 권한 필요` : 'GPU 사용률은 관리자 권한 필요',
+  };
+  if (info && info.vramGb != null) {
+    cachedVram = {
+      percent: null, usedGb: null, totalGb: info.vramGb, available: true,
+      reason: model || null,
+    };
+  } else {
+    cachedVram = {
+      percent: null, available: false,
+      reason: info?.unified ? '통합 메모리 — 전용 VRAM 없음' : 'VRAM 정보를 읽지 못함',
+    };
+  }
 }
 
 /**
@@ -175,10 +280,11 @@ async function refreshViaWindowsCounters() {
 
 async function refreshHeavy() {
   if (process.platform === 'darwin') {
-    // macOS GPU/VRAM 실측(powermetrics)은 관리자 권한이 필요해, 백그라운드 폴링에서
-    // 조용히 암호를 요구하는 UX 변경을 임의로 넣지 않는다(사용자 확인 없이는 보류) —
-    // RAM 세부 분해만 갱신.
-    await refreshMacRam().catch(() => { cachedMacRamBreakdown = null; });
+    await refreshMacRam().catch(() => { cachedMacRam = null; });
+    await refreshMacGpu().catch(() => {
+      cachedGpu = { percent: null, available: false };
+      cachedVram = { percent: null, available: false };
+    });
     return;
   }
   if (process.platform === 'win32') {
@@ -224,6 +330,9 @@ function sample() {
     },
     ram: {
       percent: ram.percent, usedGb: ram.usedGb, totalGb: ram.totalGb, available: true,
+      // 어느 경로로 계산했는지(vm_stat | os.freemem) — macOS 에서 수치가 활성 모니터와
+      // 다를 때 "vm_stat 을 실제로 읽고 있는지" 를 바로 구분하려고 남긴다.
+      source: ram.source,
       breakdown: ramBreakdown(ram),
     },
     gpu: cachedGpu,
@@ -231,4 +340,5 @@ function sample() {
   };
 }
 
-module.exports = { sample };
+// parseVmStat/parseMacDisplays 는 macOS 없이도 실제 출력 고정 입력으로 검증하려고 노출한다.
+module.exports = { sample, parseVmStat, parseMacDisplays };
