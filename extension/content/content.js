@@ -619,6 +619,7 @@
    *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
    *  않고 버튼이 활성화될 때까지 폴링한다. */
   async function resubmitPrompt(cfg, waitMs = 15000) {
+    const startedAt = Date.now();
     await new Promise(r => setTimeout(r, 200)); // setEditorText 후 React 상태 반영 대기
     const sels = (cfg.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean);
     const deadline = Date.now() + waitMs;
@@ -627,18 +628,22 @@
         const btn = document.querySelector(sel);
         if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
           btn.click();
+          console.log(`[SecureDoc] 재전송: 버튼 클릭 성공 (${Date.now() - startedAt}ms, sel=${sel})`);
           return true;
         }
       }
       await new Promise(r => setTimeout(r, 200));
     }
     // 끝내 활성화되지 않으면 Enter 로 한 번 시도해본다.
+    console.warn(`[SecureDoc] 재전송: ${waitMs}ms 동안 전송 버튼이 활성화되지 않음(sel="${cfg.sendBtnSel}") — Enter 로 폴백 시도`);
     const editor = cfg.editorSel && document.querySelector(cfg.editorSel);
     if (editor) {
       editor.focus();
       editor.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
       }));
+    } else {
+      console.error(`[SecureDoc] 재전송 실패: 입력창(sel="${cfg.editorSel}")도 못 찾음 — 마스킹본이 입력창에 남아있지만 아무것도 전송되지 않았습니다`);
     }
     return false;
   }
@@ -684,7 +689,11 @@
     }
 
     const latestCfg = getPromptConfig();
-    if (!latestCfg) return;
+    if (!latestCfg) {
+      console.error('[SecureDoc] 재전송 실패: 승인은 됐지만 이 사이트 설정을 못 찾음 — 아무것도 전송되지 않았습니다');
+      if (staged) clearPendingAttachment();
+      return;
+    }
     promptApproved = true;
 
     const restoreEditor = hideEditorDuringSubmit(latestCfg);

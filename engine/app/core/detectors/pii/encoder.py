@@ -196,6 +196,7 @@ class EncoderPiiDetector:
         payload = await self._read_ready_line(config.PII_LOAD_TIMEOUT_SEC, "pii_encoder")
         if not payload.get("ready"):
             raise RuntimeError(f"pii_encoder: 예상치 못한 준비 응답: {payload!r}")
+        self.residency.device = payload.get("device")
 
     async def _read_ready_line(self, timeout_sec: float, tag: str) -> dict[str, Any]:
         """준비(ready) 라인을 기다린다.
