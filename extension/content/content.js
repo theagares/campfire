@@ -20,10 +20,12 @@
 (function () {
   'use strict';
 
+  // 전체 보호(프롬프트 전송 가로채기 포함). 확장 팝업의 헤더 토글이 이 값을 쓴다.
   let protectionEnabled = true;
-  // 파일 인터셉트만 따로 끄고 켤 수 있는 스위치(확장 팝업에서 제어) — protectionEnabled와
-  // 별개다. protectionEnabled는 텍스트 프롬프트 검사까지 포함한 전체 보호 플래그라
-  // 지금은 이걸 끄는 UI가 없다(popup.js 상단 주석 — 의도적으로 안 둠).
+  // 파일(문서) 레이어. 팝업 토글은 두 값을 함께 끄고 켠다 — "끄면 검사뿐 아니라
+  // 인터셉트 자체가 없어야 한다"가 요구사항이라 둘을 갈라둘 이유가 없다.
+  // (예전엔 팝업이 이 값만 썼고 protectionEnabled 는 writer 가 없어 항상 true 였다.
+  //  그래서 토글을 꺼도 프롬프트는 계속 가로채였다 — 실사용자 리포트로 확인.)
   let fileInterceptEnabled = true;
 
   const bridgeToken = (
@@ -452,6 +454,10 @@
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
   document.addEventListener('dragover', (event) => {
+    // 보호가 꺼져 있으면 preventDefault 도 하지 않는다 — 이걸 빼먹으면 토글을 꺼도
+    // 페이지가 계속 우리 드롭 타깃으로 동작해서 "인터셉트가 안 꺼진다" 로 보인다
+    // (실사용자 리포트). 검사만 건너뛰는 게 아니라 개입 자체를 하지 않아야 한다.
+    if (!protectionEnabled || !fileInterceptEnabled) return;
     if (Array.from(event.dataTransfer?.items ?? []).some(i => i.kind === 'file')) event.preventDefault();
   }, true);
 
