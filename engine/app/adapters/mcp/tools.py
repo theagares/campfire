@@ -62,19 +62,35 @@ def _file_kind(path: Path) -> str:
     return "binary"
 
 
+def _redact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """탐지 항목에서 원문 값(text)을 뺀 사본. 위치·종류·신뢰도만 남긴다.
+
+    항목의 text 에는 탐지된 원문이 그대로 들어 있다(PII 는 주민번호·카드번호 실값,
+    인젝션은 공격 문구 자체). MCP 소비자는 사람이 아니라 AI 이므로 이걸 그대로
+    넘기면 두 가지가 동시에 깨진다:
+      - 마스킹의 의미가 사라진다. 개인정보를 가리려고 검사했는데 실값을 같이 준다.
+      - 인젝션 문구를 AI 에게 그대로 먹인다 — 막으려던 공격을 우리가 전달하는 꼴이다.
+    """
+    return [{k: v for k, v in item.items() if k != "text"} for item in items]
+
+
 def _public(result: dict[str, Any]) -> dict[str, Any]:
     """MCP 응답용 뷰. 파이프라인 결과에 요약 플래그를 덧붙인다.
 
-    originalText 는 세션 중 HITL/diff 참고용으로만 포함(store 미저장은 db 책임, PLAN §9.1).
+    **원문은 절대 넣지 않는다.** 원문(originalText)과 항목별 원문 값(item.text)은
+    HTTP API 경로에서는 필요하다 — 그쪽 소비자는 확장의 검토 패널이고, 사람이 원문과
+    마스킹본을 나란히 보고 항목별로 켜고 끄기 때문이다. 하지만 MCP 는 소비자가 AI
+    자신이라 정반대다. 여기로 원문을 흘리면 "AI 에게 원문을 안 보여주려고" 검사한
+    의미가 통째로 사라진다(실사용자 확인: scan_file 응답만으로 주민번호·카드번호·
+    인젝션 문구가 모두 노출됐다).
     """
     pii = result.get("piiItems", [])
     inj = result.get("injectionItems", [])
     detection_count = len(pii) + len(inj)
     return {
-        "originalText": result.get("originalText", ""),
         "maskedText": result.get("maskedText", ""),
-        "piiItems": pii,
-        "injectionItems": inj,
+        "piiItems": _redact_items(pii),
+        "injectionItems": _redact_items(inj),
         "stats": result.get("stats", {}),
         "scanStatus": result.get("scanStatus", "ok"),
         "reason": result.get("reason"),
@@ -124,8 +140,12 @@ async def scan_text(text: str, user_prompt: str = "") -> dict[str, Any]:
     읽으므로, 그 요청 문구를 넘기면 인젝션 탐지가 placeholder 대신 이걸 근거로
     "이 텍스트가 사용자의 실제 지시를 무시/변조하려는가"를 판단한다(정확도 향상).
 
-    반환: originalText, maskedText, piiItems/injectionItems(각 {type,start,end,text,
-    confidence,source}, 좌표는 원문 기준 0-based), stats, hasPii/hasInjection, policy.
+    반환: maskedText, piiItems/injectionItems(각 {type,start,end,confidence,source},
+    좌표는 원문 기준 0-based), stats, hasPii/hasInjection, policy.
+
+    원문은 돌려주지 않는다 — 원문(originalText)도, 항목별 원문 값(text)도 없다.
+    이 도구를 부르는 쪽이 AI 자신이라, 원문을 주면 검사한 의미가 사라진다.
+    마스킹 전 값이 꼭 필요하면 사람이 확인하는 경로(확장의 검토 패널)를 쓸 것.
     """
     result = await run_pipeline(
         text=text, file_name="prompt.txt", wrap_file=False, user_prompt=user_prompt or None

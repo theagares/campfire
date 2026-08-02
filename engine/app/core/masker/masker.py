@@ -61,6 +61,18 @@ def validate_and_fix(text: str, items: list[Item]) -> list[Item]:
         end = item.get("end")
         item_text = item.get("text", "")
 
+        # 항목에 원문(text)이 없을 수 있다 — MCP 응답은 원문 유출을 막으려고 text 를
+        # 빼고 내보낸다(adapters/mcp/tools.py 의 _redact_items). 그 항목을 그대로
+        # mask_text 에 되돌려주는 흐름이 정상 경로다.
+        #
+        # 그때는 내용 대조를 할 수단이 없으니 좌표를 신뢰한다. 이 분기가 없으면 아래
+        # 대조가 전부 실패하고 text.find("") 도 -1 이 되어 **항목이 통째로 버려진다** —
+        # 마스킹이 하나도 적용되지 않았는데 호출은 성공으로 끝나는 최악의 실패다.
+        if not item_text:
+            if isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(text):
+                valid.append(item)
+            continue
+
         if (
             not isinstance(start, int)
             or not isinstance(end, int)
