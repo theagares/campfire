@@ -317,7 +317,12 @@ def write_response(payload: dict[str, Any]) -> None:
 
 
 def run_stdio(detector: InjectionDetector) -> None:
-    write_response({"ready": True, "backend_model": detector.backend_model, "variant": detector.variant})
+    write_response({
+        "ready": True,
+        "backend_model": detector.backend_model,
+        "variant": detector.variant,
+        "device": detector.device,
+    })
     for line in sys.stdin:
         line = line.strip()
         if not line:
