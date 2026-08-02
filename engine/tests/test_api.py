@@ -29,7 +29,7 @@ def test_health_signature(client):
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["service"] == "securedoc-gateway"  # 시그니처 필수 (PLAN §11)
+    assert body["service"] == "campfire"  # 시그니처 필수 (PLAN §11)
     assert body["status"] == "ok"
     assert "port" in body
 

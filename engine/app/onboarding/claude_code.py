@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .common import MutationError, SettingsDiff, build_diff
+from .common import MutationError, SettingsDiff, build_diff, is_our_hook
 
 # 실 사용 시 참고용 기본 경로 — 사용자가 명시적으로 경로를 넘기지 않을 때만 쓰인다.
 # 이 저장소의 테스트/자동검증 코드는 이 기본값을 절대 사용하지 않는다(항상 override).
@@ -60,8 +60,8 @@ def _mutate_pretooluse_hook(after: dict) -> tuple[bool, str]:
     for entry in pre_tool_use:
         if isinstance(entry, dict) and entry.get("matcher") == _PRETOOLUSE_HOOK_MATCHER:
             for h in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
-                if isinstance(h, dict) and h.get("_securedocGateway") is True:
-                    return False, "이미 securedoc-gateway PreToolUse 이중 방어 훅이 등록돼 있습니다."
+                if is_our_hook(h):
+                    return False, "이미 campfire PreToolUse 이중 방어 훅이 등록돼 있습니다."
 
     # 이중 방어용 훅: permissions.deny 강제가 실패하는 버그 이력(GH #24846 등) 대비.
     # command 는 실제 배포 패키지에 포함될 검증 스크립트 경로로 교체해야 한다(TODO) —
@@ -72,8 +72,8 @@ def _mutate_pretooluse_hook(after: dict) -> tuple[bool, str]:
             "hooks": [
                 {
                     "type": "command",
-                    "command": "securedoc-gateway-block-read",  # TODO: 실제 배포 스크립트 경로로 교체
-                    "_securedocGateway": True,
+                    "command": "campfire-block-read",  # TODO: 실제 배포 스크립트 경로로 교체
+                    "_campfire": True,
                 }
             ],
         }

@@ -12,7 +12,7 @@ stdio 만 지원하는 MCP 클라이언트(예: Claude Desktop)를 위해, 클�
 사용법 (Claude Desktop claude_desktop_config.json 예):
     {
       "mcpServers": {
-        "securedoc-gateway": {
+        "campfire": {
           "command": "D:\\...\\engine\\.venv\\Scripts\\python.exe",
           "args": ["-m", "app.adapters.mcp.stdio_shim"],
           "cwd": "D:\\...\\engine",

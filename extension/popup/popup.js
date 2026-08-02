@@ -6,7 +6,7 @@
  *     content.js/interceptor.js가 chrome.storage.local의 protectionEnabled /
  *     fileInterceptEnabled 를 구독하고, 이 팝업은 그 값을 읽고 쓰기만 한다.
  *   - 서버 설정(읽기 전용): 연결 대상(로컬/원격), 로컬 포트(자동 탐지, 편집 불가), 다시 탐지
- *   - 앱 설정: 엔진 연결 상태, 대시보드 열기(upsecurity:// 커스텀 프로토콜로 데스크탑 앱 자체를 연다)
+ *   - 앱 설정: 엔진 연결 상태, 대시보드 열기(campfire:// 커스텀 프로토콜로 데스크탑 앱 자체를 연다)
  * 원격 URL 편집란·범위 카드·최근 활동 카드는 두지 않는다.
  */
 
@@ -58,11 +58,11 @@ function requestInfo(type) {
 }
 
 $('open-dashboard').addEventListener('click', () => {
-  // 엔진 REST(baseUrl)가 아니라 데스크탑 앱 자체를 연다 — 앱이 upsecurity:// 를
+  // 엔진 REST(baseUrl)가 아니라 데스크탑 앱 자체를 연다 — 앱이 campfire:// 를
   // 기본 프로토콜로 등록해두고(main.js), OS가 이 스킴을 열면 이미 떠 있는 앱 인스턴스의
   // second-instance 이벤트가 대시보드 창을 포그라운드로 띄운다(main.js showDashboard).
   if (lastInfo?.target === 'local' && lastInfo?.ok) {
-    chrome.tabs.create({ url: 'upsecurity://dashboard' });
+    chrome.tabs.create({ url: 'campfire://dashboard' });
   }
 });
 

@@ -35,7 +35,7 @@
 
   function sendBridgeTokenToMain() {
     window.postMessage({
-      __upsecurity_config: true,
+      __campfire_config: true,
       direction: 'isolated-to-main',
       type: 'SECUREDOC_BRIDGE_TOKEN',
       token: bridgeToken,
@@ -44,7 +44,7 @@
 
   function sendProtectionStateToMain(enabled, fileEnabled) {
     window.postMessage({
-      __upsecurity_config: true,
+      __campfire_config: true,
       direction: 'isolated-to-main',
       type: 'UPS_PROTECTION_STATE',
       enabled: Boolean(enabled),
@@ -71,7 +71,7 @@
   async function announceContentApprovedFile(file) {
     if (!file) return;
     window.postMessage({
-      __upsecurity_config: true,
+      __campfire_config: true,
       direction: 'isolated-to-main',
       type: 'UPS_CONTENT_APPROVED_FILE',
       meta: {
@@ -242,7 +242,7 @@
 
       overlayIframe = document.createElement('iframe');
       overlayIframe.src = chrome.runtime.getURL('sidepanel/sidepanel.html');
-      overlayIframe.title = 'UpSecurity 문서 검토';
+      overlayIframe.title = 'Campfire 문서 검토';
       overlayIframe.style.cssText = 'width: 100% !important; height: 100% !important; border: 0 !important; display: block !important;';
 
       overlayRoot.appendChild(overlayIframe);

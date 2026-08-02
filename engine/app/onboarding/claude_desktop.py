@@ -55,7 +55,7 @@ def detect_filesystem_servers(config_path: Path) -> dict[str, Any]:
     if found:
         warning = (
             f"서드파티 filesystem MCP 서버({', '.join(found)})가 등록돼 있습니다. "
-            "이 서버로 원본 파일을 직접 읽으면 securedoc-gateway 를 우회할 수 있습니다 — "
+            "이 서버로 원본 파일을 직접 읽으면 campfire 를 우회할 수 있습니다 — "
             "제거는 사용자 승인이 필요하므로 자동으로 삭제하지 않았습니다. 직접 확인 후 제거를 권장합니다."
         )
     return {"path": str(config_path), "exists": True, "error": None, "servers": found, "warning": warning}

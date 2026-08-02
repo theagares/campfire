@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "securedoc-gateway-engine"
+name = "campfire-engine"
 version = "0.1.0"
-description = "securedoc-gateway 엔진 코어 (U1, Phase 0) — 로컬 우선 PII/프롬프트 인젝션 마스킹 게이트웨이"
+description = "campfire 엔진 코어 (U1, Phase 0) — 로컬 우선 PII/프롬프트 인젝션 마스킹 게이트웨이"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",

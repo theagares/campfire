@@ -79,7 +79,7 @@ async function getConnections(engineStatus) {
       note: running
         ? '엔진 실행 중 — MCP 엔드포인트 이용 가능. (활성 세션 정확 판정은 엔진 sessions API 필요)'
         : '엔진이 실행 중이 아닙니다',
-      command: 'npx upsecurity-mcp connect', // PLAN §8: 1줄만 확정, 나머지는 Figma 플레이스홀더
+      command: 'npx campfire-mcp connect', // PLAN §8: 1줄만 확정, 나머지는 Figma 플레이스홀더
     },
     extension: {
       status: extActive ? 'available' : 'unavailable',

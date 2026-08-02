@@ -133,10 +133,15 @@ function allItemSegments() {
   return state.segments.filter(s => s.type === 'item');
 }
 
-/** 탐지 항목을 유형(dtype)별로 묶는다. PII 를 먼저, 그 안에서는 건수 많은 순. */
+/** PII 만 유형(dtype)별로 묶는다. 건수 많은 순.
+ *
+ *  인젝션은 묶지 않는다 — 같은 유형이라도 문구 하나하나가 서로 다른 공격이라,
+ *  "명령 재정의 2건" 으로 접어버리면 정작 읽고 판단해야 할 내용이 가려진다.
+ *  이름·이메일처럼 종류만 알면 되는 PII 와 성격이 다르다. */
 function groupItems() {
   const map = new Map();
   for (const seg of allItemSegments()) {
+    if (seg.cat !== 'pii') continue;
     let g = map.get(seg.dtype);
     if (!g) {
       g = { dtype: seg.dtype, cat: seg.cat, label: seg.label, segs: [] };
@@ -144,21 +149,24 @@ function groupItems() {
     }
     g.segs.push(seg);
   }
-  return [...map.values()].sort((a, b) =>
-    a.cat === b.cat ? b.segs.length - a.segs.length : (a.cat === 'pii' ? -1 : 1));
+  return [...map.values()].sort((a, b) => b.segs.length - a.segs.length);
 }
 
+/** 묶지 않고 하나씩 보여줄 항목(= 인젝션). 문서에 나온 순서 그대로. */
+const soloItems = () => allItemSegments().filter(s => s.cat !== 'pii');
+
 const maskedCountOf = (g) => g.segs.filter(s => !state.unmasked.has(s.idx)).length;
-const trunc = (s) => (s.length > 40 ? s.slice(0, 40) + '…' : s);
+const trunc = (s, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
 
 function renderItems() {
   state.groups = groupItems();
-  if (state.groups.length === 0) {
+  const solos = soloItems();
+  if (state.groups.length === 0 && solos.length === 0) {
     el.items.innerHTML = '<div class="empty">탐지된 항목이 없습니다. 원본을 그대로 전송할 수 있습니다.</div>';
     return;
   }
 
-  el.items.innerHTML = state.groups.map(g => {
+  const groupsHtml = state.groups.map(g => {
     const masked = maskedCountOf(g);
     const open = state.expanded.has(g.dtype);
     return `
@@ -187,6 +195,22 @@ function renderItems() {
         </div>
       </div>`;
   }).join('');
+
+  // 인젝션은 접지 않고 한 줄씩 — 유형명과 함께 실제 문구를 바로 보여준다.
+  const solosHtml = solos.map(s => `
+    <div class="solo" data-idx="${s.idx}">
+      <span class="cat ${s.cat}"></span>
+      <div class="s-text">
+        <div class="s-label">${esc(s.label)}</div>
+        <div class="s-snip">${esc(trunc(s.original, 90))}</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" class="i-toggle" data-idx="${s.idx}" ${state.unmasked.has(s.idx) ? '' : 'checked'}>
+        <span class="track"><span class="thumb"></span></span>
+      </label>
+    </div>`).join('');
+
+  el.items.innerHTML = groupsHtml + solosHtml;
 
   // indeterminate(일부만 마스킹)는 HTML 속성으로 표현할 수 없어 렌더 후 직접 세팅한다.
   state.groups.forEach(g => syncGroupHead(g.dtype));
@@ -364,11 +388,11 @@ function renderProgress(session) {
     el.docType.textContent = '문서 검사 중';
     el.progressSub.textContent = session.meta.fileName;
   } else if (session?.meta?.textPreview) {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검사 중';
     el.progressSub.textContent = `"${session.meta.textPreview}"`;
   } else {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '문서 검토';
   }
   (session?.progress || []).forEach(applyProgress);
@@ -395,7 +419,7 @@ function renderResult(kind, result, meta) {
   refreshCounts();
 
   if (kind === 'combined') {
-    el.docName.textContent = meta?.fileName || 'UpSecurity';
+    el.docName.textContent = meta?.fileName || 'Campfire';
     el.docType.textContent = '문서 + 프롬프트 검토';
     state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 0);
     state.promptSegments = buildSegments(
@@ -406,11 +430,11 @@ function renderResult(kind, result, meta) {
     el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else if (result.originalLength || result.stats?.originalLength) {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   } else {
-    el.docName.textContent = 'UpSecurity';
+    el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검토';
     state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
   }

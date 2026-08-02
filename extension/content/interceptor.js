@@ -47,7 +47,7 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
-    if (!event.data?.__upsecurity_config || event.data.direction !== 'isolated-to-main') return;
+    if (!event.data?.__campfire_config || event.data.direction !== 'isolated-to-main') return;
     if (event.data.type === 'SECUREDOC_BRIDGE_TOKEN') {
       _bridgeToken = String(event.data.token || '');
       return;
@@ -603,7 +603,7 @@
           }));
         } else if (res?.action === 'cancel' || res?.action === 'download') {
           // 취소 → picker를 취소한 것처럼 AbortError 던지기
-          throw new DOMException('Upload cancelled by upsecurity', 'AbortError');
+          throw new DOMException('Upload cancelled by campfire', 'AbortError');
         } else {
           result.push(handle); // 처리 오류 시 원본 통과
         }

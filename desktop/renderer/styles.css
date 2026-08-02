@@ -1,4 +1,4 @@
-/* renderer/styles.css — UpSecurity 대시보드 (Figma 완성본 1:1 반영, 파일 hMO6k051z9JXBoa2fWySND) */
+/* renderer/styles.css — Campfire 대시보드 (Figma 완성본 1:1 반영, 파일 hMO6k051z9JXBoa2fWySND) */
 
 @font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-Regular.ttf'); font-weight:400; font-style:normal; }
 @font-face { font-family:'Inter'; src:url('../assets/fonts/Inter-Medium.ttf'); font-weight:500; font-style:normal; }
@@ -290,34 +290,58 @@ img { display:block; }
 .pipe-node.dragging { cursor:grabbing; z-index:5; }
 .pipe-node .pn-icon { width:100%; height:100%; display:block; object-fit:contain; pointer-events:none; }
 
-/* 실시간 처리 단계 표시 (app.js applyPipelineActivity).
-   아이콘이 PNG/SVG 이미지라 색을 직접 못 바꾸므로, 뒤에 깔리는 후광(::before)과
-   대비/채도로 상태를 준다 — 아이콘 자체는 건드리지 않아 디자인이 유지된다.
-   드래그 중에는 후광이 커서를 따라다니면 산만해서 끈다. */
+/* 실시간 처리 단계 표시 (app.js renderPipeline).
+   처음엔 노드 뒤 후광만 넣었는데 --purple-soft(12%)라 흰 카드 위에서 사실상 안 보였다.
+   지금은 (1) 지나온 연결선을 보라색으로 켜두고 (2) 진행 중인 구간 위로 빛이 흐르고
+   (3) 현재 노드에 또렷한 링을 두른다 — 셋 다 눈에 들어오는 대비로 올렸다. */
+
+/* (1) 지나온/진행 중인 연결선 */
+.pipe-lines path { transition:stroke .3s ease, stroke-width .3s ease; }
+.pipe-lines path.lit { stroke:var(--purple); stroke-width:1.1; }
+.pipe-lines path.dashed.lit { stroke:rgba(88,76,220,.55); }
+
+/* (2) 연결선 위를 흘러가는 빛.
+   좌표는 app.js 가 path.getPointAtLength() 로 매 프레임 % 로 찍어준다. 크기는 px 라
+   캔버스가 늘어나도(preserveAspectRatio="none") 찌그러지지 않고 동그랗게 남는다. */
+.pipe-spark {
+  position:absolute; width:7px; height:7px; margin:-3.5px 0 0 -3.5px;
+  border-radius:9999px; background:var(--purple); pointer-events:none; z-index:3;
+  box-shadow:0 0 6px 2px rgba(88,76,220,.55);
+}
+.pipe-spark.head {
+  width:9px; height:9px; margin:-4.5px 0 0 -4.5px; background:#fff;
+  box-shadow:0 0 5px 2px var(--purple), 0 0 12px 5px rgba(88,76,220,.65);
+}
+
+/* (3) 노드 상태 — 아이콘이 이미지라 색을 못 바꾸니 링과 후광으로 표시한다. */
 .pipe-node::before {
-  content:''; position:absolute; inset:-14%; border-radius:14px;
-  background:var(--purple-soft); opacity:0; transform:scale(.86);
+  content:''; position:absolute; inset:-16%; border-radius:16px;
+  background:rgba(88,76,220,.14); border:1.5px solid transparent;
+  opacity:0; transform:scale(.86);
   transition:opacity .25s ease, transform .25s ease; pointer-events:none; z-index:-1;
 }
-.pipe-node.done::before { opacity:1; transform:scale(1); }
+.pipe-node.done::before { opacity:1; transform:scale(1); background:rgba(88,76,220,.10); }
 .pipe-node.active::before {
   opacity:1; transform:scale(1);
-  animation:pipe-node-pulse 1.5s ease-in-out infinite;
+  background:rgba(88,76,220,.22); border-color:var(--purple);
+  box-shadow:0 0 10px 2px rgba(88,76,220,.45);
+  animation:pipe-node-pulse 1.4s ease-in-out infinite;
 }
 .pipe-node.dragging::before { animation:none; }
-.pipe-node .pn-icon { transition:filter .25s ease, opacity .25s ease; }
-.pipe-node.done .pn-icon { filter:saturate(1.15); }
-.pipe-node.active .pn-icon { filter:saturate(1.35) drop-shadow(0 0 3px var(--purple-soft)); }
-.pipe-node.active .pn-label { color:var(--purple); }
+.pipe-node .pn-icon { transition:filter .25s ease; }
+.pipe-node.active .pn-icon { filter:drop-shadow(0 0 4px rgba(88,76,220,.7)); }
+.pipe-node.active .pn-label { color:var(--purple); font-weight:700; }
 
 @keyframes pipe-node-pulse {
-  0%, 100% { opacity:.55; transform:scale(.94); }
-  50%      { opacity:1;   transform:scale(1.06); }
+  0%, 100% { box-shadow:0 0 6px 1px rgba(88,76,220,.35); }
+  50%      { box-shadow:0 0 14px 4px rgba(88,76,220,.6); }
 }
 
-/* 모션을 줄이도록 설정한 사용자에겐 맥동 대신 정적 강조만 남긴다. */
+/* 모션을 줄이도록 설정한 사용자: 맥동과 흐르는 빛을 멈추고 정적 강조만 남긴다.
+   (빛은 JS 가 그리므로 여기서는 감춘다 — app.js 는 계속 좌표만 갱신하고 비용은 미미하다) */
 @media (prefers-reduced-motion: reduce) {
   .pipe-node.active::before { animation:none; }
+  .pipe-spark { display:none; }
 }
 .pipe-node .pn-label {
   position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:3px;

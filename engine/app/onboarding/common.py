@@ -136,3 +136,19 @@ def apply_diff(diff: SettingsDiff, *, apply: bool = False) -> bool:
     diff.path.parent.mkdir(parents=True, exist_ok=True)
     diff.path.write_text(json.dumps(diff.after, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return True
+
+
+# ── 훅 등록 마커 ─────────────────────────────────────────────────────────────
+# 우리가 심은 훅인지 판별하는 표식. 사용자 설정 파일(~/.claude/settings.json 등)에
+# 그대로 저장되므로, 리브랜딩(UpSecurity/securedoc-gateway -> Campfire) 이전에 등록된
+# 항목은 옛 키를 달고 남아 있다. 새 키만 보면 "아직 없다" 고 판단해 훅을 한 번 더
+# 추가하게 되므로(중복 등록), 조회할 때는 옛 키도 함께 인정한다.
+HOOK_MARKER = "_campfire"
+LEGACY_HOOK_MARKERS = ("_securedocGateway",)
+
+
+def is_our_hook(entry: object) -> bool:
+    """이 항목이 우리가 등록한 훅인가(옛 이름 포함)."""
+    if not isinstance(entry, dict):
+        return False
+    return any(entry.get(k) for k in (HOOK_MARKER, *LEGACY_HOOK_MARKERS))
