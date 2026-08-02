@@ -24,22 +24,24 @@ class TrayController {
   }
 
   create() {
-    const iconPath = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-    let image = nativeImage.createFromPath(iconPath); // 같은 폴더의 tray-icon@2x.png 를 레티나용으로 자동 인식
+    // 플랫폼마다 트레이 아이콘 규칙이 정반대라 에셋을 나눠 쓴다.
+    //
+    // macOS: 템플릿 이미지 — setTemplateImage(true) 가 알파를 마스크로 쓰고 RGB 는
+    //   무시한다. 그래서 tray-icon.png 는 검정 실루엣 + 투명 배경이어야 하고, OS 가
+    //   메뉴바 테마에 맞춰 알아서 반전한다. 배경까지 불투명한 PNG 를 넘기면 아이콘이
+    //   통짜 사각형으로 칠해지는 버그가 있었다.
+    // Windows: 템플릿 반전을 해주지 않는다 — 같은 검정 실루엣을 쓰면 Windows 11 기본
+    //   다크 작업표시줄에서 거의 안 보인다. 그래서 흰색으로 그린 별도 에셋을 쓴다.
+    const base = process.platform === 'darwin' ? 'tray-icon' : 'tray-icon-win';
+    const iconPath = path.join(__dirname, '..', 'assets', `${base}.png`);
+    let image = nativeImage.createFromPath(iconPath); // 같은 폴더의 <base>@2x.png 를 레티나용으로 자동 인식
     if (image.isEmpty()) {
       image = nativeImage.createEmpty();
     }
-    // tray-icon.png 는 검정 라인아트 + 투명 배경(진짜 알파 채널)으로 만든 macOS 템플릿 전용
-    // 에셋이다 — setTemplateImage(true) 는 알파를 마스크로 쓰고 RGB 는 무시하기 때문에,
-    // 이전처럼 배경까지 불투명(알파 없음)한 PNG 를 넘기면 아이콘 전체가 라이트/다크 모드에
-    // 따라 검정 또는 흰색 사각형으로 통짜 채워져 "색이 반전된 것처럼" 보이는 버그가 있었다.
-    if (process.platform === 'darwin') {
-      const tmpl = image.resize({ width: 22, height: 22 });
-      tmpl.setTemplateImage(true);
-      this.tray = new Tray(tmpl);
-    } else {
-      this.tray = new Tray(image.resize({ width: 20, height: 20 }));
-    }
+    // 에셋이 이미 최종 크기(mac 22 / win 16)와 @2x 로 준비돼 있어 리사이즈하지 않는다 —
+    // 예전엔 큰 원본을 런타임에 줄여 써서 가장자리가 뭉갰다.
+    if (process.platform === 'darwin') image.setTemplateImage(true);
+    this.tray = new Tray(image);
     this.tray.setToolTip('Campfire — 로컬 보안 게이트웨이');
 
     this.tray.on('click', () => this.togglePopover());
