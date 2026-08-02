@@ -4,7 +4,7 @@
  *
  * 트레이 아이콘 클릭 시 프레임 없는 팝오버 창(renderer/tray.html)을 트레이 근처에 띄운다.
  * 구성(§8): Security ON/OFF, PII/INJECTION 모델 pill, CPU/GPU/RAM/VRAM 바, 오늘 탐지 카운트,
- *          "대시보드에서 더 보기 →", "QUIT UpSecurity".
+ *          "대시보드에서 더 보기 →", "QUIT Campfire".
  * macOS 는 메뉴바, Windows 는 시스템 트레이. 우클릭 시 최소 네이티브 메뉴도 제공.
  */
 
@@ -40,7 +40,7 @@ class TrayController {
     } else {
       this.tray = new Tray(image.resize({ width: 20, height: 20 }));
     }
-    this.tray.setToolTip('UpSecurity — 로컬 보안 게이트웨이');
+    this.tray.setToolTip('Campfire — 로컬 보안 게이트웨이');
 
     this.tray.on('click', () => this.togglePopover());
     this.tray.on('right-click', () => this._showContextMenu());
@@ -115,7 +115,7 @@ class TrayController {
     const menu = Menu.buildFromTemplate([
       { label: '대시보드 열기', click: () => this.onShowDashboard && this.onShowDashboard() },
       { type: 'separator' },
-      { label: 'QUIT UpSecurity', click: () => this.onQuit && this.onQuit() },
+      { label: 'QUIT Campfire', click: () => this.onQuit && this.onQuit() },
     ]);
     this.tray.popUpContextMenu(menu);
   }

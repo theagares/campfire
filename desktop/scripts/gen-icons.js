@@ -2,7 +2,7 @@
 /**
  * scripts/gen-icons.js
  * 외부 에셋 없이 앱/트레이 아이콘 PNG 를 코드로 생성한다(빌드 재현성·CDN 금지).
- * UpSecurity 시그니처: Blue500(#3182F6) 라운드 스퀘어 + 흰 방패/체크.
+ * Campfire 시그니처: Blue500(#3182F6) 라운드 스퀘어 + 흰 방패/체크.
  *   - build/icon.png   512x512 (electron-builder 가 win/mac 포맷으로 자동 변환)
  *   - assets/tray-icon.png 32x32 (트레이)
  */

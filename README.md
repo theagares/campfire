@@ -1,4 +1,4 @@
-# securedoc-gateway
+# campfire
 
 업로드/전송 전 PII(개인정보)와 프롬프트 인젝션을 로컬에서 자동 탐지·마스킹하는
 보안 게이트웨이입니다. 세 컴포넌트로 구성됩니다.
@@ -25,30 +25,30 @@
 
 ### 설치 파일 다운로드 (일반 사용자, 권장)
 
-[최신 릴리스](https://github.com/theagares/securedoc-gateway/releases/latest)에서
+[최신 릴리스](https://github.com/theagares/campfire/releases/latest)에서
 운영체제에 맞는 파일을 내려받아 실행하면 됩니다. Node/Python을 따로 설치할 필요
 없이 바로 설치되는 앱입니다.
 
-**Windows** — `UpSecurity-Setup-*.exe`를 받아 더블클릭 → 설치 마법사를 따라가면
+**Windows** — `Campfire-Setup-*.exe`를 받아 더블클릭 → 설치 마법사를 따라가면
 시작 메뉴/바탕화면에 아이콘이 생깁니다. 아이콘 클릭으로 실행.
 
 ```powershell
-irm https://github.com/theagares/securedoc-gateway/releases/latest/download/UpSecurity-Setup-0.1.0.exe -OutFile UpSecurity-Setup.exe
+irm https://github.com/theagares/campfire/releases/latest/download/Campfire-Setup-0.1.0.exe -OutFile Campfire-Setup.exe
 ```
 
 **macOS** — Apple Silicon(M1/M2/M3...)이면 `-arm64.dmg`, Intel이면 확장자 앞에
 아무것도 안 붙은 `.dmg`를 받으세요.
 
 ```bash
-curl -L -o UpSecurity.dmg https://github.com/theagares/securedoc-gateway/releases/latest/download/UpSecurity-0.1.0-arm64.dmg
+curl -L -o Campfire.dmg https://github.com/theagares/campfire/releases/latest/download/Campfire-0.1.0-arm64.dmg
 ```
 
-dmg를 열어 `UpSecurity.app`을 `Applications` 폴더로 드래그하면 됩니다.
+dmg를 열어 `Campfire.app`을 `Applications` 폴더로 드래그하면 됩니다.
 
 > **macOS 첫 실행 시 참고**: 아직 Apple 유료 개발자 인증서로 정식 서명(노터라이즈)한
 > 빌드가 아니라 ad-hoc 서명만 되어 있습니다. 더블클릭 시 "확인되지 않은 개발자"
 > 경고가 뜨면 앱을 우클릭(또는 Control+클릭) → **열기**를 선택하거나, 터미널에서
-> `xattr -cr /Applications/UpSecurity.app` 실행 후 다시 열면 됩니다.
+> `xattr -cr /Applications/Campfire.app` 실행 후 다시 열면 됩니다.
 
 앱이 뜨면 엔진 사이드카를 자동으로 spawn합니다. 창을 닫아도 트레이(macOS는
 메뉴바)에 상주하며, 트레이 아이콘 클릭으로 다시 열 수 있습니다.
@@ -56,23 +56,23 @@ dmg를 열어 `UpSecurity.app`을 `Applications` 폴더로 드래그하면 됩�
 ### 개발자용: 소스로 직접 빌드/실행
 
 **명령어 한 줄로 개발 환경 준비** (git clone 없이, 엔진 Python·데스크탑 Electron
-의존성까지 한 번에 설치 — 기본 위치 `~/securedoc-gateway`, 환경변수
+의존성까지 한 번에 설치 — 기본 위치 `~/campfire`, 환경변수
 `SECUREDOC_INSTALL_DIR`로 변경 가능):
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/theagares/campfire/main/scripts/install.ps1 | iex
 ```
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/theagares/securedoc-gateway/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/theagares/campfire/main/scripts/install.sh | bash
 ```
 
 설치가 끝나면 안내되는 대로 실행하면 됩니다:
 
 ```bash
-cd ~/securedoc-gateway/desktop
+cd ~/campfire/desktop
 npm start
 ```
 
@@ -86,8 +86,8 @@ npm run dist:mac   # macOS dmg
 **코드를 고치거나 기여하려면** 위 원커맨드 설치 대신 일반적인 clone이 낫습니다.
 
 ```bash
-git clone https://github.com/theagares/securedoc-gateway.git
-cd securedoc-gateway
+git clone https://github.com/theagares/campfire.git
+cd campfire
 
 cd engine
 python -m venv .venv
@@ -100,7 +100,7 @@ npm start
 ```
 
 단독으로 엔진만 실행해 확인하려면 `python -m app.main` (venv의 python 사용) —
-`/health` 응답에 `{"service":"securedoc-gateway","port":48200}` (또는 다음 사용
+`/health` 응답에 `{"service":"campfire","port":48200}` (또는 다음 사용
 가능한 포트)가 뜨면 정상입니다.
 
 ### Chrome 확장
@@ -114,7 +114,7 @@ npm start
 ## 구조
 
 ```
-securedoc-gateway/
+campfire/
 ├── engine/      # PII/인젝션 탐지·마스킹 코어 + MCP 어댑터
 ├── desktop/     # Electron 데스크탑 앱
 └── extension/   # Chrome MV3 확장

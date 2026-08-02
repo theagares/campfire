@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "securedoc-gateway",
+  "name": "Campfire",
   "version": "2.0.0",
   "description": "업로드/전송 전 PII와 프롬프트 인젝션을 자동 탐지·마스킹하는 로컬 우선 보안 게이트웨이 (사이드패널 HITL)",
 
@@ -78,7 +78,7 @@
 
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "securedoc-gateway 설정",
+    "default_title": "Campfire 설정",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

@@ -583,7 +583,7 @@ function renderAll() {
 
 async function init() {
   const info = await api.getAppInfo().catch(() => null);
-  if (info && info.dev) document.title = 'UpSecurity (dev)';
+  if (info && info.dev) document.title = 'Campfire (dev)';
 
   state.settings = await api.getSettings();
   state.engine = await api.getEngineStatus();

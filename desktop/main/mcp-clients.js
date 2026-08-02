@@ -17,7 +17,13 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const SERVER_NAME = 'securedoc-gateway';
+const SERVER_NAME = 'campfire';
+// 리브랜딩 이전에 등록해둔 키. 사용자의 claude_desktop_config.json 에 그대로 남아 있어서,
+// 새 키만 보면 "연결 안 됨" 으로 보이고 해제해도 옛 항목이 계속 남는다. 조회·해제 때
+// 둘 다 취급하고, 연결할 때는 옛 항목을 지우고 새 키로 바꿔 쓴다.
+const LEGACY_SERVER_NAMES = ['securedoc-gateway'];
+const serverKeysIn = (servers) =>
+  [SERVER_NAME, ...LEGACY_SERVER_NAMES].filter(k => servers && servers[k]);
 
 function run(cmd) {
   return new Promise((resolve) => {
@@ -33,7 +39,8 @@ async function claudeCodeInfo() {
     return { id: 'claude_code', name: 'Claude Code', method: 'cli', available: false, connected: false };
   }
   const list = await run('claude mcp list');
-  const connected = list.ok && list.stdout.includes(SERVER_NAME);
+  const connected = list.ok
+    && [SERVER_NAME, ...LEGACY_SERVER_NAMES].some(k => list.stdout.includes(k));
   return { id: 'claude_code', name: 'Claude Code', method: 'cli', available: true, connected };
 }
 
@@ -43,8 +50,15 @@ async function claudeCodeConnect(mcpUrl) {
 }
 
 async function claudeCodeDisconnect() {
-  const res = await run(`claude mcp remove ${SERVER_NAME} --scope user`);
-  if (!res.ok) throw new Error(res.stderr.trim() || 'claude mcp remove 실행 실패');
+  // 옛 이름으로 등록돼 있을 수 있어 둘 다 시도한다. 없는 이름을 지우면 실패하므로,
+  // 하나라도 성공하면 해제된 것으로 본다(둘 다 없을 때만 오류).
+  const results = [];
+  for (const key of [SERVER_NAME, ...LEGACY_SERVER_NAMES]) {
+    results.push(await run(`claude mcp remove ${key} --scope user`));
+  }
+  if (!results.some(r => r.ok)) {
+    throw new Error(results[0].stderr.trim() || 'claude mcp remove 실행 실패');
+  }
 }
 
 function claudeDesktopConfigPath(app) {
@@ -64,7 +78,7 @@ function readJsonSafe(p) {
 function claudeDesktopInfo(app) {
   const p = claudeDesktopConfigPath(app);
   const data = readJsonSafe(p);
-  const connected = !!(data.mcpServers && data.mcpServers[SERVER_NAME]);
+  const connected = serverKeysIn(data.mcpServers).length > 0;
   return { id: 'claude_desktop', name: 'Claude Desktop', method: 'config', available: true, connected, configPath: p };
 }
 
@@ -72,6 +86,7 @@ function claudeDesktopConnect(app, mcpUrl) {
   const p = claudeDesktopConfigPath(app);
   const data = readJsonSafe(p);
   data.mcpServers = data.mcpServers && typeof data.mcpServers === 'object' ? data.mcpServers : {};
+  for (const k of LEGACY_SERVER_NAMES) delete data.mcpServers[k]; // 옛 이름으로 중복 등록되지 않게
   data.mcpServers[SERVER_NAME] = { type: 'http', url: mcpUrl };
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
@@ -81,8 +96,9 @@ function claudeDesktopDisconnect(app) {
   const p = claudeDesktopConfigPath(app);
   if (!fs.existsSync(p)) return;
   const data = readJsonSafe(p);
-  if (data.mcpServers && data.mcpServers[SERVER_NAME]) {
-    delete data.mcpServers[SERVER_NAME];
+  const keys = serverKeysIn(data.mcpServers);
+  if (keys.length) {
+    for (const k of keys) delete data.mcpServers[k]; // 옛 이름으로 남은 항목까지 정리
     fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
   }
 }
