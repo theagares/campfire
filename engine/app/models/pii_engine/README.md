@@ -36,7 +36,10 @@ pii_engine/
   README.md
   models/
     seed42/
+    seed43/
+    seed44/
   runtime/
+    local_pii_ensemble_inference.py
     local_pii_inference.py
     pii_model.py
     crf_bio.py
@@ -44,14 +47,7 @@ pii_engine/
     requirements.txt
 ```
 
-The seed folder contains its tokenizer, weights, PII config, label map, gazetteer, and bundled backbone config.
-
-> This bundle originally shipped a seed42/43/44 ensemble. The three seeds turned out to be
-> byte-identical weights (hardlinked at packaging time), so the ensemble gave no diversity
-> benefit — only 3x the compute and VRAM. It was switched to the single seed42 model in
-> commit `155c9bd`, and the release asset (`pii_engine_v2.tar.gz`) now ships seed42 only.
-> The metrics above were measured in the 3-seed era; since the weights were identical, they
-> apply unchanged to the single model.
+Each seed folder contains its tokenizer, weights, PII config, label map, gazetteer, and bundled backbone config.
 
 ## Install
 
@@ -68,8 +64,8 @@ For a CPU-only app environment, install a CPU build of PyTorch appropriate for t
 
 ```bash
 cd pii_engine/runtime
-python3 local_pii_inference.py \
-  --model-dir ../models/seed42 \
+python3 local_pii_ensemble_inference.py \
+  --ensemble-dir .. \
   --device cpu \
   --text "홍길동 고객님의 연락처는 010-1234-5678 입니다."
 ```
@@ -91,7 +87,7 @@ Start the detector once:
 
 ```bash
 cd pii_engine/runtime
-python3 local_pii_inference.py --model-dir ../models/seed42 --device cpu --stdio
+python3 local_pii_ensemble_inference.py --ensemble-dir .. --device cpu --stdio
 ```
 
 Send one JSON object per line:
@@ -144,7 +140,7 @@ Character offsets are Python string offsets. Treat `begin` as inclusive and `end
 
 ## Notes for the Implementing LLM
 
-Implement a small adapter around `local_pii_inference.py --stdio`.
+Implement a small adapter around `local_pii_ensemble_inference.py --stdio`.
 
 The adapter should:
 

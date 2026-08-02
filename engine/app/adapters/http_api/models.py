@@ -43,16 +43,10 @@ router = APIRouter()
 
 _RELEASE_BASE = "https://github.com/theagares/securedoc-gateway/releases/download/models-v1"
 
-# v2 는 seed42 하나만 담는다. v1 은 seed42/43/44 를 담고 있었는데, 세 seed 가 실제로는
-# 동일한 가중치라 tar 안에서 하드링크로 묶여 있었다 — 그래서 압축본은 476MB 로 작았지만
-# Windows 에서 풀면 하드링크가 실제 복사본으로 펼쳐져 디스크에 1.7GB 를 차지했다(실측).
-# 어차피 단일 seed 전환(155c9bd) 이후 읽는 건 seed42 뿐이라, 나머지 둘은 순수 낭비였다.
-# 다운로드 크기는 v1 과 같고(476MB), 압축 해제 후 디스크 사용량만 1.7GB → 569MB 로 준다.
-# v1 은 지우지 않고 남겨둔다 — 이미 배포된 구버전 앱이 그 URL/체크섬을 그대로 쓴다.
 _ASSETS: dict[str, dict[str, Any]] = {
     "pii": {
-        "url": f"{_RELEASE_BASE}/pii_engine_v2.tar.gz",
-        "sha256": "1cc79978799d1d6c3a7b1737bed4e407ebfe3a6fc0925e73c7d18da21a1d3032",
+        "url": f"{_RELEASE_BASE}/pii_engine_v1.tar.gz",
+        "sha256": "dbf7d8e52bddc44bea869ca9280ff873875babce7ab7acd2ab67453e9ba7a386",
         "extract_to": lambda: config.PII_ENGINE_DIR,
         "label": "PII 모델(seed42)",
     },
