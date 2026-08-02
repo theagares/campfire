@@ -17,6 +17,11 @@ const { EventEmitter } = require('events');
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
+/** 엔진이 요청을 받을 수 있는 상태인가. getStatus() 는 state 문자열을 준다(running 불리언 없음). */
+function isEngineRunning(status) {
+  return !!(status && status.state === 'running' && status.baseUrl);
+}
+
 class PipelineActivity extends EventEmitter {
   /** @param {import('./engine-manager')} engineManager */
   constructor(engineManager) {
@@ -34,10 +39,12 @@ class PipelineActivity extends EventEmitter {
     this.stopped = false;
     this.connect();
     // 엔진이 다시 떴을 때 곧바로 재구독한다(포트가 바뀌었을 수 있다).
+    // 상태 판정은 engineManager.getStatus().state 를 쓴다 — running 같은 불리언
+    // 필드는 없다(connections.js/ipc.js 도 같은 방식).
     this.engineManager.on('status', (status) => {
       if (this.stopped) return;
-      if (status && status.running && !this.req) this.scheduleReconnect(0);
-      if (status && !status.running) this.disconnect();
+      if (isEngineRunning(status) && !this.req) this.scheduleReconnect(0);
+      if (status && !isEngineRunning(status)) this.disconnect();
     });
   }
 
@@ -67,7 +74,7 @@ class PipelineActivity extends EventEmitter {
   connect() {
     if (this.stopped || this.req) return;
     const status = this.engineManager.getStatus();
-    if (!status || !status.running || !status.baseUrl) {
+    if (!isEngineRunning(status)) {
       this.scheduleReconnect();
       return;
     }
