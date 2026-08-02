@@ -414,10 +414,88 @@ function schedulePipeLayoutSave() {
   }, 400);
 }
 
+// ── 처리현황 실시간 동기화 ────────────────────────────────────────────────────
+// 엔진의 GET /activity/stream(SSE)을 메인 프로세스가 중계해 pipeline:activity 로
+// 넘겨준다. 여기서는 그걸 노드 상태로 옮긴다.
+//
+// 단계 이름은 엔진(core/activity.py)이 정한 도메인 용어이고, 어떤 노드에 불을
+// 켤지는 UI 사정이라 매핑을 렌더러가 갖는다. 마스킹은 PII/인젝션 두 갈래를 함께
+// 끝내므로 완료 노드 둘에 같이 불이 들어간다.
+const PIPE_STAGE_ORDER = ['receive', 'parse', 'pii', 'injection', 'mask'];
+const PIPE_STAGE_NODES = {
+  receive: ['receive'],
+  parse: ['parse'],
+  pii: ['pii-detect'],
+  injection: ['inj-detect'],
+  mask: ['pii-done', 'inj-done'],
+};
+// 완료 직후 곧바로 회색으로 돌아가면 마지막 단계가 깜빡이고 끝나 눈에 안 남는다 —
+// 잠깐 "완료" 상태를 보여주고 사그라들게 한다.
+const PIPE_SETTLE_MS = 1400;
+
+const pipeActivity = { jobs: new Map(), settleTimer: null, settling: false };
+
+function pipeStageIndex(stage) {
+  const i = PIPE_STAGE_ORDER.indexOf(stage);
+  return i === -1 ? -1 : i;
+}
+
+function applyPipelineActivity(ev) {
+  if (!ev) return;
+  if (ev.type === 'snapshot') {
+    // 처리 도중에 앱을 켠 경우 — 현재 진행 중인 것들로 바로 맞춘다.
+    pipeActivity.jobs.clear();
+    (ev.active || []).forEach((a) => pipeActivity.jobs.set(a.jobId, a.stage));
+  } else if (ev.type === 'activity') {
+    if (ev.phase === 'finish') pipeActivity.jobs.delete(ev.jobId);
+    else pipeActivity.jobs.set(ev.jobId, ev.stage);
+  } else {
+    return;
+  }
+
+  clearTimeout(pipeActivity.settleTimer);
+  if (pipeActivity.jobs.size === 0) {
+    // 방금 끝났다 — 잠깐 완료 상태를 유지한 뒤 idle 로.
+    pipeActivity.settling = true;
+    pipeActivity.settleTimer = setTimeout(() => {
+      pipeActivity.settling = false;
+      renderPipeline();
+    }, PIPE_SETTLE_MS);
+  } else {
+    pipeActivity.settling = false;
+  }
+  renderPipeline();
+}
+
 function renderPipeline() {
   buildPipelineDiagram();
-  // 실시간 "탐지중" 신호는 엔진 REST 계약(§2)에 없어 idle 고정 표시.
-  const running = false;
+
+  const busy = pipeActivity.jobs.size > 0;
+  // 여러 요청이 겹치면 가장 앞선 단계를 기준으로 보여준다(전체 흐름이 어디까지
+  // 갔는지가 관심사라, 뒤처진 job 때문에 되감기는 것보다 자연스럽다).
+  let furthest = -1;
+  pipeActivity.jobs.forEach((stage) => {
+    furthest = Math.max(furthest, pipeStageIndex(stage));
+  });
+
+  PIPE_NODES.forEach((n) => {
+    const el = pipeNodeEls[n.id];
+    if (!el) return;
+    let cls = '';
+    if (busy) {
+      const stageOfNode = PIPE_STAGE_ORDER.find((s) => PIPE_STAGE_NODES[s]?.includes(n.id));
+      const idx = pipeStageIndex(stageOfNode);
+      if (idx !== -1 && idx < furthest) cls = 'done';
+      else if (idx !== -1 && idx === furthest) cls = 'active';
+    } else if (pipeActivity.settling) {
+      // 막 끝난 직후: 흐름 전체를 완료로 보여준다.
+      if (PIPE_STAGE_ORDER.some((s) => PIPE_STAGE_NODES[s]?.includes(n.id))) cls = 'done';
+    }
+    el.classList.toggle('active', cls === 'active');
+    el.classList.toggle('done', cls === 'done');
+  });
+
+  const running = busy;
   const status = $('#pipe-status');
   status.classList.toggle('running', running);
   status.classList.toggle('idle', !running);
@@ -557,6 +635,8 @@ async function init() {
   api.onMetrics((m) => { state.metrics = m; renderResources($('#db-resources')); });
   api.onStats((s) => { state.stats = s; renderHome(); renderDashboard(); });
   api.onNavigate((view) => goto(view));
+  // 구버전 preload 와 섞여 실행될 수 있어 옵셔널 호출 — 없으면 처리현황은 idle 로 남는다.
+  api.onPipelineActivity?.((ev) => applyPipelineActivity(ev));
 
   // 연결 상태는 주기적으로 갱신
   refreshConnections();

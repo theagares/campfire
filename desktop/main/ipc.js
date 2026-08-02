@@ -11,6 +11,9 @@ const { getConnections } = require('./connections');
 const models = require('./models');
 const mcpClients = require('./mcp-clients');
 const paths = require('./paths');
+const { PipelineActivity } = require('./pipeline-activity');
+
+let pipelineActivity = null;
 
 /** 모든 창(대시보드+트레이)에 이벤트 push */
 function broadcast(channel, payload) {
@@ -173,6 +176,21 @@ function register(ctx) {
 
   // 엔진 상태 변화 → 즉시 브로드캐스트
   engineManager.on('status', (status) => broadcast('engine:status', status));
+
+  // 처리현황(파이프라인 단계) 실시간 구독 → 렌더러로 push.
+  // 엔진 SSE 를 메인이 중계한다(렌더러는 엔진 포트를 모르고, contextIsolation 아래
+  // 화이트리스트 API 만 쓴다). 구버전 엔진이면 404 로 조용히 물러난다.
+  pipelineActivity = new PipelineActivity(engineManager);
+  pipelineActivity.on('activity', (payload) => broadcast('pipeline:activity', payload));
+  pipelineActivity.start();
 }
 
-module.exports = { register, broadcast, buildStats };
+/** 앱 종료 시 SSE 연결 정리 (main.js 에서 호출). */
+function disposeActivity() {
+  if (pipelineActivity) {
+    pipelineActivity.stop();
+    pipelineActivity = null;
+  }
+}
+
+module.exports = { register, broadcast, buildStats, disposeActivity };
