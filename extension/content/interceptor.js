@@ -39,8 +39,9 @@
 
   let _protectionEnabled = true;
   // content.js(isolated world)의 fileInterceptEnabled를 그대로 미러링한다 — 확장 팝업의
-  // "파일 인터셉트" 토글이 꺼지면 이 MAIN world 레이어(XHR/fetch 자동 감지)도 같이
-  // 꺼져야 한다. protectionEnabled(텍스트 프롬프트 포함 전체 보호)와는 별개.
+  // 보호 토글이 꺼지면 이 MAIN world 레이어(XHR/fetch 자동 감지)도 같이 꺼져야 한다.
+  // 팝업은 두 값을 함께 끄지만, 여기서는 둘 다 확인한다(어느 한쪽만 꺼진 예전 설정이
+  // 남아 있어도 안전하게 꺼진 쪽을 따르도록).
   let _fileInterceptEnabled = true;
   let _bridgeToken = '';
 
@@ -648,6 +649,9 @@
   // ════════════════════════════════════════════════════════════════════════════
   document.addEventListener('dragover', (e) => {
     if (CONTENT_OWNS_LAYER1_UPLOADS) return;
+    // 보호가 꺼져 있으면 preventDefault 조차 하지 않는다 — content.js 의 같은 훅과
+    // 같은 이유다(끄면 개입 자체가 없어야 한다).
+    if (!isProtectionEnabled() || !isFileInterceptEnabled()) return;
     // Layer 3 위임 사이트(Gemini 등): dragover도 건드리지 않음
     // → 페이지 전체를 드롭 가능 영역으로 만들면 Gemini 의도한 드롭존 외의
     //   버그 있는 핸들러(this.drop is not a function)가 실행됨

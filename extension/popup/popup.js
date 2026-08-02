@@ -2,13 +2,12 @@
  * popup.js  ─  설정 전용 popup (PLAN §변경2)
  *
  * 표시 항목:
- *   - 헤더: 파일 인터셉트 on/off (content.js/interceptor.js가 chrome.storage.local의
- *     fileInterceptEnabled를 그대로 구독 — 이 팝업은 그 값을 읽고 쓰기만 한다)
+ *   - 헤더: 보호 on/off — 프롬프트·문서 인터셉트를 통째로 켜고 끈다.
+ *     content.js/interceptor.js가 chrome.storage.local의 protectionEnabled /
+ *     fileInterceptEnabled 를 구독하고, 이 팝업은 그 값을 읽고 쓰기만 한다.
  *   - 서버 설정(읽기 전용): 연결 대상(로컬/원격), 로컬 포트(자동 탐지, 편집 불가), 다시 탐지
  *   - 앱 설정: 엔진 연결 상태, 대시보드 열기(campfire:// 커스텀 프로토콜로 데스크탑 앱 자체를 연다)
- * 원격 URL 편집란·범위 카드·최근 활동 카드는 두지 않는다. 텍스트 프롬프트 검사까지
- * 포함한 전체 보호(protectionEnabled)를 끄는 토글도 의도적으로 두지 않는다 — 이 팝업이
- * 다루는 건 파일 인터셉트 하나뿐이다.
+ * 원격 URL 편집란·범위 카드·최근 활동 카드는 두지 않는다.
  */
 
 const $ = (id) => document.getElementById(id);
@@ -72,20 +71,36 @@ $('rescan').addEventListener('click', async () => {
   render(await requestInfo('RESCAN_SERVER'));
 });
 
-function renderFileIntercept(enabled) {
-  const toggle = $('file-intercept-toggle');
+function renderProtection(enabled) {
+  const toggle = $('protection-toggle');
   toggle.checked = enabled;
-  $('file-intercept-label').textContent = enabled ? 'ON' : 'OFF';
+  $('protection-label').textContent = enabled ? 'ON' : 'OFF';
 }
 
-$('file-intercept-toggle').addEventListener('change', (e) => {
+// 이 토글은 "보호 전체" 스위치다 — 끄면 검사뿐 아니라 인터셉트 자체가 멈춰야 한다.
+// 그래서 두 키를 함께 쓴다:
+//   protectionEnabled     — 프롬프트 전송 가로채기까지 포함한 전체 보호
+//   fileInterceptEnabled  — 파일(문서) 레이어
+// 예전에는 이 토글이 fileInterceptEnabled 만 썼고 protectionEnabled 는 아무도 쓰지
+// 않아 항상 true 였다(데스크탑 앱의 ON/OFF 토글이 제거되면서 writer 가 사라졌다).
+// 그 결과 토글을 꺼도 프롬프트는 계속 가로채였다 — 실사용자 리포트.
+function setProtection(enabled) {
+  chrome.storage?.local?.set?.({ protectionEnabled: enabled, fileInterceptEnabled: enabled });
+}
+
+$('protection-toggle').addEventListener('change', (e) => {
   const enabled = e.target.checked;
-  renderFileIntercept(enabled);
-  chrome.storage?.local?.set?.({ fileInterceptEnabled: enabled });
+  renderProtection(enabled);
+  setProtection(enabled);
 });
 
-chrome.storage?.local?.get?.({ fileInterceptEnabled: true }, ({ fileInterceptEnabled }) => {
-  renderFileIntercept(Boolean(fileInterceptEnabled));
-});
+chrome.storage?.local?.get?.(
+  { protectionEnabled: true, fileInterceptEnabled: true },
+  ({ protectionEnabled, fileInterceptEnabled }) => {
+    // 둘 중 하나라도 꺼져 있으면 꺼진 것으로 본다(예전 버전에서 fileInterceptEnabled
+    // 만 꺼둔 채 업데이트된 사용자도 화면과 실제 동작이 어긋나지 않게).
+    renderProtection(Boolean(protectionEnabled) && Boolean(fileInterceptEnabled));
+  },
+);
 
 (async () => { render(await requestInfo('GET_CONNECTION_INFO')); })();
