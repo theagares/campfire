@@ -47,6 +47,8 @@ let state = {
   docSegments: [],        // kind: 'combined' — 문서 쪽
   promptSegments: [],     // kind: 'combined' — 프롬프트 쪽
   unmasked: new Set(),   // 마스킹 제외(=원본 유지) 항목 인덱스(문서/프롬프트 idx 공유 — buildSegments 의 offset 으로 겹치지 않게 함)
+  groups: [],            // 탐지 유형(dtype)별 묶음 — renderItems() 가 채운다
+  expanded: new Set(),   // 펼쳐진 그룹의 dtype
   decided: false,
 };
 
@@ -97,12 +99,17 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+const tipFor = (label, masked) => `${label} — ${masked ? '눌러서 마스킹 해제' : '눌러서 다시 마스킹'}`;
+
+// 마킹된 구간은 그 자체가 버튼이다 — 문서에서 바로 눌러 마스킹을 풀거나 다시 건다.
+// (우측 목록의 토글과 같은 상태를 공유하며, 어느 쪽을 바꿔도 양쪽이 함께 갱신된다.)
 function segmentsToHtml(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
-    const kept = state.unmasked.has(seg.idx);
+    const masked = !state.unmasked.has(seg.idx);
     const cls = seg.cat === 'inj' ? 'inj' : 'pii';
-    return `<span class="mark ${cls}${kept ? ' kept' : ''}" title="${esc(seg.label)}">${esc(seg.original)}</span>`;
+    return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-idx="${seg.idx}" data-label="${esc(seg.label)}"`
+      + ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}">${esc(seg.original)}</span>`;
   }).join('');
 }
 
@@ -126,38 +133,185 @@ function allItemSegments() {
   return state.segments.filter(s => s.type === 'item');
 }
 
+/** 탐지 항목을 유형(dtype)별로 묶는다. PII 를 먼저, 그 안에서는 건수 많은 순. */
+function groupItems() {
+  const map = new Map();
+  for (const seg of allItemSegments()) {
+    let g = map.get(seg.dtype);
+    if (!g) {
+      g = { dtype: seg.dtype, cat: seg.cat, label: seg.label, segs: [] };
+      map.set(seg.dtype, g);
+    }
+    g.segs.push(seg);
+  }
+  return [...map.values()].sort((a, b) =>
+    a.cat === b.cat ? b.segs.length - a.segs.length : (a.cat === 'pii' ? -1 : 1));
+}
+
+const maskedCountOf = (g) => g.segs.filter(s => !state.unmasked.has(s.idx)).length;
+const trunc = (s) => (s.length > 40 ? s.slice(0, 40) + '…' : s);
+
 function renderItems() {
-  const items = allItemSegments();
-  if (items.length === 0) {
+  state.groups = groupItems();
+  if (state.groups.length === 0) {
     el.items.innerHTML = '<div class="empty">탐지된 항목이 없습니다. 원본을 그대로 전송할 수 있습니다.</div>';
     return;
   }
-  el.items.innerHTML = items.map(seg => {
-    const on = !state.unmasked.has(seg.idx);
-    const snip = seg.original.length > 40 ? seg.original.slice(0, 40) + '…' : seg.original;
+
+  el.items.innerHTML = state.groups.map(g => {
+    const masked = maskedCountOf(g);
+    const open = state.expanded.has(g.dtype);
     return `
-      <div class="item">
-        <span class="cat ${seg.cat}"></span>
-        <div class="body">
-          <div class="lbl">${esc(seg.label)}</div>
-          <div class="snip">${esc(snip)}</div>
+      <div class="group${open ? ' open' : ''}" data-type="${esc(g.dtype)}">
+        <div class="group-head" role="button" tabindex="0" aria-expanded="${open}">
+          <span class="caret" aria-hidden="true"></span>
+          <span class="cat ${g.cat}"></span>
+          <div class="g-text">
+            <div class="g-label"><span class="g-name">${esc(g.label)}</span><span class="g-count">${g.segs.length}</span></div>
+            <div class="g-state">${masked}/${g.segs.length} 마스킹</div>
+          </div>
+          <label class="switch g-switch">
+            <input type="checkbox" class="g-toggle" ${masked === g.segs.length ? 'checked' : ''}>
+            <span class="track"><span class="thumb"></span></span>
+          </label>
         </div>
-        <label class="switch">
-          <input type="checkbox" data-idx="${seg.idx}" ${on ? 'checked' : ''}>
-          <span class="track"><span class="thumb"></span></span>
-        </label>
+        <div class="group-body"${open ? '' : ' hidden'}>
+          ${g.segs.map(s => `
+            <div class="item" data-idx="${s.idx}">
+              <div class="snip">${esc(trunc(s.original))}</div>
+              <label class="switch">
+                <input type="checkbox" class="i-toggle" data-idx="${s.idx}" ${state.unmasked.has(s.idx) ? '' : 'checked'}>
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>`).join('')}
+        </div>
       </div>`;
   }).join('');
 
-  el.items.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const idx = parseInt(cb.dataset.idx, 10);
-      if (cb.checked) state.unmasked.delete(idx); else state.unmasked.add(idx);
-      renderDiff();
-      refreshSummary();
-    });
+  // indeterminate(일부만 마스킹)는 HTML 속성으로 표현할 수 없어 렌더 후 직접 세팅한다.
+  state.groups.forEach(g => syncGroupHead(g.dtype));
+}
+
+// ── 상태 동기화 ──────────────────────────────────────────────────────────────
+// 문서 diff 는 통째로 다시 그리지 않고 해당 구간만 갱신한다 — 긴 문서에서 마킹을
+// 누를 때마다 innerHTML 을 재생성하면 스크롤 위치가 튄다.
+function groupElOf(dtype) {
+  return [...el.items.querySelectorAll('.group')].find(g => g.dataset.type === dtype) || null;
+}
+
+function syncMark(idx) {
+  const masked = !state.unmasked.has(idx);
+  el.diff.querySelectorAll(`.mark[data-idx="${idx}"]`).forEach(m => {
+    m.classList.toggle('kept', !masked);
+    m.setAttribute('aria-pressed', String(masked));
+    m.title = tipFor(m.dataset.label || '', masked);
   });
 }
+
+function syncGroupHead(dtype) {
+  const g = state.groups.find(x => x.dtype === dtype);
+  const box = groupElOf(dtype);
+  if (!g || !box) return;
+  const masked = maskedCountOf(g);
+  const cb = box.querySelector('.g-toggle');
+  cb.checked = masked === g.segs.length;
+  cb.indeterminate = masked > 0 && masked < g.segs.length;
+  box.querySelector('.g-state').textContent = `${masked}/${g.segs.length} 마스킹`;
+}
+
+function syncItemRow(idx) {
+  const cb = el.items.querySelector(`.i-toggle[data-idx="${idx}"]`);
+  if (cb) cb.checked = !state.unmasked.has(idx);
+}
+
+function groupOfIdx(idx) {
+  return state.groups.find(g => g.segs.some(s => s.idx === idx)) || null;
+}
+
+/** 항목 하나의 마스킹 여부를 바꾸고, 문서·목록·요약을 모두 맞춘다. */
+function setMasked(idx, masked) {
+  if (masked) state.unmasked.delete(idx); else state.unmasked.add(idx);
+  syncMark(idx);
+  syncItemRow(idx);
+  const g = groupOfIdx(idx);
+  if (g) syncGroupHead(g.dtype);
+  refreshSummary();
+}
+
+/** 그룹 전체를 한 번에 마스킹/해제 — 종류별 일괄 처리가 이 화면의 기본 조작이다. */
+function setGroupMasked(dtype, masked) {
+  const g = state.groups.find(x => x.dtype === dtype);
+  if (!g) return;
+  for (const s of g.segs) {
+    if (masked) state.unmasked.delete(s.idx); else state.unmasked.add(s.idx);
+    syncMark(s.idx);
+    syncItemRow(s.idx);
+  }
+  syncGroupHead(dtype);
+  refreshSummary();
+}
+
+function toggleGroupOpen(dtype) {
+  const box = groupElOf(dtype);
+  if (!box) return;
+  const open = !state.expanded.has(dtype);
+  if (open) state.expanded.add(dtype); else state.expanded.delete(dtype);
+  box.classList.toggle('open', open);
+  box.querySelector('.group-head').setAttribute('aria-expanded', String(open));
+  box.querySelector('.group-body').hidden = !open;
+  // 목록 영역이 좁아(사이드패널 기본 폭에서는 화면의 절반 이하) 펼친 내용이 그대로
+  // 잘리는 경우가 많다 — 방금 편 그룹은 보이는 곳까지 끌어온다.
+  if (open) box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+// ── 이벤트(위임) ─────────────────────────────────────────────────────────────
+// 렌더가 innerHTML 을 갈아끼워도 살아남도록 컨테이너에 한 번만 건다.
+
+// 문서 본문: 마킹된 구간 클릭 → 마스킹 해제/재마스킹
+el.diff.addEventListener('click', (e) => {
+  const mark = e.target.closest('.mark');
+  if (!mark) return;
+  const idx = Number(mark.dataset.idx);
+  if (Number.isFinite(idx)) setMasked(idx, state.unmasked.has(idx));
+});
+el.diff.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const mark = e.target.closest('.mark');
+  if (!mark) return;
+  e.preventDefault(); // 스페이스로 스크롤되는 것 방지
+  const idx = Number(mark.dataset.idx);
+  if (Number.isFinite(idx)) setMasked(idx, state.unmasked.has(idx));
+});
+
+// 우측 목록: 그룹 토글 / 개별 토글
+el.items.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.classList.contains('g-toggle')) {
+    const box = t.closest('.group');
+    if (box) setGroupMasked(box.dataset.type, t.checked);
+  } else if (t.classList.contains('i-toggle')) {
+    const idx = Number(t.dataset.idx);
+    if (Number.isFinite(idx)) setMasked(idx, t.checked);
+  }
+});
+
+// 우측 목록: 헤더 클릭 → 펼치기/접기 (토글 스위치를 누른 경우는 제외)
+el.items.addEventListener('click', (e) => {
+  if (e.target.closest('.switch')) return;
+  const head = e.target.closest('.group-head');
+  if (!head) return;
+  const box = head.closest('.group');
+  if (box) toggleGroupOpen(box.dataset.type);
+});
+el.items.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  if (e.target.closest('.switch')) return;
+  const head = e.target.closest('.group-head');
+  if (!head) return;
+  e.preventDefault();
+  const box = head.closest('.group');
+  if (box) toggleGroupOpen(box.dataset.type);
+});
 
 function refreshCounts() {
   const pii = state.result?.stats?.piiCount ?? 0;
@@ -225,6 +379,8 @@ function renderResult(kind, result, meta) {
   state.result = result;
   state.meta = meta;
   state.unmasked = new Set();
+  state.groups = [];
+  state.expanded = new Set();
   state.decided = false;
 
   // 미검사 통과(파싱 실패/미지원/타임아웃) — PLAN §9.2
