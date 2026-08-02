@@ -1,0 +1,68 @@
+{
+  "stage": "S1_warmup",
+  "commit": "72471d8",
+  "device": "cuda",
+  "load_sec": 13.231,
+  "docs": {
+    "demo_pii_카드분쟁접수서.docx": {
+      "chars": 1394,
+      "chunks": 2,
+      "pii_count": 26,
+      "injection_count": 2,
+      "first_pii_ms": 211.6,
+      "first_injection_ms": 128.9,
+      "first_total_ms": 340.5,
+      "warm_pii_ms": 175.1,
+      "warm_injection_ms": 110.0,
+      "warm_total_ms": 285.1,
+      "warm_pii_all": [
+        169.4,
+        175.1,
+        169.1,
+        180.5,
+        175.8,
+        175.8,
+        169.8
+      ],
+      "warm_injection_all": [
+        109.4,
+        113.2,
+        110.0,
+        115.6,
+        113.5,
+        107.6,
+        109.2
+      ]
+    },
+    "demo_chatgpt_고객지원리뷰.docx": {
+      "chars": 1839,
+      "chunks": 2,
+      "pii_count": 33,
+      "injection_count": 1,
+      "first_pii_ms": 222.1,
+      "first_injection_ms": 124.6,
+      "first_total_ms": 346.7,
+      "warm_pii_ms": 229.1,
+      "warm_injection_ms": 125.7,
+      "warm_total_ms": 354.9,
+      "warm_pii_all": [
+        221.0,
+        243.2,
+        235.1,
+        218.9,
+        229.1,
+        235.2,
+        221.5
+      ],
+      "warm_injection_all": [
+        124.1,
+        132.3,
+        125.7,
+        123.5,
+        132.8,
+        124.0,
+        131.7
+      ]
+    }
+  }
+}
