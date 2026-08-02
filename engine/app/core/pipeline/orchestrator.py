@@ -15,12 +15,17 @@ import base64
 from typing import Any, Awaitable, Callable
 
 from app import config
+from app.core import model_status
 from app.core.detectors import registry
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_OK, parse_document
 
 Emit = Callable[[dict], Awaitable[None]]
+
+# 모델(pii encoder/injection llm_mcp)이 로컬에 준비되지 않았을 때의 scan_status.
+# 파싱 관련 상태(STATUS_UNSUPPORTED 등)와 별개 축이라 parser 모듈이 아니라 여기 둔다.
+MODELS_NOT_READY = "models_not_ready"
 
 
 async def _noop_emit(_event: dict) -> None:
@@ -128,6 +133,28 @@ async def run_pipeline(
             injection_items=[],
             scan_status=scan_status,
             reason=reason,
+            blocked=False,
+            masked_file=None,
+        )
+
+    # 룰베이스 폴백을 없앴다 — pii/injection 모두 실 모델(encoder/llm_mcp)만 남아서,
+    # 가중치가 아직 안 받아진 상태로 detect() 를 부르면 서브프로세스가 로딩에 실패해
+    # 예외로 죽는다. 파싱은 이미 끝났으니(원문은 그대로 확보) 탐지만 생략하고 위와
+    # 같은 미검사 통과 경로로 넘긴다 — "모델이 없으면 조용히 룰베이스로 격하"가 아니라
+    # "모델이 없으면 아예 검사하지 않는다"는 게 이번 변경의 핵심이다.
+    if not model_status.all_ready():
+        await emit({
+            "type": "warning",
+            "scanStatus": MODELS_NOT_READY,
+            "reason": "PII/인젝션 모델이 아직 준비되지 않았습니다",
+        })
+        return _build_result(
+            original_text=text,
+            masked_text=text,
+            pii_items=[],
+            injection_items=[],
+            scan_status=MODELS_NOT_READY,
+            reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
             blocked=False,
             masked_file=None,
         )

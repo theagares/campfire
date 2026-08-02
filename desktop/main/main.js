@@ -124,73 +124,31 @@ function waitForEngineRunning(timeoutMs = 30000) {
 }
 
 /**
- * advanced 전환 직후 잠깐 지켜보다가, 엔진이 'error' 로 떨어지면(예: GPU/CUDA 미탑재로
- * 실 모델 서브프로세스가 뜨지 못하는 경우) rule_based 로 자동 복귀시킨다 — 설치 직후
- * 기본값을 advanced 로 강제하는 대신, 이 안전장치로 GPU 없는 PC에서도 앱이 계속
- * 정상 동작하게 한다(브릭 방지).
- */
-function watchForAdvancedStartupFailure() {
-  const timer = setTimeout(() => engineManager.off('status', onStatus), 20000);
-  function onStatus(s) {
-    if (s.state === 'running') {
-      clearTimeout(timer);
-      engineManager.off('status', onStatus);
-    } else if (s.state === 'error') {
-      clearTimeout(timer);
-      engineManager.off('status', onStatus);
-      console.error('[main] advanced 모드 기동 실패 → rule_based 로 자동 복귀:', s.message);
-      config.set({ piiDetector: 'rule_based', injectionDetector: 'rule_based' });
-      ipc.broadcast('models:fetchProgress', {
-        type: 'fallback',
-        message:
-          `고급 탐지 모델 기동에 실패해 기본(rule_based) 모드로 되돌아갔습니다` +
-          `(GPU/CUDA 환경을 확인하세요): ${s.message || ''}`,
-      });
-      engineManager.restart().catch((err) => console.error('[main] 복귀 재시작 실패:', err.message));
-    }
-  }
-  engineManager.on('status', onStatus);
-}
-
-/**
- * 설치 직후 자동으로 실제 ML 모델(advanced)을 준비해 기본값으로 승격시킨다.
- * 최초 spawn 은 항상 rule_based(가중치 없이도 항상 뜨는 안전한 상태) — 엔진이
- * running 이 되면 가중치를 확인/다운로드하고, advanced 로 설정을 바꾼 뒤 재시작한다.
+ * 실 모델(encoder/llm_mcp, PII+인젝션) 가중치를 자동으로 준비한다.
  *
- * 이전엔 "이미 성공적으로 한 번 했는지"를 config 플래그(advancedAutoSetupDone)로만
- * 기억해 두고 그게 true 면 아예 재확인도 안 했는데 — 이 플래그는 설치 디렉터리
- * (resources/engine)가 아니라 별도의 userData 설정 파일에 저장돼 재설치/업데이트를
- * 해도 그대로 남아 있다. 재설치는 실제 다운로드된 가중치 파일이 있는 resources/engine
- * 을 통째로 새로 깔기 때문에(가중치는 설치 파일에 포함되지 않고 설치 후 별도 다운로드,
- * MODELS.md 참고) 가중치는 다시 사라지는데 플래그만 true 로 남아, 재설치 후 advanced로
- * 설정돼 있어도 실제로는 가중치가 없어 탐지가 죽는 상태가 재현됐다(실측: v0.1.5 재설치
- * 직후 /models/status 가 pii/injection 모두 ready:false 인데도 auto-setup 이 스킵됨).
- * 그래서 이제 플래그에 의존하지 않고 매번 실제 /models/status 를 확인해, 진짜 준비된
- * 경우에만 건너뛴다(파일 존재 확인이라 비용은 거의 없음).
+ * 룰베이스 폴백을 완전히 없앤 뒤에는 detector 가 encoder/llm_mcp 로 고정이라(엔진
+ * config.py 기본값) 예전처럼 "rule_based 로 먼저 띄운 뒤 advanced 로 전환+재시작"
+ * 하는 2단계 춤이 필요 없다. 가중치가 아직 없는 동안은 엔진의 model_status 게이트가
+ * 검사 없이 통과시키고(§PLAN 9.2), 다운로드가 끝나면 그다음 실제 검사 요청에서
+ * detector 가 알아서 실 모델을 스폰한다 — 엔진 재시작도 필요 없다. 이 함수는 그
+ * 다운로드만 트리거하고 진행률을 브로드캐스트한다.
  */
-async function ensureAdvancedModelsAutoSetup() {
+async function ensureModelsAutoDownload() {
   if (!config.get('securityEnabled')) return; // 보안 보호가 꺼져 있으면 엔진 자체가 안 뜬다
 
   try {
     await waitForEngineRunning();
     const status = await models.getStatus(engineManager);
     const modelsReady = !!(status.pii?.ready && status.injection?.ready);
-    const alreadyAdvanced =
-      config.get('piiDetector') === 'encoder' && config.get('injectionDetector') === 'llm_mcp';
-    if (modelsReady && alreadyAdvanced) return; // 이미 완전히 준비된 상태 — 재다운로드/재시작 불필요
+    if (modelsReady) return; // 이미 준비된 상태 — 재다운로드 불필요
 
-    if (!modelsReady) {
-      ipc.broadcast('models:fetchProgress', {
-        type: 'progress',
-        label: '필수 보안 모델(약 600MB)을 준비하는 중...',
-      });
-      await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
-    }
-    config.set({ piiDetector: 'encoder', injectionDetector: 'llm_mcp' });
-    await engineManager.restart();
-    watchForAdvancedStartupFailure();
+    ipc.broadcast('models:fetchProgress', {
+      type: 'progress',
+      label: '필수 보안 모델(약 600MB)을 준비하는 중...',
+    });
+    await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
   } catch (err) {
-    console.error('[main] 고급 모델 자동 설치 실패(다음 실행에서 재시도):', err.message);
+    console.error('[main] 모델 자동 다운로드 실패(다음 실행에서 재시도):', err.message);
     ipc.broadcast('models:fetchProgress', {
       type: 'error',
       message: `필수 모델 자동 설치 실패: ${err.message} — 인터넷 연결을 확인하면 다음 실행 시 다시 시도합니다.`,
@@ -234,7 +192,7 @@ app.whenReady().then(async () => {
   engineManager.start().catch((err) => console.error('[main] 엔진 start 실패:', err.message));
 
   // 설치 직후 자동으로 실 ML 모델(advanced)을 준비 — 엔진 기동과 별도로 백그라운드 진행.
-  ensureAdvancedModelsAutoSetup().catch((err) => console.error('[main] 자동 모델 설치 오류:', err.message));
+  ensureModelsAutoDownload().catch((err) => console.error('[main] 자동 모델 설치 오류:', err.message));
 
   initAutoUpdater(app);
 

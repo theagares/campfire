@@ -77,6 +77,8 @@ async def _drive(url: str) -> dict:
 
 
 def test_mcp_tools(server, tmp_path):
+    from app.core import model_status
+
     result = anyio.run(_drive, server)
 
     # tools/list — 6종(scan_file/scan_files, secure_search/list 쌍 포함) 전부 노출
@@ -86,20 +88,27 @@ def test_mcp_tools(server, tmp_path):
     }
     assert expected.issubset(set(result["tool_names"])), result["tool_names"]
 
-    # scan_text — 마스킹 동작
+    # scan_text — 룰베이스 폴백 제거 후, PII 모델이 로컬에 없으면 미검사 통과가
+    # 정상이다(§PLAN 9.2). 있으면 실제 마스킹을 기대한다 — 단, 이름/이메일 중
+    # 어느 쪽을 잡는지는 실행마다 갈렸다(모델 정확도/비결정성 이슈, MCP 응답은
+    # originalText 를 안 주므로(PR #57) 특정 필드 대신 최소 1건 마스킹만 확인).
     st = result["scan_text"]
-    assert "[이름 마스킹]" in st["maskedText"]
-    assert "홍길동" not in st["maskedText"]
-    assert st["stats"]["piiCount"] >= 1
+    if model_status.pii_ready():
+        assert st["stats"]["piiCount"] >= 1
+    else:
+        assert st["scanStatus"] == "models_not_ready"
+        assert "홍길동" in st["maskedText"]
 
     # get_status — 시그니처·detector·정책
     gs = result["get_status"]
     assert gs["service"] == "securedoc-gateway"
-    assert "rule_based" in gs["detectors"]["pii"]
+    assert "pii_encoder" in gs["detectors"]["pii"]
     assert gs["policy"]["injection"] in ("mask", "block")
 
 
 def test_mcp_scan_file(server, tmp_path):
+    from app.core import model_status
+
     f = tmp_path / "sample.txt"
     f.write_text("연락처 010-1234-5678 / 이메일 a@b.com", encoding="utf-8")
 
@@ -111,6 +120,9 @@ def test_mcp_scan_file(server, tmp_path):
                 return r.structuredContent
 
     res = anyio.run(_drive_file, server)
-    assert res["stats"]["piiCount"] >= 1
-    assert res["scanStatus"] == "ok"
     assert res["path"].endswith("sample.txt")
+    if model_status.pii_ready():
+        assert res["scanStatus"] == "ok"
+        assert res["stats"]["piiCount"] >= 1
+    else:
+        assert res["scanStatus"] == "models_not_ready"

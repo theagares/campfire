@@ -252,16 +252,13 @@
 
         <div class="divider"></div>
 
-        <!-- 탐지 모델(encoder/llm_mcp) — advanced가 기본이며 설치 후 자동으로 준비된다 -->
+        <!-- 탐지 모델(encoder/llm_mcp) — 유일한 모드라 고를 게 없다(룰베이스 폴백 제거).
+             가중치가 없으면 검사 없이 통과한다(PLAN §9.2 model_status 게이트). -->
         <div class="field" id="detector-field">
           <div class="setting-row">
             <div>
               <label>탐지 모델</label>
-              <div class="hint" id="detector-hint">advanced(기본): PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델 — 설치 후 최초 실행 시 가중치(약 600MB)가 자동으로 내려받아집니다(GPU 권장, 없으면 자동으로 rule_based로 전환됨). rule_based: 정규식/키워드 기반, 수동으로 되돌릴 때 사용. 변경 시 엔진이 재시작됩니다.</div>
-            </div>
-            <div class="seg" id="detector-seg">
-              <button data-mode="rule_based">rule_based</button>
-              <button data-mode="advanced" class="active">advanced</button>
+              <div class="hint" id="detector-hint">PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델 — 설치 후 최초 실행 시 가중치(약 600MB)가 자동으로 내려받아집니다. 다운로드가 끝나기 전에는 검사 없이 그대로 통과합니다.</div>
             </div>
           </div>
           <div class="hint" id="detector-progress" style="display:none"></div>
