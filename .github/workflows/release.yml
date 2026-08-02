@@ -283,5 +283,9 @@ jobs:
             echo "에셋이 부족합니다(exe 1 + dmg 2 = 3 기대) — draft 로 둡니다."
             exit 1
           fi
-          gh release edit "$tag" --draft=false --latest
+          # draft 생성 때 넣어둔 "빌드 중입니다" placeholder 가 공개된 뒤에도 그대로
+          # 남아있던 문제 — publish 단계가 notes 를 갱신한 적이 없었다. generate-notes
+          # API 로 이전 릴리스 이후 커밋/PR 목록을 만들어 채운다.
+          notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$tag" --jq .body)
+          gh release edit "$tag" --notes "$notes" --draft=false --latest
           echo "릴리스를 공개했습니다: $tag"
