@@ -394,11 +394,15 @@ function drawPipeLines() {
     if (!a || !b) return '';
     const dx = (b.x - a.x) / 2;
     const d = `M ${a.x},${a.y} C ${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
-    return `<path d="${d}" class="${e.dashed ? 'dashed' : ''}" marker-end="url(#pipe-arrow)" />`;
+    // data-edge: 실시간 처리 단계에 맞춰 이 구간에 빛을 흘리려면(renderPipeline)
+    // 그릴 때마다 새로 만들어지는 path 를 다시 찾을 수 있어야 한다.
+    return `<path d="${d}" data-edge="${pipeEdgeKey(e)}" class="${e.dashed ? 'dashed' : ''}" marker-end="url(#pipe-arrow)" />`;
   }).join('');
   // defs(화살촉)는 index.html 에 고정 정의돼 있어 매번 다시 그릴 필요 없이 path 만 교체.
   Array.from(svg.querySelectorAll('path')).forEach((p) => p.remove());
   svg.insertAdjacentHTML('beforeend', paths);
+  // 리사이즈·드래그로 다시 그린 뒤에도 현재 단계 표시가 유지되게 상태를 재적용한다.
+  if (typeof reapplyPipeEdgeState === 'function') reapplyPipeEdgeState();
 }
 
 function schedulePipeLayoutSave() {
@@ -416,11 +420,18 @@ function schedulePipeLayoutSave() {
 
 // ── 처리현황 실시간 동기화 ────────────────────────────────────────────────────
 // 엔진의 GET /activity/stream(SSE)을 메인 프로세스가 중계해 pipeline:activity 로
-// 넘겨준다. 여기서는 그걸 노드 상태로 옮긴다.
+// 넘겨준다. 여기서는 그걸 "지금 어느 구간을 지나고 있는가" 로 바꿔 보여준다.
 //
-// 단계 이름은 엔진(core/activity.py)이 정한 도메인 용어이고, 어떤 노드에 불을
-// 켤지는 UI 사정이라 매핑을 렌더러가 갖는다. 마스킹은 PII/인젝션 두 갈래를 함께
-// 끝내므로 완료 노드 둘에 같이 불이 들어간다.
+// 표현 방식: 진행 중인 구간의 연결선 위로 빛이 흘러간다. 처음엔 노드 뒤에 후광만
+// 넣었는데 --purple-soft(12% 투명도)라 사실상 안 보였고, 무엇보다 "어디까지 갔는지"
+// 가 안 읽혔다. 선을 따라 움직이는 빛이 흐름을 훨씬 직관적으로 보여준다.
+//
+// 왜 SVG dash 애니메이션이 아니라 HTML 발광체인가: 이 SVG 는 viewBox 100x100 을
+// preserveAspectRatio="none" 으로 460x220 캔버스에 늘려 쓰고 path 는
+// vector-effect:non-scaling-stroke 다. 그래서 stroke-dasharray 는 화면 픽셀 기준인데
+// getTotalLength() 는 user unit 을 돌려줘 둘이 안 맞고, 늘어난 좌표계 탓에 점도
+// 타원으로 찌그러진다. path.getPointAtLength() 로 좌표만 얻어 HTML div 를 옮기면
+// 발광체는 px 로 그려져 항상 동그랗고, 좌표는 % 라 캔버스가 늘어나도 선 위에 붙는다.
 const PIPE_STAGE_ORDER = ['receive', 'parse', 'pii', 'injection', 'mask'];
 const PIPE_STAGE_NODES = {
   receive: ['receive'],
@@ -429,11 +440,24 @@ const PIPE_STAGE_NODES = {
   injection: ['inj-detect'],
   mask: ['pii-done', 'inj-done'],
 };
+// 각 단계에서 "빛이 흐르는" 구간 = 그 단계로 들어오는 연결선.
+// receive 는 들어오는 선이 없어 노드만 빛난다.
+const PIPE_STAGE_EDGES = {
+  parse: ['receive>parse'],
+  pii: ['parse>pii-detect'],
+  injection: ['parse>inj-detect'],
+  mask: ['pii-detect>pii-done', 'inj-detect>inj-done'],
+};
+const pipeEdgeKey = (e) => `${e.from}>${e.to}`;
+
 // 완료 직후 곧바로 회색으로 돌아가면 마지막 단계가 깜빡이고 끝나 눈에 안 남는다 —
 // 잠깐 "완료" 상태를 보여주고 사그라들게 한다.
 const PIPE_SETTLE_MS = 1400;
+const PIPE_FLOW_PERIOD_MS = 1100; // 빛 하나가 구간을 지나는 데 걸리는 시간
+const PIPE_SPARK_TRAIL = [0, 0.055, 0.11]; // 꼬리: 선행 빛 뒤로 경로 비율만큼 뒤처짐
 
 const pipeActivity = { jobs: new Map(), settleTimer: null, settling: false };
+const pipeFlow = { edges: new Set(), sparks: new Map(), raf: 0 };
 
 function pipeStageIndex(stage) {
   const i = PIPE_STAGE_ORDER.indexOf(stage);
@@ -467,6 +491,83 @@ function applyPipelineActivity(ev) {
   renderPipeline();
 }
 
+// ── 흐르는 빛 ────────────────────────────────────────────────────────────────
+function ensureSparks(edgeKey) {
+  let sparks = pipeFlow.sparks.get(edgeKey);
+  if (sparks) return sparks;
+  const canvas = $('#pipe-diagram');
+  if (!canvas) return null;
+  sparks = PIPE_SPARK_TRAIL.map((_, i) => {
+    const el = document.createElement('div');
+    el.className = 'pipe-spark' + (i === 0 ? ' head' : '');
+    canvas.appendChild(el);
+    return el;
+  });
+  pipeFlow.sparks.set(edgeKey, sparks);
+  return sparks;
+}
+
+function clearSparks(edgeKey) {
+  const sparks = pipeFlow.sparks.get(edgeKey);
+  if (!sparks) return;
+  sparks.forEach((el) => el.remove());
+  pipeFlow.sparks.delete(edgeKey);
+}
+
+function setFlowEdges(keys) {
+  const next = new Set(keys);
+  // 더 이상 흐르지 않는 구간의 발광체 제거
+  for (const key of [...pipeFlow.sparks.keys()]) {
+    if (!next.has(key)) clearSparks(key);
+  }
+  pipeFlow.edges = next;
+  if (next.size === 0) {
+    cancelAnimationFrame(pipeFlow.raf);
+    pipeFlow.raf = 0;
+    return;
+  }
+  if (!pipeFlow.raf) pipeFlow.raf = requestAnimationFrame(stepFlow);
+}
+
+/** 리사이즈·드래그로 path 를 다시 그린 직후, 현재 단계 표시(lit)를 새 path 에 다시 입힌다. */
+function reapplyPipeEdgeState() {
+  if (!pipeFlow.lit) return;
+  PIPE_EDGES.forEach((e) => {
+    const key = pipeEdgeKey(e);
+    const path = $(`#pipe-lines path[data-edge="${key}"]`);
+    if (path) path.classList.toggle('lit', pipeFlow.lit.has(key));
+  });
+}
+
+function stepFlow(now) {
+  pipeFlow.raf = 0;
+  if (pipeFlow.edges.size === 0) return;
+
+  // 처리현황 화면이 아니면 좌표 계산을 건너뛴다(보이지도 않는데 매 프레임 돌 이유가 없다).
+  const visible = $('#view-pipeline')?.classList.contains('active');
+  if (visible) {
+    const t = (now % PIPE_FLOW_PERIOD_MS) / PIPE_FLOW_PERIOD_MS;
+    pipeFlow.edges.forEach((key) => {
+      const path = $(`#pipe-lines path[data-edge="${key}"]`);
+      const sparks = ensureSparks(key);
+      if (!path || !sparks) return;
+      let len = 0;
+      try { len = path.getTotalLength(); } catch { return; }
+      if (!len) return;
+      sparks.forEach((el, i) => {
+        // 꼬리는 선행 빛보다 뒤처지고, 경로 앞에서 다시 나타나지 않게 잘라낸다.
+        const at = t - PIPE_SPARK_TRAIL[i];
+        if (at < 0) { el.style.opacity = '0'; return; }
+        const p = path.getPointAtLength(at * len);
+        el.style.left = p.x + '%';
+        el.style.top = p.y + '%';
+        el.style.opacity = String(1 - i * 0.32);
+      });
+    });
+  }
+  pipeFlow.raf = requestAnimationFrame(stepFlow);
+}
+
 function renderPipeline() {
   buildPipelineDiagram();
 
@@ -488,12 +589,25 @@ function renderPipeline() {
       if (idx !== -1 && idx < furthest) cls = 'done';
       else if (idx !== -1 && idx === furthest) cls = 'active';
     } else if (pipeActivity.settling) {
-      // 막 끝난 직후: 흐름 전체를 완료로 보여준다.
       if (PIPE_STAGE_ORDER.some((s) => PIPE_STAGE_NODES[s]?.includes(n.id))) cls = 'done';
     }
     el.classList.toggle('active', cls === 'active');
     el.classList.toggle('done', cls === 'done');
   });
+
+  // 이미 지나온 구간은 계속 켜두고(어디까지 왔는지 남는다), 지금 구간만 빛이 흐른다.
+  const currentStage = furthest === -1 ? null : PIPE_STAGE_ORDER[furthest];
+  const flowing = busy && currentStage ? (PIPE_STAGE_EDGES[currentStage] || []) : [];
+  const passed = new Set();
+  if (busy || pipeActivity.settling) {
+    const upto = pipeActivity.settling ? PIPE_STAGE_ORDER.length : furthest;
+    PIPE_STAGE_ORDER.slice(0, Math.max(upto, 0)).forEach((s) => {
+      (PIPE_STAGE_EDGES[s] || []).forEach((k) => passed.add(k));
+    });
+  }
+  pipeFlow.lit = new Set([...passed, ...flowing]);
+  reapplyPipeEdgeState();
+  setFlowEdges(flowing);
 
   const running = busy;
   const status = $('#pipe-status');
