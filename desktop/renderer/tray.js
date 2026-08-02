@@ -19,12 +19,6 @@ async function refresh() {
 
 function paintEngine(engine, stats) {
   const running = engine.state === 'running';
-  const toggle = $('#sec-toggle');
-  // disabled 상태면 off, 그 외(running/starting/error)면 on 의도로 표시
-  const enabledIntent = engine.state !== 'disabled' && engine.state !== 'stopped';
-  toggle.checked = enabledIntent;
-  $('#sec-label').textContent = enabledIntent ? 'Security ON' : 'Security OFF';
-
   const models = (stats && stats.models) || {};
   setPill('#t-pii-pill', models.pii, running);
   setPill('#t-inj-pill', models.injection, running);
@@ -67,10 +61,6 @@ function paintMetrics(m) {
   }).join('');
 }
 
-$('#sec-toggle').addEventListener('change', async (e) => {
-  await t.setSecurityEnabled(e.target.checked);
-  $('#sec-label').textContent = e.target.checked ? 'Security ON' : 'Security OFF';
-});
 $('#t-more').addEventListener('click', () => t.openDashboard());
 $('#t-quit').addEventListener('click', () => t.quitApp());
 

@@ -17,6 +17,23 @@
 
     <div class="outer-divider"></div>
 
+    <!-- 보호 설정 -->
+    <div class="inner-card">
+      <div class="section-label">보호 설정</div>
+      <div class="row">
+        <span class="row-label">파일 인터셉트</span>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="file-intercept-toggle" />
+          <span class="toggle-pill" id="file-intercept-pill">
+            <span id="file-intercept-label">OFF</span>
+            <span class="toggle-knob"></span>
+          </span>
+        </label>
+      </div>
+      <p class="note">꺼두면 첨부 파일(pdf/docx)을 가로채 검사하지 않고 그대로 전송합니다.
+        텍스트 프롬프트 검사에는 영향이 없습니다.</p>
+    </div>
+
     <!-- 서버 설정 (읽기 전용) -->
     <div class="inner-card">
       <div class="section-label">서버 설정</div>

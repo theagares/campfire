@@ -97,6 +97,41 @@ body {
 
 .engine-detail { font-size: 10.5px; color: var(--ink-mute); margin: 8px 0 2px; word-break: break-all; }
 
+/* 파일 인터셉트 토글 — 데스크탑 앱 트레이 팝업에 있던 "Security ON" 토글(pill+knob+glow)과
+   같은 구조. 그 토글은 트레이에서 빠지고(엔진 전체 on/off는 더 이상 여기서 제어 안 함),
+   대신 이 확장 팝업에 "파일 인터셉트만" 켜고 끄는 스위치로 옮겨왔다. */
+.toggle-wrap { position: relative; display: inline-flex; cursor: pointer; }
+.toggle-wrap input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle-pill {
+  position: relative; z-index: 1;
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 5px 5px 12px; border-radius: 999px;
+  background: var(--sunken); font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--ink-mute);
+  transition: background .2s;
+}
+.toggle-wrap input:checked + .toggle-pill { background: var(--ok); color: #fff; }
+.toggle-knob { width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); flex: 0 0 auto; }
+
+@keyframes ambient-glow-toggle {
+  0%, 100% { opacity: .93; transform: translate(-50%,-50%) scale(1); }
+  50% { opacity: 1; transform: translate(-50%,-50%) scale(1.035); }
+}
+.toggle-wrap::before {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 100px; height: 50px;
+  transform: translate(-50%,-50%) scale(1);
+  border-radius: 9999px; pointer-events: none;
+  opacity: 0; transition: opacity .8s ease-in-out;
+  background: radial-gradient(ellipse,
+    color-mix(in srgb, var(--ok) 55%, transparent) 0%,
+    color-mix(in srgb, var(--ok) 22%, transparent) 25%,
+    color-mix(in srgb, var(--ok) 6%, transparent) 55%,
+    transparent 80%);
+}
+.toggle-wrap:has(input:checked)::before {
+  opacity: 1;
+  will-change: opacity, transform;
+  animation: ambient-glow-toggle 5.8s ease-in-out infinite;
+}
+
 .btn {
   display: block; width: 100%; text-align: center; padding: 9px; margin-top: 10px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg);
