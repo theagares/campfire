@@ -1,11 +1,11 @@
 /**
  * popup.js  ─  설정 전용 popup (PLAN §변경2)
  *
- * 표시 항목(읽기 전용):
- *   - 보호 설정: 파일 인터셉트 on/off (content.js/interceptor.js가 chrome.storage.local의
+ * 표시 항목:
+ *   - 헤더: 파일 인터셉트 on/off (content.js/interceptor.js가 chrome.storage.local의
  *     fileInterceptEnabled를 그대로 구독 — 이 팝업은 그 값을 읽고 쓰기만 한다)
- *   - 서버 설정: 연결 대상(로컬/원격), 로컬 포트(자동 탐지, 편집 불가)
- *   - 앱 설정: 엔진 연결 상태, 대시보드 열기, 앱 미설치 안내
+ *   - 서버 설정(읽기 전용): 연결 대상(로컬/원격), 로컬 포트(자동 탐지, 편집 불가), 다시 탐지
+ *   - 앱 설정: 엔진 연결 상태, 대시보드 열기(upsecurity:// 커스텀 프로토콜로 데스크탑 앱 자체를 연다)
  * 원격 URL 편집란·범위 카드·최근 활동 카드는 두지 않는다. 텍스트 프롬프트 검사까지
  * 포함한 전체 보호(protectionEnabled)를 끄는 토글도 의도적으로 두지 않는다 — 이 팝업이
  * 다루는 건 파일 인터셉트 하나뿐이다.
@@ -23,7 +23,6 @@ function render(info) {
   const engineText = $('engine-text');
   const detail = $('engine-detail');
   const dashBtn = $('open-dashboard');
-  const installNote = $('install-note');
 
   const isLocal = info?.target === 'local';
   const ok = !!info?.ok;
@@ -47,13 +46,7 @@ function render(info) {
   }
 
   // 로컬 앱이 연결됐을 때만 대시보드 열기 가능
-  if (isLocal && ok) {
-    dashBtn.disabled = false;
-    installNote.hidden = true;
-  } else {
-    dashBtn.disabled = true;
-    installNote.hidden = false;
-  }
+  dashBtn.disabled = !(isLocal && ok);
 }
 
 function requestInfo(type) {
@@ -66,9 +59,11 @@ function requestInfo(type) {
 }
 
 $('open-dashboard').addEventListener('click', () => {
-  // 로컬 엔진이 뜬 포트로 앱 대시보드를 연다(앱이 해당 포트에 UI를 서빙하는 전제).
-  if (lastInfo?.target === 'local' && lastInfo?.baseUrl) {
-    chrome.tabs.create({ url: `${lastInfo.baseUrl}/` });
+  // 엔진 REST(baseUrl)가 아니라 데스크탑 앱 자체를 연다 — 앱이 upsecurity:// 를
+  // 기본 프로토콜로 등록해두고(main.js), OS가 이 스킴을 열면 이미 떠 있는 앱 인스턴스의
+  // second-instance 이벤트가 대시보드 창을 포그라운드로 띄운다(main.js showDashboard).
+  if (lastInfo?.target === 'local' && lastInfo?.ok) {
+    chrome.tabs.create({ url: 'upsecurity://dashboard' });
   }
 });
 
