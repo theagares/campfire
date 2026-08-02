@@ -66,7 +66,10 @@ body {
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 10px; text-align: center;
 }
-.agent-icon { width: 72px; height: auto; filter: drop-shadow(0 0 4px rgba(88, 76, 220, .55)); }
+/* 보라 글로우는 실루엣 하나짜리 방패 마크에 맞춘 것이었다. 지금 일러스트는 구름·나무·
+   텐트가 각각 떨어져 있어 drop-shadow 가 요소마다 보라 테를 두른다 — 그림 자체가 굵은
+   검정 아웃라인을 이미 갖고 있으므로 글로우 없이 둔다. */
+.agent-icon { width: 72px; height: auto; }
 .pill-row { display: flex; gap: 8px; margin-top: 2px; }
 .model-pill {
   display: inline-flex; align-items: center; gap: 8px;

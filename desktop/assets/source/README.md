@@ -9,6 +9,11 @@ cd desktop && node scripts/gen-icons.js
 생성물(`build/icon.png`, `assets/icon.ico`, `extension/icons/*` 등)은 직접 수정하지 말 것 —
 다음 실행 때 덮어써진다. 고칠 게 있으면 여기 마스터를 고치고 다시 돌린다.
 
+> **주의 — 현재 커밋된 트레이·확장 아이콘은 스크립트 생성물이 아니다.**
+> 16·32px 처럼 작은 크기는 디자이너가 픽셀 단위로 손봐 내보낸 파일이 들어가 있어,
+> 스크립트를 돌리면 그게 자동 축소본으로 덮인다. 아이콘이 목적이 아니라면 실행 후
+> `git status` 를 보고 의도하지 않은 파일은 `git checkout --` 로 되돌릴 것.
+
 ---
 
 ## 그려야 하는 것 3개
@@ -36,6 +41,13 @@ cd desktop && node scripts/gen-icons.js
 - **흰색 또는 컬러.** Windows 는 템플릿 반전을 해주지 않아서, 검정으로 그리면
   Windows 11 기본 다크 작업표시줄에서 거의 보이지 않는다.
 - 16px 로 표시된다.
+
+### `ui-hero.png` — 앱 홈 화면 / 확장 사이드바 일러스트 (선택)
+- **224×224 이상**, 정사각, PNG-32
+- 아이콘이 아니라 **화면 안에 크게 들어가는 그림**이다(홈 104px, 사이드바 72px).
+  16px 까지 줄어들 일이 없으니 디테일이 있어도 된다 — 아이콘 마크처럼 단순화할 필요 없다.
+- 여백은 넣지 않는다. 표시 영역을 꽉 채우는 게 맞다(앱 아이콘의 80% 규칙은 Dock 전용).
+- 이 파일이 없으면 아이콘 마크에서 대신 뽑는다(예전 동작).
 
 ---
 
@@ -75,6 +87,8 @@ tray-win/frame-01.png   ← Windows 도 따로 만들 수 있다
 | `desktop/assets/tray-icon.png` `@2x` | 22 · 44 | macOS 메뉴바 |
 | `desktop/assets/tray-icon-win.png` `@2x` | 16 · 32 | Windows 작업표시줄 |
 | `extension/icons/icon{16,32,48,128}.png` | 16·32·48·128 | 확장 프로그램 |
+| `desktop/assets/figma/home-hero.png` | 224 | 앱 홈 화면 (표시 104×107) |
+| `extension/sidepanel/assets/agent-shield.png` | 144 | 확장 사이드바 (표시 72) |
 | `desktop/assets/tray-frames/*` | 위와 동일 | 애니메이션 프레임(폴더를 준 경우) |
 
 ---
