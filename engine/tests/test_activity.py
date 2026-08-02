@@ -10,9 +10,16 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.core import activity as activity_bus
+from app.core import model_status
 from app.core.detectors import registry
 from app.main import app
 from app.store import db
+
+_needs_models = pytest.mark.skipif(
+    not model_status.all_ready(),
+    reason="PII/인젝션 모델 가중치가 로컬에 없어 실 모델 경로를 검증할 수 없음",
+)
+
 
 
 @pytest.fixture(scope="module")
@@ -37,6 +44,7 @@ def test_activity_idle_when_nothing_running(client):
     assert r.json() == {"active": [], "busy": False}
 
 
+@_needs_models
 def test_job_publishes_stages_and_clears(client):
     """실제 job 을 돌리면 단계가 방송되고, 끝나면 진행 목록이 비어야 한다."""
     events: list[dict] = []

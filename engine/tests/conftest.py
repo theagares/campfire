@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -5,6 +6,13 @@ import pytest
 
 # engine/ 를 import 경로에 추가 (app 패키지)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# 리브랜딩 마이그레이션(models_sync._migrate_legacy_models_root)은 사용자 홈의 실제
+# 가중치 폴더를 통째로 "옮긴다". 테스트가 앱을 띄우면 lifespan 이 이걸 부르기 때문에,
+# 개발 체크아웃에서 pytest 를 돌린 것만으로 설치된 앱의 모델 605MB 가 새 경로로
+# 옮겨져 구버전 앱이 모델을 잃는 사고가 실제로 났다. 테스트는 실사용자 상태를
+# 건드리지 않는다.
+os.environ.setdefault("SECUREDOC_SKIP_LEGACY_MIGRATION", "1")
 
 
 @pytest.fixture(autouse=True)

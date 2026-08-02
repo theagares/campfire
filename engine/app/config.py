@@ -22,21 +22,29 @@ APP_DIR: Path = Path(__file__).resolve().parent
 BUNDLED_MODELS_DIR: Path = APP_DIR / "models"
 
 
-def _default_models_root() -> Path:
+def _models_base() -> Path:
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    elif sys.platform == "darwin":
-        base = str(Path.home() / "Library" / "Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "UpSecurity" / "models"
+        return Path(os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"))
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    return Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share"))
+
+
+# UpSecurity -> Campfire 리브랜딩 이전에 쓰던 보관 위치. 여기에 이미 받아둔 가중치는
+# 약 600MB 라, 새 경로만 보고 "없다" 고 판단하면 기존 사용자가 전부 다시 받게 된다.
+# 새 경로가 비어 있고 옛 경로에 내용이 있으면 그대로 옮겨 쓴다(_migrate_legacy_root).
+LEGACY_MODELS_ROOT: Path = _models_base() / "UpSecurity" / "models"
+
+
+def _default_models_root() -> Path:
+    return _models_base() / "Campfire" / "models"
 
 
 MODELS_ROOT: Path = Path(os.environ.get("SECUREDOC_MODELS_DIR", str(_default_models_root())))
 
 # ── 서비스 시그니처 (PLAN §11) ────────────────────────────────────────────────
 # 익스텐션이 포트 스캔 시 "우리 엔진"임을 식별하는 고정 시그니처.
-SERVICE_NAME: str = "securedoc-gateway"
+SERVICE_NAME: str = "campfire"
 
 # ── 포트 자동 스캔 (PLAN §11) ─────────────────────────────────────────────────
 BASE_PORT: int = int(os.environ.get("SECUREDOC_BASE_PORT", "48200"))
@@ -118,7 +126,7 @@ INJECTION_LLM_USER_PROMPT: str = os.environ.get(
 def _load_dotenv_value(key: str) -> str:
     """프로젝트 루트 .env(엔진 전용이 아니라 여러 컴포넌트가 공유하는 파일)에서
     key=value 한 줄을 읽는다. python-dotenv 등 별도 의존성 없이 최소한만 지원."""
-    dotenv_path = APP_DIR.parent.parent / ".env"  # engine/app -> engine -> securedoc-gateway/.env
+    dotenv_path = APP_DIR.parent.parent / ".env"  # engine/app -> engine -> 레포 루트/.env
     if not dotenv_path.exists():
         return ""
     for line in dotenv_path.read_text(encoding="utf-8").splitlines():
