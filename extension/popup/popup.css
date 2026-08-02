@@ -32,7 +32,7 @@ body {
   display: flex; flex-direction: column; gap: 0;
 }
 
-.header { display: flex; align-items: center; gap: 10px; padding: 2px 2px 0; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 2px 0; }
 .brand-mark { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 28px; }
 .brand-copy h1 { font-size: 14px; font-weight: 700; color: var(--ink); }
 .subtitle { font-size: 11px; color: var(--ink-mute); }
@@ -55,8 +55,6 @@ body {
 .row-label { color: var(--ink-mute); }
 .row-value { font-weight: 600; }
 .row-value.mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
-
-.note { font-size: 10.5px; color: var(--ink-mute); line-height: 1.5; margin-top: 8px; }
 
 .divider { height: 1px; background: var(--line); margin: 10px 0; }
 
