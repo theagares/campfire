@@ -2,9 +2,13 @@
  * popup.js  ─  설정 전용 popup (PLAN §변경2)
  *
  * 표시 항목(읽기 전용):
+ *   - 보호 설정: 파일 인터셉트 on/off (content.js/interceptor.js가 chrome.storage.local의
+ *     fileInterceptEnabled를 그대로 구독 — 이 팝업은 그 값을 읽고 쓰기만 한다)
  *   - 서버 설정: 연결 대상(로컬/원격), 로컬 포트(자동 탐지, 편집 불가)
  *   - 앱 설정: 엔진 연결 상태, 대시보드 열기, 앱 미설치 안내
- * 원격 URL 편집란·보호 토글·범위 카드·최근 활동 카드는 두지 않는다.
+ * 원격 URL 편집란·범위 카드·최근 활동 카드는 두지 않는다. 텍스트 프롬프트 검사까지
+ * 포함한 전체 보호(protectionEnabled)를 끄는 토글도 의도적으로 두지 않는다 — 이 팝업이
+ * 다루는 건 파일 인터셉트 하나뿐이다.
  */
 
 const $ = (id) => document.getElementById(id);
@@ -71,6 +75,22 @@ $('open-dashboard').addEventListener('click', () => {
 $('rescan').addEventListener('click', async () => {
   $('target-value').textContent = '다시 탐지 중…';
   render(await requestInfo('RESCAN_SERVER'));
+});
+
+function renderFileIntercept(enabled) {
+  const toggle = $('file-intercept-toggle');
+  toggle.checked = enabled;
+  $('file-intercept-label').textContent = enabled ? 'ON' : 'OFF';
+}
+
+$('file-intercept-toggle').addEventListener('change', (e) => {
+  const enabled = e.target.checked;
+  renderFileIntercept(enabled);
+  chrome.storage?.local?.set?.({ fileInterceptEnabled: enabled });
+});
+
+chrome.storage?.local?.get?.({ fileInterceptEnabled: true }, ({ fileInterceptEnabled }) => {
+  renderFileIntercept(Boolean(fileInterceptEnabled));
 });
 
 (async () => { render(await requestInfo('GET_CONNECTION_INFO')); })();

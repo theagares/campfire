@@ -21,6 +21,10 @@
   'use strict';
 
   let protectionEnabled = true;
+  // 파일 인터셉트만 따로 끄고 켤 수 있는 스위치(확장 팝업에서 제어) — protectionEnabled와
+  // 별개다. protectionEnabled는 텍스트 프롬프트 검사까지 포함한 전체 보호 플래그라
+  // 지금은 이걸 끄는 UI가 없다(popup.js 상단 주석 — 의도적으로 안 둠).
+  let fileInterceptEnabled = true;
 
   const bridgeToken = (
     globalThis.crypto?.randomUUID?.()
@@ -36,12 +40,13 @@
     }, '*');
   }
 
-  function sendProtectionStateToMain(enabled) {
+  function sendProtectionStateToMain(enabled, fileEnabled) {
     window.postMessage({
       __upsecurity_config: true,
       direction: 'isolated-to-main',
       type: 'UPS_PROTECTION_STATE',
       enabled: Boolean(enabled),
+      fileInterceptEnabled: Boolean(fileEnabled),
     }, '*');
   }
 
@@ -78,16 +83,22 @@
 
   sendBridgeTokenToMain();
 
-  chrome.storage?.local?.get?.({ protectionEnabled: true }, ({ protectionEnabled: enabled }) => {
-    protectionEnabled = Boolean(enabled);
-    sendBridgeTokenToMain();
-    sendProtectionStateToMain(protectionEnabled);
-  });
+  chrome.storage?.local?.get?.(
+    { protectionEnabled: true, fileInterceptEnabled: true },
+    ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled }) => {
+      protectionEnabled = Boolean(enabled);
+      fileInterceptEnabled = Boolean(fileEnabled);
+      sendBridgeTokenToMain();
+      sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
+    },
+  );
 
   chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
-    if (areaName !== 'local' || !changes.protectionEnabled) return;
-    protectionEnabled = Boolean(changes.protectionEnabled.newValue);
-    sendProtectionStateToMain(protectionEnabled);
+    if (areaName !== 'local') return;
+    if (!changes.protectionEnabled && !changes.fileInterceptEnabled) return;
+    if (changes.protectionEnabled) protectionEnabled = Boolean(changes.protectionEnabled.newValue);
+    if (changes.fileInterceptEnabled) fileInterceptEnabled = Boolean(changes.fileInterceptEnabled.newValue);
+    sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
   });
 
   const SUPPORTED_TYPES = new Set([
@@ -101,7 +112,7 @@
   let promptApproved = false;
 
   function isSupportedFile(file) {
-    if (!protectionEnabled || !file) return false;
+    if (!protectionEnabled || !fileInterceptEnabled || !file) return false;
     return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '');
   }
 

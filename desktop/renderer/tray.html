@@ -36,34 +36,13 @@
     .pop { background:var(--bg); backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,.6);
       border-radius:16px; padding:14px; box-shadow:0 10px 40px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.5); }
 
-    .header-row { display:flex; justify-content:flex-end; }
-    .sec-toggle-wrap { display:inline-flex; cursor:pointer; }
-    .sec-toggle-wrap input { position:absolute; opacity:0; width:0; height:0; }
-    /* sec-pill 은 그 자체가 불투명한 배경을 가진 필(글자 포함)이라, dot 들처럼 pill
-       자신에 ::before glow를 걸면 그 그라디언트가 pill 자신의 배경 위에(= 글자 위에)
-       그려져 버린다(::before 도 pill 의 자식이라 pill 자기 배경보다는 나중에,
-       하지만 pill 안의 진짜 텍스트보다는 먼저 그려지는데, 문제는 그라디언트 중심의
-       불투명한 부분이 텍스트 대비를 해칠 정도로 진하다는 것). 그래서 glow는 배경이
-       없는 바깥 래퍼(.sec-toggle-wrap)의 ::before로 걸어 맨 아래에 깔고, pill
-       자신은 z-index로 그 위에 올려서 글자는 그대로 선명하게, 가장자리로 번지는
-       빛만 pill 바깥으로 보이게 한다. */
-    .sec-toggle-wrap { position:relative; }
-    .sec-pill {
-      position:relative; z-index:1;
-      display:inline-flex; align-items:center; gap:8px; padding:5px 5px 5px 12px; border-radius:999px;
-      background:var(--sunken); font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink-mute);
-      transition:background .2s;
-    }
-    .sec-toggle-wrap input:checked + .sec-pill { background:var(--ok); color:#fff; }
-    .sec-knob { width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); flex:0 0 auto; }
-
     .divider { height:1px; background:var(--line); margin:12px 0; }
     .section-label { font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--ink); margin-bottom:8px; }
 
-    /* Figma 는 팝업이 카드 두 개 구조다 — 바깥 카드(.pop)엔 상단 Security ON 토글과
-       하단 QUIT 만 직접 놓이고, ACTIVE MODEL/모델 pill/리소스 통계/"더 보기" 버튼은
-       전부 그 안의 별도 카드(.inner-card, 자기 테두리·그림자·더 작은 radius)에 담긴다. */
-    .outer-divider { height:1px; background:var(--line); margin:12px 0 10px; }
+    /* Figma는 원래 바깥 카드(.pop)에 상단 Security ON 토글 + 하단 QUIT, 그 사이 별도
+       카드(.inner-card)에 ACTIVE MODEL/모델 pill/리소스 통계/"더 보기" 버튼을 담는
+       구조였다. 엔진 on/off 토글은 제거됐다(파일 인터셉트 여부는 대신 확장 프로그램
+       팝업에서 제어) — .inner-card 레이아웃은 그대로 둔다. */
     .inner-card {
       background:var(--card-bg); border:1px solid rgba(255,255,255,.5); border-radius:12px;
       box-shadow:0 2px 10px rgba(0,0,0,.07), inset 0 1px 0 rgba(255,255,255,.6);
@@ -76,7 +55,7 @@
       display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
       background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
     }
-    /* mp-dot/sec-pill 의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes/구조를 쓴다.
+    /* mp-dot의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes/구조를 쓴다.
        중요한 실측 결과(styles.css의 "Ambient Glow" 섹션 주석에 자세히 남겨뒀다 — 다시
        이 삽질 하지 말 것): box-shadow는 이 환경에서 "값이 바뀌는" 모든 경우(keyframes,
        ::before, JS로 매 프레임 대입, 심지어 정적 값이어도 그 요소에 opacity<1/transform
@@ -117,37 +96,6 @@
       will-change:opacity, transform;
       animation:ambient-glow-c 6.3s ease-in-out infinite;
     }
-    /* sec-pill은 켜지면 배경이 초록(var(--ok))이 되고 그 위에 흰 글자(color:#fff, 위 규칙)가
-       올라가므로, currentColor 기반 gradient(위 ambient-glow-c 등)를 그대로 쓰면 halo
-       색이 아니라 글자색까지 초록으로 덮어써서 흰 글자가 초록 배경에 묻힌다. 그래서 이
-       요소만 currentColor 대신 var(--ok)를 직접 섞는다 — 겹 구조/증가 비율은 위
-       ambient-glow-c와 동일. glow는 pill 자신이 아니라 배경 없는 바깥 래퍼
-       (.sec-toggle-wrap)의 ::before에 걸어서 pill 자신의 불투명한 배경/글자 위로
-       그려지지 않고 pill 바깥으로만 번지게 한다(위 .sec-pill 주석 참고) — pill이
-       원형이 아니라 알약(가로로 긴 사각+둥근 모서리) 모양이라 그라디언트도 폭에 맞춰
-       타원으로 키웠다(처음엔 240x120이었는데 pill 테두리를 넘어 밖으로 번져 나가서
-       100x50으로 축소하고 점 근처 강도도 올렸다, dot 쪽과 동일한 조정 — 실측). */
-    @keyframes ambient-glow-sec {
-      0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
-      50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
-    }
-    .sec-toggle-wrap::before {
-      content:''; position:absolute; left:50%; top:50%; width:100px; height:50px;
-      transform:translate(-50%,-50%) scale(1);
-      border-radius:9999px; pointer-events:none;
-      opacity:0; transition:opacity .8s ease-in-out;
-      background:radial-gradient(ellipse,
-        color-mix(in srgb, var(--ok) 55%, transparent) 0%,
-        color-mix(in srgb, var(--ok) 22%, transparent) 25%,
-        color-mix(in srgb, var(--ok) 6%, transparent) 55%,
-        transparent 80%);
-    }
-    .sec-toggle-wrap:has(input:checked)::before {
-      opacity:1;
-      will-change:opacity, transform;
-      animation:ambient-glow-sec 5.8s ease-in-out infinite;
-    }
-
     .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
     .res-block .rb-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
     .res-block .rb-icon { width:14px; height:14px; flex:0 0 14px; display:flex; align-items:center; justify-content:center; }
@@ -179,18 +127,6 @@
 </head>
 <body>
   <div class="pop">
-    <div class="header-row">
-      <label class="sec-toggle-wrap">
-        <input type="checkbox" id="sec-toggle" checked />
-        <span class="sec-pill" id="sec-pill">
-          <span id="sec-label">Security ON</span>
-          <span class="sec-knob"></span>
-        </span>
-      </label>
-    </div>
-
-    <div class="outer-divider"></div>
-
     <div class="inner-card">
       <div class="section-label">ACTIVE MODEL</div>
       <div class="model-grid">

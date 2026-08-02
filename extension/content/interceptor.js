@@ -38,6 +38,10 @@
   }
 
   let _protectionEnabled = true;
+  // content.js(isolated world)의 fileInterceptEnabled를 그대로 미러링한다 — 확장 팝업의
+  // "파일 인터셉트" 토글이 꺼지면 이 MAIN world 레이어(XHR/fetch 자동 감지)도 같이
+  // 꺼져야 한다. protectionEnabled(텍스트 프롬프트 포함 전체 보호)와는 별개.
+  let _fileInterceptEnabled = true;
   let _bridgeToken = '';
 
   window.addEventListener('message', (event) => {
@@ -53,11 +57,16 @@
     }
     if (event.data.type !== 'UPS_PROTECTION_STATE') return;
     _protectionEnabled = Boolean(event.data.enabled);
-    debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}`);
+    _fileInterceptEnabled = Boolean(event.data.fileInterceptEnabled);
+    debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
   });
 
   function isProtectionEnabled() {
     return _protectionEnabled;
+  }
+
+  function isFileInterceptEnabled() {
+    return _fileInterceptEnabled;
   }
 
   // ─── content.js(isolated world)가 이미 검토를 마치고 주입한 파일 ─────────────
@@ -282,7 +291,7 @@
   const SUPPORTED_EXTS = /\.(pdf|docx)$/i;
 
   function isSupportedFile(b) {
-    if (!isProtectionEnabled()) return false;
+    if (!isProtectionEnabled() || !isFileInterceptEnabled()) return false;
     if (!b) return false;
     return SUPPORTED_TYPES.has(b.type) || SUPPORTED_EXTS.test(b.name || '');
   }
