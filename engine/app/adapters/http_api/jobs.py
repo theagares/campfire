@@ -16,6 +16,7 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app import config
+from app.core import activity as activity_bus
 from app.core.pipeline.orchestrator import run_pipeline
 from app.store import db
 
@@ -35,7 +36,9 @@ async def _fail(job_id: str, exc: Exception) -> None:
     응답한다.
     """
     logger.exception("파이프라인 처리 중 오류 (job=%s)", job_id)
-    await job_registry.make_emit(job_id)({"type": "error", "message": str(exc)})
+    # activity=True 로 방송까지 해야 처리현황의 "탐지중" 이 풀린다 — 실패한 job 이
+    # 방송에서 안 끝나면 대시보드가 영원히 처리 중으로 남는다.
+    await job_registry.make_emit(job_id, activity=True)({"type": "error", "message": str(exc)})
     raise HTTPException(status_code=500, detail=f"파이프라인 처리 중 오류: {exc}") from exc
 
 
@@ -46,7 +49,8 @@ async def create_prompt_job(text: str = Form(...)):
 
     job_id = str(uuid.uuid4())
     job_registry.create_job(job_id)
-    emit = job_registry.make_emit(job_id)
+    activity_bus.job_started(job_id, source="prompt")
+    emit = job_registry.make_emit(job_id, activity=True)
 
     try:
         result = await run_pipeline(text=text, file_name="prompt.txt", emit=emit, wrap_file=False)
@@ -83,7 +87,8 @@ async def create_job(
 
     job_id = str(uuid.uuid4())
     job_registry.create_job(job_id)
-    emit = job_registry.make_emit(job_id)
+    activity_bus.job_started(job_id, source="extension")
+    emit = job_registry.make_emit(job_id, activity=True)
 
     try:
         result = await run_pipeline(

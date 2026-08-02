@@ -251,6 +251,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  // 엔진 SSE 구독을 먼저 끊는다 — 안 끊으면 재연결 타이머가 종료를 붙잡는다.
+  ipc.disposeActivity();
 });
 
 app.on('will-quit', (e) => {
