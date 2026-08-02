@@ -34,6 +34,7 @@
       "output": "release",
       "buildResources": "build"
     },
+    "electronLanguages": ["ko", "en", "en-US"],
     "files": [
       "main/**/*",
       "renderer/**/*",
@@ -50,7 +51,14 @@
           "!**/*.pyc",
           "!tests/**",
           "!**/.pytest_cache/**",
-          "!.venv/**/__pycache__/**"
+          "!.venv/**/__pycache__/**",
+          "!**/site-packages/torch/include/**",
+          "!**/site-packages/torch/lib/*.lib",
+          "!**/site-packages/**/tests/**",
+          "!**/tcl/**",
+          "!**/DLLs/tcl*.dll",
+          "!**/DLLs/tk*.dll",
+          "!**/DLLs/_tkinter.pyd"
         ]
       },
       {
