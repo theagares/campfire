@@ -6,15 +6,12 @@
   "training_recipe": "SKT CRF+Gaz x3, Mix-all",
   "training_data": "KDPII + clean synthetic Mix-all training split used by real pipeline",
   "runtime": "python-sidecar-stdio",
-  "single_model": false,
-  "ensemble": true,
-  "ensemble_method": "same-label overlapping-span majority vote",
-  "default_min_votes": 2,
-  "entrypoint": "runtime/local_pii_ensemble_inference.py",
+  "single_model": true,
+  "ensemble": false,
+  "ensemble_note": "원래 seed42/43/44 3-seed 앙상블로 패키징했으나, 세 seed 가 실제로는 완전히 동일한 가중치(하드링크)로 묶여 있어 앙상블의 다양성 이득이 전혀 없었다. 단일 seed(seed42)로 전환했고(커밋 155c9bd), 배포 에셋도 seed42 만 담는다(pii_engine_v2.tar.gz). 아래 evaluation 항목은 3-seed 시절에 측정한 기록 그대로 남겨둔다 — 동일 가중치였으므로 수치 자체는 단일 seed 와 같다.",
+  "entrypoint": "runtime/local_pii_inference.py",
   "model_dirs": [
-    "models/seed42",
-    "models/seed43",
-    "models/seed44"
+    "models/seed42"
   ],
   "target_labels": [
     "PS_NAME",
