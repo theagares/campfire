@@ -231,6 +231,25 @@ body {
   flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: .01em;
 }
+/* 인젝션 — 묶지 않고 한 줄씩. 같은 유형이라도 문구마다 다른 공격이라, 종류로 접으면
+   정작 읽고 판단해야 할 내용이 가려진다. 그래서 유형명 아래 실제 문구를 두 줄까지
+   그대로 보여준다(PII 스니펫은 한 줄 말줄임). */
+.solo {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--card); border-radius: 10px; padding: 8px;
+}
+.solo .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 1px; }
+.solo .cat.pii { background: var(--pii); }
+.solo .cat.inj { background: var(--inj); }
+.s-text { flex: 1; min-width: 0; }
+.s-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+.s-snip {
+  font-size: 10.5px; color: var(--muted); line-height: 1.45; margin-top: 1px;
+  word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.solo .switch { margin-top: 2px; }
+
 .empty { font-size: 12px; color: var(--muted); text-align: center; padding: 18px; }
 
 /* 토글 스위치 (Figma Toggle: 31x16 pill) */
