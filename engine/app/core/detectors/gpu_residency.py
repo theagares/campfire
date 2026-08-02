@@ -39,6 +39,10 @@ class GpuResidency:
     state: ResidencyState = field(init=False, default="unloaded")
     last_used_at: float = field(init=False, default=0.0)
     load_count: int = field(init=False, default=0)
+    # 서브프로세스 준비(ready) 응답의 "device"(cuda/mps/cpu)를 그대로 받아 채운다 —
+    # GPU 가 안 잡힌다는 리포트가 실측 방법 자체가 없었어서(엔진이 디바이스 선택을
+    # 어디에도 노출하지 않음), /health 로 바로 확인 가능하게 한다.
+    device: str | None = field(init=False, default=None)
     _lock: asyncio.Lock = field(init=False, default_factory=asyncio.Lock, repr=False)
 
     def mark_loaded_immediately(self) -> None:
@@ -91,4 +95,5 @@ class GpuResidency:
             "idleTimeoutSec": self.idle_timeout_sec,
             "idleForSec": round(idle_for, 3) if idle_for is not None else None,
             "loadCount": self.load_count,
+            "device": self.device,
         }

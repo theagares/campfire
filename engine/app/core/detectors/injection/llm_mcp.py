@@ -154,6 +154,7 @@ class InjectionLlmMcpDetector:
         payload = await self._read_ready_line(config.INJECTION_LLM_LOAD_DELAY_SEC, "injection_llm_mcp")
         if not payload.get("ready"):
             raise RuntimeError(f"injection_llm_mcp: 예상치 못한 준비 응답: {payload!r}")
+        self.residency.device = payload.get("device")
 
     async def _read_ready_line(self, timeout_sec: float, tag: str) -> dict[str, Any]:
         """준비(ready) 라인을 기다린다.
