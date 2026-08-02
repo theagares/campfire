@@ -12,6 +12,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from app.core import activity as activity_bus
+
 # job_id -> {"events": [...], "done": bool}
 _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 _MAX_JOBS = 200  # 메모리 상한 (오래된 것부터 폐기)
@@ -52,8 +54,18 @@ def is_done(job_id: str) -> bool:
     return bool(job and job["done"])
 
 
-def make_emit(job_id: str):
+def make_emit(job_id: str, *, activity: bool = False):
+    """job 이벤트 기록용 emit 을 만든다.
+
+    activity=True 면 대시보드 "처리현황" 방송(core.activity)에도 같이 흘린다.
+    모델 다운로드(/models/fetch)도 같은 job 이벤트 구조를 쓰지만 그건 탐지
+    파이프라인이 아니므로, 방송은 실제 파이프라인 job 만 옵트인한다 — 안 그러면
+    다운로드 진행률이 처리현황을 "탐지중" 으로 만든다.
+    """
+
     async def emit(event: dict) -> None:
         record_event(job_id, event)
+        if activity:
+            activity_bus.job_event(job_id, event)
 
     return emit

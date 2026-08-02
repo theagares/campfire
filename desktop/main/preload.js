@@ -34,6 +34,7 @@ const api = {
   onStats: (cb) => subscribe('stats:tick', cb),
   onNavigate: (cb) => subscribe('nav:goto', cb),
   onModelsFetchProgress: (cb) => subscribe('models:fetchProgress', cb),
+  onPipelineActivity: (cb) => subscribe('pipeline:activity', cb),
 };
 
 function subscribe(channel, cb) {
