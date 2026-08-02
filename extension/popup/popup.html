@@ -6,18 +6,20 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <main class="container">
-    <header class="header">
-      <div class="brand-mark" aria-hidden="true">🛡️</div>
+  <div class="pop">
+    <div class="header">
+      <img class="brand-mark" src="../icons/icon48.png" alt="" aria-hidden="true">
       <div class="brand-copy">
         <h1>securedoc-gateway</h1>
         <p class="subtitle">설정</p>
       </div>
-    </header>
+    </div>
+
+    <div class="outer-divider"></div>
 
     <!-- 서버 설정 (읽기 전용) -->
-    <section class="card">
-      <h2 class="card-title">서버 설정</h2>
+    <div class="inner-card">
+      <div class="section-label">서버 설정</div>
       <div class="row">
         <span class="row-label">연결 대상</span>
         <span class="row-value" id="target-value">확인 중…</span>
@@ -28,11 +30,11 @@
       </div>
       <p class="note">포트는 자동 탐지되며(48200~48209 스캔) 수정할 수 없습니다.
         원격 URL은 앱 설정에서만 변경합니다.</p>
-    </section>
+    </div>
 
     <!-- 앱 설정 -->
-    <section class="card">
-      <h2 class="card-title">앱 설정</h2>
+    <div class="inner-card">
+      <div class="section-label">앱 설정</div>
       <div class="row">
         <span class="row-label">엔진 연결</span>
         <span class="status-pill" id="engine-pill"><span class="dot"></span><span id="engine-text">확인 중…</span></span>
@@ -44,13 +46,11 @@
         로컬 엔진으로 우선 연결되고 대시보드를 열 수 있습니다. 현재는 원격 서버로
         폴백해 동작 중입니다.
       </p>
-      <button class="btn btn-ghost" id="rescan">서버 다시 탐지</button>
-    </section>
+      <button class="btn" id="rescan">서버 다시 탐지</button>
+    </div>
 
-    <footer class="footer">
-      <span>PII · 프롬프트 인젝션 마스킹 게이트웨이</span>
-    </footer>
-  </main>
+    <div class="footer">PII · 프롬프트 인젝션 마스킹 게이트웨이</div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>
