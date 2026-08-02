@@ -123,6 +123,86 @@ def test_failed_job_clears_busy_state():
     assert activity_bus.snapshot() == []
 
 
+# ── MCP 경로 방송 ────────────────────────────────────────────────────────────
+# HTTP(확장) 경로만 방송하고 MCP 경로는 activity 를 아예 부르지 않아서, AI 클라이언트로
+# 검사를 돌리면 처리현황이 계속 idle 이었다. 실제 모델 없이도 배선을 검증할 수 있게
+# run_pipeline 을 가짜로 바꿔 단계 이벤트만 흘려보낸다.
+def _fake_pipeline(*, steps=(1, 2, 4, 5), fail=False):
+    async def fake(**kwargs):
+        emit = kwargs.get("emit")
+        for step in steps:
+            if emit is not None:
+                await emit({"type": "step", "step": step, "label": f"step {step}"})
+        if fail:
+            raise RuntimeError("파싱 실패")
+        return {"maskedText": "", "piiItems": [], "injectionItems": [], "stats": {}}
+
+    return fake
+
+
+def _drain(q):
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return out
+
+
+def test_mcp_scan_broadcasts_stages(monkeypatch):
+    """MCP 도구로 검사해도 처리현황에 단계가 떠야 한다."""
+    from app.adapters.mcp import tools
+
+    monkeypatch.setattr(tools, "run_pipeline", _fake_pipeline())
+    monkeypatch.setattr(tools, "_record", lambda *a, **k: None)
+
+    q = activity_bus.subscribe()
+    asyncio.run(tools.scan_text("홍길동 010-1234-5678"))
+    events = _drain(q)
+    activity_bus.unsubscribe(q)
+
+    stages = [e["stage"] for e in events]
+    assert events[0]["phase"] == "start"
+    assert events[0]["source"] == "mcp", "MCP 에서 온 것으로 표시돼야 한다"
+    assert "pii" in stages, "PII 탐지 단계('탐지 중')가 방송돼야 한다"
+    assert "injection" in stages
+    assert events[-1]["phase"] == "finish" and events[-1]["ok"] is True
+    assert activity_bus.snapshot() == []
+
+
+def test_mcp_scan_failure_still_clears_busy(monkeypatch):
+    """도구가 예외로 끝나도 처리현황이 '탐지중' 으로 굳으면 안 된다."""
+    from app.adapters.mcp import tools
+
+    monkeypatch.setattr(tools, "run_pipeline", _fake_pipeline(fail=True))
+    monkeypatch.setattr(tools, "_record", lambda *a, **k: None)
+
+    q = activity_bus.subscribe()
+    with pytest.raises(RuntimeError):
+        asyncio.run(tools.scan_text("boom"))
+    events = _drain(q)
+    activity_bus.unsubscribe(q)
+
+    assert events[-1]["phase"] == "finish" and events[-1]["ok"] is False
+    assert activity_bus.snapshot() == []
+
+
+def test_mcp_search_does_not_flood_activity(monkeypatch, tmp_path):
+    """secure_search_files 는 매칭 라인마다 파이프라인을 돈다 — 방송하면 검색 한 번에
+    처리현황이 수백 번 깜빡인다. 여기만은 일부러 조용해야 한다."""
+    from app.adapters.mcp import tools
+
+    monkeypatch.setattr(tools, "run_pipeline", _fake_pipeline())
+    target = tmp_path / "hits.txt"
+    target.write_text("\n".join(f"needle {i}" for i in range(20)), encoding="utf-8")
+
+    q = activity_bus.subscribe()
+    asyncio.run(tools.secure_search_files(str(tmp_path), "needle"))
+    events = _drain(q)
+    activity_bus.unsubscribe(q)
+
+    assert events == [], "검색 스니펫 마스킹은 처리현황에 방송되면 안 된다"
+    assert activity_bus.snapshot() == []
+
+
 def test_activity_stream_route_is_registered(client):
     """SSE 엔드포인트가 앱에 실제로 붙어 있는지 — 무한 스트림이라 직접 열어 확인할 수
     없으므로(열면 테스트가 멈춘다) OpenAPI 스키마로 확인한다."""

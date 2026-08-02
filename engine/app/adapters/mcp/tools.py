@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from app import config
+from app.core import activity as activity_bus
 from app.core.detectors import registry
 from app.core.masker import masker
 from app.core.pipeline.orchestrator import run_pipeline
@@ -103,10 +105,40 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _run_pipeline_broadcast(**kwargs: Any) -> dict[str, Any]:
+    """run_pipeline 을 돌리되 진행 단계를 대시보드 "처리현황" 으로 방송한다.
+
+    HTTP(확장) 경로는 jobs.py 가 job_started → emit → job_finished 로 이걸 하고 있는데
+    MCP 경로만 빠져 있었다. 그래서 AI 클라이언트로 검사를 돌리면 앱 처리현황이 계속
+    idle 이었다 — 단계가 눈에 안 띄게 빨리 지나가서가 아니라, 이벤트가 하나도 나가지
+    않아서다(어댑터 전체에 activity 호출이 없었다).
+
+    job_registry 에는 기록하지 않는다. 그쪽 기록은 job id 로 /jobs/{id}/events 를
+    되감기 위한 것인데 MCP 호출자는 job id 를 받지 않아 되감을 수단이 없다 — 방송만
+    하면 되고, 안 그러면 도구를 부를 때마다 인메모리 job 이 쌓인다.
+    """
+    job_id = f"mcp-{uuid.uuid4().hex}"
+    activity_bus.job_started(job_id, source="mcp")
+
+    async def emit(event: dict[str, Any]) -> None:
+        activity_bus.job_event(job_id, event)
+
+    ok = True
+    try:
+        return await run_pipeline(emit=emit, **kwargs)
+    except Exception:
+        ok = False
+        raise
+    finally:
+        # run_pipeline 은 step 이벤트만 내보내고 done 은 호출자 몫이다(jobs.py 와 동일).
+        # 여기서 끝내주지 않으면 _active 에 남아 처리현황이 "탐지중" 으로 굳는다.
+        activity_bus.job_finished(job_id, ok=ok)
+
+
 async def _scan_bytes(
     file_bytes: bytes, mime_type: str, file_name: str, *, user_prompt: str = ""
 ) -> dict[str, Any]:
-    result = await run_pipeline(
+    result = await _run_pipeline_broadcast(
         file_bytes=file_bytes,
         mime_type=mime_type,
         file_name=file_name,
@@ -119,8 +151,6 @@ async def _scan_bytes(
 
 def _record(file_name: str, result: dict[str, Any]) -> None:
     """탐지 통계를 store 에 남긴다(source=mcp). 원문은 저장하지 않음(PLAN §9.1)."""
-    import uuid
-
     try:
         db.record_job(str(uuid.uuid4()), file_name=file_name, source="mcp", result=result)
     except Exception:  # noqa: BLE001 - 통계 기록 실패가 도구 응답을 막지 않게
@@ -147,7 +177,7 @@ async def scan_text(text: str, user_prompt: str = "") -> dict[str, Any]:
     이 도구를 부르는 쪽이 AI 자신이라, 원문을 주면 검사한 의미가 사라진다.
     마스킹 전 값이 꼭 필요하면 사람이 확인하는 경로(확장의 검토 패널)를 쓸 것.
     """
-    result = await run_pipeline(
+    result = await _run_pipeline_broadcast(
         text=text, file_name="prompt.txt", wrap_file=False, user_prompt=user_prompt or None
     )
     _record("prompt.txt", result)
@@ -341,7 +371,10 @@ async def secure_search_files(
                 continue
         for line_no, line in enumerate(text.splitlines(), start=1):
             if query in line:
-                # 라인 스니펫만 마스킹(통계 job 기록 없이 core 파이프라인 통과)
+                # 라인 스니펫만 마스킹(통계 job 기록 없이 core 파이프라인 통과).
+                # 여기는 일부러 방송하지 않는다 — 매칭 라인마다 파이프라인을 도는 루프라
+                # 검색 한 번에 처리현황이 수백 번 깜빡이게 된다. 검색은 "지금 무슨 문서를
+                # 처리 중인가" 로 보여줄 단위가 아니다.
                 line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
                 results.append(
                     {"path": str(path), "line": line_no, "lineText": line_res["maskedText"]}
