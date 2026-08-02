@@ -136,7 +136,9 @@ body {
 @media (max-width: 480px) {
   .result-layout { flex-direction: column; }
   .result-side {
-    flex: 0 1 auto; max-height: 42%; min-width: 0;
+    /* 유형별로 묶은 뒤 접힌 상태의 목록은 짧아졌지만, 그룹을 펼치면 개별 항목이
+       쌓여 금방 넘친다 — 세로 배치일 때는 목록에 화면의 절반을 준다. */
+    flex: 0 1 auto; max-height: 50%; min-width: 0;
     border-left: 0; border-top: 1px solid var(--border);
   }
 }
@@ -152,7 +154,7 @@ body {
 .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .sw-pii { background: var(--pii); }
 .sw-inj { background: var(--inj); }
-.hint { font-weight: 400; color: var(--muted-2); margin: 0 2px 8px; }
+.hint { font-size: 10.5px; font-weight: 400; color: var(--muted-2); margin: 0 2px 8px; line-height: 1.5; }
 
 /* ── 문서 diff 미리보기 — Figma처럼 화면 위아래 전체를 채운다 ── */
 .diff {
@@ -163,7 +165,13 @@ body {
   white-space: pre-wrap; word-break: break-word;
   overflow-y: auto;
 }
-.mark { border-radius: 4px; padding: 2px 6px; font-weight: 500; }
+/* 마킹된 구간은 눌러서 마스킹을 풀거나 다시 걸 수 있는 버튼이다. */
+.mark {
+  border-radius: 4px; padding: 2px 6px; font-weight: 500;
+  cursor: pointer; transition: opacity .12s, box-shadow .12s;
+}
+.mark:hover { box-shadow: 0 0 0 2px rgba(88, 76, 220, .35); }
+.mark:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--purple); }
 .mark.pii { background: var(--pii); color: #fff; }
 .mark.inj { background: var(--inj); color: var(--text); }
 .mark.kept { opacity: .5; text-decoration: line-through; background: var(--card); color: var(--muted); }
@@ -172,18 +180,57 @@ body {
 .combined-block { margin-bottom: 4px; }
 .empty-inline { color: var(--muted-2); font-size: 12px; }
 
-/* ── 탐지 항목 토글 (우측 사이드바) ── */
+/* ── 탐지 항목 (우측 사이드바) — 유형별로 묶고, 눌러서 펼친다 ──
+   기본 조작 단위는 "종류"다: 그룹 토글 하나로 같은 종류를 한 번에 마스킹/해제하고,
+   개별 항목을 손봐야 할 때만 펼쳐서 하나씩 끈다. */
 .items { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-.item {
-  display: flex; align-items: center; gap: 10px;
-  background: var(--card); border-radius: 10px; padding: 8px;
+
+.group { background: var(--card); border-radius: 10px; overflow: hidden; }
+.group-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px; cursor: pointer; user-select: none;
 }
-.item .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; }
-.item .cat.pii { background: var(--pii); }
-.item .cat.inj { background: var(--inj); }
-.item .body { flex: 1; min-width: 0; }
-.item .lbl { font-size: 11px; font-weight: 500; color: var(--text-2); }
-.item .snip { font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: .01em; }
+.group-head:hover { background: rgba(0, 0, 0, .03); }
+.group-head:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+
+.caret {
+  flex-shrink: 0; width: 0; height: 0; margin-left: 2px;
+  border-left: 5px solid var(--muted-2);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .15s;
+}
+.group.open .caret { transform: rotate(90deg); }
+
+.group .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; }
+.group .cat.pii { background: var(--pii); }
+.group .cat.inj { background: var(--inj); }
+
+.g-text { flex: 1; min-width: 0; }
+.g-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2);
+}
+/* 긴 유형명("프롬프트 인젝션")이 좁은 패널에서 단어 중간에 끊겨 두 줄이 되던 것을
+   말줄임 한 줄로 고정한다 — 배지는 항상 라벨 끝에 붙어 있어야 읽힌다. */
+.g-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-count {
+  flex-shrink: 0;
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  background: rgba(0, 0, 0, .07); border-radius: 999px; padding: 1px 6px;
+}
+.g-state { font-size: 10px; color: var(--muted-2); letter-spacing: .01em; }
+
+.group-body { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+.group-body[hidden] { display: none; }
+.item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px;
+}
+.item .snip {
+  flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: .01em;
+}
 .empty { font-size: 12px; color: var(--muted); text-align: center; padding: 18px; }
 
 /* 토글 스위치 (Figma Toggle: 31x16 pill) */
@@ -201,6 +248,10 @@ body {
 }
 .switch input:checked + .track { background: var(--green); border-color: rgba(255, 255, 255, .6); }
 .switch input:checked + .track .thumb { transform: translateX(15px); }
+/* 그룹 안에서 일부만 마스킹된 상태 — 노브를 가운데 두어 "섞여 있음"을 보여준다.
+   (전부 켬/전부 끔과 시각적으로 구분되지 않으면 그룹 토글을 신뢰할 수 없다.) */
+.switch input:indeterminate + .track { background: var(--muted-2); border-color: rgba(255, 255, 255, .5); }
+.switch input:indeterminate + .track .thumb { transform: translateX(7.5px); }
 
 /* ── 오류 뷰 ── */
 .view-error {
