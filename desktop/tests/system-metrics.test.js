@@ -197,6 +197,25 @@ test('ioreg: 단위가 불확실한 키는 사용률로 쓰지 않는다', () =>
   assert.equal(r.utilPct, null);
 });
 
+// 실제 Apple Silicon MacBook Pro 출력 그대로(2026-08, 리포터 기기). 키 순서와
+// 이름을 손대지 않았다 — 이 문자열이 고쳐야 할 진짜 입력이다.
+const IOREG_REAL = `"PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=7996702720,"Tiler Utilization %"=9,"recoveryCount"=0,"lastRecoveryTime"=0,"Renderer Utilization %"=16,"TiledSceneBytes"=819200,"Device Utilization %"=16,"SplitSceneCount"=0,"Allocated PB Size"=91750400,"In use system memory"=1569652736}`;
+
+test('ioreg: 실기 출력 — "(driver)" 미끼 키에 속지 않는다', () => {
+  const r = parseIoregAccelerator(IOREG_REAL);
+  assert.ok(r, '실기 출력은 반드시 파싱돼야 한다');
+  // "In use system memory (driver)"=0 이 진짜 키보다 먼저 나온다. 부분 문자열로
+  // 찾으면 0 을 집어서 VRAM 이 0GB 로 표시된다 — 정확히 일치하는 키만 써야 한다.
+  assert.equal(r.unified.inUseBytes, 1569652736);
+  assert.notEqual(r.unified.inUseBytes, 0);
+  assert.equal(r.unified.allocBytes, 7996702720);
+  assert.equal(r.utilPct, 16, 'Tiler(9)/Renderer(16) 가 아니라 Device 사용률이어야 한다');
+  assert.equal(r.dedicated, null, 'Apple Silicon 은 전용 VRAM 이 없다');
+  // 화면에 실제로 뜰 값: 약 1.5GB 사용 / 7.4GB 할당.
+  assert.equal(+(r.unified.inUseBytes / GB_B).toFixed(1), 1.5);
+  assert.equal(+(r.unified.allocBytes / GB_B).toFixed(1), 7.4);
+});
+
 test('ioreg: 형식이 다르면 null 을 돌려 폴백하게 한다', () => {
   assert.equal(parseIoregAccelerator(''), null);
   assert.equal(parseIoregAccelerator('전혀 다른 출력'), null);
