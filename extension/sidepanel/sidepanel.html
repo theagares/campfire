@@ -7,6 +7,14 @@
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
+  <!-- 별 하나의 도형. 11번 반복되므로 정의는 한 번만 두고 <use> 로 참조한다.
+       fill 은 상속되므로 색은 .star 쪽 CSS 가 정한다. -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="cf-star" viewBox="0 0 24 34">
+      <path d="M12 0C13.2 11 15 15.5 24 17C15 18.5 13.2 23 12 34C10.8 23 9 18.5 0 17C9 15.5 10.8 11 12 0Z"/>
+    </symbol>
+  </svg>
+
   <div class="app">
     <header class="topbar">
       <div class="doc-badge" id="doc-meta">
@@ -22,7 +30,36 @@
 
     <!-- 진행 상태 (검사 중) -->
     <section class="view view-progress" id="view-progress">
-      <img class="agent-icon" src="assets/agent-shield.png" alt="" />
+      <!-- 검사 중 연출: 밤이 내리고(orb-bg) 별이 뜬 뒤(stars) 별똥별이 지나간다(shoot).
+           별 좌표/크기는 목업(image/campfire.html)이 JS 로 만들던 값을 그대로 박아둔 것이다 —
+           고정 값이라 런타임에 계산할 이유가 없다. --x/--y 는 중심 기준 오프셋, --w/--h 는
+           원 지름 대비 비율이라 --orb 만 바꾸면 전체가 같이 스케일된다. -->
+      <div class="orb">
+        <div class="orb-bg"></div>
+        <img class="art" src="assets/agent-shield.png" alt="" />
+        <div class="stars" aria-hidden="true">
+          <div class="star-set" style="--gd:0s">
+            <svg viewBox="0 0 24 34" class="star" style="--x:11.00%;--y:-31.00%;--w:12.73%;--h:18.18%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:-36.00%;--y:-15.00%;--w:10.74%;--h:15.34%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:33.00%;--y:-4.00%;--w:11.93%;--h:17.05%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:-27.00%;--y:2.00%;--w:9.15%;--h:13.07%"><use href="#cf-star"/></svg>
+          </div>
+          <div class="star-set" style="--gd:2.2s">
+            <svg viewBox="0 0 24 34" class="star" style="--x:2.00%;--y:-30.00%;--w:11.14%;--h:15.91%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:23.00%;--y:-23.50%;--w:9.55%;--h:13.64%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:36.00%;--y:-8.00%;--w:12.33%;--h:17.61%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:-31.50%;--y:-5.00%;--w:11.53%;--h:16.48%"><use href="#cf-star"/></svg>
+          </div>
+          <div class="star-set" style="--gd:4.4s">
+            <svg viewBox="0 0 24 34" class="star" style="--x:16.00%;--y:-28.50%;--w:10.34%;--h:14.77%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:-34.00%;--y:-11.00%;--w:11.93%;--h:17.05%"><use href="#cf-star"/></svg>
+            <svg viewBox="0 0 24 34" class="star" style="--x:31.00%;--y:3.00%;--w:9.55%;--h:13.64%"><use href="#cf-star"/></svg>
+          </div>
+        </div>
+        <div class="shoot-layer" aria-hidden="true">
+          <div class="shoot"><img src="assets/shooting-star.png" alt="" /></div>
+        </div>
+      </div>
       <div class="pill-row">
         <div class="model-pill"><span class="mp-dot"></span>PII model</div>
         <div class="model-pill"><span class="mp-dot"></span>INJECTION model</div>
