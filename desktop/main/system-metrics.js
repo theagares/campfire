@@ -196,24 +196,159 @@ function parseMacDisplays(jsonText) {
 }
 
 /**
+ * ioreg 의 IOAccelerator 노드 → GPU 사용률 + GPU 메모리(바이트).
+ *
+ * 왜 이게 필요한가: system_profiler 는 "전용 VRAM 총량"만 알려주고 Apple Silicon 은
+ * 통합 메모리라 그 필드가 아예 없다. 그래서 예전 구현은 M 시리즈 맥에서 VRAM 을
+ * 영원히 N/A 로 남겼다 — 이유 문구는 붙었지만 사용자가 원한 "숫자"는 끝내 안 나왔다.
+ *
+ * IOAccelerator 노드의 PerformanceStatistics 딕셔너리는 커널이 그대로 노출하는
+ * 실측치이고 관리자 권한이 필요 없다(powermetrics 와 달리). 키 이름이 GPU 계열마다
+ * 다르므로 아는 이름을 전부 훑는다:
+ *   - Apple Silicon: "In use system memory" / "Alloc system memory"  (통합 메모리)
+ *   - Intel/AMD:     "vramUsedBytes" / "vramFreeBytes"               (전용 VRAM)
+ *   - 사용률 공통:    "Device Utilization %" (없으면 "Renderer Utilization %")
+ * 단위가 확실치 않은 키("GPU Core Utilization" 등)는 일부러 안 쓴다 — 틀린 수치보단 N/A.
+ *
+ * 순수 함수라 macOS 없이도 실제 출력 고정 입력으로 검증할 수 있다.
+ * 형식이 예상과 다르면 null → 호출부가 기존 system_profiler 경로로 폴백한다.
+ */
+function parseIoregAccelerator(stdout) {
+  if (!stdout) return null;
+
+  // PerformanceStatistics 값은 중첩 딕셔너리라 정규식 하나로는 끝을 못 찾는다.
+  // 여는 중괄호부터 짝이 맞는 닫는 중괄호까지 세어서 잘라낸다.
+  const blocks = [];
+  let cursor = 0;
+  for (;;) {
+    const at = stdout.indexOf('"PerformanceStatistics"', cursor);
+    if (at < 0) break;
+    const start = stdout.indexOf('{', at);
+    if (start < 0) break;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < stdout.length; i += 1) {
+      if (stdout[i] === '{') depth += 1;
+      else if (stdout[i] === '}') {
+        depth -= 1;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end < 0) break;
+    const stats = {};
+    const body = stdout.slice(start + 1, end);
+    const pair = /"([^"]+)"\s*=\s*(-?\d+)/g;
+    let m;
+    while ((m = pair.exec(body))) stats[m[1]] = parseInt(m[2], 10);
+    if (Object.keys(stats).length) blocks.push(stats);
+    cursor = end + 1;
+  }
+  if (!blocks.length) return null;
+
+  const num = (stats, keys) => {
+    for (const k of keys) {
+      if (Number.isFinite(stats[k])) return stats[k];
+    }
+    return null;
+  };
+
+  // 여러 GPU(내장+외장)가 잡히면 실제로 쓰이고 있는 쪽을 고른다: 전용 VRAM 을 보고하는
+  // 어댑터를 우선하고, 그 다음은 GPU 메모리를 가장 많이 쓰는 쪽.
+  let best = null;
+  for (const stats of blocks) {
+    const vramUsed = num(stats, ['vramUsedBytes']);
+    const vramFree = num(stats, ['vramFreeBytes']);
+    const inUse = num(stats, ['In use system memory', 'inUseSystemMemory']);
+    const alloc = num(stats, ['Alloc system memory', 'allocSystemMemory']);
+    const utilPct = num(stats, ['Device Utilization %', 'Renderer Utilization %']);
+    const dedicated = vramUsed != null && vramFree != null
+      ? { usedBytes: vramUsed, totalBytes: vramUsed + vramFree }
+      : null;
+    const unified = inUse != null ? { inUseBytes: inUse, allocBytes: alloc ?? inUse } : null;
+    if (!dedicated && !unified && utilPct == null) continue;
+    const rank = (dedicated ? 1e18 : 0) + (dedicated?.usedBytes ?? unified?.inUseBytes ?? 0);
+    if (!best || rank > best.rank) best = { rank, utilPct, dedicated, unified };
+  }
+  if (!best) return null;
+  return { utilPct: best.utilPct, dedicated: best.dedicated, unified: best.unified };
+}
+
+/**
  * macOS GPU/VRAM.
  *
- * 사용률은 powermetrics 가 필요한데 그건 관리자 권한을 요구한다 — 백그라운드 폴링이
- * 조용히 암호를 묻는 UX 는 넣지 않는다. 대신 권한 없이 가능한 만큼은 채운다:
- *   - 외장/Intel GPU: VRAM 총량을 표시(사용량은 알 수 없어 비움)
- *   - Apple Silicon: 통합 메모리라 별도 VRAM 이 존재하지 않는다는 사실을 표시
- * 예전엔 이 분기가 아무것도 하지 않아 GPU/VRAM 이 이유 없이 "N/A" 로만 남았다.
+ * 1순위는 ioreg(위 파서) — 권한 없이 사용률과 GPU 메모리 실측치를 다 준다.
+ * ioreg 가 아무것도 못 주면 예전 경로(system_profiler)로 폴백해 최소한 전용 VRAM
+ * 총량이나 "왜 못 읽는지"라도 보여준다.
+ *
+ * 사용률에 powermetrics 는 여전히 안 쓴다 — 관리자 권한을 요구해서, 백그라운드 폴링이
+ * 조용히 암호를 묻는 UX 가 되기 때문이다.
  */
 async function refreshMacGpu() {
-  const info = parseMacDisplays(
-    await execFileP('system_profiler', ['SPDisplaysDataType', '-json'], { timeout: 8000 }),
-  );
-  const model = info?.model || null;
-  cachedGpu = {
-    percent: null,
-    available: false,
-    reason: model ? `${model} — 사용률은 관리자 권한 필요` : 'GPU 사용률은 관리자 권한 필요',
-  };
+  const model = await macGpuModel();
+
+  // GPU 노드의 클래스 이름이 세대마다 다르다(Intel 계열은 IOAccelerator, Apple Silicon 은
+  // AGXAccelerator/IOGPU). ioreg -c 가 하위 클래스까지 잡아주긴 하지만 상속 관계를
+  // 가정하지 않고 후보를 순서대로 시도한다 — 하나라도 걸리면 끝낸다.
+  let accel = null;
+  for (const cls of ['IOAccelerator', 'AGXAccelerator', 'IOGPU']) {
+    try {
+      // -w 0: 줄 너비 제한 해제. 이게 없으면 PerformanceStatistics 가 중간에서 잘려
+      // 필요한 키가 통째로 사라진다. -d 1: 매칭된 노드 자신만(자식 제외).
+      accel = parseIoregAccelerator(await execFileP('ioreg', ['-r', '-d', '1', '-w', '0', '-c', cls]));
+    } catch {
+      accel = null;
+    }
+    if (accel) break;
+  }
+
+  if (accel && accel.utilPct != null) {
+    const pct = Math.max(0, Math.min(100, Math.round(accel.utilPct)));
+    cachedGpu = { percent: pct, available: true, reason: model || null };
+  } else {
+    cachedGpu = {
+      percent: null,
+      available: false,
+      reason: model ? `${model} — 사용률을 읽지 못함` : 'GPU 사용률을 읽지 못함',
+    };
+  }
+
+  const gb = (b) => +(b / 1024 ** 3).toFixed(1);
+
+  // 전용 VRAM 이 있는 맥(Intel/AMD): 그대로 사용/총량.
+  if (accel && accel.dedicated && accel.dedicated.totalBytes > 0) {
+    const { usedBytes, totalBytes } = accel.dedicated;
+    cachedVram = {
+      percent: Math.round((usedBytes / totalBytes) * 100),
+      usedGb: gb(usedBytes), totalGb: gb(totalBytes), available: true,
+      reason: model || null,
+      breakdown: [
+        { label: '사용 중', gb: gb(usedBytes) },
+        { label: '여유', gb: gb(totalBytes - usedBytes) },
+      ],
+    };
+    return;
+  }
+
+  // Apple Silicon: 전용 VRAM 이라는 물건이 없고 GPU 가 시스템 메모리를 그대로 쓴다.
+  // 그래서 "GPU 가 실제로 쓰고 있는 메모리 / 전체 시스템 메모리"로 보여준다 —
+  // 지어낸 수치가 아니라 커널이 보고하는 실측 점유량이다.
+  const totalBytes = os.totalmem();
+  if (accel && accel.unified && totalBytes > 0) {
+    const { inUseBytes, allocBytes } = accel.unified;
+    cachedVram = {
+      percent: Math.max(0, Math.min(100, Math.round((inUseBytes / totalBytes) * 100))),
+      usedGb: gb(inUseBytes), totalGb: gb(totalBytes), available: true,
+      reason: model ? `${model} — 통합 메모리` : '통합 메모리',
+      breakdown: [
+        { label: '사용 중', gb: gb(inUseBytes) },
+        { label: '할당됨', gb: gb(allocBytes) },
+      ],
+    };
+    return;
+  }
+
+  // ioreg 가 실패한 경우에만 오는 폴백 — 총량만이라도.
+  const info = await macDisplays();
   if (info && info.vramGb != null) {
     cachedVram = {
       percent: null, usedGb: null, totalGb: info.vramGb, available: true,
@@ -222,9 +357,29 @@ async function refreshMacGpu() {
   } else {
     cachedVram = {
       percent: null, available: false,
-      reason: info?.unified ? '통합 메모리 — 전용 VRAM 없음' : 'VRAM 정보를 읽지 못함',
+      reason: info?.unified ? '통합 메모리 — GPU 메모리를 읽지 못함' : 'VRAM 정보를 읽지 못함',
     };
   }
+}
+
+/** system_profiler 결과 캐시 — GPU 모델명은 잘 안 바뀌는데 조회는 느리다(수백 ms~수 초). */
+let cachedDisplays;
+async function macDisplays() {
+  if (cachedDisplays === undefined) {
+    try {
+      cachedDisplays = parseMacDisplays(
+        await execFileP('system_profiler', ['SPDisplaysDataType', '-json'], { timeout: 8000 }),
+      );
+    } catch {
+      cachedDisplays = null;
+    }
+  }
+  return cachedDisplays;
+}
+
+async function macGpuModel() {
+  const info = await macDisplays();
+  return info?.model || null;
 }
 
 /**
@@ -340,5 +495,5 @@ function sample() {
   };
 }
 
-// parseVmStat/parseMacDisplays 는 macOS 없이도 실제 출력 고정 입력으로 검증하려고 노출한다.
-module.exports = { sample, parseVmStat, parseMacDisplays };
+// 파서들은 macOS 없이도 실제 출력 고정 입력으로 검증하려고 노출한다.
+module.exports = { sample, parseVmStat, parseMacDisplays, parseIoregAccelerator };
