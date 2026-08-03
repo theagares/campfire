@@ -15,7 +15,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { parseVmStat, parseMacDisplays } = require('../main/system-metrics');
+const { parseVmStat, parseMacDisplays, parseIoregAccelerator } = require('../main/system-metrics');
 
 // Apple Silicon(page size 16384) 실제 vm_stat 형식.
 const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
@@ -111,4 +111,95 @@ test('system_profiler: 내장 GPU 의 MB 표기도 GB 로 환산한다', () => {
 test('system_profiler: 깨진 출력은 null', () => {
   assert.equal(parseMacDisplays('not json'), null);
   assert.equal(parseMacDisplays(JSON.stringify({ SPDisplaysDataType: [] })), null);
+});
+
+// ── ioreg IOAccelerator ────────────────────────────────────────────────────
+// 배경(리포트): "맥에서 VRAM 이 아직도 안 보임". Apple Silicon 은 통합 메모리라
+// system_profiler 에 VRAM 필드가 없고, 그래서 예전 구현은 영원히 N/A 였다. ioreg 의
+// PerformanceStatistics 는 관리자 권한 없이 실제 GPU 메모리/사용률을 준다.
+
+// Apple Silicon 실제 형식(중첩 딕셔너리 + 무관한 키 다수).
+const IOREG_APPLE = `+-o IOGPU  <class AGXAcceleratorG13X, id 0x100000452, registered, matched, active, busy 0 (0 ms), retain 32>
+  {
+    "IOClass" = "AGXAcceleratorG13X"
+    "IOPowerManagement" = {"CurrentPowerState"=1,"MaxPowerState"=1}
+    "PerformanceStatistics" = {"Alloc system memory"=2371584000,"In use system memory"=1099497472,"Device Utilization %"=37,"Renderer Utilization %"=21,"Tiler Utilization %"=4,"recoveryCount"=0,"SplitSceneCount"=0}
+    "IOAccelRevision" = 2
+  }`;
+
+const GB_B = 1024 ** 3;
+
+test('ioreg: Apple Silicon 은 통합 메모리 점유량을 준다', () => {
+  const r = parseIoregAccelerator(IOREG_APPLE);
+  assert.ok(r, '파싱에 성공해야 한다');
+  assert.equal(r.utilPct, 37);
+  assert.equal(r.dedicated, null, '전용 VRAM 은 없어야 한다');
+  assert.equal(r.unified.inUseBytes, 1099497472);
+  assert.equal(r.unified.allocBytes, 2371584000);
+  // 이게 핵심 회귀 방지: 예전엔 여기서 아무 수치도 못 얻어 VRAM 이 N/A 였다.
+  assert.ok(r.unified.inUseBytes / GB_B > 1, 'GB 단위로 의미 있는 값이어야 한다');
+});
+
+test('ioreg: 중첩 딕셔너리를 만나도 블록 끝을 정확히 찾는다', () => {
+  // PerformanceStatistics 안에 또 딕셔너리가 들어간 형태 — 정규식 하나로 자르면
+  // 첫 '}' 에서 끊겨 뒤쪽 키를 통째로 놓친다.
+  const nested = IOREG_APPLE.replace(
+    '"recoveryCount"=0',
+    '"nested"={"a"=1,"b"=2},"recoveryCount"=0',
+  );
+  const r = parseIoregAccelerator(nested);
+  assert.equal(r.unified.inUseBytes, 1099497472);
+  assert.equal(r.utilPct, 37);
+});
+
+test('ioreg: Intel/AMD 는 전용 VRAM 사용/총량을 준다', () => {
+  const amd = `+-o IOGPU  <class AMDRadeonX6000, id 0x1000004a1>
+  {
+    "PerformanceStatistics" = {"vramFreeBytes"=6207545344,"vramUsedBytes"=1385439232,"Device Utilization %"=12,"hardwareWaitTime"=0}
+  }`;
+  const r = parseIoregAccelerator(amd);
+  assert.equal(r.utilPct, 12);
+  assert.equal(r.unified, null);
+  assert.equal(r.dedicated.usedBytes, 1385439232);
+  assert.equal(r.dedicated.totalBytes, 1385439232 + 6207545344);
+});
+
+test('ioreg: 내장+외장이 같이 잡히면 전용 VRAM 쪽을 고른다', () => {
+  const both = `+-o IOGPU  <class AppleIntelKBLGraphics>
+  {
+    "PerformanceStatistics" = {"In use system memory"=50000000,"Device Utilization %"=2}
+  }
++-o IOGPU  <class AMDRadeonX6000>
+  {
+    "PerformanceStatistics" = {"vramFreeBytes"=6000000000,"vramUsedBytes"=2000000000,"Device Utilization %"=88}
+  }`;
+  const r = parseIoregAccelerator(both);
+  assert.equal(r.utilPct, 88, '실제로 쓰이는 외장 GPU 의 사용률이어야 한다');
+  assert.equal(r.dedicated.usedBytes, 2000000000);
+});
+
+test('ioreg: 사용률 키가 없어도 메모리만은 살린다', () => {
+  const noUtil = IOREG_APPLE
+    .replace('"Device Utilization %"=37,', '')
+    .replace('"Renderer Utilization %"=21,', '');
+  const r = parseIoregAccelerator(noUtil);
+  assert.equal(r.utilPct, null);
+  assert.equal(r.unified.inUseBytes, 1099497472);
+});
+
+test('ioreg: 단위가 불확실한 키는 사용률로 쓰지 않는다', () => {
+  // "GPU Core Utilization" 은 기기에 따라 % 가 아닌 스케일로 나온다 — 틀린 수치보단 N/A.
+  const odd = `+-o IOGPU
+  {
+    "PerformanceStatistics" = {"GPU Core Utilization"=8500000,"In use system memory"=1000}
+  }`;
+  const r = parseIoregAccelerator(odd);
+  assert.equal(r.utilPct, null);
+});
+
+test('ioreg: 형식이 다르면 null 을 돌려 폴백하게 한다', () => {
+  assert.equal(parseIoregAccelerator(''), null);
+  assert.equal(parseIoregAccelerator('전혀 다른 출력'), null);
+  // 키는 있는데 값이 하나도 안 잡히는 경우(-w 0 을 빼먹어 잘린 출력 등).
+  assert.equal(parseIoregAccelerator('"PerformanceStatistics" = {}'), null);
 });
