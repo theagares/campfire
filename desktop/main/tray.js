@@ -8,11 +8,16 @@
  * macOS 는 메뉴바, Windows 는 시스템 트레이. 우클릭 시 최소 네이티브 메뉴도 제공.
  */
 
+const fs = require('fs');
 const path = require('path');
-const { Tray, BrowserWindow, Menu, nativeImage, screen } = require('electron');
+const { Tray, BrowserWindow, Menu, nativeImage, screen, systemPreferences } = require('electron');
 
 const POPOVER_W = 300;
 const POPOVER_H = 460; // ACTIVE MODEL 섹션 + 2×2 리소스 그리드(서브로우 포함) 반영해 확장
+
+// 트레이 애니메이션 프레임. assets/tray-frames/manifest.json 이 프레임 목록과 재생
+// 간격을 들고 있어 이 파일에 하드코딩하지 않는다.
+const FRAMES_DIR = path.join(__dirname, '..', 'assets', 'tray-frames');
 
 class TrayController {
   constructor(app, { onShowDashboard, onQuit }) {
@@ -21,6 +26,12 @@ class TrayController {
     this.onQuit = onQuit;
     this.tray = null;
     this.popover = null;
+    // 불꽃 애니메이션 상태. frames 가 없으면(윈도우·에셋 없음) 정지 아이콘으로 남는다.
+    this.frames = null;      // { idle: [nativeImage], busy: [nativeImage] }
+    this.frameIntervalMs = 100;
+    this.animState = 'idle';
+    this.animIndex = 0;
+    this.animTimer = null;
   }
 
   create() {
@@ -46,7 +57,88 @@ class TrayController {
 
     this.tray.on('click', () => this.togglePopover());
     this.tray.on('right-click', () => this._showContextMenu());
+    this._startAnimation();
     this._buildPopover();
+  }
+
+  // ── 불꽃 애니메이션 ────────────────────────────────────────────────────────
+  // 평상시엔 잔잔하게(idle), 문서를 검사하는 동안엔 세게(busy) 타오른다. 상태는
+  // 엔진의 처리현황 SSE 에서 온다(main.js 가 setBusy 로 알려준다).
+  //
+  // macOS 전용이다. Windows 용 프레임은 만들지 않았고, 무엇보다 작업표시줄 아이콘은
+  // 템플릿 반전이 없어 같은 검정 실루엣을 그대로 쓸 수 없다. 프레임이 없으면 이 함수는
+  // 조용히 물러나고 기존 정지 아이콘이 그대로 남는다.
+
+  /** manifest 를 읽어 프레임을 nativeImage 로 미리 만들어 둔다(재생 중 디스크 접근 0). */
+  _loadFrames() {
+    if (process.platform !== 'darwin') return null;
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(FRAMES_DIR, 'manifest.json'), 'utf-8'));
+    } catch {
+      return null; // 에셋이 없는 체크아웃 — 정지 아이콘으로 동작
+    }
+    const spec = manifest && manifest.mac;
+    if (!spec || !Array.isArray(spec.idle) || !spec.idle.length) return null;
+
+    const toImages = (names) => {
+      const out = [];
+      for (const name of names || []) {
+        // 같은 폴더의 <name>@2x.png 를 레티나용으로 nativeImage 가 알아서 집어온다.
+        const img = nativeImage.createFromPath(path.join(FRAMES_DIR, name));
+        if (img.isEmpty()) return null; // 한 장이라도 깨졌으면 애니메이션을 켜지 않는다
+        img.setTemplateImage(true);
+        out.push(img);
+      }
+      return out.length ? out : null;
+    };
+
+    const idle = toImages(spec.idle);
+    if (!idle) return null;
+    const busy = toImages(spec.busy) || idle; // busy 세트가 없으면 idle 을 그대로 쓴다
+    if (Number.isFinite(manifest.frameIntervalMs) && manifest.frameIntervalMs > 0) {
+      this.frameIntervalMs = manifest.frameIntervalMs;
+    }
+    return { idle, busy };
+  }
+
+  _startAnimation() {
+    this.frames = this._loadFrames();
+    if (!this.frames) return;
+
+    // macOS "동작 줄이기"를 켠 사용자에겐 첫 프레임만 정지 상태로 보여준다. 메뉴바에서
+    // 계속 움직이는 아이콘은 이 설정을 켠 이유 그 자체다.
+    if (this._prefersReducedMotion()) {
+      this._drawFrame();
+      return;
+    }
+    this.animTimer = setInterval(() => {
+      this.animIndex += 1;
+      this._drawFrame();
+    }, this.frameIntervalMs);
+  }
+
+  _prefersReducedMotion() {
+    try {
+      return !!systemPreferences.getAnimationSettings().prefersReducedMotion;
+    } catch {
+      return false; // 이 API 가 없는 플랫폼/버전이면 애니메이션을 막지 않는다
+    }
+  }
+
+  _drawFrame() {
+    if (!this.frames || !this.tray || this.tray.isDestroyed()) return;
+    const set = this.frames[this.animState] || this.frames.idle;
+    this.tray.setImage(set[this.animIndex % set.length]);
+  }
+
+  /** 검사 중인가. main.js 가 처리현황 구독 결과를 넘겨준다. */
+  setBusy(busy) {
+    const next = busy ? 'busy' : 'idle';
+    if (next === this.animState) return;
+    this.animState = next;
+    // 세기가 바뀌는 순간은 불꽃 모양이 튀지 않게 프레임 위상을 유지한 채 세트만 바꾼다.
+    this._drawFrame();
   }
 
   _buildPopover() {
@@ -123,6 +215,11 @@ class TrayController {
   }
 
   destroy() {
+    if (this.animTimer) {
+      clearInterval(this.animTimer);
+      this.animTimer = null;
+    }
+    this.frames = null;
     if (this.popover && !this.popover.isDestroyed()) this.popover.destroy();
     if (this.tray && !this.tray.isDestroyed()) this.tray.destroy();
     this.popover = null;

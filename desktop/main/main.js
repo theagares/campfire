@@ -204,6 +204,10 @@ app.whenReady().then(async () => {
   });
   tray.create();
 
+  // 검사 중이면 트레이 불꽃이 세게 탄다. register() 가 트레이보다 먼저 불리므로
+  // 여기서 붙인다(ipc.onPipelineBusy 주석 참고).
+  ipc.onPipelineBusy((busy) => tray && tray.setBusy(busy));
+
   // CI 전용: macOS 러너에서 트레이 팝오버를 스크린샷으로 검증하기 위한 훅(§SECUREDOC_* 환경변수
   // 관례). 일반 실행에선 설정하지 않으므로 아무 영향 없음.
   if (process.env.SECUREDOC_E2E_OPEN_TRAY) {

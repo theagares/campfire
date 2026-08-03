@@ -433,12 +433,20 @@ function main() {
     writePng(path.join(DESKTOP, 'assets', `${spec.base}@2x.png`), frames[0], s2);
 
     if (animated) {
-      manifest[spec.tag] = frames.map((f, i) => {
-        const n = `${spec.tag}-${String(i + 1).padStart(2, '0')}`;
-        writePng(path.join(DESKTOP, 'assets', 'tray-frames', `${n}.png`), f, s1);
-        writePng(path.join(DESKTOP, 'assets', 'tray-frames', `${n}@2x.png`), f, s2);
-        return `${n}.png`;
-      });
+      // manifest 는 상태별 목록이다: { mac: { idle: [...], busy: [...] } }.
+      // 여기(마스터 1벌)서 만들 수 있는 건 idle 뿐이라 idle 만 채운다 — 런타임은
+      // busy 가 없으면 idle 을 그대로 쓴다(main/tray.js _loadFrames 참고).
+      manifest[spec.tag] = {
+        idle: frames.map((f, i) => {
+          const n = `${spec.tag}-idle-${String(i).padStart(2, '0')}`;
+          writePng(path.join(DESKTOP, 'assets', 'tray-frames', `${n}.png`), f, s1);
+          writePng(path.join(DESKTOP, 'assets', 'tray-frames', `${n}@2x.png`), f, s2);
+          return `${n}.png`;
+        }),
+      };
+      warnings.push(`${spec.name}/ 로 만든 프레임은 idle 세트로만 들어갑니다. `
+        + '검사 중(busy) 세트는 별도 에셋이라 assets/tray-frames/ 에 직접 두고 '
+        + 'manifest.json 을 손으로 갱신해야 합니다 — 이 스크립트를 돌리면 덮어써집니다.');
     }
   }
 
