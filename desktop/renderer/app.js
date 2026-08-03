@@ -230,9 +230,18 @@ function renderResources(host) {
     ${resBlock('cpu', 'CPU', cpu, cpu && `${cpu.percent}%`)}
     ${resBlock('ram', 'RAM', ram, ram && `${ram.usedGb}GB <span class="sub">/ ${ram.totalGb}GB</span>`)}
     ${resBlock('gpu', 'GPU', gpu, gpu && gpu.available ? `${gpu.percent}%` : null)}
-    ${resBlock('vram', 'VRAM', vram, vram && vram.available
-      ? (vram.usedGb != null ? `${vram.usedGb}GB <span class="sub">/ ${vram.totalGb}GB</span>` : `${vram.percent}%`)
-      : null)}`;
+    ${resBlock('vram', 'VRAM', vram, vram && vram.available ? vramValueHtml(vram) : null)}`;
+}
+
+/** 사용량을 알 수 있으면 used/total, 총량만 알면 총량만 — 없는 수치를 지어내지 않는다
+ *  (macOS 외장 GPU 는 총량만 권한 없이 읽을 수 있다, system-metrics.js 참고). */
+function vramValueHtml(vram) {
+  if (vram.usedGb != null && vram.totalGb != null) {
+    return `${vram.usedGb}GB <span class="sub">/ ${vram.totalGb}GB</span>`;
+  }
+  if (vram.totalGb != null) return `<span class="sub">총 </span>${vram.totalGb}GB`;
+  if (vram.percent != null) return `${vram.percent}%`;
+  return '—';
 }
 const RES_ICON_EXT = { cpu: 'png', ram: 'png', gpu: 'png', vram: 'svg' };
 function resBlock(key, label, r, valueHtml) {
@@ -245,7 +254,12 @@ function resBlock(key, label, r, valueHtml) {
         <div class="rb-icon"><img src="../assets/figma/dash-icon-${key}.${RES_ICON_EXT[key]}" alt="" /></div>
         <div class="rb-top">
           <span class="rb-label">${label}</span>
-          <span class="rb-value">${available ? `<span class="main">${valueHtml}</span>` : 'N/A'}</span>
+          <span class="rb-value">${available
+            ? `<span class="main">${valueHtml}</span>`
+            // 왜 못 읽는지를 알려준다 — 그냥 N/A 만 뜨면 고장난 것처럼 보인다
+            // (macOS 는 통합 메모리라 전용 VRAM 이 아예 없는 게 정상이다).
+            : `<span class="na-reason" title="${escapeHtml(r?.reason || '')}">${r?.reason ? escapeHtml(r.reason) : 'N/A'}</span>`
+          }</span>
         </div>
       </div>
       <div class="rb-body">
