@@ -255,7 +255,9 @@ function resBlock(key, label, r, valueHtml) {
         <div class="rb-top">
           <span class="rb-label">${label}</span>
           <span class="rb-value">${available
-            ? `<span class="main">${valueHtml}</span>`
+            // reason 은 못 읽을 때만 쓰는 게 아니다 — 읽어냈을 때도 그 수치가 어느
+            // GPU 의 무엇인지(예: "Apple M2 Pro — 통합 메모리") 툴팁으로 남긴다.
+            ? `<span class="main" title="${escapeHtml(r?.reason || '')}">${valueHtml}</span>`
             // 왜 못 읽는지를 알려준다 — 그냥 N/A 만 뜨면 고장난 것처럼 보인다
             // (macOS 는 통합 메모리라 전용 VRAM 이 아예 없는 게 정상이다).
             : `<span class="na-reason" title="${escapeHtml(r?.reason || '')}">${r?.reason ? escapeHtml(r.reason) : 'N/A'}</span>`
