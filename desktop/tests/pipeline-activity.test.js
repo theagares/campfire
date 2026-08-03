@@ -121,3 +121,101 @@ test('stop() 후에는 재연결 타이머가 남지 않는다', async () => {
   await wait(400);
   assert.equal(engine.hits, before, 'stop() 이후 추가 연결 시도가 없어야 한다');
 });
+
+// ── busy 이벤트: 트레이 불꽃 세기를 정하는 값 ────────────────────────────────
+//
+// 트레이는 단계별 상세가 필요 없고 "지금 검사 중인가" 하나만 본다. 그 판정을 여기서
+// 한 번만 하고 변화가 있을 때만 내보낸다. 잘못되면 증상이 조용하다 — 불꽃이 계속
+// 세게 타거나(끝난 걸 모름) 아예 안 세지거나(시작을 놓침) 둘 중 하나다.
+
+test('검사가 시작되면 busy=true, 끝나면 false 를 낸다', async () => {
+  const engine = await startFakeEngine();
+  const activity = new PipelineActivity(fakeManager({ state: 'running', baseUrl: engine.baseUrl }));
+  const busy = [];
+  activity.on('busy', (b) => busy.push(b));
+  activity.start();
+  try {
+    await wait(300);
+    assert.deepEqual(busy, [], '빈 스냅샷만 받았으면 아직 변화 없음');
+
+    engine.push({ type: 'activity', phase: 'start', stage: 'receive', jobId: 'j1' });
+    await wait(200);
+    assert.deepEqual(busy, [true]);
+
+    engine.push({ type: 'activity', phase: 'progress', stage: 'pii', jobId: 'j1' });
+    await wait(200);
+    assert.deepEqual(busy, [true], '진행 중에는 같은 값을 반복해서 내지 않는다');
+
+    engine.push({ type: 'activity', phase: 'finish', stage: 'done', jobId: 'j1' });
+    await wait(200);
+    assert.deepEqual(busy, [true, false]);
+  } finally {
+    activity.stop();
+    engine.close();
+  }
+});
+
+test('job 이 여러 개면 마지막 하나가 끝나야 busy 가 풀린다', async () => {
+  const engine = await startFakeEngine();
+  const activity = new PipelineActivity(fakeManager({ state: 'running', baseUrl: engine.baseUrl }));
+  const busy = [];
+  activity.on('busy', (b) => busy.push(b));
+  activity.start();
+  try {
+    await wait(300);
+    engine.push({ type: 'activity', phase: 'start', stage: 'receive', jobId: 'a' });
+    engine.push({ type: 'activity', phase: 'start', stage: 'receive', jobId: 'b' });
+    await wait(200);
+    assert.deepEqual(busy, [true]);
+
+    engine.push({ type: 'activity', phase: 'finish', stage: 'done', jobId: 'a' });
+    await wait(200);
+    assert.deepEqual(busy, [true], 'b 가 아직 돌고 있다');
+
+    engine.push({ type: 'activity', phase: 'finish', stage: 'done', jobId: 'b' });
+    await wait(200);
+    assert.deepEqual(busy, [true, false]);
+  } finally {
+    activity.stop();
+    engine.close();
+  }
+});
+
+test('처리 도중 접속하면 스냅샷만으로도 busy 가 켜진다', async () => {
+  // 앱을 켜기 전부터 확장이 검사를 돌리고 있던 경우. 스냅샷을 무시하면 그 검사가
+  // 끝날 때까지 트레이가 평상시 모습으로 남는다.
+  const engine = await startFakeEngine();
+  const activity = new PipelineActivity(fakeManager({ state: 'running', baseUrl: engine.baseUrl }));
+  const busy = [];
+  activity.on('busy', (b) => busy.push(b));
+  activity.start();
+  try {
+    await wait(300);
+    engine.push({ type: 'snapshot', active: [{ jobId: 'inflight', stage: 'pii' }] });
+    await wait(200);
+    assert.deepEqual(busy, [true]);
+  } finally {
+    activity.stop();
+    engine.close();
+  }
+});
+
+test('연결이 끊기면 busy 가 풀린다 (엔진 재시작 후 계속 타오르는 것 방지)', async () => {
+  const engine = await startFakeEngine();
+  const activity = new PipelineActivity(fakeManager({ state: 'running', baseUrl: engine.baseUrl }));
+  const busy = [];
+  activity.on('busy', (b) => busy.push(b));
+  activity.start();
+  try {
+    await wait(300);
+    engine.push({ type: 'activity', phase: 'start', stage: 'receive', jobId: 'j1' });
+    await wait(200);
+    assert.deepEqual(busy, [true]);
+
+    activity.disconnect();
+    assert.deepEqual(busy, [true, false], '끊기면 마지막 상태를 붙들지 않는다');
+  } finally {
+    activity.stop();
+    engine.close();
+  }
+});
