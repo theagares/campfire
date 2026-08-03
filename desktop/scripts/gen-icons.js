@@ -21,6 +21,10 @@
  *                  macOS 템플릿 이미지는 알파만 읽고 RGB 를 버리므로 색은 무의미하다.
  *   tray-win.png   64x64 이상, 정사각. Windows 는 템플릿 반전을 안 해주므로 다크
  *                  작업표시줄에서 보이도록 흰색/컬러로 그린다.
+ *   ui-hero.png    224x224 이상, 정사각, RGBA. (선택)
+ *                  앱 홈 화면과 확장 사이드바에 크게 들어가는 일러스트. 아이콘 마크와
+ *                  달리 16px 까지 줄어들 일이 없으므로 디테일이 있어도 된다.
+ *                  없으면 아이콘 마크에서 대신 뽑는다.
  *
  * ── 애니메이션 ──────────────────────────────────────────────────────────────
  * 앱 아이콘(Dock/작업표시줄)은 macOS·Windows 모두 애니메이션을 지원하지 않는다 —
@@ -398,9 +402,17 @@ function main() {
   for (const s of [16, 32, 48, 128]) {
     writePng(path.join(REPO, 'extension', 'icons', `icon${s}.png`), markTrimmed, s);
   }
-  // 화면에 보이는 브랜드 이미지 — 표시 크기의 2배로 만든다(CSS 가 줄여서 그린다).
-  writePng(path.join(DESKTOP, 'assets', 'figma', 'home-hero.png'), markTrimmed, 224);        // 표시 104x107
-  writePng(path.join(REPO, 'extension', 'sidepanel', 'assets', 'agent-shield.png'), markTrimmed, 144); // 표시 72
+  // 화면에 보이는 브랜드 일러스트 — 표시 크기의 2배로 만든다(CSS 가 줄여서 그린다).
+  // 앱 홈 화면과 확장 사이드바에는 아이콘 마크가 아니라 별도 일러스트(ui-hero.png)를 쓴다:
+  // 이 두 자리는 100px 안팎으로 크게 보여주는 곳이라, 16px 트레이까지 견디려고 단순화한
+  // 마크를 확대하면 휑해 보인다. ui-hero.png 가 없으면 예전처럼 마크에서 뽑는다.
+  const heroFile = path.join(SRC, 'ui-hero.png');
+  const hero = fs.existsSync(heroFile) ? loadImage(heroFile, 'ui-hero.png', 224) : markTrimmed;
+  if (hero === markTrimmed) {
+    warnings.push('ui-hero.png 이 없어 홈/사이드바 일러스트도 아이콘 마크에서 뽑았습니다.');
+  }
+  writePng(path.join(DESKTOP, 'assets', 'figma', 'home-hero.png'), hero, 224);        // 표시 104x107
+  writePng(path.join(REPO, 'extension', 'sidepanel', 'assets', 'agent-shield.png'), hero, 144); // 표시 72
 
   // ── 트레이 (애니메이션 가능 — 프레임 폴더면 프레임별로 생성) ──
   const SPECS = [
