@@ -261,6 +261,12 @@ img { display:block; }
 .res-block .rb-bar .fill { height:100%; background:var(--purple); border-radius:9999px; transition:width .4s ease; }
 .res-block .rb-bar .fill.warn { background:var(--warn); } .res-block .rb-bar .fill.hot { background:var(--danger); }
 .res-block.na .rb-value { color:#94A3B8; }
+/* 못 읽는 이유(예: "통합 메모리 — 전용 VRAM 없음")는 수치보다 길어서, 값 자리에
+   들어가도 카드가 밀리지 않게 작게 줄이고 넘치면 말줄임 처리한다(전체는 title 로). */
+.res-block.na .rb-value .na-reason {
+  display:inline-block; max-width:150px; font-size:10px; font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom;
+}
 /* 실측 세부 항목(Figma 63:258 하단 서브로우) — CPU/RAM/GPU/VRAM 전부 실측 가능(system-metrics.js), 세로+좌측 정렬 */
 .res-block .rb-sub { display:flex; flex-direction:column; gap:3px; margin-top:7px; font-size:9.03px; }
 .res-block .rb-sub-item { display:flex; align-items:baseline; justify-content:flex-start; gap:5px; }
