@@ -71,31 +71,9 @@ tray-win/frame-01.png   ← Windows 도 따로 만들 수 있다
 생성 결과는 `assets/tray-frames/` 에 들어가고, 프레임 목록과 재생 간격은
 `assets/tray-frames/manifest.json` 에 기록된다.
 
-### 재생 코드와 상태
-
-`main/tray.js` 가 `assets/tray-frames/manifest.json` 을 읽어 `tray.setImage()` 로 돌린다.
-**macOS 전용**이다 — Windows 작업표시줄은 템플릿 반전이 없어 같은 검정 실루엣을 쓸 수
-없고, 따로 만든 프레임도 없다. 프레임이 없거나 한 장이라도 깨졌으면 애니메이션을 켜지
-않고 정지 아이콘으로 남는다(메뉴바에서 깜빡이다 마는 것보다 낫다).
-
-상태가 둘이다:
-
-| 상태 | 쓰는 세트 | 언제 |
-|---|---|---|
-| `idle` | 잔잔한 불꽃 | 평상시 |
-| `busy` | 센 불꽃 | 문서를 검사하는 동안 |
-
-`busy` 판정은 엔진의 처리현황 SSE 에서 온다 —
-`main/pipeline-activity.js` 가 진행 중인 job 을 세어 `busy` 이벤트로 내보내고,
-`main/main.js` 가 그걸 `tray.setBusy()` 로 넘긴다. macOS "동작 줄이기"가 켜져 있으면
-애니메이션 없이 첫 프레임만 보여준다.
-
-> **현재 커밋된 프레임은 이 스크립트 생성물이 아니다.** 22/44px 로 이미 내보낸 디자이너
-> 파일을 리샘플 없이 그대로 `assets/tray-frames/` 에 넣었다(작은 크기는 픽셀 단위로
-> 손봐야 뭉개지지 않는다). `tray-mac/` 폴더를 만들어 이 스크립트를 돌리면 그 파일들이
-> `idle` 세트로 덮어써지고 `busy` 세트는 manifest 에서 사라진다 — 프레임을 바꿀 땐
-> `assets/tray-frames/` 를 직접 교체하고 `manifest.json` 을 손으로 갱신하는 쪽이 맞다.
-> `desktop/tests/tray-frames.test.js` 가 파일 존재·크기·manifest 정합을 지킨다.
+> 프레임을 만들어도 **재생 코드는 아직 없다.** `main/tray.js` 는 현재 정지 아이콘만
+> 쓴다. 실제로 움직이게 하려면 manifest 를 읽어 `tray.setImage()` 를 돌리는 작업이
+> 따로 필요하다.
 
 ---
 

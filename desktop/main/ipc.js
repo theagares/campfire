@@ -14,7 +14,6 @@ const paths = require('./paths');
 const { PipelineActivity } = require('./pipeline-activity');
 
 let pipelineActivity = null;
-const busyListeners = new Set();
 
 /** 모든 창(대시보드+트레이)에 이벤트 push */
 function broadcast(channel, payload) {
@@ -185,18 +184,7 @@ function register(ctx) {
   // 화이트리스트 API 만 쓴다). 구버전 엔진이면 404 로 조용히 물러난다.
   pipelineActivity = new PipelineActivity(engineManager);
   pipelineActivity.on('activity', (payload) => broadcast('pipeline:activity', payload));
-  pipelineActivity.on('busy', (busy) => busyListeners.forEach((cb) => cb(busy)));
   pipelineActivity.start();
-}
-
-/** "지금 검사 중인가" 구독. 트레이 불꽃이 세기를 바꾸는 데 쓴다.
- *
- *  콜백 등록을 따로 두는 이유: register() 는 트레이보다 먼저 불린다(main.js). 그래서
- *  트레이를 register 인자로 넘길 수가 없어, 만들어진 뒤에 붙이는 형태로 뺐다. */
-function onPipelineBusy(cb) {
-  busyListeners.add(cb);
-  if (pipelineActivity) cb(pipelineActivity.busy); // 현재 상태를 먼저 한 번
-  return () => busyListeners.delete(cb);
 }
 
 /** 앱 종료 시 SSE 연결 정리 (main.js 에서 호출). */
@@ -205,7 +193,6 @@ function disposeActivity() {
     pipelineActivity.stop();
     pipelineActivity = null;
   }
-  busyListeners.clear();
 }
 
-module.exports = { register, broadcast, buildStats, disposeActivity, onPipelineBusy };
+module.exports = { register, broadcast, buildStats, disposeActivity };

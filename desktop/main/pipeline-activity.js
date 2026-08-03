@@ -17,10 +17,6 @@ const { EventEmitter } = require('events');
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
-// 'finish' 이벤트를 놓쳤을 때 job 이 영원히 "검사 중"으로 남지 않게 하는 상한.
-// 엔진 쪽 core/activity.py 도 같은 이유로 항목마다 startedAt 을 실어 보낸다.
-const JOB_MAX_AGE_MS = 5 * 60 * 1000;
-
 /** 엔진이 요청을 받을 수 있는 상태인가. getStatus() 는 state 문자열을 준다(running 불리언 없음). */
 function isEngineRunning(status) {
   return !!(status && status.state === 'running' && status.baseUrl);
@@ -36,11 +32,6 @@ class PipelineActivity extends EventEmitter {
     this.backoff = RECONNECT_MIN_MS;
     this.stopped = true;
     this.buffer = '';
-    // 진행 중인 job 집합. "지금 검사 중인가"만 알면 되는 소비자(트레이 불꽃)를 위해
-    // 여기서 한 번만 계산해 busy 변화로 내보낸다 — 렌더러는 단계별 상세가 필요해
-    // 자기 상태를 따로 들고 있고, 이쪽은 불리언 하나면 충분하다.
-    this.jobs = new Map(); // jobId -> 마지막으로 소식을 들은 시각(ms)
-    this.busy = false;
   }
 
   start() {
@@ -70,45 +61,6 @@ class PipelineActivity extends EventEmitter {
       this.req = null;
     }
     this.buffer = '';
-    // 연결이 끊기면 진행 상황을 더는 알 수 없다. 마지막으로 본 상태를 붙들고 있으면
-    // 엔진이 재시작한 뒤에도 트레이가 계속 "검사 중"으로 타오른다.
-    this._setJobs(new Map());
-  }
-
-  /** SSE 이벤트를 "지금 검사 중인가"로 접는다. */
-  _track(payload) {
-    if (!payload) return;
-    const now = Date.now();
-    if (payload.type === 'snapshot') {
-      // 늦게 붙은 구독자용 첫 프레임 — 이게 진행 중인 job 의 정답이다.
-      const next = new Map();
-      for (const a of payload.active || []) {
-        if (a && a.jobId) next.set(a.jobId, now);
-      }
-      this._setJobs(next);
-      return;
-    }
-    if (payload.type !== 'activity' || !payload.jobId) return;
-    if (payload.phase === 'finish') this.jobs.delete(payload.jobId);
-    else this.jobs.set(payload.jobId, now);
-
-    // finish 를 놓친 job 이 남아 영원히 타오르는 것을 막는다.
-    for (const [id, seen] of this.jobs) {
-      if (now - seen > JOB_MAX_AGE_MS) this.jobs.delete(id);
-    }
-    this._emitBusy();
-  }
-
-  _setJobs(next) {
-    this.jobs = next;
-    this._emitBusy();
-  }
-
-  _emitBusy() {
-    const busy = this.jobs.size > 0;
-    if (busy === this.busy) return;
-    this.busy = busy;
-    this.emit('busy', busy);
   }
 
   scheduleReconnect(delayMs) {
@@ -165,9 +117,7 @@ class PipelineActivity extends EventEmitter {
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue;
         try {
-          const payload = JSON.parse(line.slice(6));
-          this._track(payload);
-          this.emit('activity', payload);
+          this.emit('activity', JSON.parse(line.slice(6)));
         } catch { /* 깨진 프레임은 버린다 */ }
       }
     }
