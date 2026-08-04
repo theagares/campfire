@@ -223,6 +223,21 @@ body {
 
 /* ── 결과: Figma #45:951 그대로 — 문서(좌, 화면 전체 높이) + 탐지 항목(우) 2컬럼.
    Figma 실측 비율(469:195 ≈ 70.6:29.4)을 그대로 따르는 비율 분할. */
+/* 스크롤은 되지만 스크롤바는 그리지 않는다.
+   사이드패널은 폭이 400px 안팎이라 스크롤바가 차지하는 폭이 그대로 본문에서 빠진다 —
+   특히 좌우 2컬럼일 때 체감이 크다. 스크롤 자체(휠/트랙패드/키보드/스크롤 앵커링)는
+   그대로 살아 있고 표시만 없앤다.
+   scrollbar-width 는 표준(Chrome 121+), ::-webkit-scrollbar 는 그 이전 버전용 —
+   확장이 도는 크롬 버전을 특정할 수 없어 둘 다 둔다. */
+.view,
+.result-side,
+.diff,
+.items { scrollbar-width: none; }
+.view::-webkit-scrollbar,
+.result-side::-webkit-scrollbar,
+.diff::-webkit-scrollbar,
+.items::-webkit-scrollbar { width: 0; height: 0; }
+
 .view-result { display: flex; flex-direction: column; padding: 0; }
 .result-layout { flex: 1; display: flex; min-height: 0; }
 .result-main {
@@ -294,6 +309,18 @@ body {
    기본 조작 단위는 "종류"다: 그룹 토글 하나로 같은 종류를 한 번에 마스킹/해제하고,
    개별 항목을 손봐야 할 때만 펼쳐서 하나씩 끈다. */
 .items { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+
+/* 목록의 자식은 절대 줄어들지 않는다 — 넘치면 .items 가 스크롤한다.
+   이게 없으면 그룹을 펼쳤을 때 목록이 스크롤되는 대신 항목들이 짓눌려 중간에서
+   잘렸다. 원인은 아래 .group 의 overflow:hidden 이다: flex 아이템은 overflow 가
+   visible 이 아니면 자동 최소 크기(min-height:auto)가 min-content 가 아니라 0 이
+   되어, 공간이 모자랄 때 내용 높이 밑으로도 얼마든지 찌그러진다. 그리고 그렇게
+   찌그러져 다 들어가 버리니 .items 에는 넘침이 없어 스크롤바조차 안 생겼다.
+   실측(400px 폭, 이름 14개 펼침): 그룹 내용 540px 가 226px 로 눌려 314px 가
+   잘렸고 .items 넘침은 0 이었다. 이 규칙을 넣으면 잘림 0, 넘침 457px 로 스크롤된다. */
+.items > .group,
+.items > .solo,
+.items > .empty { flex-shrink: 0; }
 
 .group { background: var(--card); border-radius: 10px; overflow: hidden; }
 .group-head {
