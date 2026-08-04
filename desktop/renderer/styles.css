@@ -139,21 +139,19 @@ img { display:block; }
 
 /* ── 연결 ── */
 .conn-stack { display:flex; flex-direction:column; gap:16px; }
+/* 테두리 색은 예전엔 연결 상태(.connected/.disconnected)로 갈렸다. 그 판정을 없애면서
+   카드 자체에 고정색을 준다 — border-color 를 빼면 currentColor 로 떨어져 글자색
+   테두리가 그려진다. */
 .conn-card {
   padding:27px; border-radius:var(--radius-card-lg); display:flex; flex-direction:column; gap:14px;
-  border-width:.5px; border-style:solid;
+  border:.5px solid var(--grey-400);
 }
-.conn-card.connected { border-color:var(--purple); }
-.conn-card.disconnected { border-color:var(--grey-400); }
 .conn-head { display:flex; align-items:flex-start; gap:13px; }
 .conn-head img.conn-ico { width:39px; height:39px; border-radius:9px; object-fit:cover; flex:0 0 39px; }
 .conn-head .ch-text h3 { margin:0 0 4px; font-size:12.5px; font-weight:600; color:var(--ink-850); }
 .conn-head .ch-text p { margin:0; font-size:11px; color:var(--ink-500); }
-.conn-head .ch-status { margin-left:auto; flex:0 0 auto; }
-.badge-pill {
-  display:inline-flex; padding:5px 7px; border-radius:5px; background:#fff;
-  font-size:10px; font-weight:600; letter-spacing:-.0186em; color:var(--purple);
-}
+/* MCP 클라이언트 행의 "수동 / 미설치 / 연결됨" 표시에 계속 쓰인다(카드 배지는 없앴지만
+   클라이언트별 상태는 설정 파일을 직접 읽어 판정하므로 정확하다). */
 .badge-plain { font-size:10px; font-weight:600; letter-spacing:-.0186em; color:var(--grey-500); }
 .codeblock-list { display:flex; flex-direction:column; gap:7px; }
 .codeblock-row {

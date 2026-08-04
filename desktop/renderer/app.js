@@ -10,7 +10,6 @@ const state = {
   engine: null,
   stats: null,
   metrics: null,
-  connections: null,
   mcpInfo: null,
 };
 
@@ -32,7 +31,7 @@ $('#global-banner-close').addEventListener('click', hideGlobalBanner);
 function goto(view) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
-  if (view === 'connect') { refreshConnections(); refreshMcpClients(); }
+  if (view === 'connect') refreshMcpClients();
 }
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => goto(b.dataset.view)));
 
@@ -52,31 +51,12 @@ function setModelPill(sel, model) {
 }
 
 // ── 연결 ─────────────────────────────────────────────────────────────────────
-async function refreshConnections() {
-  state.connections = await api.getConnections();
-  renderConnections();
-}
-function renderConnections() {
-  const c = state.connections;
-  if (!c) return;
-  const mcpCard = $('#conn-mcp-card');
-  const mcpOn = c.mcp.status === 'available';
-  mcpCard.classList.toggle('connected', mcpOn);
-  mcpCard.classList.toggle('disconnected', !mcpOn);
-  const mcpBadge = $('#conn-mcp-badge');
-  mcpBadge.className = mcpOn ? 'badge-pill' : 'badge-plain';
-  mcpBadge.textContent = mcpOn ? '연결됨' : '미연결';
-
-  // 확장의 최근 /health 요청(Origin: chrome-extension://...)을 엔진이 감지해 알려주는
-  // extensionLastSeenSecondsAgo 기준 — MCP 카드와 동일한 패턴(§connections.js 참고).
-  const extCard = $('#conn-ext-card');
-  const extOn = c.extension.status === 'available';
-  extCard.classList.toggle('connected', extOn);
-  extCard.classList.toggle('disconnected', !extOn);
-  const extBadge = $('#conn-ext-badge');
-  extBadge.className = extOn ? 'badge-pill' : 'badge-plain';
-  extBadge.textContent = extOn ? '연결됨' : '미연결';
-}
+// MCP/확장 카드에는 "연결됨 / 미연결" 배지가 없다. 둘 다 판정이 애매했기 때문이다:
+// MCP 는 "엔진이 떠 있으니 /mcp 를 부를 수 있다"까지만 확인할 수 있었고(활성 세션
+// 조회 API 가 없다), 확장은 최근 60초 안에 /health 요청이 왔는지로 추정해서 브라우저를
+// 잠깐 안 쓰면 멀쩡히 설치된 확장이 "미연결"로 뒤집혔다. 실제 상태와 어긋나는 표시라
+// 아예 없앴다 — MCP 클라이언트별 연결 상태(아래 renderMcpClients)는 설정 파일을
+// 직접 읽어 판정하므로 정확하고, 그대로 남긴다.
 $('#conn-ext-install').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
@@ -710,7 +690,6 @@ function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&am
 function renderAll() {
   renderHome();
   renderDashboard();
-  renderConnections();
   renderPipeline();
 }
 
@@ -732,10 +711,8 @@ async function init() {
   // 구버전 preload 와 섞여 실행될 수 있어 옵셔널 호출 — 없으면 처리현황은 idle 로 남는다.
   api.onPipelineActivity?.((ev) => applyPipelineActivity(ev));
 
-  // 연결 상태는 주기적으로 갱신
-  refreshConnections();
+  // MCP 클라이언트 목록은 주기적으로 갱신(사용자가 앱 밖에서 설정을 바꿀 수 있다)
   refreshMcpClients();
-  setInterval(refreshConnections, 5000);
   setInterval(refreshMcpClients, 5000);
 }
 

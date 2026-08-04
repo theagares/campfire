@@ -13,7 +13,6 @@ const api = {
   getStats: () => ipcRenderer.invoke('stats:get'),
   getMetrics: () => ipcRenderer.invoke('metrics:get'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
-  getConnections: () => ipcRenderer.invoke('connections:get'),
   getModelsStatus: () => ipcRenderer.invoke('models:status'),
 
   // 변경/제어

@@ -49,7 +49,7 @@ class PipelineActivity extends EventEmitter {
     this.connect();
     // 엔진이 다시 떴을 때 곧바로 재구독한다(포트가 바뀌었을 수 있다).
     // 상태 판정은 engineManager.getStatus().state 를 쓴다 — running 같은 불리언
-    // 필드는 없다(connections.js/ipc.js 도 같은 방식).
+    // 필드는 없다(ipc.js 도 같은 방식).
     this.engineManager.on('status', (status) => {
       if (this.stopped) return;
       if (isEngineRunning(status) && !this.req) this.scheduleReconnect(0);

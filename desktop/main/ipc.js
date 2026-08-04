@@ -7,7 +7,6 @@
 const { ipcMain, BrowserWindow, shell, app } = require('electron');
 const systemMetrics = require('./system-metrics');
 const engineStats = require('./engine-stats');
-const { getConnections } = require('./connections');
 const models = require('./models');
 const mcpClients = require('./mcp-clients');
 const paths = require('./paths');
@@ -155,8 +154,6 @@ function register(ctx) {
     config.setPipelineLayout(layout);
     return true;
   });
-
-  ipcMain.handle('connections:get', async () => getConnections(engineManager.getStatus()));
 
   ipcMain.handle('window:showDashboard', () => {
     if (typeof onShowDashboard === 'function') onShowDashboard();
