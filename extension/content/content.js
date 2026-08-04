@@ -620,15 +620,87 @@
     return null;
   }
 
+  // ── 선택자가 깨졌을 때의 폴백 ─────────────────────────────────────────────
+  //
+  // 위 PROMPT_CONFIGS 는 사이트 DOM 에 그대로 의존해서, 그쪽이 개편되면 조용히
+  // 깨진다. 그리고 깨졌을 때의 증상이 "아무 일도 안 일어남" 이라 원인 파악이
+  // 어렵다(실사용자 리포트: copilot·perplexity 는 사이드바가 아예 안 뜨고,
+  // gemini 는 뜨는데 전송이 안 됨).
+  //
+  // 트리거 경로가 셋인데 전부 선택자에 걸려 있는 게 문제였다:
+  //   click    → sendBtnSel 이 안 맞으면 안 뜬다
+  //   keydown  → editorSel 이 안 맞으면 안 뜬다
+  //   submit   → SPA 는 네이티브 form submit 을 거의 안 쓴다
+  // 그래서 editorSel 이 깨지면 사이드바 자체가 안 뜨고(copilot·perplexity),
+  // sendBtnSel 만 깨지면 검토는 되는데 재전송이 실패한다(gemini — 15초 폴링 후
+  // 합성 Enter 로 폴백하지만 Quill 은 그걸 무시한다).
+  //
+  // 아래 폴백은 "사이트별 선택자가 실제로 안 맞을 때만" 동작한다 — 맞는 사이트의
+  // 기존 동작은 건드리지 않는다.
+
+  function isEditableEl(el) {
+    if (!el || el === document.body) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    return el.isContentEditable === true;
+  }
+
+  /** 지금 실제로 글을 쓰고 있는 입력창. 선택자가 맞으면 그걸 쓰고, 아니면 포커스된
+   *  편집 가능한 요소로 폴백한다. */
+  function findEditor(cfg) {
+    let bySel = null;
+    try { bySel = cfg?.editorSel ? document.querySelector(cfg.editorSel) : null; } catch (_) { bySel = null; }
+    if (bySel) return bySel;
+    const active = document.activeElement;
+    if (!isEditableEl(active)) return null;
+    warnStaleSelector('editorSel', cfg?.editorSel);
+    return active;
+  }
+
+  // 사이트를 안 가리는 전송 버튼 후보. aria-label 은 언어별로 다르므로 부분 일치를
+  // 쓰고, 사이트가 자기 선택자로 이미 잡히는 경우엔 아예 쓰이지 않는다.
+  const GENERIC_SEND_SELS = [
+    'button[type="submit"]',
+    'button[aria-label*="send" i]',
+    'button[aria-label*="submit" i]',
+    'button[aria-label*="보내기"]',
+    'button[aria-label*="제출"]',
+    'button[data-testid*="send" i]',
+    'button[data-testid*="submit" i]',
+  ];
+
+  /** 전송 버튼 후보 선택자 목록. 사이트별 선택자가 문서에서 하나도 안 잡힐 때만
+   *  일반 후보를 덧붙인다(= 선택자가 깨진 상태). */
+  function sendButtonSelectors(cfg) {
+    const configured = (cfg?.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean);
+    const anyPresent = configured.some(sel => {
+      try { return !!document.querySelector(sel); } catch (_) { return false; }
+    });
+    if (anyPresent) return configured;
+    warnStaleSelector('sendBtnSel', cfg?.sendBtnSel);
+    return [...configured, ...GENERIC_SEND_SELS];
+  }
+
+  // 선택자가 깨진 걸 조용히 넘기지 않는다. 폴백이 있어도 사이트가 개편됐다는
+  // 사실 자체는 남겨야 다음에 원인을 찾을 수 있다(종류당 한 번만).
+  const _warnedSelectors = new Set();
+  function warnStaleSelector(kind, sel) {
+    if (_warnedSelectors.has(kind)) return;
+    _warnedSelectors.add(kind);
+    console.warn(
+      `[SecureDoc] ${location.hostname} 의 ${kind}("${sel}")이 현재 페이지에서 하나도 안 잡힙니다 — `
+      + '사이트 개편으로 선택자가 낡았을 수 있어 일반 후보로 폴백합니다.',
+    );
+  }
+
   function getEditorText(cfg) {
-    const editor = cfg?.editorSel && document.querySelector(cfg.editorSel);
+    const editor = findEditor(cfg);
     if (!editor) return '';
     if (editor.tagName === 'TEXTAREA') return editor.value.trim();
     return (editor.innerText || editor.textContent || '').trim();
   }
 
   function setEditorText(cfg, text) {
-    const editor = cfg?.editorSel && document.querySelector(cfg.editorSel);
+    const editor = findEditor(cfg);
     if (!editor) return false;
     editor.focus();
     if (editor.tagName === 'TEXTAREA') {
@@ -682,11 +754,13 @@
   async function resubmitPrompt(cfg, waitMs = 15000) {
     const startedAt = Date.now();
     await new Promise(r => setTimeout(r, 200)); // setEditorText 후 React 상태 반영 대기
-    const sels = (cfg.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean);
     const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
-      for (const sel of sels) {
-        const btn = document.querySelector(sel);
+      // 매 회 다시 고른다 — 사이트별 선택자가 깨졌으면 일반 후보로 폴백해야 하고,
+      // 그 판정은 DOM 이 다시 그려지면 바뀔 수 있다.
+      for (const sel of sendButtonSelectors(cfg)) {
+        let btn = null;
+        try { btn = document.querySelector(sel); } catch (_) { continue; }
         if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
           btn.click();
           console.log(`[SecureDoc] 재전송: 버튼 클릭 성공 (${Date.now() - startedAt}ms, sel=${sel})`);
@@ -697,7 +771,7 @@
     }
     // 끝내 활성화되지 않으면 Enter 로 한 번 시도해본다.
     console.warn(`[SecureDoc] 재전송: ${waitMs}ms 동안 전송 버튼이 활성화되지 않음(sel="${cfg.sendBtnSel}") — Enter 로 폴백 시도`);
-    const editor = cfg.editorSel && document.querySelector(cfg.editorSel);
+    const editor = findEditor(cfg);
     if (editor) {
       editor.focus();
       editor.dispatchEvent(new KeyboardEvent('keydown', {
@@ -809,7 +883,10 @@
   document.addEventListener('click', async (event) => {
     const cfg = getPromptConfig();
     if (!cfg?.sendBtnSel || promptApproved) return;
-    const isSendButton = cfg.sendBtnSel.split(',').map(s => s.trim()).some(sel => event.target.closest?.(sel));
+    // 사이트별 선택자가 깨졌으면 일반 후보까지 본다(sendButtonSelectors 주석 참고).
+    const isSendButton = sendButtonSelectors(cfg).some(sel => {
+      try { return !!event.target.closest?.(sel); } catch (_) { return false; }
+    });
     if (!isSendButton) return;
     const btn = event.target.closest?.('button, [role="button"]');
     if (btn?.disabled || btn?.getAttribute?.('aria-disabled') === 'true') return;
@@ -821,7 +898,9 @@
     if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
     const cfg = getPromptConfig();
     if (!cfg?.editorSel || promptApproved) return;
-    const editor = document.querySelector(cfg.editorSel);
+    // 선택자가 깨졌으면 포커스된 편집 요소로 폴백한다 — 이게 없으면 사이드바가
+    // 아예 안 뜬다(copilot·perplexity 증상).
+    const editor = findEditor(cfg);
     if (!editor) return;
     const active = document.activeElement;
     if (!editor.contains?.(active) && active !== editor) return;

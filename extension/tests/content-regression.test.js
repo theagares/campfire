@@ -559,7 +559,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error('검사가 이미 진행 중인데 또 다른 검사를 시작했다');
   }
 
-  // (9) 마스킹본은 "주입 시점에 살아 있는" 파일 input 으로 들어가야 한다.
+  // (10) 마스킹본은 "주입 시점에 살아 있는" 파일 input 으로 들어가야 한다.
   //
   // 배경(실사용자 리포트): "인젝션 검사는 되는데 전송을 눌러도 파일이 안 간다".
   // 첨부를 가로챈 순간부터 검토 패널에서 승인할 때까지 수 초~수십 초가 흐르는데
@@ -621,6 +621,56 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (liveInput.files?.length !== 1) {
     throw new Error(`살아 있는 input 에 파일이 담기지 않았다: ${liveInput.files?.length}`);
+  }
+
+  // (11) 사이트별 선택자가 깨져도 검토 흐름이 시작돼야 한다.
+  //
+  // 배경(실사용자 리포트): copilot.microsoft.com / perplexity.ai 는 사이드바가 아예
+  // 안 뜨고, gemini.google.com 은 뜨는데 전송이 안 된다. 트리거 경로가 셋인데 전부
+  // PROMPT_CONFIGS 의 선택자에 걸려 있어서, 사이트가 개편되면 editorSel 이 깨진 곳은
+  // 사이드바 자체가 안 뜨고(click/keydown 둘 다 막힘) sendBtnSel 만 깨진 곳은 검토는
+  // 되는데 재전송이 실패한다. 게다가 아무 로그도 없어 원인 파악이 안 됐다.
+  //
+  // 여기서는 두 선택자를 전부 문서에서 없애(=개편으로 낡은 상태) 그래도
+  //   - Enter 로 검사가 시작되고(포커스된 편집 요소로 폴백)
+  //   - 재전송이 일반 전송 버튼 후보로 폴백해 실제로 클릭되는지
+  // 를 확인한다.
+  const pendingScan9 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: pendingScan9.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+  await new Promise(r => setTimeout(r, 4500)); // promptApproved(3초) 해제 대기
+
+  // 사이트 개편 재현: 설정된 선택자가 문서에서 하나도 안 잡히게 만든다.
+  domBySelector.delete('#prompt-textarea');
+  domBySelector.delete('[data-testid="send-button"]');
+  // 대신 일반 후보로 잡히는 전송 버튼만 남는다.
+  const genericSendBtn = new SendButtonStub();
+  genericSendBtn.disabled = false;
+  domBySelector.set('button[type="submit"]', genericSendBtn);
+  // 사용자가 실제로 글을 쓰고 있는 입력창(포커스됨) — 선택자로는 못 찾는다.
+  promptEditorStub.value = '선택자가 깨진 사이트에서 보내는 프롬프트';
+  documentStub.activeElement = promptEditorStub;
+
+  const before9 = runtimeMessages.length;
+  nextDecision = { action: 'masked', maskedText: '마스킹된 프롬프트' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  const scan9 = runtimeMessages.slice(before9).find(m => m.type === 'START_SCAN');
+  if (!scan9) {
+    throw new Error('선택자가 깨지자 검사가 아예 시작되지 않았다 — 사이드바가 안 뜨는 증상 그대로다');
+  }
+  // resubmitPrompt 는 200ms 대기 후 폴링하므로 실제로 클릭될 때까지 기다린다.
+  for (let i = 0; i < 30 && genericSendBtn.clicks < 1; i += 1) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (genericSendBtn.clicks < 1) {
+    throw new Error('일반 전송 버튼 후보로 폴백하지 못했다 — 검토는 되는데 전송이 안 되는 증상 그대로다');
   }
 
   console.log('content regression ok');
