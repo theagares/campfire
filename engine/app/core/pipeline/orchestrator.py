@@ -69,14 +69,23 @@ async def _detect_all(
     그 구간은 그대로 순서대로 처리되지만, 인젝션 detector 의 Solar API 호출처럼
     락 밖에서 일어나는 네트워크 대기는 청크끼리 겹쳐서 진행된다 — 청크 2개가
     각각 Solar 를 부르는 문서에서 총 대기시간이 (콜1+콜2) 대신 max(콜1,콜2) 에
-    가까워진다(실측)."""
+    가까워진다(실측).
+
+    다만 그 겹침에는 상한이 있어야 한다. 예전엔 gather 로 청크를 전부 띄웠는데,
+    위 이득은 청크가 몇 개인 문서를 전제로 한 것이라 문서가 길면 팬아웃이 그대로
+    커졌다 — 실측: 50장(10만 자)이면 청크 111개가 한꺼번에 진입하고, 15만 자면
+    167개다. 그만큼의 Solar 호출이 동시에 나가고 태스크도 그만큼 쌓인다.
+    config.DETECT_CONCURRENCY 로 상한을 두되 기본값(8)이 웬만한 짧은 문서의 청크
+    수보다 커서 작은 문서의 지연 이득은 그대로 남는다."""
     total = len(chunks)
+    sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
 
     async def _run(idx: int, ch: dict) -> tuple[dict, list[Detection]]:
         meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
         if user_prompt:
             meta["user_prompt"] = user_prompt
-        dets = await detector.detect(ch["text"], meta=meta)
+        async with sem:
+            dets = await detector.detect(ch["text"], meta=meta)
         return ch, dets
 
     pairs = await asyncio.gather(*(_run(idx, ch) for idx, ch in enumerate(chunks)))

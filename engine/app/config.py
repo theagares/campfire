@@ -67,6 +67,29 @@ MAX_PROMPT_CHARS: int = int(os.environ.get("SECUREDOC_MAX_PROMPT_CHARS", "100000
 # ── 타임아웃 (PLAN §9.2) ──────────────────────────────────────────────────────
 REQUEST_TIMEOUT_SEC: int = int(os.environ.get("SECUREDOC_REQUEST_TIMEOUT_SEC", "30"))
 
+# 검출기 서브프로세스에 요청을 써넣고 응답 한 줄을 기다리는 상한(초).
+# 없으면 서브프로세스가 멎었을 때 readline() 이 영원히 대기하는데, 그 대기가
+# _request_lock 안에서 일어나므로 뒤에 줄 선 모든 청크까지 같이 멎는다
+# (50장 문서 = 청크 111개가 통째로 잠긴다). 죽은 것과 도는 중인 것을 구분할 수
+# 없게 되는 것도 문제라 상한을 둔다.
+# 값의 근거: 이건 "한 청크의 추론 시간" 상한이지 문서 전체가 아니다(락 대기 시간은
+# 포함되지 않는다 — 요청을 쓴 뒤부터 재니까). GPU 에서는 청크당 0.1초 안팎이지만
+# CPU 폴백(PII_DEVICE/INJECTION_DEVICE=cpu)에서는 훨씬 느려서 넉넉히 잡는다.
+DETECT_INFER_TIMEOUT_SEC: float = float(
+    os.environ.get("SECUREDOC_DETECT_INFER_TIMEOUT_SEC", "120")
+)
+
+# 청크별 detect() 를 한 번에 몇 개까지 띄울지.
+# 예전엔 상한 없이 asyncio.gather 로 전부 띄웠다. 청크가 2~3개인 문서를 전제로 한
+# 최적화였는데(Solar API 대기를 겹치게 해서 총 대기시간을 줄이는 목적), 문서가 길면
+# 그 팬아웃이 그대로 커진다 — 실측: 50장(10만 자) = 청크 111개가 동시에 진입,
+# 15만 자면 167개. 모델 추론 자체는 각 detector 의 _request_lock 이 직렬화하므로
+# GPU 가 동시에 물리진 않지만, 락 밖의 Solar API 호출이 그 수만큼 한꺼번에 나가고
+# 태스크/대기 자원도 그만큼 쌓인다. 작은 문서의 이득은 유지하면서 상한만 둔다.
+DETECT_CONCURRENCY: int = max(
+    1, int(os.environ.get("SECUREDOC_DETECT_CONCURRENCY", "8"))
+)
+
 # ── Detector 선택 (PLAN §5 registry) ─────────────────────────────────────────
 # 룰베이스 폴백은 완전히 제거했다 — encoder/llm_mcp(실 모델)만 남는다. 가중치가
 # 아직 안 받아진 상태에서는 detector 자체가 아니라 파이프라인의 model_status 게이트가
