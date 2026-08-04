@@ -515,6 +515,12 @@ img { display:block; }
   background:var(--warn-soft); color:var(--ink-900); border-bottom:1px solid var(--warn);
   font-size:12px; line-height:1.4;
 }
+/* 모델 다운로드는 첫 실행의 정상 절차지 경고가 아니다 — 기본 주황(warn)은 실제 문제
+   (설치 실패, MCP 연결 실패)에만 남기고, 진행 표시는 앱 톤인 퍼플로 구분한다.
+   `.banner.info` 와 같은 색 규칙(--purple-soft + --ink-600)을 따른다. */
+.global-banner.progress {
+  background:var(--purple-soft); color:var(--ink-600); border-bottom-color:var(--purple);
+}
 .global-banner span#global-banner-text { flex:1; }
 .global-banner .icon-x { flex:0 0 auto; }
 

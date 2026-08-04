@@ -55,7 +55,9 @@ _ASSETS: dict[str, dict[str, Any]] = {
         "url": f"{_RELEASE_BASE}/pii_engine_v2.tar.gz",
         "sha256": "1cc79978799d1d6c3a7b1737bed4e407ebfe3a6fc0925e73c7d18da21a1d3032",
         "extract_to": lambda: config.PII_ENGINE_DIR,
-        "label": "PII 모델(seed42)",
+        # seed 이름은 내부 학습 아티팩트 식별자라 사용자에겐 의미가 없다(단일 seed 전환
+        # 이후로는 고를 것도 없다). 다운로드 진행 표시에 그대로 노출되던 걸 뺀다.
+        "label": "PII 모델",
     },
     "injection": {
         "url": f"{_RELEASE_BASE}/injection_engine_v1.tar.gz",
