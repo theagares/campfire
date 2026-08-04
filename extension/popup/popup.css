@@ -66,6 +66,11 @@ body {
   position: relative; z-index: 1;
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
   background: var(--sunken); font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--ink-mute);
+  /* dot 의 glow(::before, 44px)가 필 높이(약 24px)보다 커서 위아래로 새어나갔다 —
+     필 안쪽으로만 번지게 자른다. 이 필은 .row(display:flex) 의 플렉스 아이템이라
+     overflow 로 인한 inline baseline 변화 문제가 없다(트레이 팝오버 쪽은 그게 걸려
+     clip-path 를 쓴다, desktop/renderer/tray.html 참고). */
+  overflow: hidden;
 }
 .status-pill.ok { color: var(--ok); }
 .status-pill.off { color: var(--danger); }
