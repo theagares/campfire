@@ -32,11 +32,6 @@ body {
   border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
 .doc-badge { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.doc-ico-wrap {
-  flex-shrink: 0; width: 30px; height: 30px; border-radius: 9px;
-  background: #fb2c36; display: flex; align-items: center; justify-content: center;
-}
-.doc-ico-wrap img { width: 14px; height: 14px; }
 .doc-text { min-width: 0; }
 .doc-name {
   font-size: 12px; font-weight: 600; color: var(--text-2);
