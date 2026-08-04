@@ -1,7 +1,7 @@
 {
   "name": "campfire-desktop",
   "productName": "Campfire",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Campfire 데스크탑 앱 — 로컬 Python 엔진 사이드카 + 대시보드 + 트레이 (PLAN §8, Build Unit U4)",
   "author": "Campfire",
   "license": "UNLICENSED",
