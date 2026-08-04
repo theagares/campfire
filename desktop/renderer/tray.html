@@ -54,6 +54,15 @@
     .model-pill {
       display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:999px;
       background:var(--card-bg); border:1px solid var(--line); font-size:11px; font-weight:600; color:var(--ink-mute);
+      /* mp-dot 의 glow 가 필 테두리를 넘어 새어나가지 않게 자른다(앱 본체 styles.css 의
+         .model-pill 과 같은 목적). 다만 거기선 overflow:hidden 을 쓰고 여기선 clip-path 다 —
+         이 필은 블록(.model-col) 안에 홀로 놓인 inline-flex 라, overflow 를 visible 이
+         아닌 값으로 주면 인라인 박스의 baseline 이 "마지막 줄"에서 "아래 마진 끝"으로
+         바뀌면서 줄 높이가 늘어 아래 요소가 밀린다(팝오버는 높이가 460px 로 고정이라
+         이런 밀림이 그대로 잘림으로 이어진다). clip-path 는 레이아웃에 전혀 영향을 주지
+         않는다. 반대로 앱 쪽 필은 자기 box-shadow 가 있어서 clip-path 를 쓰면 그 그림자가
+         같이 잘려 나가므로 overflow 를 써야 한다 — 그래서 기법이 갈린다. */
+      clip-path:inset(0 round 999px);
     }
     /* mp-dot의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes/구조를 쓴다.
        중요한 실측 결과(styles.css의 "Ambient Glow" 섹션 주석에 자세히 남겨뒀다 — 다시

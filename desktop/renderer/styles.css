@@ -123,6 +123,11 @@ img { display:block; }
   display:inline-flex; align-items:center; gap:8px; padding:6px 16px; border-radius:9999px;
   background:#fff; font-weight:500; font-size:13px; line-height:19.5px;
   box-shadow:0 0 14px rgba(120,120,120,.18), inset 0 0 8px rgba(120,120,120,.18);
+  /* mp-dot 의 glow(::before, 56px)가 필 높이(약 33px)보다 커서 위아래 테두리를 넘어
+     밖으로 새어나갔다 — 필 안쪽으로만 번지게 자른다. clip-path 가 아니라 overflow 인
+     이유: clip-path 는 이 요소 "자신의" box-shadow(위 0 0 14px)까지 같이 잘라내
+     필 주변의 부드러운 그림자가 사라진다. overflow 는 자손만 자른다. */
+  overflow:hidden;
 }
 .model-pill .mp-dot { position:relative; width:6px; height:6px; border-radius:9999px; transition:background-color .8s ease-in-out; }
 .model-pill.on { border:1px solid var(--purple); }
@@ -172,7 +177,11 @@ img { display:block; }
 .dash-row + .dash-row { margin-top:13px; }
 
 /* 모델 카드 (Figma 63:249/63:250 좌표를 280×136 기준 %로 환산 — 카드 폭이 줄어도 비율 유지) */
-.model-card { position:relative; height:136px; }
+/* overflow:hidden — mc-dot 은 카드 우상단 모서리 근처에 붙어 있어서 glow(::before, 56px)가
+   카드 위/오른쪽 테두리를 그대로 넘어 나갔다. 카드 안쪽으로만 번지게 자른다.
+   .card 자신의 box-shadow 는 overflow 로 안 잘린다(clip-path 였다면 잘렸다).
+   자식(mc-title/mc-photo/mc-caption)은 전부 카드 안에 들어오므로 잘릴 게 없다. */
+.model-card { position:relative; height:136px; overflow:hidden; }
 /* line-height 를 명시하지 않으면 body 의 기본 line-height:1.5 가 15px 폰트에 그대로 적용돼
    박스가 22.5px(=15*1.5)까지 커진다 — Injection 카드는 로고 이미지가 원형 박스 가장자리까지
    꽉 차 있어(PII 로고는 흰 여백이 있어 안 보였다) 이 초과분과 mc-photo 상단이 겹쳐 로고가
