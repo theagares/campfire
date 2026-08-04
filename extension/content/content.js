@@ -145,6 +145,48 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  /** 주입 "시점"에 살아 있는 파일 input 을 고른다.
+   *
+   *  왜 필요한가: 파일을 가로챈 순간부터 사용자가 검토 패널에서 승인할 때까지 수 초~
+   *  수십 초가 흐른다(그 사이 프롬프트를 다 입력한다). 그동안 SPA 가 컴포저를 다시
+   *  그리면, 가로챌 때 붙들어 둔 input 은 DOM 에서 떨어져 나간 고아 노드가 된다.
+   *  거기에 파일을 넣고 change 를 쏘면 — 예외도 안 나고 input.files 에는 파일이
+   *  들어가는데 — 그 이벤트는 document 까지 버블링하지 않으므로 사이트는 아무것도
+   *  못 받는다. 파일만 조용히 사라지고 프롬프트는 그대로 전송된다.
+   *  (실측: 살아있는 input 은 사이트가 change 1회 수신, detached 는 0회. 고아 노드에
+   *   파일 1개가 들어간 채 실제 컴포저는 0개였다.)
+   *
+   *  주의: findFileInput 처럼 target.closest('form') 을 먼저 보면, target 이 이미
+   *  detached 인 경우 그 "detached 한 form" 안의 낡은 input 을 그대로 돌려준다.
+   *  그래서 매 후보마다 isConnected 를 확인한다. */
+  function liveFileInput(preferred) {
+    if (preferred?.isConnected) return preferred;
+    const byForm = preferred?.closest?.('form')?.querySelector?.('input[type="file"]');
+    if (byForm?.isConnected) return byForm;
+    // querySelector 는 문서에 붙어 있는 노드만 돌려주므로 이건 항상 살아 있다.
+    return document.querySelector('input[type="file"]');
+  }
+
+  /** 마스킹본을 파일 input 으로 흘려보내고, 사이트가 실제로 받았는지까지 확인한다.
+   *  못 넣었으면 조용히 넘어가지 않고 알린다 — 예전엔 실패해도 아무 신호가 없어서
+   *  "검사는 되는데 파일만 안 간다" 로만 보였다. 성공 여부를 돌려주므로 호출부가
+   *  폴백(합성 drop/paste)으로 넘어갈지 정할 수 있다. */
+  function injectFileIntoInput(preferred, finalFile) {
+    const input = liveFileInput(preferred);
+    if (!input) {
+      console.error('[SecureDoc] 파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다');
+      return false;
+    }
+    setFileOnInput(input, finalFile);
+    if (!input.isConnected || input.files?.length !== 1) {
+      console.error('[SecureDoc] 파일 재주입 실패: 주입 후에도 input 에 파일이 없습니다', {
+        connected: input.isConnected, files: input.files?.length,
+      });
+      return false;
+    }
+    return true;
+  }
+
   /** 사이트가 파일 선택(📎) 버튼용으로 이미 갖고 있는 숨은 input[type=file]을 찾는다
    *  — drop/paste로 들어온 파일도 이 input을 통해 "새로 파일을 선택한 것"처럼
    *  흘려보내기 위함(아래 "드래그앤드롭/붙여넣기 재주입" 섹션 참고). target이 속했던
@@ -449,7 +491,11 @@
     event.stopImmediatePropagation();
     input.value = ''; // 사이트가 원본 파일을 보지 못하게 즉시 비운다(스캔 전 유출 방지)
 
-    await stageFileAttachment(file, (finalFile) => setFileOnInput(input, finalFile));
+    // 여기서 붙든 input 을 그대로 쓰지 않는다 — 승인까지 시간이 흐르는 동안 SPA 가
+    // 컴포저를 다시 그리면 이 노드는 고아가 되고, 거기에 넣은 파일은 사이트에 전달되지
+    // 않는다(liveFileInput 주석 참고). drop/paste 경로는 이미 주입 시점에 다시 찾고
+    // 있었는데 이 📎 경로만 예전 방식으로 남아 있었다.
+    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile));
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
@@ -484,8 +530,7 @@
       // 아예 원래 drop 이벤트를 취소해버리고 사이트가 이미 갖고 있는 파일 선택
       // input[type=file]에 "새로 파일을 선택한 것"처럼 흘려보낸다 — 이 경로는
       // change 이벤트 하나로 끝나며 드래그 상태와 전혀 무관하다.
-      const input = findFileInput(target);
-      if (input) { setFileOnInput(input, finalFile); return; }
+      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
 
       // 폴백: 이 사이트에 파일 선택 input이 따로 없는 경우에만 기존 방식(합성 drop
       // 재생)을 시도한다. isConnected로 detached 여부를 확인해 document.body로
@@ -515,8 +560,7 @@
 
     await stageFileAttachment(file, (finalFile) => {
       // drop 재주입과 동일한 이유(위 주석 참고)로 파일 선택 input을 우선 사용한다.
-      const input = findFileInput(target);
-      if (input) { setFileOnInput(input, finalFile); return; }
+      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
 
       // 폴백: 파일 선택 input이 없는 경우에만 기존 합성 paste 재생을 시도한다.
       const dt = new DataTransfer();
