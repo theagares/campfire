@@ -171,18 +171,55 @@
    *  못 넣었으면 조용히 넘어가지 않고 알린다 — 예전엔 실패해도 아무 신호가 없어서
    *  "검사는 되는데 파일만 안 간다" 로만 보였다. 성공 여부를 돌려주므로 호출부가
    *  폴백(합성 drop/paste)으로 넘어갈지 정할 수 있다. */
+  /** 파일 input 이 아예 없을 때의 폴백 — 컴포저에 합성 drop 을 재생한다.
+   *
+   *  Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 통째로 없앤다
+   *  (실사용자 콘솔: "파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다"
+   *   — content.js:498 = 파일 선택 경로의 주입 콜백). 그래서 승인 시점엔 넣을 곳이
+   *  없어 파일이 조용히 버려지고 프롬프트만 전송됐다.
+   *
+   *  이런 사이트도 컴포저에 파일을 끌어다 놓는 건 지원하므로 그 경로로 넣는다.
+   *  일부 사이트는 dragenter/dragover 로 드롭 상태가 만들어져야 drop 을 처리해서
+   *  세 이벤트를 순서대로 보낸다.
+   *
+   *  이 합성 drop 은 우리 drop 캡처 리스너에도 걸리지만, 마스킹본은
+   *  base64ToFile() 이 contentOwnedFiles 에 넣어둔 파일이라 그 리스너가 걸러낸다
+   *  (재귀하지 않는다). */
+  function injectFileByDrop(finalFile, preferredTarget) {
+    let target = preferredTarget?.isConnected ? preferredTarget : null;
+    if (!target) {
+      const editor = findEditor(getPromptConfig());
+      if (editor?.isConnected) target = editor;
+    }
+    if (!target) target = document.body;
+    if (!target) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(finalFile);
+      const init = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt };
+      target.dispatchEvent(new DragEvent('dragenter', init));
+      target.dispatchEvent(new DragEvent('dragover', init));
+      target.dispatchEvent(new DragEvent('drop', init));
+      console.log('[SecureDoc] 파일 재주입: input 이 없어 합성 drop 으로 넣었습니다');
+      return true;
+    } catch (e) {
+      console.error('[SecureDoc] 파일 재주입 폴백(drop) 실패:', e);
+      return false;
+    }
+  }
+
   function injectFileIntoInput(preferred, finalFile) {
     const input = liveFileInput(preferred);
     if (!input) {
-      console.error('[SecureDoc] 파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다');
-      return false;
+      // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
+      return injectFileByDrop(finalFile, null);
     }
     setFileOnInput(input, finalFile);
     if (!input.isConnected || input.files?.length !== 1) {
-      console.error('[SecureDoc] 파일 재주입 실패: 주입 후에도 input 에 파일이 없습니다', {
+      console.warn('[SecureDoc] input 주입이 반영되지 않았습니다 — 합성 drop 으로 재시도합니다', {
         connected: input.isConnected, files: input.files?.length,
       });
-      return false;
+      return injectFileByDrop(finalFile, null);
     }
     return true;
   }
@@ -710,22 +747,63 @@
       editor.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
-    try {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
-      document.execCommand('insertText', false, text);
-    } catch (_) {
-      editor.textContent = text;
-    }
-    editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-    if (cfg.editorType === 'lexical') {
+    // contenteditable 은 에디터 프레임워크마다 먹는 방법이 달라 여러 수단을 쓴다.
+    // 중요한 건 "첫 번째로 성공한 것에서 멈추는" 것이다.
+    //
+    // 예전엔 세 수단(execCommand / 합성 InputEvent / 합성 paste)을 조건 없이 전부
+    // 실행했다. Lexical(perplexity)처럼 셋을 다 받아들이는 에디터에서는 같은 글이
+    // 그만큼 여러 번 삽입되고, 게다가 Lexical 은 execCommand('selectAll'+'delete')를
+    // 무시해서 원래 있던 글까지 남는다 — 합쳐서 프롬프트가 4벌로 들어갔다
+    // (실사용자 리포트: "프롬프트가 4번 반복돼서 넘어간다").
+    const target = text.trim();
+    const current = () => (editor.innerText || editor.textContent || '').trim();
+    const done = () => current() === target;
+
+    // 기존 내용을 지운다. execCommand('selectAll') 만으로는 Lexical 같은 에디터에서
+    // 안 먹는 경우가 있어, 실제 DOM 선택 영역을 직접 잡아준다 — insertText/paste 는
+    // "선택 영역을 대체" 하므로 선택만 제대로 잡혀 있으면 지우기와 넣기가 한 번에 된다.
+    const clear = () => {
       try {
-        const dt = new DataTransfer();
-        dt.setData('text/plain', text);
-        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      } catch (_) { /* ignore */ }
-    }
-    return true;
+        const sel = window.getSelection?.();
+        if (sel) {
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch (_) { /* 아래 execCommand 로도 시도한다 */ }
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      } catch (_) { /* 아래 수단이 알아서 덮어쓴다 */ }
+    };
+
+    // 1) execCommand — 가장 "진짜 입력"에 가까워 대부분의 에디터가 자기 이벤트를 낸다.
+    clear();
+    try { document.execCommand('insertText', false, text); } catch (_) { /* 다음 수단 */ }
+    if (done()) return true;
+
+    // 2) 합성 paste — Lexical 등 execCommand 를 무시하는 에디터용.
+    clear();
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch (_) { /* 다음 수단 */ }
+    if (done()) return true;
+
+    // 3) 최후 — DOM 을 직접 갈아끼우고 input 을 알린다. 프레임워크가 자기 상태와
+    //    어긋난 것으로 보고 되돌릴 수 있어 마지막에만 쓴다.
+    clear();
+    editor.textContent = text;
+    // 알림용 이벤트에는 data/inputType 을 싣지 않는다. insertText + data 를 실으면
+    // 프레임워크가 "또 넣으라는 뜻" 으로 읽어 방금 세팅한 내용 뒤에 한 벌 더 붙는다
+    // (실측: 이 한 줄 때문에 마지막 수단에서도 2벌이 됐다).
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    if (done()) return true;
+
+    console.warn('[SecureDoc] 입력창에 마스킹본을 넣지 못했습니다 — 현재 내용이 의도와 다를 수 있습니다');
+    return false;
   }
 
   /** 마스킹된 텍스트가 채팅 입력창에 채워졌다가 전송되기까지의 짧은 순간, 입력창을
@@ -839,13 +917,22 @@
         // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
         // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
         // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
+        // 주입 성공 여부를 반드시 본다 — 예전엔 반환값을 버려서, 파일이 하나도 안
+        // 들어갔는데도 그대로 프롬프트만 전송했다("문서가 안 간다"의 마지막 조각).
+        let injected = true;
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
           const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
           await announceContentApprovedFile(maskedFile);
-          staged.inject(maskedFile);
+          injected = staged.inject(maskedFile) !== false;
         } else if (decision.file?.action === 'passthrough') {
           await announceContentApprovedFile(staged.file);
-          staged.inject(staged.file);
+          injected = staged.inject(staged.file) !== false;
+        }
+        if (!injected) {
+          console.error(
+            '[SecureDoc] 문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다. '
+            + '문서를 다시 첨부해 주세요.',
+          );
         }
         // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
         clearPendingAttachment();
