@@ -15,9 +15,12 @@ const state = {
 };
 
 // ── 전역 배너(설정 모달 밖에서도 보여야 하는 알림 — 설치 직후 자동 모델 설치 진행/실패 등) ──
-function showGlobalBanner(text) {
+// tone: 'warn'(기본, 주황) — 실패·문제 / 'progress'(퍼플) — 진행 중인 정상 절차.
+// 같은 배너를 재사용하므로 매번 명시적으로 정리한다(이전 호출의 톤이 남지 않게).
+function showGlobalBanner(text, tone = 'warn') {
   const el = $('#global-banner');
   $('#global-banner-text').textContent = text;
+  el.classList.toggle('progress', tone === 'progress');
   el.style.display = 'flex';
 }
 function hideGlobalBanner() {
@@ -671,7 +674,7 @@ api.onModelsFetchProgress?.((ev) => {
     const label = `${ev.label || ''}${pct}`;
     setDetectorProgress(label);
     // 설정 모달이 닫혀 있어도(설치 직후 자동 설치 루틴) 진행 상황을 보여준다.
-    if (!modal.classList.contains('open')) showGlobalBanner(label);
+    if (!modal.classList.contains('open')) showGlobalBanner(label, 'progress');
   } else if (ev.type === 'error' || ev.type === 'fallback') {
     showGlobalBanner(ev.message || '모델 설치 중 문제가 발생했습니다.');
   } else if (ev.type === 'done') {
