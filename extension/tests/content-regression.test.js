@@ -37,14 +37,20 @@ class EventTargetStub {
   contains() { return false; }
 }
 class HTMLInputElementStub extends EventTargetStub {
-  constructor(file = null) {
+  // isConnected: 진짜 input 은 DOM 에 붙어 있다. 재주입 코드가 "이 노드가 아직
+  // 살아 있나"를 이걸로 판단하므로 기본값이 true 여야 실제와 같다. 테스트 (9)에서만
+  // false 로 내려 SPA 재렌더로 떨어져 나간 상황을 만든다.
+  // id: 어느 input 에 주입됐는지 구분하려고 순서 로그에 같이 남긴다.
+  constructor(file = null, id = 'input') {
     super();
     this.type = 'file';
     this.files = file ? [file] : [];
     this.value = '';
+    this.isConnected = true;
+    this.id = id;
   }
   // setFileOnInput 이 마스킹본을 넣고 input/change 를 쏘는 시점을 순서 로그에 남긴다.
-  dispatchEvent() { actionLog.push({ kind: 'inject' }); return true; }
+  dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id }); return true; }
 }
 class HTMLTextAreaElementStub extends EventTargetStub {
   constructor(value = '') {
@@ -553,7 +559,71 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error('검사가 이미 진행 중인데 또 다른 검사를 시작했다');
   }
 
-  // (9) 사이트별 선택자가 깨져도 검토 흐름이 시작돼야 한다.
+  // (10) 마스킹본은 "주입 시점에 살아 있는" 파일 input 으로 들어가야 한다.
+  //
+  // 배경(실사용자 리포트): "인젝션 검사는 되는데 전송을 눌러도 파일이 안 간다".
+  // 첨부를 가로챈 순간부터 검토 패널에서 승인할 때까지 수 초~수십 초가 흐르는데
+  // (그 사이 프롬프트를 다 입력한다), SPA 가 컴포저를 다시 그리면 가로챌 때 붙들어
+  // 둔 input 은 DOM 에서 떨어져 나간 고아 노드가 된다. 거기에 파일을 넣고 change 를
+  // 쏘면 예외도 안 나고 input.files 에도 들어가지만, 그 이벤트는 document 까지
+  // 버블링하지 않아 사이트는 아무것도 못 받는다 — 파일만 조용히 사라지고 프롬프트는
+  // 그대로 전송된다. drop/paste 경로는 이미 주입 시점에 다시 찾고 있었는데 파일
+  // 선택(📎) 경로만 예전 방식으로 남아 있었다.
+  // 앞 테스트는 일부러 결정을 회신하지 않아 검사를 진행 중으로 남겨뒀다
+  // (promptInProcess=true). 취소해서 이 테스트가 깨끗한 상태에서 시작하게 한다.
+  const pendingScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: pendingScan.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+
+  const file9 = new FileStub(['pdf bytes'], 'stale.pdf', { type: 'application/pdf' });
+  const staleInput = new HTMLInputElementStub(file9, 'stale');
+  dispatchDocumentEvent('change', {
+    target: staleInput,
+    composedPath: () => [staleInput, documentStub],
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 여기서 사이트가 컴포저를 다시 그렸다 — 우리가 들고 있던 input 은 죽고 새 것이 생겼다.
+  staleInput.isConnected = false;
+  const liveInput = new HTMLInputElementStub(null, 'live');
+  domBySelector.set('input[type="file"]', liveInput);
+
+  actionLog.length = 0;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload',
+      maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf',
+      fileName: 'stale.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await flush();
+
+  const injected = actionLog.filter(e => e.kind === 'inject');
+  if (injected.some(e => e.id === 'stale')) {
+    throw new Error('재렌더로 떨어져 나간 낡은 input 에 주입했다 — 사이트는 파일을 못 받는다');
+  }
+  if (!injected.some(e => e.id === 'live')) {
+    throw new Error('살아 있는 input 에 마스킹본이 주입되지 않았다 — 파일이 전송되지 않는다');
+  }
+  if (liveInput.files?.length !== 1) {
+    throw new Error(`살아 있는 input 에 파일이 담기지 않았다: ${liveInput.files?.length}`);
+  }
+
+  // (11) 사이트별 선택자가 깨져도 검토 흐름이 시작돼야 한다.
   //
   // 배경(실사용자 리포트): copilot.microsoft.com / perplexity.ai 는 사이드바가 아예
   // 안 뜨고, gemini.google.com 은 뜨는데 전송이 안 된다. 트리거 경로가 셋인데 전부
