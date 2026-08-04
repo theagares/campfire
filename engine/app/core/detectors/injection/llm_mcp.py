@@ -255,8 +255,24 @@ class InjectionLlmMcpDetector:
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
+            # 응답 대기에 상한을 둔다. 없으면 서브프로세스가 멎었을 때(GPU 이상 등)
+            # 이 readline 이 영원히 대기하는데, 그게 _request_lock 안이라 뒤에 줄 선
+            # 청크 전부가 같이 멎는다(50장 문서 = 111개). 잡음 라인이 계속 와도
+            # 무한정 늘어나지 않게 매 줄이 아니라 전체에 대한 마감시각으로 잰다.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + config.DETECT_INFER_TIMEOUT_SEC
             while True:
-                out_line = await proc.stdout.readline()
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    await self._kill_process()  # 멎은 프로세스는 버린다 — 다음 요청이 새로 띄운다
+                    raise RuntimeError(
+                        f"injection_llm_mcp: 서브프로세스가 {config.DETECT_INFER_TIMEOUT_SEC}초 안에 "
+                        "응답하지 않음 — 프로세스를 재시작합니다"
+                    )
+                try:
+                    out_line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue  # 다음 루프에서 remaining<=0 으로 걸려 위 분기로 간다
                 if not out_line:
                     stderr = b""
                     if proc.stderr is not None:

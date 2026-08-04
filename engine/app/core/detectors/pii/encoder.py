@@ -271,9 +271,23 @@ class EncoderPiiDetector:
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
+            # 응답 대기 상한 — 인젝션 쪽(_infer)과 같은 이유다. 이 대기는
+            # _request_lock 안이라, 멎으면 뒤에 줄 선 청크가 전부 함께 멎는다.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + config.DETECT_INFER_TIMEOUT_SEC
             result = None
             while result is None:
-                out_line = await proc.stdout.readline()
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    await self._kill_process()  # 멎은 프로세스는 버린다 — 다음 요청이 새로 띄운다
+                    raise RuntimeError(
+                        f"pii_encoder: 서브프로세스가 {config.DETECT_INFER_TIMEOUT_SEC}초 안에 "
+                        "응답하지 않음 — 프로세스를 재시작합니다"
+                    )
+                try:
+                    out_line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue  # 다음 루프에서 remaining<=0 으로 걸려 위 분기로 간다
                 if not out_line:
                     stderr = b""
                     if proc.stderr is not None:
