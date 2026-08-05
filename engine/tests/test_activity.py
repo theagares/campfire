@@ -186,8 +186,14 @@ def test_mcp_scan_failure_still_clears_busy(monkeypatch):
 
 
 def test_mcp_search_does_not_flood_activity(monkeypatch, tmp_path):
-    """secure_search_files 는 매칭 라인마다 파이프라인을 돈다 — 방송하면 검색 한 번에
-    처리현황이 수백 번 깜빡인다. 여기만은 일부러 조용해야 한다."""
+    """secure_search_files 의 탐지는 처리현황에 방송하지 않는다.
+
+    검색은 "지금 무슨 문서를 처리 중인가" 로 보여줄 단위가 아니다 — 방송하면 검색
+    한 번에 처리현황이 깜빡인다.
+
+    (예전 이 설명은 "매칭 라인마다 파이프라인을 돈다" 였다. 지금은 매칭이 있는
+    파일당 한 번만 돈다 — 라인당 ML 추론 + Solar 과금을 없앤 변경. 방송하지 않는다는
+    계약은 그대로다.)"""
     from app.adapters.mcp import tools
 
     monkeypatch.setattr(tools, "run_pipeline", _fake_pipeline())

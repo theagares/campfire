@@ -8,6 +8,11 @@ GET /health — 시그니처 필드 필수 (PLAN §11).
 마지막으로 확장에서 온 요청 시각을 같이 내려준다. 브라우저가 cross-origin fetch 에
 자동으로 붙이는 Origin 헤더가 확장 background(service worker)에서는
 "chrome-extension://<id>" 형태라, 별도 확장 코드 수정 없이 이 값만으로 식별 가능하다.
+
+주의: 이건 **"확장 계열에서 왔다"까지만 아는 성긴 신호**다. 확장 ID 를 검증하지 않으므로
+설치된 다른 확장이 /health 를 부르면 그 표시가 켜진다(우리 확장의 ID 는 개발용
+언패킹 로드에서 매번 달라져서 고정 검증이 불가능하다). 화면에 "연결됨" 을 보여주는
+용도라 이 정도로 두지만, 인증이나 접근 제어 근거로는 쓰면 안 된다.
 """
 
 from __future__ import annotations

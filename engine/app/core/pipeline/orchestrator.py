@@ -33,7 +33,12 @@ async def _noop_emit(_event: dict) -> None:
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int = 100) -> list[dict]:
-    """1,500자 청크 분할(+겹침). 경계에서 매치가 잘리는 것을 겹침으로 완화."""
+    """chunk_size 자 단위 분할(+겹침). 경계에서 매치가 잘리는 것을 겹침으로 완화.
+
+    크기는 호출부가 config.CHUNK_SIZE 로 넘긴다(기본 1,000자). 이 docstring 은 한동안
+    "1,500자" 라고 적혀 있었는데, 실측으로 1,000자가 속도·VRAM 둘 다 유리하다는 결론이
+    나면서 기본값이 바뀐 뒤에도 문구가 남아 있었다(근거는 config.py 의 CHUNK_SIZE 주석).
+    """
     if not text:
         return [{"text": "", "offset": 0}]
     chunks: list[dict] = []

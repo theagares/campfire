@@ -86,6 +86,24 @@ def reset_cache() -> None:
     _injection_detector = None
 
 
+async def aclose_detectors() -> None:
+    """종료 시 detector 자원을 정리한다(lifespan 종료에서 호출).
+
+    reset_cache() 는 이벤트 루프가 없는 곳에서도 부를 수 있어야 해서 terminate() 만
+    던지는 best-effort 인데, 그것만으로는 detector 가 들고 있는 비동기 자원(예:
+    llm_mcp 의 httpx 클라이언트, 유휴 워처 태스크)을 닫을 수 없다. 루프가 살아있는
+    종료 시점에는 이쪽으로 제대로 닫는다. aclose() 가 없는 detector 는 건너뛴다.
+    """
+    global _pii_detector, _injection_detector
+    for det in (_pii_detector, _injection_detector):
+        closer = getattr(det, "aclose", None)
+        if closer is None:
+            continue
+        with contextlib.suppress(Exception):
+            await closer()
+    reset_cache()
+
+
 def residency_status() -> dict[str, Any]:
     """GPU 상주 정책 상태 조회 (PLAN §4.1). /health, get_status(MCP) 에서 사용.
 

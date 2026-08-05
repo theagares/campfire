@@ -54,12 +54,22 @@ def placeholder_for(item_type: str) -> str:
 
 
 def validate_and_fix(text: str, items: list[Item]) -> list[Item]:
-    """위치가 실제 텍스트와 일치하는지 검증·보정 (masker.js validateAndFix 이식)."""
+    """위치가 실제 텍스트와 일치하는지 검증·보정 (masker.js validateAndFix 이식).
+
+    항목의 모양 자체가 어긋난 것(dict 이 아니거나 type 이 문자열이 아닌 것)은 여기서
+    버린다. 이 함수는 MCP 의 mask_text 를 통해 **외부 입력**(AI 가 채워 보낸 목록)을
+    직접 받는 경로에 있어서, 아래 단계들이 item["type"] 을 그대로 인덱싱하면
+    KeyError/TypeError 로 500 이 난다.
+    """
     valid: list[Item] = []
     for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            continue
         start = item.get("start")
         end = item.get("end")
-        item_text = item.get("text", "")
+        item_text = item.get("text") or ""
+        if not isinstance(item_text, str):
+            continue
 
         # 항목에 원문(text)이 없을 수 있다 — MCP 응답은 원문 유출을 막으려고 text 를
         # 빼고 내보낸다(adapters/mcp/tools.py 의 _redact_items). 그 항목을 그대로
@@ -117,9 +127,11 @@ def merge_overlapping(items: list[Item]) -> list[Item]:
     for cur in ordered[1:]:
         last = merged[-1]
         if cur["start"] < last["end"]:
-            # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택
-            cur_score = (cur.get("confidence", 0.0), cur["end"] - cur["start"])
-            last_score = (last.get("confidence", 0.0), last["end"] - last["start"])
+            # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택.
+            # confidence 가 None 으로 실려오는 경로가 있다(MCP _redact_items 를 거친
+            # 항목, secure_search_files 의 라인 단위 재구성) — or 0.0 으로 받아낸다.
+            cur_score = (cur.get("confidence") or 0.0, cur["end"] - cur["start"])
+            last_score = (last.get("confidence") or 0.0, last["end"] - last["start"])
             if cur_score > last_score:
                 last["type"] = cur["type"]
                 last["confidence"] = cur.get("confidence", last.get("confidence", 0.0))

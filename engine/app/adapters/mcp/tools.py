@@ -44,6 +44,16 @@ _TEXT_EXTS = {
 }
 _DOCUMENT_EXTS = set(config.SUPPORTED_EXTENSIONS) | set(config.UNSUPPORTED_EXTENSIONS)
 
+# read_text() 로 그대로 읽을 수 있는 확장자 = secure_search_files 가 훑을 수 있는 대상.
+#
+# _TEXT_EXTS 와 따로 두는 이유: ".txt" 는 파서가 다루는 포맷이라 config.SUPPORTED_EXTENSIONS
+# 에도 들어 있고, _file_kind() 는 문서 판정을 먼저 하므로 ".txt" 의 kind 가 "document" 다.
+# 그래서 kind == "text" 만 보던 secure_search_files 에서 **가장 흔한 텍스트 파일이 통째로
+# 빠져 있었다**(도구 설명은 "텍스트 파일을 검색한다" 인데 .txt 는 한 건도 안 나왔다).
+# 분류를 바꾸면 secure_read_file 의 mime 추정 등 다른 판단까지 흔들리므로, "검색 가능한
+# 평문" 이라는 별도 기준을 여기 둔다.
+_SEARCHABLE_TEXT_EXTS = _TEXT_EXTS | {".txt"}
+
 # 자격증명이 담기는 파일. 예전엔 .env 가 위 _TEXT_EXTS 에 들어 있어서 "text" 로 분류됐고,
 # 그러면 secure_read_file 이 내용을 읽어 마스킹본을 돌려줬다 — 그런데 마스커가 지우는 건
 # PII 와 인젝션뿐이라 UPSTAGE_API_KEY=..., AWS 키, DB 비밀번호는 그대로 통과했다.
@@ -333,11 +343,21 @@ async def mask_text(
     """탐지 항목 목록으로 텍스트에 마스킹만 재적용한다(재탐지 없음).
 
     scan_* 가 이미 maskedText 를 함께 주므로 보통은 불필요하다. 항목 일부를 편집(예: 특정
-    PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다. 반환: {maskedText, applied}.
+    PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다.
+
+    반환: {maskedText, applied, skippedCount}. 모양이 어긋난 항목(dict 이 아님,
+    type 없음, 좌표가 정수가 아님, 범위 밖)은 조용히 버리고 그 개수를 skippedCount 로
+    알려준다 — 이 목록은 호출자가 채워 보내는 값이라, 하나 틀렸다고 요청 전체를
+    실패시키는 대신 무엇이 빠졌는지 알려주는 게 맞다.
     """
-    items = list(pii_items) + list(injection_items or [])
+    raw = list(pii_items or []) + list(injection_items or [])
+    items = [it for it in raw if isinstance(it, dict) and isinstance(it.get("type"), str)]
     out = masker.apply_masking(text, items)
-    return {"maskedText": out["masked_text"], "applied": out["applied"]}
+    return {
+        "maskedText": out["masked_text"],
+        "applied": out["applied"],
+        "skippedCount": len(raw) - len(out["applied"]),
+    }
 
 
 # ── 도구 5: secure_read_file (§4.2 게이트) ────────────────────────────────────
@@ -435,6 +455,13 @@ async def secure_search_files(
     """정책을 적용해 텍스트 파일을 검색한다 — 매칭 라인은 PII/인젝션 마스킹 후 반환한다.
 
     검색 결과 스니펫도 원본이 새어나가지 않도록 core 마스커를 통과시킨다(PLAN §4.2).
+
+    탐지는 **매칭이 있는 파일당 한 번**만 돈다. 예전에는 매칭 라인마다 run_pipeline 을
+    불렀는데, 그건 라인 하나당 PII 인코더 + EXAONE 추론이고 인젝션이 걸리면 Solar
+    유료 호출까지 붙는다 — max_results=50 이면 최악 50회 직렬 추론 + 50회 과금이었다.
+    파일 전체를 한 번 검사해 좌표를 받은 뒤, 각 라인 구간에 걸친 항목만 그 라인
+    기준으로 옮겨 마스킹한다(결과는 라인별로 돌리던 것과 같고, 오히려 라인 경계에
+    걸친 항목까지 제대로 잡는다).
     """
     root_path = _resolve(root)
     if not root_path.is_dir():
@@ -444,7 +471,10 @@ async def secure_search_files(
     for path in sorted(root_path.rglob(pattern)):
         if len(results) >= max_results:
             break
-        if not path.is_file() or _file_kind(path) != "text":
+        if not path.is_file():
+            continue
+        # 자격증명 파일은 검색 스니펫으로도 새지 않게 먼저 걸러낸다(2번과 같은 이유).
+        if _file_kind(path) == "secret" or path.suffix.lower() not in _SEARCHABLE_TEXT_EXTS:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -453,21 +483,50 @@ async def secure_search_files(
                 text = path.read_text(encoding="cp949")
             except (UnicodeDecodeError, OSError):
                 continue
-        for line_no, line in enumerate(text.splitlines(), start=1):
+
+        # 먼저 매칭 라인을 (원문 기준 좌표와 함께) 모은다. 하나도 없으면 이 파일에는
+        # 탐지를 아예 돌리지 않는다 — 검색어가 없는 파일에 추론 비용을 쓸 이유가 없다.
+        hits: list[tuple[int, int, int, str]] = []  # (line_no, line_start, line_end, line)
+        pos = 0
+        for line_no, raw in enumerate(text.splitlines(keepends=True), start=1):
+            line = raw.rstrip("\r\n")
             if query in line:
-                # 라인 스니펫만 마스킹(통계 job 기록 없이 core 파이프라인 통과).
-                # 여기는 일부러 방송하지 않는다 — 매칭 라인마다 파이프라인을 도는 루프라
-                # 검색 한 번에 처리현황이 수백 번 깜빡이게 된다. 검색은 "지금 무슨 문서를
-                # 처리 중인가" 로 보여줄 단위가 아니다.
-                line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
-                # block 정책에 걸린 라인은 스니펫도 넘기지 않는다 — 위치는 알려주되
+                hits.append((line_no, pos, pos + len(line), line))
+            pos += len(raw)
+        if not hits:
+            continue
+
+        # 파일 전체 1회 검사. 여기는 일부러 방송하지 않는다 — 검색은 "지금 무슨 문서를
+        # 처리 중인가" 로 보여줄 단위가 아니다(처리현황이 검색 한 번에 깜빡이게 된다).
+        file_res = await run_pipeline(text=text, file_name=path.name, wrap_file=False)
+        items = list(file_res.get("piiItems") or []) + list(file_res.get("injectionItems") or [])
+        file_blocked = bool(file_res.get("blocked"))
+
+        for line_no, line_start, line_end, line in hits:
+            if len(results) >= max_results:
+                break
+            if file_blocked:
+                # block 정책에 걸린 파일은 스니펫도 넘기지 않는다 — 위치는 알려주되
                 # 내용은 주지 않는다(그래야 "무엇을 못 봤는지"는 알 수 있다).
-                line_text = "[차단됨 — 인젝션 정책]" if line_res["blocked"] else line_res["maskedText"]
-                results.append(
-                    {"path": str(path), "line": line_no, "lineText": line_text}
-                )
-                if len(results) >= max_results:
-                    break
+                results.append({"path": str(path), "line": line_no,
+                                "lineText": "[차단됨 — 인젝션 정책]", "blocked": True})
+                continue
+            # 이 라인과 겹치는 항목만 골라 라인 기준 좌표로 옮긴다. 라인 밖으로
+            # 삐져나간 부분은 잘라낸다(그 부분은 그 라인의 내용이 아니다).
+            local: list[dict[str, Any]] = []
+            for it in items:
+                if it["end"] <= line_start or it["start"] >= line_end:
+                    continue
+                s = max(it["start"], line_start) - line_start
+                e = min(it["end"], line_end) - line_start
+                if s < e:
+                    # text 는 넘기지 않는다 — 좌표를 잘랐으므로 원래 text 와 길이가
+                    # 어긋나고, masker 는 text 가 없으면 좌표를 신뢰한다(validate_and_fix).
+                    local.append({"type": it["type"], "start": s, "end": e,
+                                  "confidence": it.get("confidence"), "source": it.get("source")})
+            masked = masker.apply_masking(line, local)["masked_text"] if local else line
+            results.append({"path": str(path), "line": line_no, "lineText": masked, "blocked": False})
+
     return {"root": str(root_path), "query": query, "count": len(results), "results": results}
 
 

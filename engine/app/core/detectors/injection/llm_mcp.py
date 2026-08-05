@@ -86,6 +86,15 @@ _CACHE_MISS = object()
 _SOLAR_PROMPT_CACHE_KEY = "campfire-injection-localize-v2"  # 시스템 프롬프트 개정 시 올린다
 
 
+class ProcessGone(RuntimeError):
+    """추론을 보내려는 순간 서브프로세스가 없었다.
+
+    유휴 워처가 회수했거나 앞선 요청이 타임아웃으로 죽였을 때 나온다 — 재기동하면
+    되는 일시적 상태다. 응답이 안 와서 죽인 경우(타임아웃)와 구분해야 detect() 가
+    "재시도해도 되는가"를 판단할 수 있다.
+    """
+
+
 class InjectionLlmMcpDetector:
     """EXAONE-4.0-1.2B + hybrid regularized MLP 인젝션 탐지기 — Detector Protocol 구현체."""
 
@@ -105,6 +114,10 @@ class InjectionLlmMcpDetector:
         self._next_id = 0
         self._watcher_task: asyncio.Task | None = None
         self._http_client: httpx.AsyncClient | None = None
+        # 클라이언트 생성을 감싸는 락. _detect_all 이 청크를 asyncio.gather 로 동시에
+        # 돌리므로(orchestrator), 두 청크가 같은 순간에 캐시 미스를 내면 lazy 생성이
+        # 두 번 일어나 하나가 참조를 잃고 새어나간다(닫히지 않은 커넥션 풀로 남는다).
+        self._http_lock = asyncio.Lock()
         self._solar_cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 
     def _runtime_script(self) -> Path:
@@ -240,7 +253,12 @@ class InjectionLlmMcpDetector:
             await asyncio.sleep(min(30.0, timeout))
             _ = self.residency.status  # 만료 체크(내부에서 state 갱신)
             if self.residency.state != "loaded":
-                async with self._proc_lock:
+                # _request_lock 도 같이 잡는다. 예전엔 _proc_lock 만 잡고 죽였는데,
+                # 그러면 추론이 진행 중인 파이프 밑을 빼버릴 수 있다(_infer 는
+                # _request_lock 만 쥔다). 락 순서는 proc -> request 로 고정한다 —
+                # 반대로 잡는 경로가 없어야 교착이 없고, _infer 의 타임아웃 처리는
+                # _request_lock 만 쥔 채 _kill_process 를 부르므로 조건을 만족한다.
+                async with self._proc_lock, self._request_lock:
                     await self._kill_process()
                 return
             if self._process is None or self._process.returncode is not None:
@@ -263,7 +281,7 @@ class InjectionLlmMcpDetector:
             # 없을 수 있다 — 정상적인 실패 경로다. assert 로 두면 python -O 에서 통째로
             # 사라져 None.stdin AttributeError 가 된다.
             if proc is None or proc.stdin is None or proc.stdout is None or proc.returncode is not None:
-                raise RuntimeError("injection_llm_mcp: 추론 서브프로세스가 살아있지 않습니다")
+                raise ProcessGone("injection_llm_mcp: 추론 서브프로세스가 살아있지 않습니다")
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
@@ -474,7 +492,9 @@ class InjectionLlmMcpDetector:
             return cached
         try:
             if self._http_client is None:
-                self._http_client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
+                async with self._http_lock:
+                    if self._http_client is None:  # 락 대기 중 다른 청크가 이미 만들었을 수 있다
+                        self._http_client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
             resp = await self._http_client.post(
                 config.UPSTAGE_API_BASE,
                 headers={
@@ -530,7 +550,15 @@ class InjectionLlmMcpDetector:
         # scan_text 등 호출 맥락이 없는 경로) config 의 일반 placeholder 로 대체한다.
         user_prompt = (meta or {}).get("user_prompt")
         try:
-            result = await self._infer(text, user_prompt=user_prompt)
+            try:
+                result = await self._infer(text, user_prompt=user_prompt)
+            except ProcessGone:
+                # _ensure_process 와 _infer 사이에서 유휴 워처가 프로세스를 회수했거나,
+                # 앞선 요청이 타임아웃으로 죽인 직후일 수 있다. 한 번만 다시 띄우고
+                # 재시도한다 — 타임아웃(응답 없음)은 이 분기로 오지 않으므로 120초를
+                # 두 번 기다리는 일은 없다.
+                await self._ensure_process()
+                result = await self._infer(text, user_prompt=user_prompt)
         finally:
             self.residency.touch()
 
@@ -580,6 +608,25 @@ class InjectionLlmMcpDetector:
                 source="llm",
             )
         ]
+
+
+    async def aclose(self) -> None:
+        """종료 시 정리 — HTTP 클라이언트를 닫고 서브프로세스를 회수한다.
+
+        registry.aclose_detectors() 가 lifespan 종료에서 부른다. 예전에는 닫는 곳이
+        아예 없어서 httpx 클라이언트가 프로세스 수명 내내 커넥션 풀을 들고 있었고,
+        테스트처럼 앱을 여러 번 띄우는 흐름에서는 그만큼 쌓였다.
+        """
+        if self._watcher_task is not None and not self._watcher_task.done():
+            self._watcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._watcher_task
+        self._watcher_task = None
+        if self._http_client is not None:
+            client, self._http_client = self._http_client, None
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        await self._kill_process()
 
 
 def build() -> InjectionLlmMcpDetector:

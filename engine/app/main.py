@@ -44,6 +44,10 @@ async def lifespan(app: FastAPI):
     # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
     async with mcp_session_context():
         yield
+    # detector 가 들고 있는 비동기 자원(httpx 클라이언트, 유휴 워처, 추론 서브프로세스)을
+    # 루프가 살아있는 지금 닫는다 — 프로세스 종료에 맡기면 커넥션 풀과 자식 프로세스가
+    # 그대로 남는다.
+    await registry.aclose_detectors()
     db.close_db()
 
 

@@ -70,6 +70,11 @@ _ASSETS: dict[str, dict[str, Any]] = {
 # fire-and-forget 백그라운드 태스크가 GC 되지 않도록 참조를 들고 있는다.
 _background_tasks: set[asyncio.Task] = set()
 
+# 진행 이벤트 최소 간격(초). 이벤트는 job_registry 에 계속 쌓이므로 초당 수십 개를
+# 남길 이유가 없다 — 화면은 라벨과 퍼센트 한 줄만 그린다. 백본 다운로드 쪽 report()
+# 루프도 원래 1초 간격이라 같은 값으로 맞춘다.
+_PROGRESS_MIN_INTERVAL_SEC = 1.0
+
 # 실제 판정 로직은 app.core.model_status 에 있다(파이프라인의 미검사 통과 게이트와
 # 공유) — 여기서는 이 라우터의 기존 이름으로 얇게 위임만 한다.
 def _pii_weights_present() -> bool:
@@ -103,13 +108,28 @@ async def models_status() -> dict[str, Any]:
 
 
 def _safe_extract(tar: tarfile.TarFile, dest_dir: Path) -> None:
-    """path traversal 방지 — 압축 안에 ../ 등으로 dest_dir 밖을 가리키는 경로가 있으면 거부."""
+    """path traversal 방지 — 압축 안에 dest_dir 밖을 가리키는 경로가 있으면 거부.
+
+    표준 라이브러리의 'data' 필터가 있으면 그걸 쓴다. 손으로 쓴 아래 검사는 멤버 이름만
+    보기 때문에 심볼릭 링크 멤버(예: `a -> /etc` 를 만든 뒤 `a/b` 를 쓰는 수법)를
+    못 잡는다 — 'data' 필터는 링크·절대경로·디바이스 파일까지 함께 거른다.
+    (Python 3.12+ 및 3.10/3.11 후기 패치 릴리스에 있다. 없으면 기존 검사로 내려간다.)
+
+    실제 위험은 낮다 — 받는 tarball 은 체크섬으로 고정돼 있어 우리가 만든 것만 풀린다.
+    그래도 표준 필터가 더 넓게 막고 더 짧다.
+    """
+    if hasattr(tarfile, "data_filter"):
+        tar.extractall(dest_dir, filter="data")
+        return
+
     dest_resolved = dest_dir.resolve()
     for member in tar.getmembers():
         member_path = (dest_dir / member.name).resolve()
         if dest_resolved != member_path and dest_resolved not in member_path.parents:
             raise ValueError(f"압축 파일에 안전하지 않은 경로가 포함되어 있습니다: {member.name}")
-    tar.extractall(dest_dir)  # noqa: S202 - 위에서 각 멤버 경로를 이미 검증함
+        if member.issym() or member.islnk():
+            raise ValueError(f"압축 파일에 링크 멤버가 포함되어 있습니다: {member.name}")
+    tar.extractall(dest_dir)  # noqa: S202 - 위에서 각 멤버 경로/종류를 이미 검증함
 
 
 async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable) -> None:
@@ -124,10 +144,21 @@ async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable)
                     resp.raise_for_status()
                     total = int(resp.headers.get("content-length", 0)) or None
                     downloaded = 0
+                    # 청크(1MB)마다 이벤트를 내보내면 476MB 자산 하나에 ~476개가 쌓인다.
+                    # job_registry 는 이벤트를 전부 리스트에 보관하고 /jobs/{id}/events 는
+                    # 매 폴링마다 after 이후를 전량 순회하므로, 진행 표시 하나 때문에
+                    # 폴링이 계속 무거워진다. 화면은 "라벨 + 퍼센트" 한 줄이라 초당 몇 번
+                    # 이상은 의미가 없다 — 시간 기준으로 솎아낸다(마지막 것은 항상 보낸다).
+                    last_emit = 0.0
                     async for chunk in resp.aiter_bytes(1024 * 1024):
                         tmp.write(chunk)
                         sha256.update(chunk)
                         downloaded += len(chunk)
+                        now = asyncio.get_running_loop().time()
+                        is_last = total is not None and downloaded >= total
+                        if not is_last and now - last_emit < _PROGRESS_MIN_INTERVAL_SEC:
+                            continue
+                        last_emit = now
                         pct = round(downloaded / total * 100, 1) if total else None
                         await emit(
                             {

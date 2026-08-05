@@ -56,10 +56,10 @@ async def create_prompt_job(text: str = Form(...)):
         result = await run_pipeline(text=text, file_name="prompt.txt", emit=emit, wrap_file=False)
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
-    await emit({"type": "done", "result": _public(result)})
+    await emit({"type": "done", "result": result})
 
-    db.record_job(job_id, file_name="prompt.txt", source="prompt", result=result)
-    return {"jobId": job_id, "done": True, "result": _public(result)}
+    _record(job_id, "prompt.txt", "prompt", result)
+    return {"jobId": job_id, "done": True, "result": result}
 
 
 @router.post("/jobs")
@@ -101,12 +101,22 @@ async def create_job(
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
-    await emit({"type": "done", "result": _public(result)})
+    await emit({"type": "done", "result": result})
 
-    db.record_job(job_id, file_name=name, source="extension", result=result)
-    return {"jobId": job_id, "done": True, "result": _public(result)}
+    _record(job_id, name, "extension", result)
+    return {"jobId": job_id, "done": True, "result": result}
 
 
-def _public(result: dict) -> dict:
-    """API 응답용 뷰. originalText 는 세션 내 diff 용으로만 포함(디스크 미저장은 store 책임)."""
-    return result
+def _record(job_id: str, file_name: str, source: str, result: dict) -> None:
+    """탐지 통계를 store 에 남긴다. 실패해도 응답을 깨지 않는다.
+
+    예전엔 db.record_job 을 그대로 불렀다. 그런데 record_job 은 항목의 type/start/end 를
+    그대로 인덱싱하고 sqlite 에 쓰기 때문에 실패할 여지가 있고, 그러면 **검사는 성공했고
+    마스킹 결과까지 다 만들어놓은 상태에서** 요청이 500 으로 뒤집혔다(확장은 "검사 실패"
+    로 표시한다). 통계는 부가 기능이라 이게 본 흐름을 막을 이유가 없다 —
+    adapters/mcp/tools.py 의 _record 도 같은 이유로 감싸져 있다.
+    """
+    try:
+        db.record_job(job_id, file_name=file_name, source=source, result=result)
+    except Exception:  # noqa: BLE001 - 통계 기록 실패가 검사 결과를 버리지 않게
+        logger.exception("통계 기록 실패 (job=%s) — 검사 결과는 그대로 반환한다", job_id)

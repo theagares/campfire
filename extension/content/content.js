@@ -28,6 +28,18 @@
   //  그래서 토글을 꺼도 프롬프트는 계속 가로채였다 — 실사용자 리포트로 확인.)
   let fileInterceptEnabled = true;
 
+  // MAIN world(interceptor.js)와 주고받는 메시지에 실어 "우리 쪽에서 온 것"을 표시하는 값.
+  //
+  // 이것이 **페이지의 위조를 막지는 못한다.** 아래 sendBridgeTokenToMain() 이 이 값을
+  // window.postMessage 로 MAIN world 에 넘기는데, MAIN world 는 곧 페이지 자신의 JS
+  // 컨텍스트라 페이지가 message 리스너 하나만 달면 토큰을 그대로 읽는다. 원리적으로
+  // 그렇고(두 world 가 같은 window 를 공유한다) 우회로가 없다.
+  //
+  // 그래서 이 토큰의 실제 역할은 "무관한 프레임/확장이 흘려보낸 메시지 걸러내기" 까지다.
+  // 이 채널로 받아들이는 것도 그 전제에 맞춰 **검사 요청**(SECUREDOC_FILE_SELECTED /
+  // SECUREDOC_PROMPT_SELECTED)뿐이다 — 위조해도 검토 패널이 한 번 더 열릴 뿐, 마스킹을
+  // 건너뛰게 하거나 승인을 흉내낼 수는 없다. 승인 경로(PANEL_DECISION)는 이 채널이
+  // 아니라 확장 런타임 메시지로만 들어온다.
   const bridgeToken = (
     globalThis.crypto?.randomUUID?.()
     || `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -801,7 +813,7 @@
     if (!event.data?.__securedoc || event.data.direction !== 'main-to-isolated') return;
 
     if (event.data.type === 'SECUREDOC_FILE_SELECTED') {
-      if (event.data.bridgeToken !== bridgeToken) return; // 위조 메시지 차단
+      if (event.data.bridgeToken !== bridgeToken) return; // 무관한 출처 걸러내기(bridgeToken 주석 참고 — 페이지 위조는 못 막는다)
       const { inputId, base64Data, mimeType, fileName, fileSize } = event.data.payload;
       if (!protectionEnabled) { sendResultToMain({ inputId, action: 'passthrough' }); return; }
 

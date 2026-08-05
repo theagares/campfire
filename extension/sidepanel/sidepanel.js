@@ -11,16 +11,46 @@
  * 평소엔 닫혀 있고 결과가 돌아올 때만 열린다 — 유휴/기본 화면 없음.
  */
 
-const TYPE_LABELS = {
+// ── 라벨: 화면에 보여줄 이름과, 텍스트에 실제로 박히는 이름을 갈라 둔다 ──────────
+//
+// 이 둘을 하나로 쓰다가 문제가 났다. 이 패널은 최종 전송 텍스트를 자기가 만들기
+// 때문에(buildFinalTextFrom) 라벨이 곧 치환 문자열이 된다 — 그런데 목록에 보여주려고
+// 라벨을 세분화해두는 바람에, 엔진이 만든 maskedText 와 실제로 사이트에 나가는 문자열이
+// 갈렸다. 실제 사례:
+//   ORGANIZATION      엔진 [기관명 마스킹]  vs 패널 [조직기밀 마스킹]
+//   OTHER_INJECTION   엔진 [인젝션 마스킹]  vs 패널 [프롬프트 인젝션 마스킹]
+//   INSTRUCTION_OVERRIDE 도 마찬가지(엔진은 인젝션 7종을 전부 "인젝션" 하나로 낸다)
+// 저장된 통계·감사로그는 엔진 기준이라, 같은 검사인데 기록과 실제 전송물이 달라진다.
+//
+// 그래서 치환용 라벨은 engine/app/core/masker/masker.py 의 TYPE_LABELS/INJECTION_LABEL
+// 을 **그대로** 복제하고(아래 PII_LABELS·INJECTION_PLACEHOLDER_LABEL), 세분화된 이름은
+// 화면 표시에만 쓴다. 엔진 쪽을 바꾸면 여기도 같이 바꿔야 한다.
+const PII_LABELS = {
   PERSON_NAME: '이름', EMAIL: '이메일', PHONE: '전화번호', ADDRESS: '주소',
   ID_NUMBER: '신분증번호', CREDIT_CARD: '카드번호', DATE_OF_BIRTH: '생년월일',
-  ORGANIZATION: '조직기밀', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
+  ORGANIZATION: '기관명', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
+};
+
+// 엔진은 인젝션 유형을 구분하지 않고 전부 이 라벨로 치환한다(masker.py INJECTION_LABEL).
+const INJECTION_PLACEHOLDER_LABEL = '인젝션';
+
+// 화면 표시용 세분화 이름 — 목록에서 "무엇에 걸렸는지" 읽히게 하려는 것이고,
+// 치환 문자열에는 절대 쓰지 않는다.
+const INJECTION_DISPLAY_LABELS = {
   INSTRUCTION_OVERRIDE: '명령 재정의', ROLE_MANIPULATION: '역할 조작',
   SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',
   HIDDEN_COMMAND: '숨겨진 명령', DATA_EXFILTRATION: '데이터 유출 시도',
   OTHER_INJECTION: '프롬프트 인젝션',
 };
-const labelOf = (t) => TYPE_LABELS[t] ?? t;
+
+const isInjectionType = (t) => Object.prototype.hasOwnProperty.call(INJECTION_DISPLAY_LABELS, t);
+
+/** 목록·문서 툴팁에 보여줄 이름. */
+const labelOf = (t) => INJECTION_DISPLAY_LABELS[t] ?? PII_LABELS[t] ?? t;
+
+/** 실제 치환에 쓰는 이름 — masker.py 의 get_label() 과 같은 규칙이어야 한다. */
+const placeholderLabelOf = (t) =>
+  (isInjectionType(t) ? INJECTION_PLACEHOLDER_LABEL : (PII_LABELS[t] ?? '개인정보'));
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -75,11 +105,46 @@ if (state.myTabId == null) {
 // ── 세그먼트 빌드 ────────────────────────────────────────────────────────────
 // idxOffset: combined 모드에서 문서/프롬프트 두 세그먼트 배열의 idx 가 서로 겹치지
 // 않게(체크박스 data-idx 유일성, state.unmasked Set 공유) 시작 번호를 밀어준다.
+/** 겹치는 탐지를 하나로 합친다 — engine/app/core/masker/masker.py 의 merge_overlapping 이식.
+ *
+ *  엔진은 마스킹 직전에 겹침을 병합하는데(그래서 maskedText 에는 합쳐진 구간 하나가
+ *  들어간다) 응답의 piiItems/injectionItems 는 병합 전 목록이다. 예전엔 여기서 병합
+ *  없이 겹친 부분만 잘라 양쪽을 다 남겼고, 그 결과 PII 와 인젝션이 겹치면
+ *    엔진   [인젝션 마스킹]
+ *    패널   [이름 마스킹][인젝션 마스킹]
+ *  처럼 같은 입력에 결과가 둘이 됐다. 대표 유형은 엔진과 같은 기준(confidence 우선,
+ *  동률이면 더 긴 구간)으로 고른다.
+ *
+ *  부수 효과로 토글도 자연스러워진다 — 겹친 구간이 항목 하나가 되므로, 한쪽만 풀어서
+ *  "가린 것도 아니고 안 가린 것도 아닌" 상태를 만들 수 없다. */
+function mergeOverlapping(items) {
+  if (items.length === 0) return [];
+  const ordered = [...items].sort((a, b) => (a.start - b.start) || ((b.end - b.start) - (a.end - a.start)));
+  const merged = [{ ...ordered[0] }];
+  for (const cur of ordered.slice(1)) {
+    const last = merged[merged.length - 1];
+    if (cur.start < last.end) {
+      const score = (x) => [x.confidence ?? 0, x.end - x.start];
+      const [curConf, curLen] = score(cur);
+      const [lastConf, lastLen] = score(last);
+      if (curConf > lastConf || (curConf === lastConf && curLen > lastLen)) {
+        last.type = cur.type;
+        last.cat = cur.cat;
+        last.confidence = cur.confidence ?? last.confidence;
+      }
+      last.end = Math.max(last.end, cur.end);
+    } else {
+      merged.push({ ...cur });
+    }
+  }
+  return merged;
+}
+
 function buildSegments(text, piiItems, injectionItems, idxOffset = 0) {
-  const all = [
+  const all = mergeOverlapping([
     ...(piiItems || []).map(i => ({ ...i, cat: 'pii' })),
     ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
-  ].sort((a, b) => a.start - b.start);
+  ]);
 
   const segs = [];
   let cursor = 0, idx = idxOffset;
@@ -88,7 +153,15 @@ function buildSegments(text, piiItems, injectionItems, idxOffset = 0) {
     const start = Math.max(it.start, cursor);
     if (start > cursor) segs.push({ type: 'text', text: text.slice(cursor, start) });
     const original = text.slice(start, it.end);
-    if (original) segs.push({ type: 'item', idx: idx++, cat: it.cat, dtype: it.type, label: labelOf(it.type), original });
+    if (original) {
+      segs.push({
+        type: 'item', idx: idx++, cat: it.cat, dtype: it.type,
+        label: labelOf(it.type),
+        // 치환에 쓰는 이름은 반드시 엔진 규칙을 따른다(위 라벨 섹션 주석 참고).
+        phLabel: placeholderLabelOf(it.type),
+        original,
+      });
+    }
     cursor = it.end;
   }
   if (cursor < text.length) segs.push({ type: 'text', text: text.slice(cursor) });
@@ -479,7 +552,8 @@ function sendDecision(decision) {
 function buildFinalTextFrom(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return seg.text;
-    return state.unmasked.has(seg.idx) ? seg.original : `[${seg.label} 마스킹]`;
+    // seg.label(화면용) 이 아니라 seg.phLabel(엔진과 같은 치환용) 을 쓴다.
+    return state.unmasked.has(seg.idx) ? seg.original : `[${seg.phLabel} 마스킹]`;
   }).join('');
 }
 
