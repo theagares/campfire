@@ -1487,5 +1487,131 @@
     await _interceptPromptSubmit(event, cfg);
   }, true);
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 첨부 업로드 관측기 — "지금 이 페이지가 파일을 올리고 있는가"를 isolated world 로
+  // 브로드캐스트한다.
+  //
+  // 왜 필요한가: content.js 는 마스킹본을 컴포저에 넣은 뒤 사이트가 그 파일을 자기
+  // 서버로 다 올릴 때까지 기다렸다가 전송 버튼을 눌러야 한다. 안 그러면 프롬프트만
+  // 먼저 나가고 첨부가 빠진다(실사용자 Gemini 리포트).
+  // 지금까지는 "업로드 중엔 전송 버튼이 잠긴다"를 신호로 썼는데, Gemini 는 업로드
+  // 내내 전송 버튼이 활성 상태라 그 신호가 아예 안 잡혔다(실사용자 콘솔:
+  //   [SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다
+  //   [SecureDoc] 재전송: 버튼 클릭 성공 (207ms, ...)
+  // → 900ms 폴백으로 떨어져 업로드 도중에 전송).
+  //
+  // 업로드 여부를 가장 사이트-무관하게 알 수 있는 곳은 네트워크 레이어다. content.js
+  // 는 isolated world 라 페이지 네트워크를 못 보지만, 이 파일은 MAIN world 라 이미
+  // XHR/fetch 를 후킹하고 있다. 그래서 여기서 "파일처럼 생긴 바디를 가진 요청"의
+  // 진행 중 개수를 세서 알려준다 — 어떤 사이트의 어떤 DOM 에도 의존하지 않는다.
+  //
+  // 기존 훅 "위에" 한 겹 더 감싼다(아래 코드가 실행되는 시점엔 XHR.send/fetch 가 이미
+  // 우리 훅으로 교체돼 있다). 관측만 하고 요청은 그대로 위임하므로 기존 인터셉트
+  // 동작에는 영향이 없다. 사이트가 window.fetch / XHR.send 로 부르는 요청은 이 겉껍질을
+  // 반드시 지나므로(안쪽 훅이 마스킹본으로 바꿔 보내든 보류했다 보내든) 그대로 세어진다.
+  // 반대로 이 파일이 내부적으로 _origFetch/_origXHRSend 를 직접 부르는 경로는 세지
+  // 않는다 — 그건 MAIN world 가 스스로 주도하는 흐름이라 content.js 가 기다리고 있지 않다.
+  //
+  // 헤드리스 Chrome 실측(임시 하니스, 로컬 서버 대상):
+  //   XHR+FormData(File 50KB)  start 1 / end 1 / inflight 최대 1, 응답 200·본문 정상
+  //   fetch+Blob(50KB)         start 1 / end 1 / inflight 최대 1, 응답 200·본문 정상
+  //   fetch+작은 JSON          start 0 / end 0            (오탐 없음)
+  //   동시 업로드 2건          inflight 1→2→1→0
+  //   전송 도중 abort 한 XHR   end 발생, inflight 0        (티켓이 굳지 않음)
+  //   fetch+80KB 문자열 바디   start 1 / end 1            (base64 JSON 업로드 사이트)
+  //
+  // 위조 우려: 페이지 스크립트도 이 postMessage 를 흉내낼 수 있다. 그래도 유출로는
+  // 이어지지 않는다 — 이 시점의 파일은 이미 사용자 검토를 마친 마스킹본이고, 이
+  // 신호가 할 수 있는 일은 우리 전송을 "더 기다리게" 하는 것뿐이다(그 대기에도 상한이
+  // 있어 결국 전송된다). 그래서 bridgeToken 을 요구하지 않는다.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // 요청이 끝났다는 신호를 영영 못 받는 경우(사이트가 취소했거나 우리 인터셉트가
+  // 그 요청을 막은 경우)를 대비한 상한. content.js 쪽 대기 상한과 같은 자리수여야
+  // "영원히 업로드 중" 으로 굳지 않는다.
+  const _UPLOAD_TICKET_TTL_MS = 60_000;
+  // 문자열 바디를 업로드로 볼 최소 길이. Grok 처럼 파일을 base64 로 JSON 에 실어
+  // 보내는 사이트를 잡기 위한 것 — 일반 채팅 요청 JSON 이 이만큼 커지는 일은 없다.
+  const _UPLOAD_STRING_BODY_MIN = 64 * 1024;
+  const _openUploadTickets = new Set();
+  let _uploadTicketSeq = 0;
+
+  function _bodyLooksLikeUpload(body) {
+    if (!body) return false;
+    try {
+      if (body instanceof Blob) return body.size > 0;
+      if (body instanceof FormData) {
+        for (const v of body.values()) if (v instanceof Blob) return true;
+        return false;
+      }
+      if (body instanceof ArrayBuffer) return body.byteLength >= _UPLOAD_STRING_BODY_MIN;
+      if (ArrayBuffer.isView?.(body)) return body.byteLength >= _UPLOAD_STRING_BODY_MIN;
+      if (typeof body === 'string') return body.length >= _UPLOAD_STRING_BODY_MIN;
+    } catch (_) { /* 이상한 바디는 업로드로 보지 않는다 */ }
+    return false;
+  }
+
+  function _broadcastUploadActivity(phase) {
+    try {
+      window.postMessage({
+        __campfire_config: true,
+        direction: 'main-to-isolated',
+        type: 'UPS_UPLOAD_ACTIVITY',
+        phase,
+        inflight: _openUploadTickets.size,
+      }, '*');
+    } catch (_) { /* ignore */ }
+  }
+
+  function _beginUploadTicket() {
+    const id = ++_uploadTicketSeq;
+    _openUploadTickets.add(id);
+    _broadcastUploadActivity('start');
+    setTimeout(() => _endUploadTicket(id), _UPLOAD_TICKET_TTL_MS);
+    return id;
+  }
+
+  function _endUploadTicket(id) {
+    if (!_openUploadTickets.delete(id)) return; // 이미 닫힘(중복 호출 방지)
+    _broadcastUploadActivity('end');
+  }
+
+  const _observedXHRSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (body) {
+    if (!_bodyLooksLikeUpload(body)) return _observedXHRSend.call(this, body);
+    const id = _beginUploadTicket();
+    // loadend 는 성공/실패/abort 어느 쪽으로 끝나도 발생한다. 우리 훅이 요청을
+    // 보류했다가 나중에 보내는 경우에도, 실제로 끝나는 그 시점에 닫힌다.
+    try {
+      this.addEventListener('loadend', () => _endUploadTicket(id), { once: true });
+    } catch (_) {
+      _endUploadTicket(id);
+    }
+    try {
+      return _observedXHRSend.call(this, body);
+    } catch (e) {
+      _endUploadTicket(id);
+      throw e;
+    }
+  };
+
+  const _observedFetch = window.fetch;
+  window.fetch = function (input, init) {
+    const body = init?.body ?? null;
+    if (!_bodyLooksLikeUpload(body)) return _observedFetch.call(this, input, init);
+    const id = _beginUploadTicket();
+    let out;
+    try {
+      out = _observedFetch.call(this, input, init);
+    } catch (e) {
+      _endUploadTicket(id);
+      throw e;
+    }
+    return Promise.resolve(out).then(
+      (res) => { _endUploadTicket(id); return res; },
+      (err) => { _endUploadTicket(id); throw err; },
+    );
+  };
+
 })();
 

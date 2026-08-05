@@ -85,6 +85,26 @@
 
   sendBridgeTokenToMain();
 
+  // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
+  //
+  // content.js 는 isolated world 라 페이지의 XHR/fetch 를 직접 볼 수 없다. 반면
+  // interceptor.js 는 MAIN world 에서 이미 그 둘을 후킹하고 있어서, 파일처럼 생긴
+  // 바디를 가진 요청의 진행 중 개수를 여기로 브로드캐스트해준다(그쪽 파일 맨 아래
+  // "첨부 업로드 관측기" 참고). waitForAttachmentReady 가 이 값을 쓴다.
+  let uploadInflight = 0;
+  // 시작 이벤트 누적 카운터. "대기를 시작한 뒤 업로드가 하나라도 있었나"를 보려면
+  // 진행 중 개수만으론 부족하다 — 업로드가 폴링 간격보다 빨리 끝나면 inflight 는
+  // 계속 0 으로만 보이기 때문이다.
+  let uploadStartCount = 0;
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data?.__campfire_config || data.direction !== 'main-to-isolated') return;
+    if (data.type !== 'UPS_UPLOAD_ACTIVITY') return;
+    uploadInflight = Math.max(0, Number(data.inflight) || 0);
+    if (data.phase === 'start') uploadStartCount += 1;
+  });
+
   chrome.storage?.local?.get?.(
     { protectionEnabled: true, fileInterceptEnabled: true },
     ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled }) => {
@@ -871,6 +891,24 @@
    *  그 시점엔 업로드가 아직 진행 중이라 버튼이 비활성 → 클릭이 먹지 않고 그대로
    *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
    *  않고 버튼이 활성화될 때까지 폴링한다. */
+  // 사이트를 안 가리는 "무언가 진행 중" 표시. 첨부 칩의 스피너/진행률 바가 보통
+  // 이 중 하나로 그려진다. 문서 전체에서 세되 "대기 시작 시점의 개수"를 기준선으로
+  // 잡고 그보다 늘어난 것만 신호로 본다 — 답변 스트리밍 인디케이터처럼 원래부터
+  // 떠 있는 것에 걸려 영원히 기다리는 일을 막기 위해서다.
+  const BUSY_INDICATOR_SELS = [
+    '[role="progressbar"]',
+    'progress',
+    '[aria-busy="true"]',
+  ];
+
+  function countBusyIndicators() {
+    let n = 0;
+    for (const sel of BUSY_INDICATOR_SELS) {
+      try { n += document.querySelectorAll(sel)?.length ?? 0; } catch (_) { /* 무시 */ }
+    }
+    return n;
+  }
+
   /** 첨부가 사이트에 실제로 올라갈 때까지 기다린다.
    *
    *  왜 필요한가: 예전엔 파일을 넣고 고정 900ms 만 기다린 뒤 전송했다. 사이트는
@@ -878,11 +916,30 @@
    *  업로드가 끝나기 전에 눌려 프롬프트만 먼저 나갔다(실사용자 Gemini 리포트:
    *  "첨부는 됐는데 요약하기가 먼저 들어갔어").
    *
-   *  고정 시간을 늘리는 건 추측이라, 사이트가 주는 신호를 쓴다. 대부분의 챗 UI 는
-   *  첨부를 올리는 동안 전송 버튼을 잠갔다가 끝나면 다시 연다. 그 "잠김 → 열림"
-   *  전환을 기다린다. 잠기는 걸 못 봤으면(그렇게 동작하지 않는 사이트) 판단 불가라
-   *  예전과 같은 짧은 대기로 물러난다 — 없던 신호를 지어내지 않는다. */
-  async function waitForAttachmentReady(cfg, busyProbeMs = 2500, readyWaitMs = 60000) {
+   *  (2026-08-05 재정정) 그 다음 시도는 "업로드 중엔 전송 버튼이 잠긴다"를 신호로
+   *  썼다. ChatGPT 는 그렇게 동작하지만 Gemini 는 아니다 — 업로드 내내 전송 버튼이
+   *  활성이라 신호가 안 잡히고 900ms 폴백으로 떨어졌다(실사용자 Gemini 콘솔:
+   *    [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+   *    [SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다
+   *    [SecureDoc] 재전송: 버튼 클릭 성공 (207ms, sel=button[aria-label="메시지 보내기"])
+   *  주입은 성공했는데 207ms 만에 전송됐다 = 업로드 도중 전송).
+   *
+   *  그래서 신호를 하나에 걸지 않고, 사이트에 덜 의존하는 순서로 셋을 함께 본다:
+   *    1) network — MAIN world(interceptor.js)가 세는 "파일 바디를 가진 요청"의
+   *                 진행 중 개수. 어떤 사이트의 DOM 에도 의존하지 않는다.
+   *    2) dom     — 진행률/스피너 요소가 대기 시작 시점보다 늘어났는지.
+   *    3) button  — 전송 버튼 잠김(예전 신호). ChatGPT 처럼 실제로 잠그는 사이트용.
+   *  셋 중 하나라도 "시작"을 보면 그것들이 전부 풀릴 때까지 기다린다. 사이트별
+   *  선택자나 클래스명은 하나도 쓰지 않는다 — 그런 하드코딩은 사이트 개편 때마다
+   *  조용히 깨져왔다(이 파일의 "선택자가 깨졌을 때의 폴백" 섹션 참고).
+   *
+   *  아무 신호도 못 보면 그대로 전송한다. 예전의 900ms 추가 대기는 근거 없는
+   *  값이었다 — 어디서 온 숫자인지 설명할 수 없고, 실제로 Gemini 를 못 구했다.
+   *  지금은 그 시간을 "가만히 자는" 데 쓰지 않고 probeMs 동안 세 신호를 실제로
+   *  관측하는 데 쓴다. 신호가 잡히면 그 즉시 빠져나오므로 정상 경로는 오히려 빨라지고,
+   *  끝까지 아무것도 안 잡히면 그건 "모르겠다"가 아니라 "이 페이지는 업로드를
+   *  시작하지 않았다"는 관측 결과다. */
+  async function waitForAttachmentReady(cfg, probeMs = 1500, readyWaitMs = 60000) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const sendBtn = () => {
       for (const sel of sendButtonSelectors(cfg)) {
@@ -898,26 +955,65 @@
       return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
     };
 
+    // 기준선은 반드시 주입 "직후"인 지금 잡는다 — 이 뒤에 늘어난 것만 우리 첨부
+    // 때문이라고 볼 수 있다.
+    const startCountBase = uploadStartCount;
+    const busyBase = countBusyIndicators();
+
+    const netBusy = () => uploadInflight > 0;
+    const netFinished = () => uploadStartCount > startCountBase && uploadInflight === 0;
+    const domBusy = () => countBusyIndicators() > busyBase;
+
+    const fired = new Set();
+    const probe = () => {
+      if (netBusy()) fired.add('network');
+      if (domBusy()) fired.add('dom');
+      if (locked()) fired.add('button');
+      return fired.size > 0;
+    };
+    const stillBusy = () => (
+      (fired.has('network') && netBusy())
+      || (fired.has('dom') && domBusy())
+      || (fired.has('button') && locked())
+    );
+
     const startedAt = Date.now();
-    let sawBusy = false;
-    while (Date.now() - startedAt < busyProbeMs) {
-      if (locked()) { sawBusy = true; break; }
-      await sleep(100);
-    }
-    if (!sawBusy) {
-      // 업로드 중임을 알려주는 신호가 없다 — 예전 동작(짧은 대기)으로 물러난다.
-      await sleep(900);
-      console.log('[SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다');
-      return false;
-    }
-    while (Date.now() - startedAt < readyWaitMs) {
-      if (!locked()) {
-        console.log(`[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${Date.now() - startedAt}ms)`);
+    while (Date.now() - startedAt < probeMs) {
+      if (probe()) break;
+      // 업로드가 폴링 간격보다 빨리 끝나버린 경우 — 시작을 못 봤어도 이미 끝났다.
+      if (netFinished()) {
+        console.log(`[SecureDoc] 첨부 대기: 업로드가 즉시 끝났습니다 (network, ${Date.now() - startedAt}ms)`);
         return true;
       }
-      await sleep(150);
+      await sleep(80);
     }
-    console.warn(`[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 전송 버튼이 다시 열리지 않았습니다 — 그대로 전송을 시도합니다`);
+
+    if (!fired.size) {
+      console.log(
+        `[SecureDoc] 첨부 대기: 업로드 신호 없음 — ${probeMs}ms 동안 network/dom/button 셋 다 무반응이라 그대로 전송합니다`,
+      );
+      return false;
+    }
+
+    const signal = [...fired].join('+');
+    console.log(`[SecureDoc] 첨부 대기: 업로드 진행 감지 (${signal}) — 끝날 때까지 기다립니다`);
+    while (Date.now() - startedAt < readyWaitMs) {
+      if (!stillBusy()) {
+        // 업로드 응답을 받은 뒤 사이트가 첨부를 컴포저 상태에 반영하는 데 한 틱이
+        // 더 걸린다. 그 사이에 눌리면 다시 첨부 없이 나갈 수 있어 짧게 양보한다.
+        // (이 값은 안전 여유일 뿐 신호가 아니다 — 실기 계측으로 정한 값은 아니다.)
+        await sleep(250);
+        console.log(
+          `[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${signal}, ${Date.now() - startedAt}ms)`,
+        );
+        return true;
+      }
+      probe(); // 늦게 켜지는 신호도 이후 대기에 반영한다
+      await sleep(120);
+    }
+    console.warn(
+      `[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 업로드가 끝나지 않았습니다 (${signal}) — 그대로 전송을 시도합니다`,
+    );
     return false;
   }
 

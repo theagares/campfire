@@ -149,6 +149,10 @@ const domBySelector = new Map([
   ['[data-testid="send-button"]', sendButtonStub],
 ]);
 
+// querySelectorAll 용 — waitForAttachmentReady 의 "진행 중 표시" 탐지(테스트 15)에서
+// 진행률 바가 떴다가 사라지는 것을 흉내내려면 이게 제어 가능해야 한다.
+const domBySelectorAll = new Map();
+
 // 인라인 스타일 최소 구현 — 페이지(html/body)를 건드리지 않는지 보는 데 쓴다(테스트 7).
 function makeStyleStub() {
   const props = new Map();
@@ -197,7 +201,7 @@ const documentStub = {
   addEventListener: (t, l) => addListener(documentListeners, t, l),
   createElement: (tag) => makeElementStub(tag),
   querySelector: (sel) => domBySelector.get(sel) ?? null,
-  querySelectorAll: () => [],
+  querySelectorAll: (sel) => domBySelectorAll.get(sel) ?? [],
   execCommand: () => true,
 };
 
@@ -434,6 +438,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 살아 있어 Enter 가 통째로 무시됐다).
   await new Promise(r => setTimeout(r, 12000));
   // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
+  // 2026-08-05: 신호 없음 경로가 "2.5초 관측 + 900ms 고정 대기"에서 "1.5초 관측"으로
+  // 짧아져 테스트 4 가 약 1.9초 빨리 끝난다. 이 값은 하한이라 그대로 둬도 안전하고,
+  // 여유를 남겨 두면 되돌리기 실험(수정 전 코드로 되돌려 돌려보기)도 그대로 돌아간다.
 
   sendButtonStub.disabled = true;
   sendButtonStub.clicks = 0;
@@ -811,6 +818,140 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   const drops13 = promptEditorStub.dispatched.filter(e => e.type === 'drop');
   if (drops13.length) {
     throw new Error('되돌리기로 충분한데 합성 drop 까지 쐈다 — 사이트 핸들러를 터뜨릴 수 있다');
+  }
+
+  // (14) 전송 버튼이 업로드 내내 활성인 사이트(Gemini)에서도, 첨부 업로드가 끝날
+  //      때까지 기다렸다가 전송해야 한다.
+  //
+  // 배경(실사용자 gemini.google.com 콘솔):
+  //   [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+  //   [SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다
+  //   [SecureDoc] 재전송: 버튼 클릭 성공 (207ms, sel=button[aria-label="메시지 보내기"])
+  // 파일 주입은 성공했는데 207ms 만에 전송됐다. Gemini 는 업로드 중에도 전송 버튼을
+  // 잠그지 않아서 "버튼 잠김 → 열림" 신호가 아예 안 잡히고 900ms 폴백으로 떨어진
+  // 것이다. 그 900ms 안에 업로드가 끝날 리 없으니 프롬프트만 먼저 나가고 첨부가 빠진다.
+  //
+  // 이제는 MAIN world(interceptor.js)가 XHR/fetch 로 관측한 "파일 업로드 진행 중"을
+  // UPS_UPLOAD_ACTIVITY 로 알려주고, content.js 가 그게 끝날 때까지 기다린다.
+  // 여기서는 그 사이트를 모사한다: 전송 버튼은 처음부터 끝까지 활성이고, 업로드는
+  // 5초 걸린다. 그 5초 동안 단 한 번도 눌리면 안 된다.
+  //
+  // 앞 테스트(13)의 재전송 + promptApproved(3초) 해제 대기.
+  // 지금 코드에서 (13)이 끝나는 데 걸리는 시간은 첨부 대기 1.5초 + 재전송 폴링 0.2초
+  // + promptApproved 3초 = 약 4.7초다. 그런데 이 값을 4.7초에 맞춰 깎으면, 수정을
+  // 되돌렸을 때(첨부 대기가 2.5초 관측 + 900ms 고정 = 3.4초로 길어진다) (13)이 6.6초에
+  // 끝나면서 이 테스트의 Enter 가 promptApproved 에 통째로 먹혀 "검사가 시작되지
+  // 않았다"로 엉뚱하게 실패한다 — 되돌리기 실험이 무의미해진다. 두 경우를 모두 덮도록
+  // 9초로 잡는다.
+  await new Promise(r => setTimeout(r, 9000));
+
+  const send14 = new SendButtonStub();
+  send14.disabled = false;                    // Gemini: 업로드 중에도 계속 활성
+  domBySelector.set('[data-testid="send-button"]', send14);
+
+  const file14 = new FileStub(['pdf bytes'], 'gemini-upload.pdf', { type: 'application/pdf' });
+  const input14 = new HTMLInputElementStub(file14, 'live14');
+  dispatchDocumentEvent('change', {
+    target: input14,
+    composedPath: () => [input14, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf', fileName: 'gemini-upload.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 사이트가 마스킹본을 자기 서버로 올리기 시작했다(MAIN world 관측기의 브로드캐스트).
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
+  });
+
+  // 업로드가 5초 걸린다. 예전 코드는 2.5초 관측 + 900ms 고정 대기 후 약 3.6초에
+  // 눌러버렸다 — 그 회귀를 여기서 잡는다.
+  await new Promise(r => setTimeout(r, 5000));
+  if (send14.clicks !== 0) {
+    throw new Error(`첨부 업로드가 아직 끝나지 않았는데 전송했다 (clicks=${send14.clicks}) — 프롬프트만 먼저 나가고 첨부가 빠진다`);
+  }
+
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+  });
+  for (let i = 0; i < 40 && send14.clicks < 1; i += 1) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (send14.clicks !== 1) {
+    throw new Error(`업로드가 끝났는데도 전송되지 않았다 (clicks=${send14.clicks})`);
+  }
+
+  // (15) 네트워크 신호를 못 받는 경우엔 진행률/스피너 표시를 신호로 쓴다.
+  //
+  // interceptor.js 가 못 보는 경로(워커 업로드 등)로 올리는 사이트를 대비한 2차 신호.
+  // 중요한 건 "대기 시작 시점보다 늘어난 것"만 신호로 본다는 점이다 — 답변 스트리밍
+  // 인디케이터처럼 원래부터 떠 있는 progressbar 에 걸리면 매번 60초를 기다리게 된다.
+  // 그래서 여기서는 기준선으로 하나를 미리 띄워두고, 그 위에 업로드용 하나를 더
+  // 얹었다가 내린다.
+  // (14)의 재전송 직후부터 promptApproved 3초가 흐른다 — 여유를 두고 5초 기다린다.
+  await new Promise(r => setTimeout(r, 5000));
+
+  const send15 = new SendButtonStub();
+  send15.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send15);
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]); // 기준선
+
+  const file15 = new FileStub(['pdf bytes'], 'spinner.pdf', { type: 'application/pdf' });
+  const input15 = new HTMLInputElementStub(file15, 'live15');
+  dispatchDocumentEvent('change', {
+    target: input15,
+    composedPath: () => [input15, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf', fileName: 'spinner.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 주입 직후(= 기준선을 잡은 뒤) 첨부 칩의 진행률 표시가 하나 더 뜬다.
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }, { id: 'upload' }]);
+  await new Promise(r => setTimeout(r, 4500));
+  if (send15.clicks !== 0) {
+    throw new Error(`진행률 표시가 떠 있는데 전송했다 (clicks=${send15.clicks}) — 업로드 도중 전송이다`);
+  }
+
+  // 업로드 완료 → 진행률 표시만 사라지고 기준선은 그대로 남는다.
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]);
+  for (let i = 0; i < 40 && send15.clicks < 1; i += 1) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (send15.clicks !== 1) {
+    throw new Error(`진행률 표시가 사라졌는데도 전송되지 않았다 (clicks=${send15.clicks}) — 기준선 progressbar 에 걸려 계속 기다린다`);
   }
 
   console.log('content regression ok');
