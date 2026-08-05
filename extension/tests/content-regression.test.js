@@ -57,6 +57,10 @@ class HTMLTextAreaElementStub extends EventTargetStub {
     super();
     this.tagName = 'TEXTAREA';
     this.value = value;
+    // 진짜 입력창은 DOM 에 붙어 있다. 재주입 폴백이 "이 요소가 살아 있나"를
+    // isConnected 로 보므로 기본값이 true 여야 실제와 같다(테스트 12).
+    this.isConnected = true;
+    this.dispatched = [];
     // hideEditorDuringSubmit 이 전송 직전 입력창을 잠깐 감출 때 쓰는 최소 CSSOM stub.
     const props = new Map();
     this.style = {
@@ -67,6 +71,7 @@ class HTMLTextAreaElementStub extends EventTargetStub {
     };
   }
   focus() {}
+  dispatchEvent(event) { this.dispatched.push(event); return true; }
 }
 class FileStub {
   constructor(parts, name, options = {}) {
@@ -356,6 +361,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   actionLog.length = 0;
   promptEditorStub.value = '이 문서를 요약해줘';
   documentStub.activeElement = promptEditorStub;
+  // 첨부 업로드 대기(waitForAttachmentReady)는 전송 버튼이 잠기는 걸 신호로 쓴다.
+  // 여기선 그 신호가 없는 사이트를 모사한다 — 짧은 고정 대기로 물러난 뒤 전송한다.
+  sendButtonStub.disabled = false;
   nextDecision = {
     action: 'send',
     maskedText: '이 문서를 요약해줘',
@@ -420,7 +428,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 사이트는 첨부 파일을 다 업로드할 때까지 전송 버튼을 비활성으로 둔다. 예전엔
   // 고정 시간만 기다리고 한 번만 눌러봐서, 그 시점에 아직 업로드 중이면 클릭이 먹지
   // 않고 그대로 끝났다(실사용자 재현: 검토는 되는데 전송이 안 됨).
-  await new Promise(r => setTimeout(r, 3100)); // 테스트 4가 세운 promptApproved 해제 대기
+  // 테스트 4가 세운 promptApproved(재전송 후 3초) 해제 대기.
+  // 첨부가 보류된 제출은 이제 waitForAttachmentReady 를 거쳐 전송하므로 테스트 4가
+  // 그만큼 늦게 끝난다 — 실측으로 이 값이 필요했다(6초로는 아직 promptApproved 가
+  // 살아 있어 Enter 가 통째로 무시됐다).
+  await new Promise(r => setTimeout(r, 12000));
+  // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
 
   sendButtonStub.disabled = true;
   sendButtonStub.clicks = 0;
@@ -439,7 +452,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
 
   sendButtonStub.disabled = false;              // 업로드 완료 → 활성화
-  await new Promise(r => setTimeout(r, 800));   // 폴링 주기(200ms) 안에 눌려야 한다
+  // 첨부가 보류돼 있으면 전송 전에 waitForAttachmentReady 가 "버튼이 다시 열릴 때까지"
+  // 기다린 뒤에야 resubmitPrompt 로 넘어간다 — 그 왕복까지 덮는 창이어야 한다.
+  await new Promise(r => setTimeout(r, 2000));
   if (sendButtonStub.clicks !== 1) {
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
@@ -521,7 +536,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   promptInProcess — 결정이 안 온 검사가 아직 진행 중일 수 있다.
   // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
-  await new Promise(r => setTimeout(r, 4500));
+  await new Promise(r => setTimeout(r, 7000));
   const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
   decisionListener?.({
     type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
@@ -640,7 +655,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     type: 'PANEL_DECISION', sessionId: pendingScan9.sessionId, decision: { action: 'cancel' },
   });
   await flush();
-  await new Promise(r => setTimeout(r, 4500)); // promptApproved(3초) 해제 대기
+  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
 
   // 사이트 개편 재현: 설정된 선택자가 문서에서 하나도 안 잡히게 만든다.
   domBySelector.delete('#prompt-textarea');
@@ -671,6 +686,131 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (genericSendBtn.clicks < 1) {
     throw new Error('일반 전송 버튼 후보로 폴백하지 못했다 — 검토는 되는데 전송이 안 되는 증상 그대로다');
+  }
+
+  // (12) 파일 input 이 아예 없는 사이트에서도 문서가 페이지로 들어가야 한다.
+  //
+  // 배경(실사용자 콘솔, gemini.google.com):
+  //   [SecureDoc] 파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다
+  //     injectFileIntoInput @ content.js:177
+  //     (익명) @ content.js:498        ← 파일 선택(📎) 경로의 주입 콜백
+  // Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 통째로 없앤다. 그래서
+  // 승인 시점엔 넣을 곳이 없는데 📎 경로에는 폴백이 없어 파일이 조용히 버려지고
+  // 프롬프트만 전송됐다. drop/paste 경로에만 있던 합성 drop 폴백을 여기에도 태운다.
+  const pendingScan12 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: pendingScan12.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
+
+  // 선택자를 (11) 이 지웠으므로 되돌려 놓는다 — 이 테스트는 정상 사이트 전제다.
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  const send12 = new SendButtonStub();
+  send12.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send12);
+
+  // 첨부는 정상적으로 가로챈다(이때는 input 이 살아 있다).
+  const file12 = new FileStub(['pdf bytes'], 'gemini.pdf', { type: 'application/pdf' });
+  const input12 = new HTMLInputElementStub(file12, 'gone');
+  dispatchDocumentEvent('change', {
+    target: input12,
+    composedPath: () => [input12, documentStub],
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // Gemini 재현: 승인 전에 input 이 DOM 에서 사라진다(문서 어디에도 없다).
+  input12.isConnected = false;
+  domBySelector.delete('input[type="file"]');
+  actionLog.length = 0;
+  promptEditorStub.dispatched.length = 0;   // 합성 drop 이 여기로 와야 한다
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload',
+      maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf',
+      fileName: 'gemini.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 되돌릴 부모가 없는 경우(원래 부모까지 사라짐)라 최후 수단인 합성 drop 으로 간다.
+  const dropped = promptEditorStub.dispatched.filter(e => e.type === 'drop' && e.dataTransfer?.files?.length);
+  if (!dropped.length) {
+    throw new Error('input 이 사라진 사이트에서 문서가 페이지로 전혀 들어가지 않았다 — 프롬프트만 전송된다');
+  }
+  if (dropped[0].dataTransfer.files[0]?.name !== 'gemini.pdf') {
+    throw new Error(`합성 drop 에 실린 파일이 다르다: ${dropped[0].dataTransfer.files[0]?.name}`);
+  }
+
+  // (13) 원래 부모가 살아 있으면 합성 drop 이 아니라 "input 되돌리기" 를 쓴다.
+  //
+  // 합성 drop 은 사이트의 드래그 상태 머신에 기대는데, 그 상태가 없으면 사이트
+  // 핸들러가 "this.drop is not a function" 으로 터진다(실사용자 Gemini 콘솔).
+  // 리스너 안에서 난 예외라 우리 try/catch 로도 못 잡고, 사이트의 드롭 처리만
+  // 조용히 중단된다. 그래서 노드를 원래 자리에 되돌려 놓는 쪽을 먼저 시도해야 한다.
+  const pendingScan13 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: pendingScan13.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+  await new Promise(r => setTimeout(r, 7000));
+
+  // 사이트의 컴포저(부모)는 살아 있고, 그 안의 input 만 떼어진 상황.
+  const parent13 = new DropTargetStub();
+  parent13.appended = [];
+  parent13.appendChild = function (node) { this.appended.push(node); node.isConnected = true; };
+  const input13 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'revive.pdf', { type: 'application/pdf' }), 'orphan',
+  );
+  input13.parentElement = parent13;
+
+  dispatchDocumentEvent('change', {
+    target: input13,
+    composedPath: () => [input13, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input13.isConnected = false;              // 사이트가 떼어냈다
+  domBySelector.delete('input[type="file"]');
+  actionLog.length = 0;
+  promptEditorStub.dispatched.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'revive.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  if (!parent13.appended.includes(input13)) {
+    throw new Error('원래 부모가 살아 있는데 input 을 되돌려 놓지 않았다');
+  }
+  if (!actionLog.some(e => e.kind === 'inject' && e.id === 'orphan')) {
+    throw new Error('되돌린 input 에 마스킹본이 주입되지 않았다');
+  }
+  const drops13 = promptEditorStub.dispatched.filter(e => e.type === 'drop');
+  if (drops13.length) {
+    throw new Error('되돌리기로 충분한데 합성 drop 까지 쐈다 — 사이트 핸들러를 터뜨릴 수 있다');
   }
 
   console.log('content regression ok');

@@ -171,18 +171,91 @@
    *  못 넣었으면 조용히 넘어가지 않고 알린다 — 예전엔 실패해도 아무 신호가 없어서
    *  "검사는 되는데 파일만 안 간다" 로만 보였다. 성공 여부를 돌려주므로 호출부가
    *  폴백(합성 drop/paste)으로 넘어갈지 정할 수 있다. */
-  function injectFileIntoInput(preferred, finalFile) {
-    const input = liveFileInput(preferred);
-    if (!input) {
-      console.error('[SecureDoc] 파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다');
+  /** 파일 input 이 아예 없을 때의 폴백 — 컴포저에 합성 drop 을 재생한다.
+   *
+   *  Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 통째로 없앤다
+   *  (실사용자 콘솔: "파일 재주입 실패: 살아 있는 input[type=file] 을 찾지 못했습니다"
+   *   — content.js:498 = 파일 선택 경로의 주입 콜백). 그래서 승인 시점엔 넣을 곳이
+   *  없어 파일이 조용히 버려지고 프롬프트만 전송됐다.
+   *
+   *  이런 사이트도 컴포저에 파일을 끌어다 놓는 건 지원하므로 그 경로로 넣는다.
+   *  일부 사이트는 dragenter/dragover 로 드롭 상태가 만들어져야 drop 을 처리해서
+   *  세 이벤트를 순서대로 보낸다.
+   *
+   *  이 합성 drop 은 우리 drop 캡처 리스너에도 걸리지만, 마스킹본은
+   *  base64ToFile() 이 contentOwnedFiles 에 넣어둔 파일이라 그 리스너가 걸러낸다
+   *  (재귀하지 않는다). */
+  function injectFileByDrop(finalFile, preferredTarget) {
+    let target = preferredTarget?.isConnected ? preferredTarget : null;
+    if (!target) {
+      const editor = findEditor(getPromptConfig());
+      if (editor?.isConnected) target = editor;
+    }
+    if (!target) target = document.body;
+    if (!target) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(finalFile);
+      const init = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt };
+      target.dispatchEvent(new DragEvent('dragenter', init));
+      target.dispatchEvent(new DragEvent('dragover', init));
+      target.dispatchEvent(new DragEvent('drop', init));
+      console.log('[SecureDoc] 파일 재주입: input 이 없어 합성 drop 으로 넣었습니다');
+      return true;
+    } catch (e) {
+      console.error('[SecureDoc] 파일 재주입 폴백(drop) 실패:', e);
       return false;
     }
+  }
+
+  /** 사이트가 DOM 에서 떼어낸 파일 input 을 원래 자리에 되돌려 놓는다.
+   *
+   *  Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 없앤다. 그런데 그
+   *  노드 자체는 우리가 붙들고 있고, DOM 리스너는 노드를 떼어내도 그대로 살아 있다.
+   *  원래 부모에 다시 붙이면 그 노드에 직접 걸린 리스너도, 조상에 위임된 리스너도
+   *  다시 유효해진다 — 사이트가 만든 바로 그 노드라 사이트 입장에선 자기 input 이다.
+   *
+   *  합성 drop 보다 이걸 먼저 시도한다. drop 재생은 사이트의 드래그 상태 머신에
+   *  기대는데, 그 상태가 없으면 사이트 핸들러가 "this.drop is not a function" 으로
+   *  터진다(실사용자 Gemini 콘솔에서 재현 — 이 파일 아래 drop 재주입 주석에도
+   *  같은 크래시가 ChatGPT 사례로 기록돼 있다). 리스너 안에서 난 예외는 우리
+   *  try/catch 로 잡을 수도 없어서, 사이트의 드롭 처리만 조용히 중단된다. */
+  function reviveFileInput(orphan, parentHint) {
+    if (!orphan || orphan.isConnected) return orphan || null;
+    const host = parentHint?.isConnected
+      ? parentHint
+      : (findEditor(getPromptConfig())?.closest?.('form') || document.body);
+    if (!host) return null;
+    try {
+      host.appendChild(orphan);
+      if (!orphan.isConnected) return null;
+      console.log('[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다');
+      return orphan;
+    } catch (e) {
+      console.warn('[SecureDoc] 파일 input 되돌리기 실패:', e);
+      return null;
+    }
+  }
+
+  function injectFileIntoInput(preferred, finalFile, parentHint) {
+    // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
+    // 되돌려 놓기 → 그래도 안 되면 합성 drop 순으로 시도한다.
+    const input = liveFileInput(preferred) || reviveFileInput(preferred, parentHint);
+    if (!input) {
+      return injectFileByDrop(finalFile, null);
+    }
+    // 성공 판정은 "쏘기 전에 DOM 에 붙어 있었나" 로 한다. 쏜 "뒤" 의 isConnected 를
+    // 보면 안 된다 — 사이트가 change 를 처리하면서 그 input 을 곧바로 떼어내는 게
+    // 정상 동작이기 때문이다(실사용자 Gemini 로그: files:1 인데 connected:false).
+    // 그걸 실패로 오판하면 이미 잘 들어간 파일에 합성 drop 을 한 번 더 쏘게 되고,
+    // 그 drop 이 사이트 핸들러를 터뜨리거나 첨부가 중복될 수 있다.
+    const wasConnected = input.isConnected;
     setFileOnInput(input, finalFile);
-    if (!input.isConnected || input.files?.length !== 1) {
-      console.error('[SecureDoc] 파일 재주입 실패: 주입 후에도 input 에 파일이 없습니다', {
-        connected: input.isConnected, files: input.files?.length,
+    if (!wasConnected || input.files?.length !== 1) {
+      console.warn('[SecureDoc] input 주입이 반영되지 않았습니다 — 합성 drop 으로 재시도합니다', {
+        connectedBefore: wasConnected, files: input.files?.length,
       });
-      return false;
+      return injectFileByDrop(finalFile, null);
     }
     return true;
   }
@@ -495,7 +568,10 @@
     // 컴포저를 다시 그리면 이 노드는 고아가 되고, 거기에 넣은 파일은 사이트에 전달되지
     // 않는다(liveFileInput 주석 참고). drop/paste 경로는 이미 주입 시점에 다시 찾고
     // 있었는데 이 📎 경로만 예전 방식으로 남아 있었다.
-    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile));
+    // 지금 부모를 기억해 둔다 — 사이트가 나중에 이 input 을 DOM 에서 떼어내면
+    // 여기로 되돌려 붙여야 사이트의 위임 리스너까지 살아난다(reviveFileInput).
+    const originalParent = input.parentElement;
+    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile, originalParent));
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
@@ -676,7 +752,10 @@
       try { return !!document.querySelector(sel); } catch (_) { return false; }
     });
     if (anyPresent) return configured;
-    warnStaleSelector('sendBtnSel', cfg?.sendBtnSel);
+    // 여기서 경고하지 않는다. 이 함수는 폴링 중에도 매번 불리는데, 컴포저가 아직
+    // 안 그려진 순간에도 "선택자가 낡았다" 고 잘못 울렸다(실사용자 Gemini 로그:
+    // 경고가 뜬 뒤 정작 재전송은 설정된 선택자로 성공했다). 실제로 어떤 선택자가
+    // 먹었는지는 재전송 성공 로그에 sel= 로 찍히므로 정보가 아쉬울 것도 없다.
     return [...configured, ...GENERIC_SEND_SELS];
   }
 
@@ -710,22 +789,63 @@
       editor.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
-    try {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
-      document.execCommand('insertText', false, text);
-    } catch (_) {
-      editor.textContent = text;
-    }
-    editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-    if (cfg.editorType === 'lexical') {
+    // contenteditable 은 에디터 프레임워크마다 먹는 방법이 달라 여러 수단을 쓴다.
+    // 중요한 건 "첫 번째로 성공한 것에서 멈추는" 것이다.
+    //
+    // 예전엔 세 수단(execCommand / 합성 InputEvent / 합성 paste)을 조건 없이 전부
+    // 실행했다. Lexical(perplexity)처럼 셋을 다 받아들이는 에디터에서는 같은 글이
+    // 그만큼 여러 번 삽입되고, 게다가 Lexical 은 execCommand('selectAll'+'delete')를
+    // 무시해서 원래 있던 글까지 남는다 — 합쳐서 프롬프트가 4벌로 들어갔다
+    // (실사용자 리포트: "프롬프트가 4번 반복돼서 넘어간다").
+    const target = text.trim();
+    const current = () => (editor.innerText || editor.textContent || '').trim();
+    const done = () => current() === target;
+
+    // 기존 내용을 지운다. execCommand('selectAll') 만으로는 Lexical 같은 에디터에서
+    // 안 먹는 경우가 있어, 실제 DOM 선택 영역을 직접 잡아준다 — insertText/paste 는
+    // "선택 영역을 대체" 하므로 선택만 제대로 잡혀 있으면 지우기와 넣기가 한 번에 된다.
+    const clear = () => {
       try {
-        const dt = new DataTransfer();
-        dt.setData('text/plain', text);
-        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      } catch (_) { /* ignore */ }
-    }
-    return true;
+        const sel = window.getSelection?.();
+        if (sel) {
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch (_) { /* 아래 execCommand 로도 시도한다 */ }
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      } catch (_) { /* 아래 수단이 알아서 덮어쓴다 */ }
+    };
+
+    // 1) execCommand — 가장 "진짜 입력"에 가까워 대부분의 에디터가 자기 이벤트를 낸다.
+    clear();
+    try { document.execCommand('insertText', false, text); } catch (_) { /* 다음 수단 */ }
+    if (done()) return true;
+
+    // 2) 합성 paste — Lexical 등 execCommand 를 무시하는 에디터용.
+    clear();
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch (_) { /* 다음 수단 */ }
+    if (done()) return true;
+
+    // 3) 최후 — DOM 을 직접 갈아끼우고 input 을 알린다. 프레임워크가 자기 상태와
+    //    어긋난 것으로 보고 되돌릴 수 있어 마지막에만 쓴다.
+    clear();
+    editor.textContent = text;
+    // 알림용 이벤트에는 data/inputType 을 싣지 않는다. insertText + data 를 실으면
+    // 프레임워크가 "또 넣으라는 뜻" 으로 읽어 방금 세팅한 내용 뒤에 한 벌 더 붙는다
+    // (실측: 이 한 줄 때문에 마지막 수단에서도 2벌이 됐다).
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    if (done()) return true;
+
+    console.warn('[SecureDoc] 입력창에 마스킹본을 넣지 못했습니다 — 현재 내용이 의도와 다를 수 있습니다');
+    return false;
   }
 
   /** 마스킹된 텍스트가 채팅 입력창에 채워졌다가 전송되기까지의 짧은 순간, 입력창을
@@ -751,6 +871,56 @@
    *  그 시점엔 업로드가 아직 진행 중이라 버튼이 비활성 → 클릭이 먹지 않고 그대로
    *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
    *  않고 버튼이 활성화될 때까지 폴링한다. */
+  /** 첨부가 사이트에 실제로 올라갈 때까지 기다린다.
+   *
+   *  왜 필요한가: 예전엔 파일을 넣고 고정 900ms 만 기다린 뒤 전송했다. 사이트는
+   *  파일을 자기 서버로 올리는 중인데 전송 버튼은 "텍스트가 있으니" 열려 있어서,
+   *  업로드가 끝나기 전에 눌려 프롬프트만 먼저 나갔다(실사용자 Gemini 리포트:
+   *  "첨부는 됐는데 요약하기가 먼저 들어갔어").
+   *
+   *  고정 시간을 늘리는 건 추측이라, 사이트가 주는 신호를 쓴다. 대부분의 챗 UI 는
+   *  첨부를 올리는 동안 전송 버튼을 잠갔다가 끝나면 다시 연다. 그 "잠김 → 열림"
+   *  전환을 기다린다. 잠기는 걸 못 봤으면(그렇게 동작하지 않는 사이트) 판단 불가라
+   *  예전과 같은 짧은 대기로 물러난다 — 없던 신호를 지어내지 않는다. */
+  async function waitForAttachmentReady(cfg, busyProbeMs = 2500, readyWaitMs = 60000) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sendBtn = () => {
+      for (const sel of sendButtonSelectors(cfg)) {
+        try {
+          const b = document.querySelector(sel);
+          if (b) return b;
+        } catch (_) { /* 잘못된 선택자는 건너뛴다 */ }
+      }
+      return null;
+    };
+    const locked = () => {
+      const b = sendBtn();
+      return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
+    };
+
+    const startedAt = Date.now();
+    let sawBusy = false;
+    while (Date.now() - startedAt < busyProbeMs) {
+      if (locked()) { sawBusy = true; break; }
+      await sleep(100);
+    }
+    if (!sawBusy) {
+      // 업로드 중임을 알려주는 신호가 없다 — 예전 동작(짧은 대기)으로 물러난다.
+      await sleep(900);
+      console.log('[SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다');
+      return false;
+    }
+    while (Date.now() - startedAt < readyWaitMs) {
+      if (!locked()) {
+        console.log(`[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${Date.now() - startedAt}ms)`);
+        return true;
+      }
+      await sleep(150);
+    }
+    console.warn(`[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 전송 버튼이 다시 열리지 않았습니다 — 그대로 전송을 시도합니다`);
+    return false;
+  }
+
   async function resubmitPrompt(cfg, waitMs = 15000) {
     const startedAt = Date.now();
     await new Promise(r => setTimeout(r, 200)); // setEditorText 후 React 상태 반영 대기
@@ -839,19 +1009,33 @@
         // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
         // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
         // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
+        // 주입 성공 여부를 반드시 본다 — 예전엔 반환값을 버려서, 파일이 하나도 안
+        // 들어갔는데도 그대로 프롬프트만 전송했다("문서가 안 간다"의 마지막 조각).
+        // 텍스트를 "먼저" 넣는다. 그래야 전송 버튼이 텍스트 기준으로 일단 열리고,
+        // 그 다음 파일을 넣었을 때 사이트가 업로드하느라 버튼을 잠그는 것을
+        // 신호로 쓸 수 있다(waitForAttachmentReady). 순서가 반대면 대기 내내
+        // 입력창이 비어 버튼이 계속 잠겨 있어 업로드 중인지 구분할 수 없다.
+        setEditorText(latestCfg, finalText);
+
+        let injected = true;
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
           const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
           await announceContentApprovedFile(maskedFile);
-          staged.inject(maskedFile);
+          injected = staged.inject(maskedFile) !== false;
         } else if (decision.file?.action === 'passthrough') {
           await announceContentApprovedFile(staged.file);
-          staged.inject(staged.file);
+          injected = staged.inject(staged.file) !== false;
+        }
+        if (!injected) {
+          console.error(
+            '[SecureDoc] 문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다. '
+            + '문서를 다시 첨부해 주세요.',
+          );
         }
         // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
         clearPendingAttachment();
-        setEditorText(latestCfg, finalText);
-        // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
-        await new Promise((r) => setTimeout(r, 900));
+        // 첨부가 사이트에 실제로 올라갈 때까지 기다린 뒤 전송한다.
+        if (injected) await waitForAttachmentReady(latestCfg);
       } else {
         const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
         setEditorText(latestCfg, finalText);
