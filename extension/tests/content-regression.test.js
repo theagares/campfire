@@ -734,12 +734,73 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
+  // 되돌릴 부모가 없는 경우(원래 부모까지 사라짐)라 최후 수단인 합성 drop 으로 간다.
   const dropped = promptEditorStub.dispatched.filter(e => e.type === 'drop' && e.dataTransfer?.files?.length);
   if (!dropped.length) {
     throw new Error('input 이 사라진 사이트에서 문서가 페이지로 전혀 들어가지 않았다 — 프롬프트만 전송된다');
   }
   if (dropped[0].dataTransfer.files[0]?.name !== 'gemini.pdf') {
     throw new Error(`합성 drop 에 실린 파일이 다르다: ${dropped[0].dataTransfer.files[0]?.name}`);
+  }
+
+  // (13) 원래 부모가 살아 있으면 합성 drop 이 아니라 "input 되돌리기" 를 쓴다.
+  //
+  // 합성 drop 은 사이트의 드래그 상태 머신에 기대는데, 그 상태가 없으면 사이트
+  // 핸들러가 "this.drop is not a function" 으로 터진다(실사용자 Gemini 콘솔).
+  // 리스너 안에서 난 예외라 우리 try/catch 로도 못 잡고, 사이트의 드롭 처리만
+  // 조용히 중단된다. 그래서 노드를 원래 자리에 되돌려 놓는 쪽을 먼저 시도해야 한다.
+  const pendingScan13 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  decisionListener?.({
+    type: 'PANEL_DECISION', sessionId: pendingScan13.sessionId, decision: { action: 'cancel' },
+  });
+  await flush();
+  await new Promise(r => setTimeout(r, 4500));
+
+  // 사이트의 컴포저(부모)는 살아 있고, 그 안의 input 만 떼어진 상황.
+  const parent13 = new DropTargetStub();
+  parent13.appended = [];
+  parent13.appendChild = function (node) { this.appended.push(node); node.isConnected = true; };
+  const input13 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'revive.pdf', { type: 'application/pdf' }), 'orphan',
+  );
+  input13.parentElement = parent13;
+
+  dispatchDocumentEvent('change', {
+    target: input13,
+    composedPath: () => [input13, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input13.isConnected = false;              // 사이트가 떼어냈다
+  domBySelector.delete('input[type="file"]');
+  actionLog.length = 0;
+  promptEditorStub.dispatched.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'revive.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  if (!parent13.appended.includes(input13)) {
+    throw new Error('원래 부모가 살아 있는데 input 을 되돌려 놓지 않았다');
+  }
+  if (!actionLog.some(e => e.kind === 'inject' && e.id === 'orphan')) {
+    throw new Error('되돌린 input 에 마스킹본이 주입되지 않았다');
+  }
+  const drops13 = promptEditorStub.dispatched.filter(e => e.type === 'drop');
+  if (drops13.length) {
+    throw new Error('되돌리기로 충분한데 합성 drop 까지 쐈다 — 사이트 핸들러를 터뜨릴 수 있다');
   }
 
   console.log('content regression ok');

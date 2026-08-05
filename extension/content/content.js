@@ -208,10 +208,40 @@
     }
   }
 
-  function injectFileIntoInput(preferred, finalFile) {
-    const input = liveFileInput(preferred);
+  /** 사이트가 DOM 에서 떼어낸 파일 input 을 원래 자리에 되돌려 놓는다.
+   *
+   *  Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 없앤다. 그런데 그
+   *  노드 자체는 우리가 붙들고 있고, DOM 리스너는 노드를 떼어내도 그대로 살아 있다.
+   *  원래 부모에 다시 붙이면 그 노드에 직접 걸린 리스너도, 조상에 위임된 리스너도
+   *  다시 유효해진다 — 사이트가 만든 바로 그 노드라 사이트 입장에선 자기 input 이다.
+   *
+   *  합성 drop 보다 이걸 먼저 시도한다. drop 재생은 사이트의 드래그 상태 머신에
+   *  기대는데, 그 상태가 없으면 사이트 핸들러가 "this.drop is not a function" 으로
+   *  터진다(실사용자 Gemini 콘솔에서 재현 — 이 파일 아래 drop 재주입 주석에도
+   *  같은 크래시가 ChatGPT 사례로 기록돼 있다). 리스너 안에서 난 예외는 우리
+   *  try/catch 로 잡을 수도 없어서, 사이트의 드롭 처리만 조용히 중단된다. */
+  function reviveFileInput(orphan, parentHint) {
+    if (!orphan || orphan.isConnected) return orphan || null;
+    const host = parentHint?.isConnected
+      ? parentHint
+      : (findEditor(getPromptConfig())?.closest?.('form') || document.body);
+    if (!host) return null;
+    try {
+      host.appendChild(orphan);
+      if (!orphan.isConnected) return null;
+      console.log('[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다');
+      return orphan;
+    } catch (e) {
+      console.warn('[SecureDoc] 파일 input 되돌리기 실패:', e);
+      return null;
+    }
+  }
+
+  function injectFileIntoInput(preferred, finalFile, parentHint) {
+    // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
+    // 되돌려 놓기 → 그래도 안 되면 합성 drop 순으로 시도한다.
+    const input = liveFileInput(preferred) || reviveFileInput(preferred, parentHint);
     if (!input) {
-      // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
       return injectFileByDrop(finalFile, null);
     }
     setFileOnInput(input, finalFile);
@@ -532,7 +562,10 @@
     // 컴포저를 다시 그리면 이 노드는 고아가 되고, 거기에 넣은 파일은 사이트에 전달되지
     // 않는다(liveFileInput 주석 참고). drop/paste 경로는 이미 주입 시점에 다시 찾고
     // 있었는데 이 📎 경로만 예전 방식으로 남아 있었다.
-    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile));
+    // 지금 부모를 기억해 둔다 — 사이트가 나중에 이 input 을 DOM 에서 떼어내면
+    // 여기로 되돌려 붙여야 사이트의 위임 리스너까지 살아난다(reviveFileInput).
+    const originalParent = input.parentElement;
+    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile, originalParent));
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
