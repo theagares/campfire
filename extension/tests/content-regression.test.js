@@ -103,6 +103,24 @@ class SendButtonStub extends EventTargetStub {
   click() { this.clicks++; }
 }
 
+// content.js 가 콘솔에 찍은 줄 (테스트 14-a: 진단 로그가 필요한 때만 나오는지).
+// 실제 콘솔로도 그대로 흘려보내 기존처럼 눈으로 볼 수 있게 둔다.
+const consoleLines = [];
+function captureConsole(fn) {
+  return (...args) => {
+    consoleLines.push(args.map(a => String(a)).join(' '));
+    fn(...args);
+  };
+}
+const consoleStub = {
+  log: captureConsole(console.log.bind(console)),
+  warn: captureConsole(console.warn.bind(console)),
+  error: captureConsole(console.error.bind(console)),
+  info: captureConsole(console.info.bind(console)),
+  debug: () => {},
+};
+const diagCount = () => consoleLines.filter(l => l.includes('[SecureDoc][진단]')).length;
+
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
 const dispatchedWindowEvents = [];
@@ -245,7 +263,7 @@ const sandbox = {
   document: documentStub,
   chrome: chromeStub,
   location: { hostname: 'chatgpt.com' },
-  console,
+  console: consoleStub,
   setTimeout,
   clearTimeout,
   crypto: { randomUUID: () => 'uuid-' + Math.random().toString(36).slice(2) },
@@ -845,6 +863,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 9초로 잡는다.
   await new Promise(r => setTimeout(r, 9000));
 
+  // (14-a) 신호를 하나도 못 본 경로에서는 진단 기록이 남아야 한다.
+  //
+  // Gemini 가 딱 그 경로인데, 지금까지는 "신호 없음" 한 줄만 찍고 끝나서 왜 못 봤는지
+  // 알 방법이 없었다. 그 결과 같은 사이트에서 신호를 세 번이나 헛짚었다. 앞선 테스트
+  // (4)(12)(13)이 모두 이 경로였으므로 여기까지 왔으면 진단 줄이 있어야 한다.
+  if (diagCount() === 0) {
+    throw new Error('업로드 신호를 하나도 못 봤는데 진단 기록이 남지 않았다 — 원인 파악용 데이터가 없다');
+  }
+
+  // (14-b) 반대로 신호가 정상적으로 잡히는 경로에서는 진단이 조용해야 한다.
+  //        최종 사용자에게 상시 노이즈가 되면 안 되므로 아래 (14) 구간 동안 진단 줄이
+  //        하나도 늘지 않는 것을 확인한다.
+  const diagBefore = diagCount();
+
   const send14 = new SendButtonStub();
   send14.disabled = false;                    // Gemini: 업로드 중에도 계속 활성
   domBySelector.set('[data-testid="send-button"]', send14);
@@ -896,6 +928,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (send14.clicks !== 1) {
     throw new Error(`업로드가 끝났는데도 전송되지 않았다 (clicks=${send14.clicks})`);
+  }
+  if (diagCount() !== diagBefore) {
+    throw new Error(
+      `업로드 신호가 정상적으로 잡힌 경로에서 진단 로그가 나왔다 (${diagCount() - diagBefore}줄) — 평소엔 조용해야 한다`,
+    );
   }
 
   // (15) 네트워크 신호를 못 받는 경우엔 진행률/스피너 표시를 신호로 쓴다.

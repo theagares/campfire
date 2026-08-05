@@ -909,6 +909,125 @@
     return n;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 진단 — "첨부가 왜 안 붙는지"를 사용자가 한 번에 복사해 보고할 수 있게
+  //
+  // 같은 증상에 신호를 세 번 바꿔 달았고 세 번 다 빗나갔다(버튼 잠김 → 합성 drop →
+  // 네트워크 관측). 네 번째를 찍어 넣는 대신, 첨부 대기가 "신호 없음"으로 끝난 그
+  // 순간에 무슨 일이 있었는지를 기록으로 남긴다.
+  //
+  // 두 덩어리를 낸다:
+  //   1) 컴포저 DOM 변화 — 우리가 파일을 넣은 뒤 사이트가 자기 UI 를 바꿨는가.
+  //      첨부 칩이 생겼다면 사이트는 파일을 "받았다". 아무 변화도 없다면 주입 자체가
+  //      사이트 상태에 반영되지 않은 것이다. 이 둘은 고쳐야 할 지점이 완전히 다르다.
+  //   2) 요청 추적 — interceptor.js(MAIN world)가 모아둔 것을 두 번 출력한다.
+  //      "첨부 대기 창"과 "전송 후 8초". 업로드가 후자에만 나타나면 이 사이트는 첨부를
+  //      전송 시점에 올리는 구조이고, 그렇다면 "전송 전에 업로드를 기다린다"는 접근
+  //      자체가 성립하지 않는다 — 기다릴 업로드가 애초에 없기 때문이다.
+  //
+  // 조용함: 평소엔 아무것도 안 찍는다. 버그가 재현된 순간에만, 그것도 페이지당 한 번만
+  // 덤프한다. 다시 보고 싶으면 콘솔에서 __campfireTrace() 를 부르면 된다.
+  // ══════════════════════════════════════════════════════════════════════════
+  let diagnosticsDumped = false;
+
+  /** MAIN world 에 "모아둔 요청 기록을 콘솔에 찍어라"고 알린다. 응답을 기다리지
+   *  않으므로 전송이 그만큼 늦어지지 않는다. */
+  function requestTracePrint(label, windowMs) {
+    try {
+      window.postMessage({
+        __campfire_config: true,
+        direction: 'isolated-to-main',
+        type: 'UPS_TRACE_PRINT',
+        label,
+        windowMs,
+      }, '*');
+    } catch (_) { /* context invalidated */ }
+  }
+
+  const NO_MUTATION_TRACE = { dump() {}, stop() {} };
+
+  /** 컴포저 주변 DOM 변화를 기록한다. 텍스트는 하나도 읽지 않는다 — 태그명과 role
+   *  값(ARIA 표준 어휘)만 남기므로 문서 내용·파일명이 콘솔에 새지 않는다. */
+  function startComposerMutationTrace(cfg) {
+    if (typeof MutationObserver === 'undefined') return NO_MUTATION_TRACE;
+    let root = null;
+    try {
+      const editor = findEditor(cfg);
+      root = editor?.closest?.('form') || editor?.parentElement?.parentElement || editor || null;
+    } catch (_) { root = null; }
+    if (!root) return NO_MUTATION_TRACE;
+
+    const t0 = Date.now();
+    const recs = [];
+    let printed = 0; // 이미 출력한 개수 — 두 번째 덤프에서 같은 줄을 반복하지 않도록
+    const desc = (n) => {
+      try {
+        const tag = String(n.tagName || n.nodeName || '?').toLowerCase();
+        const role = n.getAttribute?.('role');
+        return role ? `${tag}[role=${role}]` : tag;
+      } catch (_) { return '?'; }
+    };
+
+    let mo = null;
+    try {
+      mo = new MutationObserver((list) => {
+        for (const m of list) {
+          if (recs.length >= 80) return;
+          const add = Array.from(m.addedNodes || []).filter(n => n.nodeType === 1).map(desc);
+          const rm = Array.from(m.removedNodes || []).filter(n => n.nodeType === 1).map(desc);
+          if (!add.length && !rm.length) continue;
+          recs.push({ t: Date.now() - t0, add, rm });
+        }
+      });
+      mo.observe(root, { childList: true, subtree: true });
+    } catch (_) {
+      return NO_MUTATION_TRACE;
+    }
+
+    return {
+      dump(label) {
+        const rows = recs.slice(printed);
+        printed = recs.length;
+        console.log(`[SecureDoc][진단] ===== 컴포저 DOM 변화 · ${label} · ${rows.length}건 =====`);
+        if (!rows.length) {
+          console.log('[SecureDoc][진단] (이 구간에 컴포저 주변 DOM 이 전혀 바뀌지 않았습니다)');
+        }
+        for (const r of rows) {
+          const parts = [];
+          if (r.add.length) parts.push('+ ' + r.add.slice(0, 8).join(','));
+          if (r.rm.length) parts.push('- ' + r.rm.slice(0, 8).join(','));
+          console.log(`[SecureDoc][진단] +${(r.t / 1000).toFixed(2)}s ${parts.join('   ')}`);
+        }
+        console.log('[SecureDoc][진단] ===== 컴포저 DOM 변화 끝 =====');
+      },
+      stop() { try { mo.disconnect(); } catch (_) { /* ignore */ } },
+    };
+  }
+
+  /** 첨부 대기가 아무 신호도 못 본 채 끝났을 때(= 버그 재현 순간) 한 번만 부른다. */
+  function dumpAttachmentDiagnostics(trace, probeMs) {
+    if (diagnosticsDumped) {
+      trace.stop();
+      console.log('[SecureDoc][진단] 이 페이지에서는 이미 한 번 기록을 남겼습니다 — 다시 보려면 콘솔에 __campfireTrace() 를 입력하세요.');
+      return;
+    }
+    diagnosticsDumped = true;
+    console.log(
+      '[SecureDoc][진단] 첨부가 사이트에 다 올라가기 전에 전송될 수 있는 상태입니다. '
+      + '아래에 이어지는 [진단] 줄들을 통째로 복사해 개발자에게 전달해 주세요. '
+      + '(문서 내용·파일명·요청 바디는 기록하지 않습니다. 8초 뒤 두 번째 묶음이 더 출력됩니다.)',
+    );
+    trace.dump('첨부 대기 창');
+    requestTracePrint('첨부 대기 창(주입 직후)', probeMs + 1500);
+    // 전송 "후"에야 업로드가 일어나는 구조인지를 가르는 두 번째 창.
+    setTimeout(() => {
+      trace.dump('전송 후 8초');
+      trace.stop();
+      requestTracePrint('전송 후 8초', 8000);
+      console.log('[SecureDoc][진단] 여기까지입니다. 위 [진단] 줄 전체를 복사해 주세요.');
+    }, 8000);
+  }
+
   /** 첨부가 사이트에 실제로 올라갈 때까지 기다린다.
    *
    *  왜 필요한가: 예전엔 파일을 넣고 고정 900ms 만 기다린 뒤 전송했다. 사이트는
@@ -977,11 +1096,16 @@
       || (fired.has('button') && locked())
     );
 
+    // 신호를 하나도 못 봤을 때 무슨 일이 있었는지 남기기 위한 기록(위 "진단" 참고).
+    // 신호가 정상적으로 잡히면 아무것도 출력하지 않고 조용히 멈춘다.
+    const trace = startComposerMutationTrace(cfg);
+
     const startedAt = Date.now();
     while (Date.now() - startedAt < probeMs) {
       if (probe()) break;
       // 업로드가 폴링 간격보다 빨리 끝나버린 경우 — 시작을 못 봤어도 이미 끝났다.
       if (netFinished()) {
+        trace.stop();
         console.log(`[SecureDoc] 첨부 대기: 업로드가 즉시 끝났습니다 (network, ${Date.now() - startedAt}ms)`);
         return true;
       }
@@ -992,6 +1116,7 @@
       console.log(
         `[SecureDoc] 첨부 대기: 업로드 신호 없음 — ${probeMs}ms 동안 network/dom/button 셋 다 무반응이라 그대로 전송합니다`,
       );
+      dumpAttachmentDiagnostics(trace, probeMs);
       return false;
     }
 
@@ -1003,6 +1128,7 @@
         // 더 걸린다. 그 사이에 눌리면 다시 첨부 없이 나갈 수 있어 짧게 양보한다.
         // (이 값은 안전 여유일 뿐 신호가 아니다 — 실기 계측으로 정한 값은 아니다.)
         await sleep(250);
+        trace.stop();
         console.log(
           `[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${signal}, ${Date.now() - startedAt}ms)`,
         );
@@ -1011,6 +1137,7 @@
       probe(); // 늦게 켜지는 신호도 이후 대기에 반영한다
       await sleep(120);
     }
+    trace.stop();
     console.warn(
       `[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 업로드가 끝나지 않았습니다 (${signal}) — 그대로 전송을 시도합니다`,
     );
