@@ -224,6 +224,12 @@ class InjectionLlmMcpDetector:
         떠안을 뿐, 기능적으로 달라지는 건 없다)."""
         with contextlib.suppress(Exception):
             await self._infer(_WARMUP_TEXT, user_prompt=_WARMUP_USER_PROMPT)
+        # _infer 의 타임아웃 경로는 서브프로세스를 죽이고 나온다. 그대로 두면 호출부가
+        # 죽은 프로세스를 "loaded" 로 표시해버려(_ensure_process) 첫 실요청이 곧바로
+        # "살아있지 않습니다" 로 실패한다 — 워밍업 실패는 삼켜도 되지만 프로세스가
+        # 사라진 것까지 삼키면 안 된다. 여기서 다시 띄운다(실패하면 로딩 실패로 올린다).
+        if self._process is None or self._process.returncode is not None:
+            await self._spawn_process()
 
     async def _idle_watcher(self) -> None:
         """유휴 타임아웃이 지나면 실제로 서브프로세스를 죽여 VRAM 을 회수한다."""
@@ -242,21 +248,46 @@ class InjectionLlmMcpDetector:
                 return
 
     async def _infer(self, text: str, user_prompt: str | None = None) -> dict[str, Any]:
+        request_id = str(self._next_id)
+        self._next_id += 1
         request = {
-            "id": str(self._next_id),
+            "id": request_id,
             "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
             "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
             "tool_response": text,
         }
-        self._next_id += 1
         async with self._request_lock:
             proc = self._process
-            assert proc is not None and proc.stdin is not None and proc.stdout is not None
+            # assert 였다. 서브프로세스는 유휴 워처가 _proc_lock 만 잡고 죽일 수 있고
+            # (_idle_watcher) 아래 타임아웃 경로에서도 죽으므로, 여기 도달했을 때 이미
+            # 없을 수 있다 — 정상적인 실패 경로다. assert 로 두면 python -O 에서 통째로
+            # 사라져 None.stdin AttributeError 가 된다.
+            if proc is None or proc.stdin is None or proc.stdout is None or proc.returncode is not None:
+                raise RuntimeError("injection_llm_mcp: 추론 서브프로세스가 살아있지 않습니다")
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
+
+            # 무한 대기 금지. 이 readline 은 _request_lock 을 쥔 채로 기다리므로, 응답이
+            # 영영 안 오면 이 detector 전체가 영구히 멎는다(서브프로세스는 살아 있어서
+            # 죽었는지 알 방법도 없다). 시간이 지나면 프로세스를 죽이고 실패로 끝낸다 —
+            # 다음 요청의 _ensure_process 가 alive 를 보고 새로 띄운다.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + config.INJECTION_INFER_TIMEOUT_SEC
             while True:
-                out_line = await proc.stdout.readline()
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    await self._kill_process()
+                    raise RuntimeError(
+                        f"injection_llm_mcp: 추론 응답이 {config.INJECTION_INFER_TIMEOUT_SEC}초 안에 오지 않음"
+                    )
+                try:
+                    out_line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    await self._kill_process()
+                    raise RuntimeError(
+                        f"injection_llm_mcp: 추론 응답이 {config.INJECTION_INFER_TIMEOUT_SEC}초 안에 오지 않음"
+                    ) from None
                 if not out_line:
                     stderr = b""
                     if proc.stderr is not None:
@@ -265,9 +296,17 @@ class InjectionLlmMcpDetector:
                         f"injection_llm_mcp: 서브프로세스가 응답 없이 종료됨: {stderr.decode(errors='replace')[-2000:]}"
                     )
                 try:
-                    return json.loads(out_line.decode())
+                    payload = json.loads(out_line.decode())
                 except json.JSONDecodeError:
                     continue  # transformers 진단 잡음 라인 — 무시하고 다음 줄 대기
+                # 응답 id 를 대조한다. 지금까지는 락이 요청을 1:1 로 묶어줘서 안 봐도
+                # 됐지만, 위 타임아웃이 생긴 이상 "늦게 도착한 이전 요청의 응답"이
+                # 존재할 수 있고 그걸 이번 결과로 오인하면 엉뚱한 청크의 판정을 쓰게
+                # 된다. 런타임은 요청의 id 를 그대로 돌려주고(local_injection_hybrid_
+                # inference.run_stdio), 파싱 자체가 실패한 에러 응답만 id=None 이다.
+                if payload.get("id") is not None and payload.get("id") != request_id:
+                    continue
+                return payload
 
     # 인젝션의 정의를 넓게 준다. 예전 프롬프트는 인젝션을 "원래 지시를 무시하거나
     # 변조하도록 요구하는 시도" 로만 정의했는데, 그러면 기존 지시를 건드리지 않고

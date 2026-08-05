@@ -32,17 +32,51 @@ mcp.settings.streamable_http_path = "/"
 MCP_PATH = "/mcp"
 
 
+async def _send_plain(send: Send, status: int, body: str) -> None:
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+    await send({"type": "http.response.body", "body": body.encode()})
+
+
+def _has_origin_header(scope: Scope) -> bool:
+    """요청에 Origin 헤더가 있는가 = 브라우저가 보낸 요청인가.
+
+    Origin 은 브라우저가 스스로 붙이는 헤더이고 페이지 스크립트가 지울 수 없다. 반대로
+    MCP 클라이언트(Claude Desktop, stdio_shim 등)는 브라우저가 아니라 붙이지 않는다.
+    그래서 "Origin 이 있다" = "브라우저 탭에서 온 요청" 으로 봐도 된다.
+    """
+    return any(name.lower() == b"origin" for name, _ in scope.get("headers", []))
+
+
 async def _mcp_asgi(scope: Scope, receive: Receive, send: Send) -> None:
     """`/mcp` 로 온 요청을 현재 활성 session manager 로 위임한다.
 
     session manager 가 아직 기동 전이면 503 을 돌려준다(정상 부팅 후엔 항상 존재).
+
+    그 전에 브라우저에서 온 요청을 먼저 끊는다. 여기 붙은 도구들은 로컬 파일을 읽고
+    (secure_read_file/scan_file) 디렉터리를 나열한다(secure_list_files) — 엔진에 인증이
+    없으므로 이 경로가 브라우저에 열리면 곧바로 파일 접근이 열린다. CORS 를 조여도
+    (main.py) 응답을 못 읽게 될 뿐 호출 자체는 막히지 않으니, 여기서 요청 단계에 거절한다.
+
+    현재 설치본에서는 MCP SDK 의 DNS rebinding 보호가 이미 같은 일을 하고 있다(실측:
+    Origin 을 붙이면 SDK 가 "Invalid Origin header" 로 403). 그래도 우리 쪽에 두는 이유는
+    그게 **우리 코드가 아니라 SDK 기본값**이기 때문이다 — pyproject 의 허용 범위가
+    `mcp>=1.2,<2.0` 로 넓어서 어떤 1.x 가 설치되느냐에 따라 그 미들웨어의 유무·기본값이
+    달라질 수 있다(SDK 안에서도 미들웨어를 인자 없이 만들면 보호가 꺼진 채로 시작한다).
+    파일 접근이 걸린 경로의 안전이 의존성 해석 결과에 좌우되게 두지 않는다.
     """
+    if _has_origin_header(scope) and scope["type"] == "http":
+        await _send_plain(
+            send, 403,
+            "MCP 엔드포인트는 브라우저에서 호출할 수 없습니다 "
+            "(로컬 파일 접근 도구가 붙어 있어 웹페이지에 노출하지 않습니다).",
+        )
+        return
+
     manager = mcp._session_manager  # noqa: SLF001 - 어댑터에서만 접근하는 내부 핸들
     if manager is None:
         if scope["type"] == "http":
-            await send({"type": "http.response.start", "status": 503,
-                        "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
-            await send({"type": "http.response.body", "body": "MCP 세션 매니저 미기동".encode()})
+            await _send_plain(send, 503, "MCP 세션 매니저 미기동")
         return
     await manager.handle_request(scope, receive, send)
 

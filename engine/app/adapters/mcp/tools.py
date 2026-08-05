@@ -40,9 +40,24 @@ _TEXT_EXTS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".xml",
     ".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".c", ".cpp",
     ".h", ".hpp", ".cs", ".go", ".rs", ".sh", ".ps1", ".bat", ".toml", ".ini",
-    ".cfg", ".conf", ".log", ".sql", ".env", ".example",
+    ".cfg", ".conf", ".log", ".sql",
 }
 _DOCUMENT_EXTS = set(config.SUPPORTED_EXTENSIONS) | set(config.UNSUPPORTED_EXTENSIONS)
+
+# 자격증명이 담기는 파일. 예전엔 .env 가 위 _TEXT_EXTS 에 들어 있어서 "text" 로 분류됐고,
+# 그러면 secure_read_file 이 내용을 읽어 마스킹본을 돌려줬다 — 그런데 마스커가 지우는 건
+# PII 와 인젝션뿐이라 UPSTAGE_API_KEY=..., AWS 키, DB 비밀번호는 그대로 통과했다.
+# 바이너리는 막으면서 키 파일은 열어주는, 방향이 반대인 구멍이었다.
+#
+# 이런 파일은 "마스킹해서 주는" 대상이 아니라 애초에 게이트를 통과시키지 않는다 —
+# 무엇이 비밀인지 내용만 보고 알아낼 방법이 없기 때문이다.
+_SECRET_FILE_NAMES = {
+    ".netrc", "_netrc", ".pgpass", ".htpasswd", ".npmrc", ".pypirc",
+    "credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+}
+_SECRET_SUFFIXES = {
+    ".pem", ".key", ".pfx", ".p12", ".jks", ".keystore", ".ppk", ".kdbx", ".asc", ".gpg",
+}
 
 _PROJECT_ROOT = Path(os.environ.get("SECUREDOC_PROJECT_ROOT", os.getcwd())).resolve()
 
@@ -55,13 +70,37 @@ def _resolve(path_str: str) -> Path:
     return p.resolve()
 
 
+def _is_secret_file(path: Path) -> bool:
+    name = path.name.lower()
+    # .env / .env.local / .env.production ... 전부 포함. .env.example 처럼 보통은
+    # 값이 비어 있는 것도 같이 걸리는데, 실키가 들어 있는 걸 여러 번 봤으므로
+    # 구분하지 않는다(내용을 보고 판단할 수 없다는 게 이 목록의 전제다).
+    return (
+        name.startswith(".env")
+        or name in _SECRET_FILE_NAMES
+        or path.suffix.lower() in _SECRET_SUFFIXES
+    )
+
+
 def _file_kind(path: Path) -> str:
+    if _is_secret_file(path):
+        return "secret"
     suffix = path.suffix.lower()
     if suffix in _DOCUMENT_EXTS:
         return "document"
-    if suffix in _TEXT_EXTS or path.name.lower().startswith(".env"):
+    if suffix in _TEXT_EXTS:
         return "text"
     return "binary"
+
+
+# 내용을 어떤 형태로도 돌려주지 않는 종류와, 그 사유 문구.
+_WITHHELD_KINDS = {
+    "binary": "바이너리 파일은 보안 게이트에서 원본을 반환하지 않습니다.",
+    "secret": (
+        "자격증명 파일로 판단되어 내용을 반환하지 않습니다 — 마스킹은 개인정보와 인젝션만"
+        " 지우므로 API 키·비밀번호는 걸러지지 않습니다."
+    ),
+}
 
 
 def _redact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -89,6 +128,16 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
     pii = result.get("piiItems", [])
     inj = result.get("injectionItems", [])
     detection_count = len(pii) + len(inj)
+    blocked = bool(result.get("blocked", False))
+    if blocked:
+        # 정책이 block 이면 "마스킹해서 쓰라"가 아니라 "쓰지 마라"다. 예전엔 blocked 를
+        # 필드로만 실어 보내고 recommendedAction 은 그대로 mask_before_upload 였는데,
+        # 이 응답을 읽는 건 사람이 아니라 AI 라 권고 문구가 실질적인 지시로 작동한다.
+        recommended = "block"
+    elif detection_count:
+        recommended = "mask_before_upload"
+    else:
+        recommended = "allow"
     return {
         "maskedText": result.get("maskedText", ""),
         "piiItems": _redact_items(pii),
@@ -96,11 +145,11 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
         "stats": result.get("stats", {}),
         "scanStatus": result.get("scanStatus", "ok"),
         "reason": result.get("reason"),
-        "blocked": result.get("blocked", False),
+        "blocked": blocked,
         "hasPii": len(pii) > 0,
         "hasInjection": len(inj) > 0,
         "detectionCount": detection_count,
-        "recommendedAction": "mask_before_upload" if detection_count else "allow",
+        "recommendedAction": recommended,
         "policy": result.get("policy", {"injection": config.INJECTION_POLICY}),
     }
 
@@ -199,6 +248,11 @@ async def scan_file(file_path: str, mime_type: str = "", user_prompt: str = "") 
     if not path.is_file():
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
 
+    # 자격증명 파일은 여기서도 막는다 — secure_read_file 만 막아두면 같은 내용을
+    # scan_file 의 maskedText 로 그대로 받아갈 수 있어 우회로가 된다.
+    if _is_secret_file(path):
+        raise PermissionError(f"{_WITHHELD_KINDS['secret']} (path={path})")
+
     if not mime_type:
         guessed, _ = mimetypes.guess_type(str(path))
         mime_type = guessed or "application/octet-stream"
@@ -229,8 +283,12 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
             break
         if not path.is_file():
             continue
-        if _file_kind(path) == "binary":
+        kind = _file_kind(path)
+        if kind == "binary":
             skipped.append({"path": str(path), "reason": "unsupported-binary"})
+            continue
+        if kind == "secret":
+            skipped.append({"path": str(path), "reason": "credential-file-withheld"})
             continue
         try:
             scanned = await scan_file(str(path))
@@ -242,9 +300,11 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
                     "injectionCount": scanned["stats"].get("injectionCount", 0),
                     "hasPii": scanned["hasPii"],
                     "hasInjection": scanned["hasInjection"],
+                    "blocked": scanned["blocked"],
                     "scanStatus": scanned["scanStatus"],
                     "recommendedAction": scanned["recommendedAction"],
-                    "maskedText": scanned["maskedText"],
+                    # block 정책에 걸린 파일은 마스킹본도 넘기지 않는다.
+                    "maskedText": "" if scanned["blocked"] else scanned["maskedText"],
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 사이트별 독립 에러 처리(PLAN §11)
@@ -286,8 +346,13 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
     """정책을 적용해 파일을 읽는다 — 항상 파이프라인을 통과한 마스킹본만 반환(PLAN §4.2).
 
     클라이언트의 기본 Read 도구를 이 도구로 대체하면, 원본이 파이프라인을 우회해
-    새어나가는 경로를 없앨 수 있다. 문서/텍스트 파일은 검사 후 maskedText 를 반환하고,
-    바이너리는 원본을 반환하지 않는다. decision: masked | clean | blocked.
+    새어나가는 경로를 없앨 수 있다. 문서/텍스트 파일은 검사 후 maskedText 를 반환한다.
+    내용을 아예 돌려주지 않는 경우가 셋 있다(전부 decision="blocked", content=""):
+      - 바이너리 파일
+      - 자격증명 파일(.env, *.pem, id_rsa 등) — 마스킹은 PII/인젝션만 지우므로
+        API 키·비밀번호는 걸러지지 않는다
+      - 인젝션이 탐지됐고 정책이 block 인 경우
+    decision: masked | clean | blocked.
 
     user_prompt: 이 파일을 읽게 만든 실제 사용자 요청(있으면, scan_text 참고).
     """
@@ -296,12 +361,13 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
 
     kind = _file_kind(path)
-    if kind == "binary":
+    if kind in _WITHHELD_KINDS:
         return {
             "path": str(path),
             "decision": "blocked",
-            "reason": "바이너리 파일은 보안 게이트에서 원본을 반환하지 않습니다.",
+            "reason": _WITHHELD_KINDS[kind],
             "content": "",
+            "blocked": True,
             "policy": {"injection": config.INJECTION_POLICY},
         }
 
@@ -312,11 +378,29 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
 
     result = await _scan_bytes(path.read_bytes(), mime, path.name, user_prompt=user_prompt)
     pub = _public(result)
+    # 정책이 block 인데 인젝션이 잡혔으면 내용을 넘기지 않는다. 예전에는 blocked 를
+    # 계산해놓고도(orchestrator) 여기서 응답에 싣지조차 않아, block 정책을 켜도 AI
+    # 클라이언트는 마스킹본을 그대로 받아갔다 — 정책이 문서에만 있고 이 경로에서는
+    # 아무 일도 하지 않았다. 이 도구는 §4.2 게이트라 여기서 막지 않으면 막을 곳이 없다.
+    if pub["blocked"]:
+        return {
+            "path": str(path),
+            "decision": "blocked",
+            "reason": "인젝션이 탐지되어 차단되었습니다(정책: block).",
+            "content": "",
+            "blocked": True,
+            "scanStatus": pub["scanStatus"],
+            "stats": pub["stats"],
+            "piiItems": pub["piiItems"],
+            "injectionItems": pub["injectionItems"],
+            "policy": pub["policy"],
+        }
     decision = "masked" if (pub["hasPii"] or pub["hasInjection"]) else "clean"
     return {
         "path": str(path),
         "decision": decision,
         "content": pub["maskedText"],
+        "blocked": False,
         "scanStatus": pub["scanStatus"],
         "reason": pub["reason"],
         "stats": pub["stats"],
@@ -376,8 +460,11 @@ async def secure_search_files(
                 # 검색 한 번에 처리현황이 수백 번 깜빡이게 된다. 검색은 "지금 무슨 문서를
                 # 처리 중인가" 로 보여줄 단위가 아니다.
                 line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
+                # block 정책에 걸린 라인은 스니펫도 넘기지 않는다 — 위치는 알려주되
+                # 내용은 주지 않는다(그래야 "무엇을 못 봤는지"는 알 수 있다).
+                line_text = "[차단됨 — 인젝션 정책]" if line_res["blocked"] else line_res["maskedText"]
                 results.append(
-                    {"path": str(path), "line": line_no, "lineText": line_res["maskedText"]}
+                    {"path": str(path), "line": line_no, "lineText": line_text}
                 )
                 if len(results) >= max_results:
                     break

@@ -110,6 +110,14 @@ INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")
 INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "auto")
 INJECTION_DTYPE: str = os.environ.get("SECUREDOC_INJECTION_DTYPE", "bfloat16")
 INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN", "4096"))
+# 청크 하나를 추론하는 데 기다릴 최대 시간(초). 로딩(LOAD_DELAY_SEC)과 달리 이건
+# 이미 떠 있는 서브프로세스의 응답 대기라 훨씬 짧아도 된다 — 실측 최악(CPU 빌드,
+# 1,000자 청크)이 수 초 수준이다. 여유를 크게 두되 무한 대기만은 만들지 않는다:
+# 이 대기는 요청 직렬화 락을 쥔 채로 일어나서, 한 번 멎으면 이후 모든 인젝션 검사가
+# 함께 멎는다(llm_mcp._infer 참고).
+INJECTION_INFER_TIMEOUT_SEC: float = float(
+    os.environ.get("SECUREDOC_INJECTION_INFER_TIMEOUT_SEC", "120")
+)
 INJECTION_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_INJECTION_PYTHON_EXECUTABLE", sys.executable)
 # gateway 파이프라인은 문서 청크 텍스트 한 덩어리만 주지만, 이 분류기는 원래
 # system_prompt/user_prompt/tool_response 3필드(간접 인젝션: 에이전트가 도구 응답을
