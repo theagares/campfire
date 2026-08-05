@@ -61,8 +61,34 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
     return out
 
 
+def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[dict]:
+    """원문 기준 PII 좌표를 이 청크 기준으로 옮긴다.
+
+    청크 경계를 걸친 항목은 제외한다 — 잘린 조각만 가리면 나머지 절반이 그대로
+    남아 결국 새어나간다. 청크는 100자씩 겹치게 자르므로(_split_chunks) 경계에
+    걸친 항목도 이웃 청크에서는 온전히 들어온다.
+    """
+    if not pii_items:
+        return []
+    lo = ch["offset"]
+    hi = lo + len(ch["text"])
+    out: list[dict] = []
+    for it in pii_items:
+        s, e = int(it["start"]), int(it["end"])
+        if s >= lo and e <= hi:
+            out.append({"start": s - lo, "end": e - lo, "type": it.get("type", "OTHER_PII"),
+                        "confidence": it.get("confidence", 1.0)})
+    return out
+
+
 async def _detect_all(
-    detector, text: str, chunks: list[dict], *, user_prompt: str | None = None
+    detector,
+    text: str,
+    chunks: list[dict],
+    *,
+    user_prompt: str | None = None,
+    user_prompt_masked: str | None = None,
+    pii_items: list[Detection] | None = None,
 ) -> list[Detection]:
     """청크별 detect() 를 동시에 실행한다. 각 detector 는 GPU 추론 구간을 자체
     _request_lock 으로 이미 직렬화하므로(서브프로세스 하나 공유) 동시 호출해도
@@ -84,6 +110,11 @@ async def _detect_all(
         meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
         if user_prompt:
             meta["user_prompt"] = user_prompt
+        # 외부 API(Solar)로 나갈 때 가려야 할 것들. 로컬 모델은 원문을 그대로 본다.
+        if pii_items:
+            meta["pii_spans"] = _pii_spans_for_chunk(pii_items, ch)
+        if user_prompt_masked is not None:
+            meta["user_prompt_masked"] = user_prompt_masked
         async with sem:
             dets = await detector.detect(ch["text"], meta=meta)
         return ch, dets
@@ -174,20 +205,29 @@ async def run_pipeline(
     pii_items = await _detect_all(registry.get_pii_detector(), text, chunks)
     await emit({"type": "step", "step": 2, "label": f"PII 탐지 완료 ({len(pii_items)}개)", "done": True})
 
-    # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
-    await emit({"type": "step", "step": 4, "label": "인젝션 탐지 중..."})
-    injection_items = await _detect_all(
-        registry.get_injection_detector(), text, chunks, user_prompt=user_prompt
-    )
-    await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
-
     # ── user_prompt 자체도 PII 스캔(문서와 함께 보류됐다가 같이 넘어온 경우) ───
+    # 인젝션 탐지보다 "먼저" 한다 — 인젝션 2차 위치특정이 외부 API(Solar)를 부를 때
+    # 사용자 프롬프트도 함께 보내므로, 그 전에 가릴 것을 알고 있어야 한다.
     user_prompt_masked: str | None = None
     user_prompt_pii_items: list[Detection] = []
     if user_prompt:
         prompt_chunks = _split_chunks(user_prompt, config.CHUNK_SIZE)
         user_prompt_pii_items = await _detect_all(registry.get_pii_detector(), user_prompt, prompt_chunks)
         user_prompt_masked = masker.apply_masking(user_prompt, list(user_prompt_pii_items))["masked_text"]
+
+    # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
+    # pii_items/user_prompt_masked 를 함께 넘긴다 — 로컬 모델(EXAONE)은 원문을 보되,
+    # 외부 Solar 로 나갈 때만 PII 를 가리기 위한 재료다(llm_mcp.detect 참고).
+    await emit({"type": "step", "step": 4, "label": "인젝션 탐지 중..."})
+    injection_items = await _detect_all(
+        registry.get_injection_detector(),
+        text,
+        chunks,
+        user_prompt=user_prompt,
+        user_prompt_masked=user_prompt_masked,
+        pii_items=pii_items,
+    )
+    await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
     # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
     blocked = bool(injection_items) and config.INJECTION_POLICY == "block"
