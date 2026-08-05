@@ -56,6 +56,9 @@ class HTMLTextAreaElementStub extends EventTargetStub {
   constructor(value = '') {
     super();
     this.tagName = 'TEXTAREA';
+    // 증거 판정(watchAttachmentEvidence)은 관찰 루트가 진짜 엘리먼트인지 nodeType 으로
+    // 확인한다. 실제 입력창은 당연히 1이므로 stub 도 맞춰준다.
+    this.nodeType = 1;
     this.value = value;
     // 진짜 입력창은 DOM 에 붙어 있다. 재주입 폴백이 "이 요소가 살아 있나"를
     // isConnected 로 보므로 기본값이 true 여야 실제와 같다(테스트 12).
@@ -990,6 +993,117 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (send15.clicks !== 1) {
     throw new Error(`진행률 표시가 사라졌는데도 전송되지 않았다 (clicks=${send15.clicks}) — 기준선 progressbar 에 걸려 계속 기다린다`);
   }
+
+  // (16) 주입은 "넣었다"가 아니라 "사이트가 받았다"로 판정해야 한다.
+  //
+  // 배경(실사용자 gemini.google.com 진단, 2026-08-06):
+  //   [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+  //   [진단] ===== 컴포저 DOM 변화 · 첨부 대기 창 · 0건 =====
+  //   [진단] 요청 추적 · 첨부 대기 창 · 3건 — 최대 바디 str(167B)
+  //   [진단] 요청 추적 · 전송 후 8초 · 15건 — 파일 업로드 0건
+  // revive 는 노드를 되붙이고 files 를 채우고 change 를 쏘는 데까지 "성공" 했지만,
+  // Gemini 는 그 파일을 받은 적이 없었다. Angular 가 컴포넌트를 파괴하면서 리스너까지
+  // 걷어갔기 때문이다 — 노드를 되붙여도 파괴된 바인딩은 돌아오지 않는다.
+  //
+  // 진짜 문제는 그 다음이다: revive 가 성공을 반환해 버려서 합성 drop 폴백까지
+  // 내려가지 못했다. 사용자가 "첨부는 됐다"고 했던 예전 빌드에는 그 drop 이 살아
+  // 있었으니, revive 도입이 실제로 되던 경로를 가로챈 회귀였을 수 있다.
+  //
+  // 여기서는 관찰이 가능한 환경(MutationObserver 존재)을 만들어, revive 가 기계적으로
+  // 성공해도 컴포저에 아무 변화가 없으면 합성 drop 까지 내려가는지 확인한다.
+  await new Promise(r => setTimeout(r, 5000)); // (15)의 promptApproved(3초) 해제 대기
+
+  // 사이트가 첨부를 받으면 컴포저에 무언가를 그린다 — 그 반응을 흉내내는 최소 stub.
+  class MutationObserverStub {
+    constructor(cb) { this.cb = cb; MutationObserverStub.instances.push(this); }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+    static emitAdded(node) {
+      for (const o of MutationObserverStub.instances) {
+        if (o.disconnected) continue;
+        o.cb([{ target: {}, addedNodes: [node], removedNodes: [] }]);
+      }
+    }
+  }
+  MutationObserverStub.instances = [];
+  sandbox.MutationObserver = MutationObserverStub;
+
+  const send16 = new SendButtonStub();
+  send16.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send16);
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  domBySelector.delete('input[type="file"]');      // 살아 있는 input 은 없다
+  domBySelectorAll.delete('[role="progressbar"]');
+
+  // 컴포저(부모)는 살아 있고 그 안의 input 만 떼어진 상황 = (13)과 같은 조건.
+  const parent16 = new DropTargetStub();
+  parent16.appended = [];
+  parent16.appendChild = function (node) { this.appended.push(node); node.isConnected = true; };
+  const input16 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'evidence.pdf', { type: 'application/pdf' }), 'orphan16',
+  );
+  input16.parentElement = parent16;
+
+  // 사이트는 "합성 drop 을 받았을 때만" 첨부 칩을 그린다 — 되돌린 input 의 change 는
+  // 죽은 바인딩이라 무시한다(= Gemini 에서 실제로 벌어진 일).
+  const editorDispatch = promptEditorStub.dispatchEvent.bind(promptEditorStub);
+  promptEditorStub.dispatchEvent = (event) => {
+    const r = editorDispatch(event);
+    if (event?.type === 'drop' && event?.dataTransfer?.files?.length) {
+      setTimeout(() => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV' }), 100);
+    }
+    return r;
+  };
+
+  dispatchDocumentEvent('change', {
+    target: input16,
+    composedPath: () => [input16, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input16.isConnected = false;                     // 사이트가 떼어냈다
+  const linesBefore16 = consoleLines.length;
+  promptEditorStub.dispatched.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'evidence.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  // 전략 체인: 살아있는input(즉시 실패) → 되돌리기(700ms 증거 대기) → 합성drop(≈160ms)
+  await new Promise(r => setTimeout(r, 4000));
+
+  if (!parent16.appended.includes(input16)) {
+    throw new Error('되돌리기 전략을 아예 시도하지 않았다 — 체인 순서가 깨졌다');
+  }
+  const drops16 = promptEditorStub.dispatched.filter(e => e.type === 'drop' && e.dataTransfer?.files?.length);
+  if (!drops16.length) {
+    throw new Error(
+      '되돌리기가 기계적으로만 성공했는데 합성 drop 까지 내려가지 않았다 — '
+      + '사이트가 파일을 받은 적 없어도 성공으로 단정하는 그 회귀 그대로다',
+    );
+  }
+  if (drops16[0].dataTransfer.files[0]?.name !== 'evidence.pdf') {
+    throw new Error(`합성 drop 에 실린 파일이 다르다: ${drops16[0].dataTransfer.files[0]?.name}`);
+  }
+  const chainLines = consoleLines.slice(linesBefore16);
+  if (!chainLines.some(l => l.includes('먹힌 방법: 합성drop'))) {
+    throw new Error(`어느 전략이 먹혔는지 알려주는 로그가 없다: ${chainLines.filter(l => l.includes('첨부 주입')).join(' | ')}`);
+  }
+  if (!chainLines.some(l => l.includes('input되돌리기=증거없음'))) {
+    throw new Error('되돌리기가 증거 없이 성공으로 기록됐다 — 판정이 우리 쪽 상태만 보고 있다');
+  }
+
+  delete sandbox.MutationObserver; // 뒷정리(이 파일에서 마지막 테스트다)
 
   console.log('content regression ok');
   process.exit(0);

@@ -1622,6 +1622,55 @@
   ]);
   // 있다는 사실만 남기고 값은 가리는 헤더(서명된 업로드 URL 등).
   const _TRACE_HEADERS_PRESENCE_ONLY = new Set(['x-goog-upload-url']);
+  // 응답에서 읽을 헤더(업로드 프로토콜의 진행 상태). 위 허용목록에서 파생시켜 한 곳에서만
+  // 관리한다 — 새 헤더를 추가할 때 두 군데를 고치다 하나를 빠뜨리는 일이 없게.
+  const _TRACE_RESPONSE_HEADERS = [..._TRACE_HEADERS].filter(
+    k => k.startsWith('x-goog-upload-') || k === 'upload-offset' || k === 'content-range',
+  );
+
+  /** XHR 응답에서 "실제로 읽을 수 있는" 헤더 이름 집합.
+   *
+   *  왜 필요한가: 교차 출처 응답이 Access-Control-Expose-Headers 로 노출하지 않은 헤더를
+   *  getResponseHeader() 로 읽으려 하면 Chrome 이
+   *      Refused to get unsafe header "x-goog-upload-status"
+   *  를 콘솔에 찍는다. 이건 던져지는 예외가 아니라 브라우저가 직접 내는 경고라
+   *  try/catch 로 막을 수 없고(값은 그냥 null 로 온다), 업로드와 무관한 XHR 에서도 뜬다.
+   *  진단의 목적이 "사용자가 콘솔을 통째로 복사해 보내는 것"인데 정작 우리가 그 콘솔을
+   *  오염시키게 된다(실사용자 리포트).
+   *
+   *  getAllResponseHeaders() 는 노출된 헤더만 돌려주고 그 자체로는 경고를 내지 않는다.
+   *  그래서 여기 담긴 이름만 골라 읽으면 경고가 애초에 발생하지 않는다.
+   *  (fetch 쪽은 다르다 — Response.headers 에는 노출된 헤더만 들어 있어서 없는 헤더를
+   *   get() 해도 그냥 null 이고 경고가 없다. 헤드리스 Chrome 으로 확인했다.) */
+  function _exposedResponseHeaderNames(xhr) {
+    const names = new Set();
+    try {
+      for (const line of String(xhr.getAllResponseHeaders() || '').split(/\r?\n/)) {
+        const i = line.indexOf(':');
+        if (i > 0) names.add(line.slice(0, i).trim().toLowerCase());
+      }
+    } catch (_) { /* ignore */ }
+    return names;
+  }
+
+  /** XHR·fetch 가 같은 규칙으로 응답 헤더를 읽도록 한 곳에 모은다.
+   *  has(k) 가 true 인 헤더에 대해서만 read(k) 를 부른다 — 이 계약이 위 경고를 막는다. */
+  function _collectResponseTraceHeaders(has, read) {
+    const bits = [];
+    for (const k of _TRACE_RESPONSE_HEADERS) {
+      if (!has(k)) continue;
+      let v = '';
+      try { v = read(k) || ''; } catch (_) { v = ''; }
+      if (!v) continue;
+      const shown = _TRACE_HEADERS_PRESENCE_ONLY.has(k) ? '<있음>' : String(v).slice(0, 48);
+      bits.push(`${k.replace(/^x-goog-upload-/, 'goog:')}=${shown}`);
+    }
+    return bits;
+  }
+
+  function _isCrossOrigin(u) {
+    try { return new URL(String(u), location.href).origin !== location.origin; } catch (_) { return false; }
+  }
 
   /** 호스트+경로까지만. 쿼리는 파라미터 "이름"만 남기고 값은 버린다. */
   function _shortUrl(u) {
@@ -1842,6 +1891,12 @@
       _traceAdd(rec);
     }
     const id = _bodyLooksLikeUpload(body) ? _beginUploadTicket() : 0;
+    // 이 요청이 "업로드처럼 보이는가" — 응답 헤더를 못 읽었을 때 그 사실을 남길지
+    // 판단하는 데만 쓴다(모든 교차 출처 응답에 주석을 달면 그게 곧 잡음이므로).
+    const uploadish = !!id || Object.keys(st.headers || {}).some(
+      k => k.startsWith('x-goog-upload-') || k === 'upload-offset' || k === 'content-range',
+    );
+    const crossOrigin = _isCrossOrigin(url);
     // loadend 는 성공/실패/abort 어느 쪽으로 끝나도 발생한다. 우리 훅이 요청을
     // 보류했다가 나중에 보내는 경우에도, 실제로 끝나는 그 시점에 닫힌다.
     try {
@@ -1850,8 +1905,14 @@
         if (!rec) return;
         try {
           const bits = [`→${this.status}`, `${Date.now() - rec.t}ms`];
-          const gs = this.getResponseHeader?.('x-goog-upload-status');
-          if (gs) bits.push(`goog:status=${gs}`);
+          // 노출된 헤더만 골라 읽는다 — 안 그러면 Chrome 이
+          // 'Refused to get unsafe header' 를 콘솔에 찍어 진단 출력을 오염시킨다
+          // (_exposedResponseHeaderNames 주석 참고).
+          const exposed = _exposedResponseHeaderNames(this);
+          const found = _collectResponseTraceHeaders((k) => exposed.has(k), (k) => this.getResponseHeader(k));
+          bits.push(...found);
+          // "노출이 안 돼 못 읽었다" 와 "값이 없다" 는 진단상 의미가 다르다.
+          if (!found.length && uploadish && crossOrigin) bits.push('업로드헤더=읽을수없음(CORS 미노출)');
           _traceAdd({ via: 'xhr↩', method: rec.method, path: rec.path, body: '-', extra: bits.join(' ') });
         } catch (_) { /* ignore */ }
       }, { once: true });
@@ -1889,6 +1950,7 @@
     } catch (_) { /* ignore */ }
 
     const id = _fetchLooksLikeUpload(input, init) ? _beginUploadTicket() : 0;
+    const uploadish = !!id || /goog:|upload/i.test(rec?.extra || '');
     let out;
     try {
       out = _observedFetch.call(this, input, init);
@@ -1902,8 +1964,15 @@
         if (rec) {
           try {
             const bits = [`→${res?.status}`, `${Date.now() - rec.t}ms`];
-            const gs = res?.headers?.get?.('x-goog-upload-status');
-            if (gs) bits.push(`goog:status=${gs}`);
+            // fetch 는 XHR 과 달리 노출 안 된 헤더를 get() 해도 경고가 없다(헤드리스
+            // Chrome 확인). 그래도 has()→get() 순서와 허용목록은 XHR 과 같은 함수를
+            // 써서 규칙이 한 곳에만 있게 한다.
+            const found = _collectResponseTraceHeaders(
+              (k) => { try { return !!res?.headers?.has?.(k); } catch (_) { return false; } },
+              (k) => res.headers.get(k),
+            );
+            bits.push(...found);
+            if (!found.length && uploadish && res?.type === 'cors') bits.push('업로드헤더=읽을수없음(CORS 미노출)');
             _traceAdd({ via: 'fetch↩', method: rec.method, path: rec.path, body: '-', extra: bits.join(' ') });
           } catch (_) { /* ignore */ }
         }

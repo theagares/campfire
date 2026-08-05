@@ -220,7 +220,6 @@
       target.dispatchEvent(new DragEvent('dragenter', init));
       target.dispatchEvent(new DragEvent('dragover', init));
       target.dispatchEvent(new DragEvent('drop', init));
-      console.log('[SecureDoc] 파일 재주입: input 이 없어 합성 drop 으로 넣었습니다');
       return true;
     } catch (e) {
       console.error('[SecureDoc] 파일 재주입 폴백(drop) 실패:', e);
@@ -249,7 +248,15 @@
     try {
       host.appendChild(orphan);
       if (!orphan.isConnected) return null;
-      console.log('[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다');
+      // "어디에" 되돌려 붙였는지가 결정적이다. 원래 부모가 이미 사라졌으면 host 가
+      // document.body 로 떨어지는데, 그러면 컴포저에 위임된 사이트 리스너가 이 노드의
+      // change 를 영영 못 듣는다 — 예전 로그에는 "되돌려 놓았습니다" 만 찍혀서
+      // 붙인 자리가 어디였는지 알 수 없었다.
+      const outside = host === document.body || host === document.documentElement;
+      console.log(
+        `[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다 (붙인 곳: ${describeNode(host)}`
+        + `${outside ? ' ← 컴포저 바깥이라 사이트가 못 들을 수 있습니다' : ''})`,
+      );
       return orphan;
     } catch (e) {
       console.warn('[SecureDoc] 파일 input 되돌리기 실패:', e);
@@ -257,27 +264,98 @@
     }
   }
 
-  function injectFileIntoInput(preferred, finalFile, parentHint) {
-    // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
-    // 되돌려 놓기 → 그래도 안 되면 합성 drop 순으로 시도한다.
-    const input = liveFileInput(preferred) || reviveFileInput(preferred, parentHint);
-    if (!input) {
-      return injectFileByDrop(finalFile, null);
+  // ══════════════════════════════════════════════════════════════════════════
+  // 첨부 주입 — "넣었다"가 아니라 "사이트가 받았다"를 확인하며 전략을 내려간다
+  //
+  // (2026-08-06 재정정) 예전에는 이 순서였다:
+  //     liveFileInput(preferred) || reviveFileInput(preferred, parentHint)
+  // revive 는 노드를 다시 붙이고 files 를 채우고 change 를 쏘면 "성공"으로 쳤다.
+  // 그런데 그건 전부 **우리 쪽 상태**다. 실사용자 Gemini 진단에서 드러난 것:
+  //   · 대기 창 3초 동안 나간 요청은 167B 짜리 RPC 하나뿐 — 파일 업로드 없음
+  //   · 전송 후 8초 창 15건에도 업로드 없음(최대 바디 167B)
+  //   · 컴포저 DOM 변화 0건 — 첨부 칩이 아예 안 그려졌다
+  // 즉 Gemini 는 그 파일을 받은 적이 없다. Angular 가 컴포넌트를 파괴할 때 리스너까지
+  // 걷어갔으므로, 노드를 되붙여도 죽은 노드에 이벤트를 쏜 것이다. DOM 노드는 돌아와도
+  // 파괴된 컴포넌트의 바인딩은 돌아오지 않는다.
+  //
+  // 게다가 revive 가 "성공"해 버리는 바람에 합성 drop 까지 내려가지도 못했다. 사용자가
+  // 예전에 "첨부는 됐다"고 했던 빌드에는 그 drop 폴백이 살아 있었으니, revive 도입이
+  // 실제로 되던 경로를 가로챈 회귀일 수 있다.
+  //
+  // 그래서 각 전략을 "증거"로 판정한다. 증거 기준은 watchAttachmentEvidence 참고 —
+  // 사이트의 선택자·클래스명을 하나도 쓰지 않는다.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // 한 전략이 먹혔는지 지켜보는 시간. 사이트 핸들러 → 프레임워크 상태 갱신 → 렌더까지
+  // 한 틱이면 끝나므로(보통 100ms 미만) 넉넉한 여유다. 증거가 잡히면 즉시 빠져나오고,
+  // 세 전략을 다 태워도 최악 2.1초다.
+  const INJECT_EVIDENCE_MS = 700;
+  let lastInjectionReport = null;
+
+  async function injectFileWithEvidence(finalFile, opts = {}) {
+    const cfg = getPromptConfig();
+    const { preferred = null, parentHint = null, dropTarget = null } = opts;
+    const attempts = [];
+    let winner = null;
+    let target = null;
+
+    const attempt = async (name, run) => {
+      if (winner) return;
+      const watcher = watchAttachmentEvidence(cfg);
+      let mechanical = false;
+      let note = '';
+      try {
+        mechanical = run() !== false;
+      } catch (e) {
+        note = `예외:${e?.message || e}`;
+      }
+      if (!mechanical) {
+        watcher.stop();
+        attempts.push(`${name}=주입못함${note ? `(${note})` : ''}`);
+        return;
+      }
+      const res = await watcher.settle(INJECT_EVIDENCE_MS);
+      watcher.stop();
+      attempts.push(`${name}=${res.ok ? '증거있음' : '증거없음'}(${res.why})`);
+      if (res.ok) winner = { name, why: res.why };
+    };
+
+    // 1) 지금 살아 있는 파일 input — 사이트가 자기 리스너를 그대로 갖고 있는 정상 경로.
+    await attempt('살아있는input', () => {
+      const input = liveFileInput(preferred);
+      if (!input?.isConnected) return false;
+      setFileOnInput(input, finalFile);
+      target = describeInjectionTarget('살아있는input', input);
+      return input.files?.length === 1;
+    });
+
+    // 2) 사이트가 떼어낸 input 을 되돌려 붙이기 — 노드가 살아 있는 사이트에서만 먹는다.
+    await attempt('input되돌리기', () => {
+      const revived = reviveFileInput(preferred, parentHint);
+      if (!revived) return false;
+      setFileOnInput(revived, finalFile);
+      target = describeInjectionTarget('input되돌리기', revived);
+      return revived.files?.length === 1;
+    });
+
+    // 3) 합성 drop — 사이트 핸들러가 내부에서 터질 수 있지만(this.drop is not a
+    //    function) 그건 사이트 리스너 안의 예외라 우리 흐름을 끊지 않고, 첨부 자체는
+    //    되는 경우가 있다. 앞의 둘이 증거를 못 얻었을 때만 온다.
+    await attempt('합성drop', () => injectFileByDrop(finalFile, dropTarget));
+
+    lastInjectionReport = { winner, attempts: attempts.slice(), target };
+
+    // 사용자가 한 줄만 보고 "어느 전략이 먹혔는지" 알 수 있어야 한다.
+    if (winner) {
+      console.log(`[SecureDoc] 첨부 주입 성공 — 먹힌 방법: ${winner.name} (증거: ${winner.why})`);
+    } else {
+      console.error(
+        '[SecureDoc] 첨부 주입 실패 — 어떤 방법으로도 사이트가 문서를 받았다는 증거를 얻지 못했습니다. '
+        + '프롬프트만 전송됩니다. 문서를 다시 첨부해 주세요.',
+      );
     }
-    // 성공 판정은 "쏘기 전에 DOM 에 붙어 있었나" 로 한다. 쏜 "뒤" 의 isConnected 를
-    // 보면 안 된다 — 사이트가 change 를 처리하면서 그 input 을 곧바로 떼어내는 게
-    // 정상 동작이기 때문이다(실사용자 Gemini 로그: files:1 인데 connected:false).
-    // 그걸 실패로 오판하면 이미 잘 들어간 파일에 합성 drop 을 한 번 더 쏘게 되고,
-    // 그 drop 이 사이트 핸들러를 터뜨리거나 첨부가 중복될 수 있다.
-    const wasConnected = input.isConnected;
-    setFileOnInput(input, finalFile);
-    if (!wasConnected || input.files?.length !== 1) {
-      console.warn('[SecureDoc] input 주입이 반영되지 않았습니다 — 합성 drop 으로 재시도합니다', {
-        connectedBefore: wasConnected, files: input.files?.length,
-      });
-      return injectFileByDrop(finalFile, null);
-    }
-    return true;
+    console.log(`[SecureDoc] 첨부 주입 시도 경로: ${attempts.join(' → ')}`);
+    return !!winner;
   }
 
   /** 사이트가 파일 선택(📎) 버튼용으로 이미 갖고 있는 숨은 input[type=file]을 찾는다
@@ -591,7 +669,9 @@
     // 지금 부모를 기억해 둔다 — 사이트가 나중에 이 input 을 DOM 에서 떼어내면
     // 여기로 되돌려 붙여야 사이트의 위임 리스너까지 살아난다(reviveFileInput).
     const originalParent = input.parentElement;
-    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile, originalParent));
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: input, parentHint: originalParent,
+    }));
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
@@ -616,33 +696,14 @@
     // 합성 이벤트로 드래그 상태만 즉시 정리해준다(clearSiteDragState 주석 참고).
     clearSiteDragState(target, clientX, clientY);
 
-    await stageFileAttachment(file, (finalFile) => {
-      // (2026-08-01 재정정) 원래는 드롭 지점(target)에 합성 drop 이벤트를 재생해
-      // 재주입했다. 하지만 target은 검토 패널에서 승인될 때까지(수 초~수십 초, 길게는
-      // 프롬프트를 다 입력할 때까지) 지난 뒤에야 이 콜백에 도달하는데, 그 사이 SPA가
-      // 컴포저 주변을 다시 그려버리면 드롭 재생이 의존하는 사이트의 내부 드래그
-      // 상태 머신 자체가 사라져 있을 수 있다(실측: ChatGPT에서 "this.drop is not a
-      // function" 크래시 + 드롭 오버레이 고착 재현). 드래그 제스처를 흉내내는 대신,
-      // 아예 원래 drop 이벤트를 취소해버리고 사이트가 이미 갖고 있는 파일 선택
-      // input[type=file]에 "새로 파일을 선택한 것"처럼 흘려보낸다 — 이 경로는
-      // change 이벤트 하나로 끝나며 드래그 상태와 전혀 무관하다.
-      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
-
-      // 폴백: 이 사이트에 파일 선택 input이 따로 없는 경우에만 기존 방식(합성 drop
-      // 재생)을 시도한다. isConnected로 detached 여부를 확인해 document.body로
-      // 폴백하고, 사이트 쪽 핸들러 예외가 우리 흐름을 끊지 않도록 try/catch로 감싼다.
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new DragEvent('drop', {
-          bubbles: true, cancelable: true, composed: true,
-          dataTransfer: dt, clientX, clientY,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 drop 디스패치 실패:', e);
-      }
-    });
+    // (2026-08-06 재정정) 파일 선택 input 경로를 먼저 쓰고 합성 drop 을 폴백으로 두는
+    // 구조는 그대로지만, 이제 각 단계를 "사이트가 받았다는 증거"로 판정한다
+    // (injectFileWithEvidence 주석 참고). 예전에는 input 에 넣기만 하면 성공으로 쳐서,
+    // 사이트가 그 이벤트를 못 들었을 때 폴백까지 내려가지 못했다.
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: findFileInput(target),
+      dropTarget: target?.isConnected ? target : null,
+    }));
   }, true);
 
   // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
@@ -654,22 +715,11 @@
     event.stopImmediatePropagation();
     const target = event.target;
 
-    await stageFileAttachment(file, (finalFile) => {
-      // drop 재주입과 동일한 이유(위 주석 참고)로 파일 선택 input을 우선 사용한다.
-      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
-
-      // 폴백: 파일 선택 input이 없는 경우에만 기존 합성 paste 재생을 시도한다.
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, composed: true, clipboardData: dt,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 paste 디스패치 실패:', e);
-      }
-    });
+    // drop 경로와 같은 증거 기반 체인을 쓴다(위 주석 참고).
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: findFileInput(target),
+      dropTarget: target?.isConnected ? target : null,
+    }));
   }, true);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -910,6 +960,146 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  // 컴포저 범위 찾기 + 첨부 수신 증거 판정
+  // ══════════════════════════════════════════════════════════════════════════
+
+  function findSendButtonEl(cfg) {
+    for (const sel of sendButtonSelectors(cfg)) {
+      try { const b = document.querySelector(sel); if (b) return b; } catch (_) { /* 무시 */ }
+    }
+    return null;
+  }
+
+  function describeNode(el) {
+    try {
+      if (!el) return '(없음)';
+      if (el === document.body) return 'body';
+      if (el === document.documentElement) return 'html';
+      const tag = String(el.tagName || el.nodeName || '?').toLowerCase();
+      const role = el.getAttribute?.('role');
+      const cls = el.className;
+      const tokens = typeof cls === 'string' && cls.trim()
+        ? '.' + cls.trim().split(/\s+/).slice(0, 2).map(c => c.slice(0, 24)).join('.')
+        : '';
+      return `${tag}${role ? `[role=${role}]` : ''}${tokens}`;
+    } catch (_) { return '?'; }
+  }
+
+  /** 부모 체인. 클래스명·role 같은 구조 메타만 남기고 텍스트는 읽지 않는다. */
+  function describeAncestry(el, max = 8) {
+    const out = [];
+    let n = el;
+    for (let i = 0; i < max && n; i += 1) { out.push(describeNode(n)); n = n.parentElement; }
+    if (n) out.push('…');
+    return out.join(' < ');
+  }
+
+  /** 글자 입력창과 전송 버튼을 "둘 다" 품는 가장 작은 조상 = 컴포저.
+   *
+   *  선택자·클래스명을 전혀 안 쓴다. 어떤 챗 UI 든 입력창과 전송 버튼은 한 덩어리로
+   *  묶여 있고, 첨부 칩도 그 덩어리 안(또는 바로 위)에 그려지기 때문이다.
+   *
+   *  예전에는 editor.closest('form') 이나 부모 2단계만 봤는데, Gemini 처럼 form 이
+   *  없는 사이트에서는 Quill 컨테이너 언저리에서 멈춰 첨부 칩이 그려지는 영역을 아예
+   *  못 봤을 수 있다(실사용자 진단에서 컴포저 변화 0건). 그래서 전송 버튼을 기준으로
+   *  올라가고, 칩이 형제로 그려지는 경우까지 덮도록 두 단계 여유를 더 둔다. */
+  function findComposerRoot(cfg) {
+    const editor = findEditor(cfg);
+    if (!editor) return null;
+    const btn = findSendButtonEl(cfg);
+    let node = editor;
+    let hops = 0;
+    while (hops < 12) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.body || parent === document.documentElement) break;
+      node = parent;
+      hops += 1;
+      if (btn && node.contains?.(btn)) break;
+      if (!btn && hops >= 5) break; // 전송 버튼을 못 찾으면 몇 단계만 올라간다
+    }
+    for (let i = 0; i < 2; i += 1) {
+      const p = node.parentElement;
+      if (!p || p === document.body || p === document.documentElement) break;
+      node = p;
+    }
+    return node;
+  }
+
+  function describeInjectionTarget(strategy, input) {
+    try {
+      let underComposer = null;
+      try { underComposer = !!findComposerRoot(getPromptConfig())?.contains?.(input); } catch (_) { underComposer = null; }
+      return {
+        strategy,
+        files: input?.files?.length,
+        connected: !!input?.isConnected,
+        underComposer,
+        chain: describeAncestry(input),
+      };
+    } catch (_) { return { strategy }; }
+  }
+
+  /** "사이트가 첨부를 받아들였다"는 증거를 기다린다.
+   *
+   *  판정 기준(둘 중 하나면 증거로 본다):
+   *    (a) 컴포저 하위에 **글자 입력창 바깥으로** 요소 노드가 새로 추가됐다.
+   *    (b) 사이트가 파일 업로드를 시작했다(MAIN world 네트워크 관측).
+   *
+   *  왜 이게 사이트-무관한가: 첨부를 받아들인 챗 UI 는 예외 없이 둘 중 하나를 한다 —
+   *  그 첨부를 나타내는 무언가(칩·썸네일·파일명 줄)를 그리거나, 곧바로 서버로 올리기
+   *  시작한다. 무엇을 그리는지(클래스명·구조)는 사이트마다 다르지만 "무언가 생긴다"는
+   *  사실 자체는 다르지 않다. 반대로 사이트가 우리 이벤트를 아예 못 들었다면 둘 다
+   *  일어나지 않는다.
+   *
+   *  글자 입력창 안쪽 변화를 증거에서 빼는 이유: 우리가 넣은 프롬프트 텍스트 때문에
+   *  p/br 이 생겼다 사라지는 건 첨부와 무관하다(실사용자 진단에서 전송 후 잡힌 변화가
+   *  정확히 -p/+p/+br 셋뿐이었다). 그걸 증거로 세면 항상 "성공"으로 오판한다.
+   *
+   *  관찰 자체가 불가능한 환경(MutationObserver 없음, 컴포저를 못 찾음)에서는 판정을
+   *  포기하고 기계적 성공을 그대로 인정한다 — 확인할 방법이 없는데 실패로 단정해
+   *  멀쩡한 경로를 버리는 게 더 나쁘다. 그 사실은 사유에 남긴다. */
+  function watchAttachmentEvidence(cfg) {
+    const editor = findEditor(cfg);
+    const root = findComposerRoot(cfg);
+    const netBase = uploadStartCount;
+    let added = null;
+    let mo = null;
+
+    if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
+      try {
+        mo = new MutationObserver((list) => {
+          if (added) return;
+          for (const m of list) {
+            if (editor && (m.target === editor || editor.contains?.(m.target))) continue;
+            for (const n of m.addedNodes || []) {
+              if (n?.nodeType !== 1) continue;
+              added = describeNode(n);
+              return;
+            }
+          }
+        });
+        mo.observe(root, { childList: true, subtree: true });
+      } catch (_) { mo = null; }
+    }
+
+    return {
+      root,
+      async settle(ms) {
+        if (!mo) return { ok: true, why: '관찰 불가 — 기계적 성공으로 인정' };
+        const deadline = Date.now() + ms;
+        for (;;) {
+          if (added) return { ok: true, why: `컴포저에 ${added} 추가됨` };
+          if (uploadStartCount > netBase) return { ok: true, why: '업로드 시작 관측' };
+          if (Date.now() >= deadline) break;
+          await new Promise(r => setTimeout(r, 60));
+        }
+        return { ok: false, why: `${ms}ms 동안 컴포저 변화·업로드 모두 없음` };
+      },
+      stop() { try { mo?.disconnect(); } catch (_) { /* ignore */ } },
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 진단 — "첨부가 왜 안 붙는지"를 사용자가 한 번에 복사해 보고할 수 있게
   //
   // 같은 증상에 신호를 세 번 바꿔 달았고 세 번 다 빗나갔다(버튼 잠김 → 합성 drop →
@@ -951,10 +1141,7 @@
   function startComposerMutationTrace(cfg) {
     if (typeof MutationObserver === 'undefined') return NO_MUTATION_TRACE;
     let root = null;
-    try {
-      const editor = findEditor(cfg);
-      root = editor?.closest?.('form') || editor?.parentElement?.parentElement || editor || null;
-    } catch (_) { root = null; }
+    try { root = findComposerRoot(cfg); } catch (_) { root = null; }
     if (!root) return NO_MUTATION_TRACE;
 
     const t0 = Date.now();
@@ -988,7 +1175,7 @@
       dump(label) {
         const rows = recs.slice(printed);
         printed = recs.length;
-        console.log(`[SecureDoc][진단] ===== 컴포저 DOM 변화 · ${label} · ${rows.length}건 =====`);
+        console.log(`[SecureDoc][진단] ===== 컴포저 DOM 변화 · ${label} · ${rows.length}건 · 관찰루트=${describeNode(root)} =====`);
         if (!rows.length) {
           console.log('[SecureDoc][진단] (이 구간에 컴포저 주변 DOM 이 전혀 바뀌지 않았습니다)');
         }
@@ -1017,6 +1204,18 @@
       + '아래에 이어지는 [진단] 줄들을 통째로 복사해 개발자에게 전달해 주세요. '
       + '(문서 내용·파일명·요청 바디는 기록하지 않습니다. 8초 뒤 두 번째 묶음이 더 출력됩니다.)',
     );
+    // 주입이 실제로 먹혔는지 — "우리가 넣었다"가 아니라 "사이트가 받았다" 관점의 사실.
+    // 이 세 줄이 "주입 실패"와 "전송 시점 업로드"를 한 번의 수집으로 가른다.
+    const rep = lastInjectionReport;
+    console.log(
+      `[SecureDoc][진단] 주입 판정: ${rep?.winner ? `성공(${rep.winner.name} / ${rep.winner.why})` : '증거 없음'}`
+      + ` | 시도: ${(rep?.attempts || []).join(' → ') || '(기록 없음)'}`,
+    );
+    if (rep?.target) {
+      const t = rep.target;
+      console.log(`[SecureDoc][진단] 주입 대상: ${t.strategy} files=${t.files} connected=${t.connected} 컴포저안=${t.underComposer}`);
+      console.log(`[SecureDoc][진단] 주입 대상 부모 체인: ${t.chain}`);
+    }
     trace.dump('첨부 대기 창');
     requestTracePrint('첨부 대기 창(주입 직후)', probeMs + 1500);
     // 전송 "후"에야 업로드가 일어나는 구조인지를 가르는 두 번째 창.
@@ -1244,10 +1443,11 @@
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
           const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
           await announceContentApprovedFile(maskedFile);
-          injected = staged.inject(maskedFile) !== false;
+          // inject 는 이제 "사이트가 받았다는 증거"를 확인하느라 비동기다.
+          injected = (await staged.inject(maskedFile)) !== false;
         } else if (decision.file?.action === 'passthrough') {
           await announceContentApprovedFile(staged.file);
-          injected = staged.inject(staged.file) !== false;
+          injected = (await staged.inject(staged.file)) !== false;
         }
         if (!injected) {
           console.error(
