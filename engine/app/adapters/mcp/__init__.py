@@ -92,11 +92,21 @@ async def mcp_session_context() -> AsyncIterator[None]:
 
     StreamableHTTPSessionManager.run() 은 인스턴스당 1회만 호출 가능하므로, 매 진입마다
     기존 매니저를 버리고 streamable_http_app() 으로 새로 만들어 재기동 가능하게 한다.
+
+    **나올 때도 비운다.** 예전엔 진입에서만 None 으로 밀고 종료 시엔 그대로 뒀는데,
+    그러면 lifespan 이 끝난 뒤 _session_manager 가 "이미 죽은 매니저" 를 가리킨 채
+    남는다. 그 상태로 /mcp 요청이 오면 _mcp_asgi 의 None 검사를 통과해버려
+    handle_request 안에서 "Task group is not initialized" 로 500 이 난다 — 우리가
+    준비해둔 503("세션 매니저 미기동") 대신 정체불명의 500 이다. 한 프로세스에서
+    앱을 두 번 띄우는 전체 테스트 실행에서 실제로 재현됐다.
     """
     mcp._session_manager = None  # noqa: SLF001 - 재기동을 위해 1회용 매니저 재생성
     mcp.streamable_http_app()  # 세션 매니저 lazy 생성
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        mcp._session_manager = None  # noqa: SLF001 - 죽은 매니저를 남기지 않는다
 
 
 __all__ = ["mcp", "mount_mcp", "mcp_session_context", "MCP_PATH"]

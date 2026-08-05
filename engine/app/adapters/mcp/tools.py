@@ -345,18 +345,24 @@ async def mask_text(
     scan_* 가 이미 maskedText 를 함께 주므로 보통은 불필요하다. 항목 일부를 편집(예: 특정
     PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다.
 
-    반환: {maskedText, applied, skippedCount}. 모양이 어긋난 항목(dict 이 아님,
-    type 없음, 좌표가 정수가 아님, 범위 밖)은 조용히 버리고 그 개수를 skippedCount 로
-    알려준다 — 이 목록은 호출자가 채워 보내는 값이라, 하나 틀렸다고 요청 전체를
-    실패시키는 대신 무엇이 빠졌는지 알려주는 게 맞다.
+    반환: {maskedText, applied, skippedCount}. 쓸 수 없는 항목(dict 이 아님, type 이
+    문자열이 아님, 좌표가 정수가 아니거나 범위 밖)은 조용히 버리고 그 개수를
+    skippedCount 로 알려준다 — 이 목록은 호출자가 채워 보내는 값이라, 하나 틀렸다고
+    요청 전체를 실패시키는 대신 무엇이 빠졌는지 알려주는 게 맞다.
+
+    skippedCount 를 len(applied) 와의 차이로 계산하지 않는 이유: 좌표가 겹치는 항목은
+    하나로 병합되므로(masker.merge_overlapping) 정상 입력에서도 applied 가 입력보다
+    적을 수 있다. 그걸 "버렸다"고 세면 멀쩡한 요청에 경고가 붙는다. 그래서 병합 전
+    단계인 validate_and_fix 를 기준으로 센다.
     """
     raw = list(pii_items or []) + list(injection_items or [])
     items = [it for it in raw if isinstance(it, dict) and isinstance(it.get("type"), str)]
+    usable = masker.validate_and_fix(text, items)  # 병합 전 = 실제로 쓸 수 있는 항목
     out = masker.apply_masking(text, items)
     return {
         "maskedText": out["masked_text"],
         "applied": out["applied"],
-        "skippedCount": len(raw) - len(out["applied"]),
+        "skippedCount": len(raw) - len(usable),
     }
 
 
@@ -459,9 +465,11 @@ async def secure_search_files(
     탐지는 **매칭이 있는 파일당 한 번**만 돈다. 예전에는 매칭 라인마다 run_pipeline 을
     불렀는데, 그건 라인 하나당 PII 인코더 + EXAONE 추론이고 인젝션이 걸리면 Solar
     유료 호출까지 붙는다 — max_results=50 이면 최악 50회 직렬 추론 + 50회 과금이었다.
-    파일 전체를 한 번 검사해 좌표를 받은 뒤, 각 라인 구간에 걸친 항목만 그 라인
-    기준으로 옮겨 마스킹한다(결과는 라인별로 돌리던 것과 같고, 오히려 라인 경계에
-    걸친 항목까지 제대로 잡는다).
+
+    검사에 넣는 건 **매칭된 라인만 이어붙인 텍스트**다. 파일 전체를 넣으면 매칭 한 줄
+    때문에 수 MB 로그를 통째로 추론하게 되고(청크가 수천 개) 그건 라인별로 돌리는
+    것보다도 나쁘다. 라인 수는 max_results 로 이미 묶여 있어 검사량이 파일 크기와
+    무관하게 유지된다. 이어붙인 텍스트 기준 좌표를 받아 각 라인 기준으로 옮겨 마스킹한다.
     """
     root_path = _resolve(root)
     if not root_path.is_dir():
@@ -484,27 +492,33 @@ async def secure_search_files(
             except (UnicodeDecodeError, OSError):
                 continue
 
-        # 먼저 매칭 라인을 (원문 기준 좌표와 함께) 모은다. 하나도 없으면 이 파일에는
-        # 탐지를 아예 돌리지 않는다 — 검색어가 없는 파일에 추론 비용을 쓸 이유가 없다.
-        hits: list[tuple[int, int, int, str]] = []  # (line_no, line_start, line_end, line)
-        pos = 0
-        for line_no, raw in enumerate(text.splitlines(keepends=True), start=1):
-            line = raw.rstrip("\r\n")
-            if query in line:
-                hits.append((line_no, pos, pos + len(line), line))
-            pos += len(raw)
+        # 매칭 라인만 모은다. 하나도 없으면 이 파일에는 탐지를 아예 돌리지 않는다 —
+        # 검색어가 없는 파일에 추론 비용을 쓸 이유가 없다. 남은 결과 정원만큼만 담아
+        # 검사 대상 크기를 max_results 로 묶는다.
+        remaining = max_results - len(results)
+        hits: list[tuple[int, str]] = []  # (line_no, line)
+        for line_no, raw in enumerate(text.splitlines(), start=1):
+            if len(hits) >= remaining:
+                break
+            if query in raw:
+                hits.append((line_no, raw))
         if not hits:
             continue
 
-        # 파일 전체 1회 검사. 여기는 일부러 방송하지 않는다 — 검색은 "지금 무슨 문서를
-        # 처리 중인가" 로 보여줄 단위가 아니다(처리현황이 검색 한 번에 깜빡이게 된다).
-        file_res = await run_pipeline(text=text, file_name=path.name, wrap_file=False)
+        # 매칭 라인만 이어붙여 1회 검사. 여기는 일부러 방송하지 않는다 — 검색은 "지금
+        # 무슨 문서를 처리 중인가" 로 보여줄 단위가 아니다(검색 한 번에 처리현황이 깜빡인다).
+        joined = "\n".join(line for _, line in hits)
+        line_spans: list[tuple[int, int]] = []  # joined 기준 (start, end)
+        cursor = 0
+        for _, line in hits:
+            line_spans.append((cursor, cursor + len(line)))
+            cursor += len(line) + 1  # "\n"
+
+        file_res = await run_pipeline(text=joined, file_name=path.name, wrap_file=False)
         items = list(file_res.get("piiItems") or []) + list(file_res.get("injectionItems") or [])
         file_blocked = bool(file_res.get("blocked"))
 
-        for line_no, line_start, line_end, line in hits:
-            if len(results) >= max_results:
-                break
+        for (line_no, line), (line_start, line_end) in zip(hits, line_spans):
             if file_blocked:
                 # block 정책에 걸린 파일은 스니펫도 넘기지 않는다 — 위치는 알려주되
                 # 내용은 주지 않는다(그래야 "무엇을 못 봤는지"는 알 수 있다).
