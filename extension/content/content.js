@@ -244,10 +244,16 @@
     if (!input) {
       return injectFileByDrop(finalFile, null);
     }
+    // 성공 판정은 "쏘기 전에 DOM 에 붙어 있었나" 로 한다. 쏜 "뒤" 의 isConnected 를
+    // 보면 안 된다 — 사이트가 change 를 처리하면서 그 input 을 곧바로 떼어내는 게
+    // 정상 동작이기 때문이다(실사용자 Gemini 로그: files:1 인데 connected:false).
+    // 그걸 실패로 오판하면 이미 잘 들어간 파일에 합성 drop 을 한 번 더 쏘게 되고,
+    // 그 drop 이 사이트 핸들러를 터뜨리거나 첨부가 중복될 수 있다.
+    const wasConnected = input.isConnected;
     setFileOnInput(input, finalFile);
-    if (!input.isConnected || input.files?.length !== 1) {
+    if (!wasConnected || input.files?.length !== 1) {
       console.warn('[SecureDoc] input 주입이 반영되지 않았습니다 — 합성 drop 으로 재시도합니다', {
-        connected: input.isConnected, files: input.files?.length,
+        connectedBefore: wasConnected, files: input.files?.length,
       });
       return injectFileByDrop(finalFile, null);
     }
@@ -746,7 +752,10 @@
       try { return !!document.querySelector(sel); } catch (_) { return false; }
     });
     if (anyPresent) return configured;
-    warnStaleSelector('sendBtnSel', cfg?.sendBtnSel);
+    // 여기서 경고하지 않는다. 이 함수는 폴링 중에도 매번 불리는데, 컴포저가 아직
+    // 안 그려진 순간에도 "선택자가 낡았다" 고 잘못 울렸다(실사용자 Gemini 로그:
+    // 경고가 뜬 뒤 정작 재전송은 설정된 선택자로 성공했다). 실제로 어떤 선택자가
+    // 먹었는지는 재전송 성공 로그에 sel= 로 찍히므로 정보가 아쉬울 것도 없다.
     return [...configured, ...GENERIC_SEND_SELS];
   }
 
@@ -862,6 +871,56 @@
    *  그 시점엔 업로드가 아직 진행 중이라 버튼이 비활성 → 클릭이 먹지 않고 그대로
    *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
    *  않고 버튼이 활성화될 때까지 폴링한다. */
+  /** 첨부가 사이트에 실제로 올라갈 때까지 기다린다.
+   *
+   *  왜 필요한가: 예전엔 파일을 넣고 고정 900ms 만 기다린 뒤 전송했다. 사이트는
+   *  파일을 자기 서버로 올리는 중인데 전송 버튼은 "텍스트가 있으니" 열려 있어서,
+   *  업로드가 끝나기 전에 눌려 프롬프트만 먼저 나갔다(실사용자 Gemini 리포트:
+   *  "첨부는 됐는데 요약하기가 먼저 들어갔어").
+   *
+   *  고정 시간을 늘리는 건 추측이라, 사이트가 주는 신호를 쓴다. 대부분의 챗 UI 는
+   *  첨부를 올리는 동안 전송 버튼을 잠갔다가 끝나면 다시 연다. 그 "잠김 → 열림"
+   *  전환을 기다린다. 잠기는 걸 못 봤으면(그렇게 동작하지 않는 사이트) 판단 불가라
+   *  예전과 같은 짧은 대기로 물러난다 — 없던 신호를 지어내지 않는다. */
+  async function waitForAttachmentReady(cfg, busyProbeMs = 2500, readyWaitMs = 60000) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const sendBtn = () => {
+      for (const sel of sendButtonSelectors(cfg)) {
+        try {
+          const b = document.querySelector(sel);
+          if (b) return b;
+        } catch (_) { /* 잘못된 선택자는 건너뛴다 */ }
+      }
+      return null;
+    };
+    const locked = () => {
+      const b = sendBtn();
+      return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
+    };
+
+    const startedAt = Date.now();
+    let sawBusy = false;
+    while (Date.now() - startedAt < busyProbeMs) {
+      if (locked()) { sawBusy = true; break; }
+      await sleep(100);
+    }
+    if (!sawBusy) {
+      // 업로드 중임을 알려주는 신호가 없다 — 예전 동작(짧은 대기)으로 물러난다.
+      await sleep(900);
+      console.log('[SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다');
+      return false;
+    }
+    while (Date.now() - startedAt < readyWaitMs) {
+      if (!locked()) {
+        console.log(`[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${Date.now() - startedAt}ms)`);
+        return true;
+      }
+      await sleep(150);
+    }
+    console.warn(`[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 전송 버튼이 다시 열리지 않았습니다 — 그대로 전송을 시도합니다`);
+    return false;
+  }
+
   async function resubmitPrompt(cfg, waitMs = 15000) {
     const startedAt = Date.now();
     await new Promise(r => setTimeout(r, 200)); // setEditorText 후 React 상태 반영 대기
@@ -952,6 +1011,12 @@
         // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
         // 주입 성공 여부를 반드시 본다 — 예전엔 반환값을 버려서, 파일이 하나도 안
         // 들어갔는데도 그대로 프롬프트만 전송했다("문서가 안 간다"의 마지막 조각).
+        // 텍스트를 "먼저" 넣는다. 그래야 전송 버튼이 텍스트 기준으로 일단 열리고,
+        // 그 다음 파일을 넣었을 때 사이트가 업로드하느라 버튼을 잠그는 것을
+        // 신호로 쓸 수 있다(waitForAttachmentReady). 순서가 반대면 대기 내내
+        // 입력창이 비어 버튼이 계속 잠겨 있어 업로드 중인지 구분할 수 없다.
+        setEditorText(latestCfg, finalText);
+
         let injected = true;
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
           const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
@@ -969,9 +1034,8 @@
         }
         // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
         clearPendingAttachment();
-        setEditorText(latestCfg, finalText);
-        // 파일 재주입(입력창 change/합성 drop 등)을 사이트가 처리할 시간을 준 뒤 전송한다.
-        await new Promise((r) => setTimeout(r, 900));
+        // 첨부가 사이트에 실제로 올라갈 때까지 기다린 뒤 전송한다.
+        if (injected) await waitForAttachmentReady(latestCfg);
       } else {
         const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
         setEditorText(latestCfg, finalText);

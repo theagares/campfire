@@ -361,6 +361,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   actionLog.length = 0;
   promptEditorStub.value = '이 문서를 요약해줘';
   documentStub.activeElement = promptEditorStub;
+  // 첨부 업로드 대기(waitForAttachmentReady)는 전송 버튼이 잠기는 걸 신호로 쓴다.
+  // 여기선 그 신호가 없는 사이트를 모사한다 — 짧은 고정 대기로 물러난 뒤 전송한다.
+  sendButtonStub.disabled = false;
   nextDecision = {
     action: 'send',
     maskedText: '이 문서를 요약해줘',
@@ -425,7 +428,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 사이트는 첨부 파일을 다 업로드할 때까지 전송 버튼을 비활성으로 둔다. 예전엔
   // 고정 시간만 기다리고 한 번만 눌러봐서, 그 시점에 아직 업로드 중이면 클릭이 먹지
   // 않고 그대로 끝났다(실사용자 재현: 검토는 되는데 전송이 안 됨).
-  await new Promise(r => setTimeout(r, 3100)); // 테스트 4가 세운 promptApproved 해제 대기
+  // 테스트 4가 세운 promptApproved(재전송 후 3초) 해제 대기.
+  // 첨부가 보류된 제출은 이제 waitForAttachmentReady 를 거쳐 전송하므로 테스트 4가
+  // 그만큼 늦게 끝난다 — 실측으로 이 값이 필요했다(6초로는 아직 promptApproved 가
+  // 살아 있어 Enter 가 통째로 무시됐다).
+  await new Promise(r => setTimeout(r, 12000));
+  // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
 
   sendButtonStub.disabled = true;
   sendButtonStub.clicks = 0;
@@ -444,7 +452,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
 
   sendButtonStub.disabled = false;              // 업로드 완료 → 활성화
-  await new Promise(r => setTimeout(r, 800));   // 폴링 주기(200ms) 안에 눌려야 한다
+  // 첨부가 보류돼 있으면 전송 전에 waitForAttachmentReady 가 "버튼이 다시 열릴 때까지"
+  // 기다린 뒤에야 resubmitPrompt 로 넘어간다 — 그 왕복까지 덮는 창이어야 한다.
+  await new Promise(r => setTimeout(r, 2000));
   if (sendButtonStub.clicks !== 1) {
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
@@ -526,7 +536,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   promptInProcess — 결정이 안 온 검사가 아직 진행 중일 수 있다.
   // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
-  await new Promise(r => setTimeout(r, 4500));
+  await new Promise(r => setTimeout(r, 7000));
   const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
   decisionListener?.({
     type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
@@ -645,7 +655,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     type: 'PANEL_DECISION', sessionId: pendingScan9.sessionId, decision: { action: 'cancel' },
   });
   await flush();
-  await new Promise(r => setTimeout(r, 4500)); // promptApproved(3초) 해제 대기
+  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
 
   // 사이트 개편 재현: 설정된 선택자가 문서에서 하나도 안 잡히게 만든다.
   domBySelector.delete('#prompt-textarea');
@@ -692,7 +702,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     type: 'PANEL_DECISION', sessionId: pendingScan12.sessionId, decision: { action: 'cancel' },
   });
   await flush();
-  await new Promise(r => setTimeout(r, 4500)); // promptApproved(3초) 해제 대기
+  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
 
   // 선택자를 (11) 이 지웠으므로 되돌려 놓는다 — 이 테스트는 정상 사이트 전제다.
   domBySelector.set('#prompt-textarea', promptEditorStub);
@@ -754,7 +764,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     type: 'PANEL_DECISION', sessionId: pendingScan13.sessionId, decision: { action: 'cancel' },
   });
   await flush();
-  await new Promise(r => setTimeout(r, 4500));
+  await new Promise(r => setTimeout(r, 7000));
 
   // 사이트의 컴포저(부모)는 살아 있고, 그 안의 input 만 떼어진 상황.
   const parent13 = new DropTargetStub();
