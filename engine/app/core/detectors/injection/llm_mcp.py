@@ -59,6 +59,8 @@ import httpx
 
 from app import config
 
+from app.core.masker.redact_map import RedactionMap, build_redaction
+
 from ..base import ChunkMeta, Detection
 from ..gpu_residency import GpuResidency
 from . import backbone
@@ -424,7 +426,10 @@ class InjectionLlmMcpDetector:
         return (offsets[j], offsets[j + len(key) - 1] + 1)
 
     async def _localize_with_solar(
-        self, text: str, user_prompt: str | None = None
+        self,
+        text: str,
+        user_prompt: str | None = None,
+        pii_spans: list[dict[str, Any]] | None = None,
     ) -> list[tuple[int, int]] | None:
         """1차(EXAONE)가 misaligned 로 판정한 청크에서 Solar Pro 3 에게 세부 위치를
         다시 묻는다.
@@ -438,17 +443,27 @@ class InjectionLlmMcpDetector:
         """
         if not config.INJECTION_LOCALIZE_ENABLED:
             return None
-        # user_prompt 도 답을 바꾸므로 캐시 키에 포함한다. 텍스트만으로 키를 만들면
-        # 같은 문서를 다른 요청 맥락에서 검사할 때 앞선 답이 잘못 재사용된다.
+
+        # Solar 는 외부 API 다. 여기서 나가는 것은 전부 PII 를 가린 뒤여야 한다 —
+        # 1차(EXAONE)는 로컬이라 원문을 그대로 보지만, 이 호출만은 다르다.
+        # 자리표시자는 원본과 길이가 달라("홍길동" 3자 → "[이름 마스킹]" 8자) Solar 가
+        # 돌려주는 좌표도 마스킹 기준이 된다. redaction.to_original() 로 원문 좌표로
+        # 되돌린다(안 되돌리면 인젝션 구간이 원문에서 엉뚱한 자리를 가리킨다).
+        redaction = build_redaction(text, pii_spans)
+        outbound_text = redaction.text
+
+        # 캐시 키는 "실제로 보내는 것" 기준이어야 한다. 원문으로 키를 잡으면 마스킹
+        # 정책이 바뀌어 보내는 내용이 달라져도 옛 답이 재사용된다.
         digest = hashlib.sha256()
         digest.update((user_prompt or "").encode("utf-8"))
         digest.update(b"\x00")  # 두 필드 경계 — 이어붙이기로 키가 겹치지 않게
-        digest.update(text.encode("utf-8"))
+        digest.update(outbound_text.encode("utf-8"))
         cache_key = digest.hexdigest()
         cached = self._solar_cache.get(cache_key, _CACHE_MISS)
         if cached is not _CACHE_MISS:
             self._solar_cache.move_to_end(cache_key)
-            return cached
+            # 캐시에 든 것은 마스킹본 기준 좌표다 — 이 호출의 원문으로 환원해야 한다.
+            return self._to_original_spans(cached, redaction)
         try:
             if self._http_client is None:
                 self._http_client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
@@ -462,7 +477,7 @@ class InjectionLlmMcpDetector:
                     "model": config.UPSTAGE_MODEL,
                     "messages": [
                         {"role": "system", "content": self._SOLAR_SYSTEM_PROMPT},
-                        {"role": "user", "content": self._solar_user_message(text, user_prompt)},
+                        {"role": "user", "content": self._solar_user_message(outbound_text, user_prompt)},
                     ],
                     "temperature": 0,
                     "prompt_cache_key": _SOLAR_PROMPT_CACHE_KEY,
@@ -477,27 +492,47 @@ class InjectionLlmMcpDetector:
         if phrases is None:
             return None  # 응답을 해석 못 함 — 판단 불가
 
+        # Solar 는 자기가 받은 것(=마스킹본) 기준으로 답하므로 검색도 거기서 한다.
         spans: list[tuple[int, int]] = []
         seen: set[tuple[int, int]] = set()
         for phrase in phrases:
-            rng = self._find_span(text, phrase)
+            rng = self._find_span(outbound_text, phrase)
             if rng is None:
-                continue  # 원문에서 위치를 못 찾은 항목만 버린다
+                continue  # 보낸 텍스트에서 위치를 못 찾은 항목만 버린다
             if rng in seen:
                 continue
             seen.add(rng)
             spans.append(rng)
 
-        # 문구는 받았는데 하나도 원문에서 찾지 못했다면 "없다" 가 아니라 "못 맞췄다" 다
+        # 문구는 받았는데 하나도 찾지 못했다면 "없다" 가 아니라 "못 맞췄다" 다
         # — 오탐 정정으로 오해하면 진짜 인젝션을 흘려보내게 되므로 판단 불가로 둔다.
         if phrases and not spans:
             return None
 
+        # 캐시에는 "마스킹본 기준" 좌표를 넣는다. 원문 좌표를 넣으면 안 된다 —
+        # 서로 다른 원문이 같은 마스킹본이 될 수 있어서다(이름이 다른 두 문서가
+        # 똑같이 "[이름 마스킹]" 이 된다). 그러면 캐시 히트 시 남의 원문 좌표를
+        # 그대로 쓰게 된다. 원문 좌표로의 환원은 반환 직전에만 한다.
         self._solar_cache[cache_key] = spans
         self._solar_cache.move_to_end(cache_key)
         if len(self._solar_cache) > _SOLAR_CACHE_MAX:
             self._solar_cache.popitem(last=False)
-        return spans
+        return self._to_original_spans(spans, redaction)
+
+    @staticmethod
+    def _to_original_spans(
+        spans: list[tuple[int, int]], redaction: RedactionMap
+    ) -> list[tuple[int, int]]:
+        """마스킹본 좌표 → 원문 좌표. 되돌리지 못한 구간은 버린다."""
+        out: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for s, e in spans:
+            mapped = redaction.to_original(s, e)
+            if mapped is None or mapped in seen:
+                continue
+            seen.add(mapped)
+            out.append(mapped)
+        return out
 
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
         if not text.strip():
@@ -521,7 +556,15 @@ class InjectionLlmMcpDetector:
         scores = result.get("scores", {})
         confidence = float(scores.get("misaligned", 0.0))
 
-        spans = await self._localize_with_solar(text, user_prompt=user_prompt)
+        # Solar(외부 API)로 나가는 것만 PII 를 가린다. 위 1차 판정(_infer)은 로컬
+        # 서브프로세스라 원문을 그대로 봤다 — 가리면 탐지 정확도만 떨어진다.
+        # user_prompt_masked 키가 아예 없는 호출(직접 detector 사용 등)은 기존처럼
+        # 원문 프롬프트를 쓴다. 파이프라인은 항상 이 키를 채워 보낸다.
+        meta_d = meta or {}
+        solar_prompt = meta_d.get("user_prompt_masked", user_prompt)
+        spans = await self._localize_with_solar(
+            text, user_prompt=solar_prompt, pii_spans=meta_d.get("pii_spans")
+        )
         if spans:
             return [
                 Detection(
