@@ -88,7 +88,53 @@ class FileStub {
   }
 }
 class DataTransferStub {
-  constructor() { this.files = []; this.items = { add: f => this.files.push(f) }; }
+  constructor() {
+    this.files = [];
+    this.items = { add: f => this.files.push(f) };
+    this._data = new Map();
+  }
+  setData(type, value) { this._data.set(type, String(value)); }
+  getData(type) { return this._data.get(type) ?? ''; }
+}
+
+/** 프레임워크형 contenteditable(Lexical/Quill 계열) 흉내 — 테스트 18.
+ *  · 자기 모델만 신뢰한다: textContent 직접 대입은 무시한다
+ *  · 문단을 블록으로 렌더한다 → innerText 에 개행이 하나 더 낀다(Chrome 실측 동작)
+ *  · acceptDelete=false 면 지우기를 무시한다(= clear() 가 안 먹는 에디터) */
+class ContentEditableStub {
+  constructor(initial, { acceptDelete = false } = {}) {
+    this.tagName = 'DIV';
+    this.nodeType = 1;
+    this.isContentEditable = true;
+    this.isConnected = true;
+    this.acceptDelete = acceptDelete;
+    this.lines = initial ? String(initial).split('\n') : [];
+    this.inserts = 0;
+    const props = new Map();
+    this.style = {
+      getPropertyValue: (k) => props.get(k)?.value ?? '',
+      getPropertyPriority: (k) => props.get(k)?.priority ?? '',
+      setProperty: (k, v, p = '') => props.set(k, { value: v, priority: p }),
+      removeProperty: (k) => props.delete(k),
+    };
+  }
+  get innerText() { return this.lines.join('\n\n'); }   // 블록 사이 개행 2개
+  get textContent() { return this.lines.join('\n\n'); }
+  set textContent(_v) { /* 프레임워크는 DOM 직접수정을 무시한다 */ }
+  focus() { documentStub.activeElement = this; }
+  acceptInsert(v) {
+    if (!v) return;
+    for (const line of String(v).split('\n')) this.lines.push(line);
+    this.inserts += 1;
+  }
+  acceptDeleteAll() { if (this.acceptDelete) this.lines = []; }
+  dispatchEvent(ev) {
+    if (ev?.type === 'paste') this.acceptInsert(ev.clipboardData?.getData?.('text/plain') ?? '');
+    return true;
+  }
+  closest() { return null; }
+  contains() { return false; }
+  getAttribute() { return null; }
 }
 // 합성 이벤트의 type/dataTransfer 를 검사할 수 있게 init 을 그대로 보관한다.
 class DragEventStub {
@@ -223,7 +269,15 @@ const documentStub = {
   createElement: (tag) => makeElementStub(tag),
   querySelector: (sel) => domBySelector.get(sel) ?? null,
   querySelectorAll: (sel) => domBySelectorAll.get(sel) ?? [],
-  execCommand: () => true,
+  // 실제 execCommand 는 "지금 포커스된 편집 요소"에 작용한다. 테스트 18의 프레임워크
+  // 에디터가 그 동작을 받아볼 수 있어야 삽입/지우기 시도를 셀 수 있다. 다른 테스트의
+  // 입력창 stub 에는 이 메서드들이 없으므로 예전처럼 아무 일도 일어나지 않는다.
+  execCommand: (cmd, _showUI, value) => {
+    const ed = documentStub.activeElement;
+    if (cmd === 'insertText') ed?.acceptInsert?.(value);
+    if (cmd === 'delete') ed?.acceptDeleteAll?.();
+    return true;
+  },
 };
 
 const chromeStub = {
@@ -278,10 +332,11 @@ const sandbox = {
   HTMLTextAreaElement: HTMLTextAreaElementStub,
   Event: class { constructor(type) { this.type = type; } },
   requestAnimationFrame: (cb) => setTimeout(cb, 0),
-  InputEvent: class {},
-  KeyboardEvent: class {},
+  // init 을 보관해야 setEditorText 의 붙여넣기/삭제 시도를 에디터 stub 이 받아볼 수 있다.
+  InputEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
+  KeyboardEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
   DragEvent: DragEventStub,
-  ClipboardEvent: class {},
+  ClipboardEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
   atob: v => Buffer.from(v, 'base64').toString('binary'),
   btoa: v => Buffer.from(v, 'binary').toString('base64'),
 };
@@ -1102,8 +1157,132 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (!chainLines.some(l => l.includes('input되돌리기=증거없음'))) {
     throw new Error('되돌리기가 증거 없이 성공으로 기록됐다 — 판정이 우리 쪽 상태만 보고 있다');
   }
+  // 이 테스트에서만 쓰는 "사이트가 drop 에 반응한다" 흉내를 되돌린다.
+  // 안 되돌리면 다음 테스트의 합성 drop 도 증거를 얻어버려 전제가 깨진다.
+  promptEditorStub.dispatchEvent = editorDispatch;
 
-  delete sandbox.MutationObserver; // 뒷정리(이 파일에서 마지막 테스트다)
+  // (17) 문서를 끝내 못 붙였으면 **전송하지 않는다**.
+  //
+  // 예전에는 주입에 실패해도 프롬프트를 그대로 보내고 콘솔에만 남겼다
+  // ("문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다"). 사용자는 문서가
+  // 갔다고 믿은 채 대화를 이어간다. 보안 제품에서 가장 나쁜 실패 모드다.
+  // 실사용자 Gemini 에서 실제로 이 경로가 나왔다(네 전략 모두 증거 없음).
+  await new Promise(r => setTimeout(r, 5000)); // (16)의 promptApproved 해제 대기
+
+  const send17 = new SendButtonStub();
+  send17.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send17);
+  domBySelector.delete('input[type="file"]');
+
+  // 어떤 전략도 증거를 못 얻는 상황: 살아있는 input 없음, 되돌릴 부모 없음,
+  // 합성 drop 을 쏴도 사이트가 아무 반응 없음(MutationObserverStub 이 아무것도 안 쏨).
+  const input17 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'blocked.pdf', { type: 'application/pdf' }), 'gone17',
+  );
+  dispatchDocumentEvent('change', {
+    target: input17,
+    composedPath: () => [input17, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input17.isConnected = false;
+  appendedToRoot.length = 0;
+  const lines17 = consoleLines.length;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'blocked.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 3500)); // 전략 체인(증거 대기 포함) 통과 시간
+
+  if (send17.clicks !== 0) {
+    throw new Error(`문서를 못 붙였는데 프롬프트를 전송했다 (clicks=${send17.clicks}) — 사용자는 문서가 갔다고 믿는다`);
+  }
+  const badge17 = appendedToRoot.find(el => el?.id === '__ups_pending_badge');
+  if (!badge17) {
+    throw new Error('전송을 멈췄는데 화면에 아무 안내도 띄우지 않았다 — 콘솔은 아무도 안 본다');
+  }
+  const badgeText = (badge17.children || []).map(c => String(c?.textContent || '')).join(' ');
+  if (!/다시 첨부/.test(badgeText)) {
+    throw new Error(`뱃지 문구가 "다시 첨부" 안내를 담고 있지 않다: ${badgeText}`);
+  }
+  if (!consoleLines.slice(lines17).some(l => l.includes('전송을 중단했습니다'))) {
+    throw new Error('전송 중단 사실이 로그에 남지 않았다');
+  }
+
+  delete sandbox.MutationObserver; // 증거 판정 뒷정리 — 아래 (18)은 텍스트 경로만 본다
+
+  // (18) 프레임워크형 입력창에서 마스킹 텍스트가 여러 벌 쌓이면 안 된다.
+  //
+  // 배경(실사용자 perplexity): "프롬프트가 4번" → 한 번 고쳐 3번 → 여전히 쌓임.
+  // setEditorText 의 contenteditable 경로에는 삽입 전략이 정확히 3개 있는데, 각 전략은
+  // done() 이 true 여야 멈춘다. 그 판정이 깨지면 3개가 전부 실행되어 그대로 쌓인다.
+  // 헤드리스 Chrome 실측으로 확인한 두 원인:
+  //   ① 프레임워크가 문단을 블록으로 렌더하면 Chrome innerText 가 블록 사이에 개행을
+  //      "두 개" 넣는다 → 글자는 같은데 === 가 false → 성공을 실패로 오판
+  //   ② 지우기(execCommand delete)가 무시되어 원문이 그대로 남는다
+  await new Promise(r => setTimeout(r, 5000)); // (17)에서 promptApproved 는 즉시 내려가지만 여유
+
+  // (18-a) 지우기가 먹는 에디터: 개행 때문에 판정만 깨지던 경우 → 정확히 1벌, 전송됨.
+  const ed18a = new ContentEditableStub('원래 프롬프트\n둘째 줄', { acceptDelete: true });
+  domBySelector.set('#prompt-textarea', ed18a);
+  const send18a = new SendButtonStub();
+  send18a.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send18a);
+  documentStub.activeElement = ed18a;
+  nextDecision = { action: 'masked', maskedText: '마스킹된 프롬프트\n둘째 줄' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed18a.inserts !== 1) {
+    throw new Error(`삽입이 ${ed18a.inserts}회 일어났다 — 판정이 깨져 전략이 연달아 덧씌운 그 회귀다`);
+  }
+  const bodyA = ed18a.lines.join(' ');
+  if ((bodyA.split('마스킹된 프롬프트').length - 1) !== 1) {
+    throw new Error(`마스킹 텍스트가 ${bodyA.split('마스킹된 프롬프트').length - 1}벌 들어갔다: ${bodyA}`);
+  }
+  if (bodyA.includes('원래 프롬프트')) {
+    throw new Error(`원문이 지워지지 않고 남았다: ${bodyA}`);
+  }
+  if (send18a.clicks !== 1) {
+    throw new Error(`정상적으로 넣었는데 전송되지 않았다 (clicks=${send18a.clicks})`);
+  }
+
+  // (18-b) 지우기가 아예 안 먹는 에디터: 삽입은 1회로 막고, 원문이 남았으므로 전송 금지.
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', { acceptDelete: false });
+  domBySelector.set('#prompt-textarea', ed18b);
+  const send18b = new SendButtonStub();
+  send18b.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send18b);
+  documentStub.activeElement = ed18b;
+  nextDecision = { action: 'masked', maskedText: '주민번호 [RRN_1] 알려줘' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed18b.inserts > 1) {
+    throw new Error(`지우지 못한 입력창에 ${ed18b.inserts}회 삽입했다 — 쌓임을 막지 못했다`);
+  }
+  if (send18b.clicks !== 0) {
+    throw new Error('마스킹본을 못 넣었는데 전송했다 — 입력창에 남은 원문이 그대로 나간다');
+  }
 
   console.log('content regression ok');
   process.exit(0);

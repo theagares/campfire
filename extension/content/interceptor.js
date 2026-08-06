@@ -2088,6 +2088,78 @@
     if (d.type === 'UPS_TRACE_PRINT') _printTrace(String(d.label || '진단'), Number(d.windowMs) || 10000);
   });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // OS 파일 선택창 억제 — content.js 가 사이트의 첨부 UI 를 직접 구동할 때 쓴다
+  //
+  // 왜 필요한가(실사용자 Gemini 진단으로 확정된 경로):
+  //   살아있는input=주입못함 → input되돌리기=증거없음 → 합성drop=증거없음
+  // 승인 시점에 Gemini DOM 에는 input[type=file] 이 아예 없고, 떼어낸 노드를 되붙여도
+  // Angular 가 컴포넌트를 파괴하며 리스너를 걷어간 뒤라 죽은 노드다. 즉 "살아 있고
+  // 사이트에 바인딩된 input" 이 필요한데, 그런 건 사이트가 직접 만들게 하는 수밖에 없다.
+  //
+  // 그래서 content.js 가 컴포저의 첨부 버튼을 눌러 사이트가 input 을 만들게 한다.
+  // 문제는 사이트 핸들러가 대개 그 input 에 .click() 을 불러 OS 파일 선택창을 띄운다는
+  // 것이다. 사용자가 누른 적 없는 창이 뜨면 안 되므로, content.js 가 첨부 UI 를 구동하는
+  // 동안만 그 호출을 무력화한다. input 노드는 그대로 만들어지고 바인딩도 살아 있다.
+  //
+  // content.js(isolated world)로는 페이지의 프로토타입을 못 고치므로 여기서 처리하고,
+  // 브리지(UPS_SUPPRESS_FILE_PICKER)로 켜고 끈다. 켜면 반드시 ACK 를 돌려준다 —
+  // content.js 가 ACK 를 받기 전에 버튼을 누르면 그 순간 진짜 파일창이 뜰 수 있다.
+  //
+  // 안전장치: 버그로 억제가 켜진 채 남으면 사용자가 파일을 영영 못 고른다. 그래서
+  // 자동 만료 타이머를 둔다 — 정상 흐름은 몇 초면 끝난다.
+  // ══════════════════════════════════════════════════════════════════════════
+  const _PICKER_SUPPRESS_MAX_MS = 8000;
+  let _suppressFilePicker = false;
+  let _suppressExpiry = 0;
+
+  function _pickerSuppressed() {
+    if (!_suppressFilePicker) return false;
+    if (Date.now() > _suppressExpiry) { // 만료됐으면 스스로 푼다
+      _suppressFilePicker = false;
+      console.warn('[SecureDoc] 파일 선택창 억제가 만료되어 자동 해제했습니다');
+      return false;
+    }
+    return true;
+  }
+
+  const _suppressedInputClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file' && _pickerSuppressed()) {
+      _traceAdd({
+        via: 'picker', method: 'BLOCK', path: '(input[type=file].click)', body: '-',
+        extra: '첨부 UI 구동 중 — OS 파일창을 막았습니다',
+      });
+      return undefined;
+    }
+    return _suppressedInputClick.call(this);
+  };
+
+  // showPicker() 는 같은 일을 하는 최신 API 다. 없는 브라우저도 있어 존재할 때만 감싼다.
+  try {
+    const _origShowPicker = HTMLInputElement.prototype.showPicker;
+    if (typeof _origShowPicker === 'function') {
+      HTMLInputElement.prototype.showPicker = function () {
+        if (this.type === 'file' && _pickerSuppressed()) return undefined;
+        return _origShowPicker.call(this);
+      };
+    }
+  } catch (_) { /* ignore */ }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d?.__campfire_config || d.direction !== 'isolated-to-main') return;
+    if (d.type !== 'UPS_SUPPRESS_FILE_PICKER') return;
+    _suppressFilePicker = !!d.on;
+    _suppressExpiry = _suppressFilePicker ? Date.now() + _PICKER_SUPPRESS_MAX_MS : 0;
+    // content.js 는 이 ACK 를 받은 뒤에야 버튼을 누른다(그 전에 누르면 진짜 창이 뜬다).
+    window.postMessage({
+      __campfire_config: true, direction: 'main-to-isolated',
+      type: 'UPS_SUPPRESS_FILE_PICKER_ACK', on: _suppressFilePicker, nonce: d.nonce,
+    }, '*');
+  });
+
   // ── 수동 조작구 (MAIN world 이므로 페이지 콘솔에서 바로 부를 수 있다) ─────
   //   __campfireTrace()          최근 60초 덤프
   //   __campfireTrace(15000)     최근 15초 덤프
