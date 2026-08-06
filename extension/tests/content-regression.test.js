@@ -97,17 +97,32 @@ class DataTransferStub {
   getData(type) { return this._data.get(type) ?? ''; }
 }
 
-/** 프레임워크형 contenteditable(Lexical/Quill 계열) 흉내 — 테스트 18.
+// ── 선택 영역 모델 ────────────────────────────────────────────────────────────
+// 브라우저에서 insertText/paste 는 "선택 영역을 대체" 한다. 선택이 잡혀 있지 않으면
+// 캐럿 자리에 덧붙는다 — 쌓임은 항상 여기서 난다. 이 구분을 모델링하지 않으면
+// (20) 이 잡아내는 회귀를 테스트로 재현할 수 없다.
+let selectedNode = null;
+const selectionStub = {
+  removeAllRanges() { selectedNode = null; },
+  addRange(range) { selectedNode = range?.node ?? null; },
+};
+
+/** 프레임워크형 contenteditable(Lexical/Quill 계열) 흉내 — 테스트 18·20.
  *  · 자기 모델만 신뢰한다: textContent 직접 대입은 무시한다
  *  · 문단을 블록으로 렌더한다 → innerText 에 개행이 하나 더 낀다(Chrome 실측 동작)
- *  · acceptDelete=false 면 지우기를 무시한다(= clear() 가 안 먹는 에디터) */
+ *  · acceptDelete=false 면 지우기를 무시한다(= clear() 가 안 먹는 에디터)
+ *  · 삽입은 선택 영역을 대체한다. 선택이 없으면 덧붙는다(브라우저 실제 동작).
+ *    그리고 textContent 대입은 값 자체는 무시하더라도 **선택을 부순다** — 자식 노드가
+ *    통째로 갈리기 때문이며, 이게 perplexity 에서 원문과 마스킹본이 공존한 기전이다. */
 class ContentEditableStub {
-  constructor(initial, { acceptDelete = false } = {}) {
+  constructor(initial, { acceptDelete = false, acceptSelectionReplace = true } = {}) {
     this.tagName = 'DIV';
     this.nodeType = 1;
     this.isContentEditable = true;
     this.isConnected = true;
     this.acceptDelete = acceptDelete;
+    // false 면 선택 영역 대체조차 안 먹는다 = 우리가 어떤 방법으로도 못 바꾸는 에디터.
+    this.acceptSelectionReplace = acceptSelectionReplace;
     this.lines = initial ? String(initial).split('\n') : [];
     this.inserts = 0;
     const props = new Map();
@@ -120,14 +135,19 @@ class ContentEditableStub {
   }
   get innerText() { return this.lines.join('\n\n'); }   // 블록 사이 개행 2개
   get textContent() { return this.lines.join('\n\n'); }
-  set textContent(_v) { /* 프레임워크는 DOM 직접수정을 무시한다 */ }
+  set textContent(_v) {
+    // 값은 무시하지만(프레임워크가 자기 모델을 지킨다) 선택은 실제로 부서진다.
+    selectedNode = null;
+  }
   focus() { documentStub.activeElement = this; }
   acceptInsert(v) {
     if (!v) return;
+    if (selectedNode === this && this.acceptSelectionReplace) this.lines = []; // 선택 영역 대체
     for (const line of String(v).split('\n')) this.lines.push(line);
+    selectedNode = null;                        // 삽입하면 선택은 접힌다
     this.inserts += 1;
   }
-  acceptDeleteAll() { if (this.acceptDelete) this.lines = []; }
+  acceptDeleteAll() { if (this.acceptDelete) { this.lines = []; selectedNode = null; } }
   dispatchEvent(ev) {
     if (ev?.type === 'paste') this.acceptInsert(ev.clipboardData?.getData?.('text/plain') ?? '');
     return true;
@@ -202,6 +222,7 @@ const windowStub = {
       actionLog.push({ kind: 'approve-msg', meta: data.meta });
     }
   },
+  getSelection: () => selectionStub,
 };
 
 // chatgpt.com 의 PROMPT_CONFIGS.editorSel('#prompt-textarea')로 조회되는 stub 에디터.
@@ -276,8 +297,11 @@ const documentStub = {
     const ed = documentStub.activeElement;
     if (cmd === 'insertText') ed?.acceptInsert?.(value);
     if (cmd === 'delete') ed?.acceptDeleteAll?.();
+    if (cmd === 'selectAll') selectedNode = ed ?? null;
     return true;
   },
+  // Range 는 "무엇을 선택했는가" 만 알면 되므로 노드만 들고 있는다.
+  createRange: () => ({ node: null, selectNodeContents(n) { this.node = n; } }),
 };
 
 const chromeStub = {
@@ -1261,10 +1285,13 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error(`정상적으로 넣었는데 전송되지 않았다 (clicks=${send18a.clicks})`);
   }
 
-  // (18-b) 지우기가 아예 안 먹는 에디터: 삽입은 1회로 막고, 원문이 남았으므로 전송 금지.
+  // (18-b) 우리가 어떤 방법으로도 못 바꾸는 에디터(지우기도 선택 영역 대체도 안 먹는다):
+  //        삽입은 1회로 막고, 원문이 남았으므로 전송 금지 — fail-closed 가 살아 있는지.
   await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
 
-  const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', { acceptDelete: false });
+  const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
+    acceptDelete: false, acceptSelectionReplace: false,
+  });
   domBySelector.set('#prompt-textarea', ed18b);
   const send18b = new SendButtonStub();
   send18b.disabled = false;
@@ -1320,6 +1347,46 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (send19.clicks !== 1) {
     throw new Error(`넣을 게 없어 성공인데 전송되지 않았다 (clicks=${send19.clicks})`);
+  }
+
+  // (20) 지우기가 안 먹는 에디터라도 "전체를 선택한 채로" 넣으면 대체된다.
+  //
+  // 배경(실사용자 perplexity, v0.2.15):
+  //   "execCommand: 입력창을 비우지 못한 채 넣었고 결과도 불일치 → 중단.
+  //    삽입 1회, 현재 1벌 감지"
+  // 마스킹본은 들어갔는데 원문이 그대로 남아 둘이 공존했다. 원인은 우리 clear() 의
+  // 마지막 단계 — editor.textContent='' 이 자식 노드를 통째로 갈아치우면서 방금 잡아둔
+  // **선택 영역을 부쉈다**. 선택이 없으면 insertText 는 "대체"가 아니라 캐럿 자리에
+  // "덧붙이기"가 된다.
+  //
+  // 이 테스트가 성립하려면 스텁이 선택 영역을 모델링해야 한다(위 ContentEditableStub).
+  // 지우기는 안 먹지만(acceptDelete:false) 선택 영역 대체는 먹는 — 실제 Lexical 이
+  // 그렇다 — 에디터를 쓴다.
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const ed20 = new ContentEditableStub('내 번호 010-1234-5678 로 연락해줘', { acceptDelete: false });
+  domBySelector.set('#prompt-textarea', ed20);
+  const send20 = new SendButtonStub();
+  send20.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send20);
+  documentStub.activeElement = ed20;
+  selectedNode = null;
+  nextDecision = { action: 'masked', maskedText: '내 번호 [PHONE_1] 로 연락해줘' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  const body20 = ed20.lines.join(' ');
+  if (body20.includes('010-1234-5678')) {
+    throw new Error(`원문이 지워지지 않고 마스킹본과 공존한다 — 그게 perplexity 회귀다: ${body20}`);
+  }
+  if ((body20.split('[PHONE_1]').length - 1) !== 1) {
+    throw new Error(`마스킹본이 ${body20.split('[PHONE_1]').length - 1}벌 있다: ${body20}`);
+  }
+  if (send20.clicks !== 1) {
+    throw new Error(`정상적으로 넣었는데 전송되지 않았다 (clicks=${send20.clicks})`);
   }
 
   console.log('content regression ok');
