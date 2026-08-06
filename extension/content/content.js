@@ -978,7 +978,12 @@
      *  "다음 전략을 시도해도 되는가"를 가르는 기준이라 정확해야 한다.
      *  (실측: 프레임워크형 에디터에서 execCommand('delete')가 무시되어 원문이 그대로
      *   남았고, 그 위에 삽입이 겹쳐 여러 벌이 됐다.) */
-    const clear = () => {
+    /** destructive=true 일 때만 마지막의 DOM 직접 비우기까지 간다.
+     *  그 단계는 자식 노드를 통째로 갈아치우므로 **선택 영역을 부순다** — 곧바로
+     *  insertText/paste 를 할 거라면 치명적이다(선택이 없으면 대체가 아니라 덧붙이기가
+     *  된다. 실사용자 perplexity 에서 원문과 마스킹본이 공존한 원인). 그래서 넣기 전
+     *  비우기에는 안 쓰고, 되돌리기처럼 "끝내려는" 자리에서만 쓴다. */
+    const clear = (destructive = false) => {
       selectAll();
       try { document.execCommand('delete', false, null); } catch (_) { /* 다음 단계 */ }
       if (isEmpty()) return true;
@@ -1001,7 +1006,8 @@
       } catch (_) { /* 다음 단계 */ }
       if (isEmpty()) return true;
 
-      // 최후 — DOM 을 직접 비운다. 프레임워크가 되돌릴 수 있어 마지막에만 쓴다.
+      // 최후 — DOM 을 직접 비운다. 선택 영역을 부수므로 destructive 일 때만.
+      if (!destructive) return false;
       try {
         editor.textContent = '';
         editor.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1009,11 +1015,15 @@
       return isEmpty();
     };
 
+    // 전략마다 "쌓일 수 있는가"가 다르다. selects=true 인 둘은 선택 영역을 대체하는
+    // 방식이라, 선택이 제대로 잡혀 있으면 전체를 갈아끼우지만 선택이 무너져 있으면
+    // 캐럿 자리에 "덧붙인다" — 쌓임은 항상 여기서 난다. DOM직접은 통째로 대입하므로
+    // 선택과 무관하게 덧붙는 일이 원리적으로 없다.
     const strategies = [
       // 1) execCommand — 가장 "진짜 입력"에 가까워 대부분의 에디터가 자기 이벤트를 낸다.
-      ['execCommand', () => { document.execCommand('insertText', false, text); }],
+      ['execCommand', true, () => { document.execCommand('insertText', false, text); }],
       // 2) 합성 paste — Lexical 등 execCommand 를 무시하는 에디터용.
-      ['합성paste', () => {
+      ['합성paste', true, () => {
         const dt = new DataTransfer();
         dt.setData('text/plain', text);
         editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
@@ -1022,7 +1032,7 @@
       //    어긋난 것으로 보고 되돌릴 수 있어 마지막에만 쓴다.
       //    알림용 이벤트에 data/inputType 을 싣지 않는 이유: insertText + data 를 실으면
       //    프레임워크가 "또 넣으라는 뜻"으로 읽어 한 벌 더 붙는다(예전 실측).
-      ['DOM직접', () => {
+      ['DOM직접', false, () => {
         editor.textContent = text;
         editor.dispatchEvent(new Event('input', { bubbles: true }));
       }],
@@ -1046,34 +1056,56 @@
     // 없다 — 공백만 다르다는 건 바뀐 게 없다는 뜻이다.)
     if (done()) return true;
 
+    // ★ "지우고 나서 넣는다" 가 아니라 "전체를 선택한 채로 넣는다".
+    //
+    // 실사용자 perplexity 로그: "execCommand: 입력창을 비우지 못한 채 넣었고 결과도
+    // 불일치 → 중단. 삽입 1회, 현재 1벌 감지" — 마스킹본은 들어갔는데 원문이 그대로
+    // 남아 둘이 공존했다. 원인은 우리 clear() 의 마지막 단계다: editor.textContent=''
+    // 은 자식 노드를 전부 갈아치우므로 **방금 잡아둔 선택 영역을 부순다**. 프레임워크가
+    // 자기 모델로 원문을 되살려 놓은 뒤엔 선택이 없는 캐럿만 남고, 이어지는
+    // insertText 는 "대체" 가 아니라 그 자리에 "덧붙이기" 가 된다.
+    //
+    // insertText/paste 는 원래 선택 영역을 대체한다. 그러니 지우려 애쓸 필요 없이
+    // 넣기 직전에 전체를 선택해 두면 지우기와 넣기가 한 번에 끝난다. 지우기가 안 먹는
+    // 에디터에서 특히 그렇다 — 못 지우는 것과 못 대체하는 것은 다른 문제다.
+    //
+    // 쌓임은 다음 두 규칙으로 막는다:
+    //   · 전략이 입력창을 "전혀 바꾸지 못했으면" 아무것도 안 쌓였으므로 다음 전략을
+    //     시도해도 안전하다.
+    //   · 바꿨는데 목표가 아니면 거기서 멈춘다 — 단, DOM직접처럼 통째로 대입하는
+    //     (selects=false) 전략은 덧붙는 게 원리적으로 불가능하므로 마지막으로 한 번
+    //     더 허용한다.
     let inserted = 0;
     let reason = '시도 없음';
-    for (const [name, run] of strategies) {
-      const emptied = clear();
-
-      // ★ 쌓임 차단의 핵심: 못 비웠는데 이미 넣은 적이 있으면 여기서 멈춘다.
-      //   이 경로를 없애면 "원문 + 삽입 + 삽입 + …" 이 원리적으로 불가능해진다.
-      if (!emptied && inserted > 0) {
-        reason = `${name} 직전 지우기 실패 + 이미 ${inserted}회 삽입 → 더 넣으면 쌓이므로 중단`;
-        break;
+    let dirty = false; // 입력창이 이미 우리 손에 의해 목표 아닌 상태로 바뀌었는가
+    for (const [name, selects, run] of strategies) {
+      if (dirty && selects) {
+        reason = `${name} 건너뜀 — 이미 바뀐 입력창에 선택 대체를 또 하면 쌓일 수 있다`;
+        continue;
       }
 
+      const before = current();
+      clear();     // 먹는 에디터는 여기서 비워진다. 선택을 부수는 단계까지는 안 간다.
+      selectAll(); // ★ 넣기 직전에 선택을 다시 잡는다 — 삽입은 "선택 영역 대체" 다
       try { run(); } catch (_) { reason = `${name} 실행 중 예외`; continue; }
-      inserted += 1;
 
       if (done()) return true;
 
+      const after = current();
+      if (after === before) { // 전혀 반응하지 않았다 — 쌓인 것도 없으니 다음 전략으로
+        reason = `${name}: 입력창이 전혀 반응하지 않음`;
+        continue;
+      }
+
+      inserted += 1;
       const n = copies();
-      if (n >= 2) { // 이미 쌓였다 — 명백한 이상이므로 되돌리고 중단
+      if (n >= 2) { // 쌓였다 — 명백한 이상이므로 되돌리고 중단
         reason = `${name} 후 같은 내용이 ${n}벌 감지 → 중단`;
-        clear();
+        clear(true); // 되돌리기 — 여기서는 선택을 부숴도 된다(더 넣지 않는다)
         break;
       }
-      if (!emptied) {
-        reason = `${name}: 입력창을 비우지 못한 채 넣었고 결과도 불일치 → 중단`;
-        break;
-      }
-      reason = `${name} 후 내용 불일치`;
+      reason = `${name} 후 내용 불일치(원문이 남았을 수 있다)`;
+      dirty = true;
     }
 
     console.warn(
