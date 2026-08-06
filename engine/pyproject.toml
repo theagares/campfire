@@ -50,3 +50,8 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# 멈춘 테스트가 어디서 멈췄는지 스스로 말하게 한다. 한/글 COM 자동화가 승인
+# 대화상자에서 무한 대기해 스위트 전체가 멎은 적이 있는데, 아무 출력이 없어서
+# 원인을 좁히는 데 시간이 걸렸다(그때는 faulthandler 를 직접 붙여서 찾았다).
+# 실모델 콜드스타트가 수십 초라 넉넉히 잡되, 그보다 오래 걸리면 비정상으로 본다.
+faulthandler_timeout = 300

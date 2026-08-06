@@ -114,41 +114,114 @@ function claudeDesktopConfigPath(app) {
   return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
 }
 
-function readJsonSafe(p) {
-  if (!fs.existsSync(p)) return {};
+/**
+ * 설정 파일을 읽어 { status, data } 로 돌려준다.
+ *
+ * "없다" 와 "있는데 못 읽겠다" 를 반드시 구분해야 한다. 예전엔 둘 다 {} 로 뭉갰는데,
+ * 그러면 파싱에 실패한 순간 아래 connect 가 그 {} 위에 우리 항목 하나만 얹어 파일을
+ * 통째로 다시 쓴다 — **사용자가 등록해둔 다른 MCP 서버와 설정이 전부 사라진다.**
+ * 트레일링 콤마나 주석 하나, 편집 중 저장 같은 흔한 상황으로도 걸린다.
+ *
+ * 이 파일은 우리 것이 아니다. 이 모듈이 Cursor/Windsurf 를 자동 쓰기 대상에서 뺀 이유
+ * (상단 주석: "잘못 자동으로 써버리면 사용자의 기존 설정을 조용히 깨뜨릴 위험")가
+ * 여기에도 똑같이 적용된다 — 스키마가 안정적인 것과 파싱이 항상 성공하는 것은 다른
+ * 얘기다. 못 읽으면 손대지 않고 사용자에게 알린다.
+ *
+ * status: 'missing'    파일 없음 → 새로 만들어도 안전
+ *         'ok'         읽었다 → data 사용
+ *         'unreadable' 있는데 JSON 이 아니거나 객체가 아님 → **쓰지 않는다**
+ */
+function readConfig(p) {
+  if (!fs.existsSync(p)) return { status: 'missing', data: {} };
+  let raw;
   try {
-    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-  } catch {
-    return {};
+    raw = fs.readFileSync(p, 'utf-8');
+  } catch (err) {
+    return { status: 'unreadable', data: {}, reason: err.message };
   }
+  if (raw.trim() === '') return { status: 'missing', data: {} }; // 빈 파일은 없는 것과 같다
+  try {
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { status: 'unreadable', data: {}, reason: '최상위가 JSON 객체가 아닙니다' };
+    }
+    return { status: 'ok', data };
+  } catch (err) {
+    return { status: 'unreadable', data: {}, reason: err.message };
+  }
+}
+
+function unreadableError(p, reason) {
+  return new Error(
+    `Claude Desktop 설정 파일을 읽을 수 없어 수정하지 않았습니다 (${reason}).\n` +
+    `${p} 를 확인해 JSON 문법을 고친 뒤 다시 시도하세요. ` +
+    '덮어쓰면 기존 설정이 사라지므로 그대로 두었습니다.'
+  );
+}
+
+/** 원자적 쓰기 + 직전 상태 백업.
+ *
+ *  writeFileSync 는 truncate 후 쓰기라, 중간에 실패하면 설정이 깨진 채 남는다.
+ *  임시 파일에 다 쓴 뒤 rename 하면 파일이 항상 "이전 내용" 아니면 "새 내용" 이다
+ *  (rename 은 같은 디렉터리 안에서 원자적이고, Windows 에서도 기존 파일을 교체한다).
+ *  그리고 우리가 뭔가 잘못했을 때 되돌릴 수 있게, 바꾸기 직전 내용을 .bak 로 남긴다. */
+function writeConfigAtomic(p, data) {
+  const dir = path.dirname(p);
+  fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(p)) {
+    try {
+      fs.copyFileSync(p, `${p}.campfire-backup`);
+    } catch (err) {
+      console.error('[mcp-clients] 설정 백업 실패(계속 진행):', err.message);
+    }
+  }
+  const tmp = path.join(dir, `.${path.basename(p)}.campfire-tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, p);
 }
 
 function claudeDesktopInfo(app) {
   const p = claudeDesktopConfigPath(app);
-  const data = readJsonSafe(p);
-  const connected = serverKeysIn(data.mcpServers).length > 0;
-  return { id: 'claude_desktop', name: 'Claude Desktop', method: 'config', available: true, connected, configPath: p };
+  const cfg = readConfig(p);
+  const connected = cfg.status === 'ok' && serverKeysIn(cfg.data.mcpServers).length > 0;
+  return {
+    id: 'claude_desktop',
+    name: 'Claude Desktop',
+    method: 'config',
+    available: true,
+    connected,
+    configPath: p,
+    // 화면이 "왜 연결 버튼이 실패하는지" 를 미리 보여줄 수 있게 알려준다.
+    configUnreadable: cfg.status === 'unreadable',
+    configIssue: cfg.status === 'unreadable' ? cfg.reason : null,
+  };
 }
 
 function claudeDesktopConnect(app, mcpUrl) {
   const p = claudeDesktopConfigPath(app);
-  const data = readJsonSafe(p);
-  data.mcpServers = data.mcpServers && typeof data.mcpServers === 'object' ? data.mcpServers : {};
+  const cfg = readConfig(p);
+  if (cfg.status === 'unreadable') throw unreadableError(p, cfg.reason);
+
+  const data = cfg.data;
+  data.mcpServers = data.mcpServers && typeof data.mcpServers === 'object' && !Array.isArray(data.mcpServers)
+    ? data.mcpServers
+    : {};
   for (const k of LEGACY_SERVER_NAMES) delete data.mcpServers[k]; // 옛 이름으로 중복 등록되지 않게
   data.mcpServers[SERVER_NAME] = { type: 'http', url: mcpUrl };
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  writeConfigAtomic(p, data);
 }
 
 function claudeDesktopDisconnect(app) {
   const p = claudeDesktopConfigPath(app);
-  if (!fs.existsSync(p)) return;
-  const data = readJsonSafe(p);
-  const keys = serverKeysIn(data.mcpServers);
+  const cfg = readConfig(p);
+  if (cfg.status === 'missing') return;
+  // 해제하려다 전체를 잃는 게 제일 나쁘다 — 못 읽으면 그대로 둔다.
+  if (cfg.status === 'unreadable') throw unreadableError(p, cfg.reason);
+
+  const keys = serverKeysIn(cfg.data.mcpServers);
   if (keys.length) {
-    for (const k of keys) delete data.mcpServers[k]; // 옛 이름으로 남은 항목까지 정리
-    fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    for (const k of keys) delete cfg.data.mcpServers[k]; // 옛 이름으로 남은 항목까지 정리
+    writeConfigAtomic(p, cfg.data);
   }
 }
 
