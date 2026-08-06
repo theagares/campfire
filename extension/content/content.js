@@ -1028,6 +1028,24 @@
       }],
     ];
 
+    // ★ 아무것도 하지 않는 게 정답인 경우 — 이게 perplexity "2벌"의 진짜 원인이었다.
+    //
+    // setEditorText 의 계약은 "입력창이 이 글을 담게 하라" 다. 이미 담고 있으면 할 일이
+    // 없다. 그런데 예전엔 그 확인 없이 무조건 지우고-넣기를 했다. 프롬프트에 PII 가 없어
+    // 마스킹이 글을 하나도 바꾸지 않은 경우(PII 가 첨부 문서 쪽에만 있는, 아주 흔한 경우)
+    // finalText 는 입력창에 이미 있는 글과 같은데, 지우기가 안 먹는 에디터(Lexical)에서는
+    // 그 위에 같은 글을 한 벌 더 얹게 된다.
+    //
+    // 실사용자 로그가 이걸 산술로 못박는다: "삽입 1회, 현재 2벌 감지". 한 번 넣었는데
+    // target 이 2벌이라는 건 넣기 전에 이미 한 벌 있었다는 뜻이다. 예전에 보고된 4벌도
+    // 같은 뿌리다 — 원문 1 + 전략 3회 = 4.
+    //
+    // 안전성: 건너뛰는 조건은 "지금 내용 == 넣으려는 글" 이다. 두 글이 같으므로 남아 있는
+    // 것이 곧 마스킹본이고, 원문이 새어나갈 여지가 없다. (norm 이 공백을 접으므로 공백만
+    // 다른 경우도 같다고 보는데, 마스킹은 PII 를 토큰으로 바꾸는 것이라 공백만 달라질 수
+    // 없다 — 공백만 다르다는 건 바뀐 게 없다는 뜻이다.)
+    if (done()) return true;
+
     let inserted = 0;
     let reason = '시도 없음';
     for (const [name, run] of strategies) {
@@ -1070,8 +1088,11 @@
    *  실제 채팅 입력창에 마스킹 텍스트가 한 번 더 노출될 필요가 없다 — opacity만
    *  0으로 감출 뿐 값 자체는 그대로 세팅되어 사이트는 정상적으로 읽어 전송한다. */
   function hideEditorDuringSubmit(cfg) {
-    const editor = cfg?.editorSel && document.querySelector(cfg.editorSel);
-    if (!editor) return () => {};
+    // findEditor 를 쓴다 — 예전엔 cfg.editorSel 로만 찾아서, 선택자가 낡은 사이트에서는
+    // (실사용자 perplexity: editorSel 이 하나도 안 잡힌다) 조용히 아무것도 안 숨겼다.
+    // 나머지 경로는 전부 findEditor 의 폴백(포커스된 편집 요소)을 쓰는데 여기만 아니었다.
+    const editor = findEditor(cfg);
+    if (!editor?.style) return () => {};
     const prevOpacity = editor.style.getPropertyValue('opacity');
     const prevPriority = editor.style.getPropertyPriority('opacity');
     editor.style.setProperty('opacity', '0', 'important');
