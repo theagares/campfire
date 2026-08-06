@@ -1284,6 +1284,44 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error('마스킹본을 못 넣었는데 전송했다 — 입력창에 남은 원문이 그대로 나간다');
   }
 
+  // (19) 마스킹이 프롬프트를 하나도 바꾸지 않았으면 입력창에 손대지 않는다.
+  //
+  // 배경(실사용자 perplexity, v0.2.14): "입력하는 곳에는 2번 반복되게 써있는데 실제로
+  // 가진 않았어". 로그는 "삽입 1회, 현재 2벌 감지" 였다 — 한 번 넣었는데 target 이 2벌
+  // 이라는 건 넣기 전에 이미 한 벌 있었다는 뜻이다. PII 가 첨부 문서 쪽에만 있으면
+  // maskedText 는 원문과 같은데, 예전 코드는 그 확인 없이 지우고-넣기를 시도했고
+  // 지우기가 안 먹는 에디터에서는 그게 곧 2벌이 됐다. 그리고 2벌을 감지해 전송을
+  // 막으니 사용자 입장에선 "아예 안 감" 이 된다.
+  //
+  // 지우기가 안 먹는(acceptDelete:false) 에디터를 쓰는 게 핵심이다 — 지우기가 먹으면
+  // 넣어도 1벌이라 이 회귀가 드러나지 않는다.
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const SAME = '이 문서 요약해줘';
+  const ed19 = new ContentEditableStub(SAME, { acceptDelete: false });
+  domBySelector.set('#prompt-textarea', ed19);
+  const send19 = new SendButtonStub();
+  send19.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send19);
+  documentStub.activeElement = ed19;
+  nextDecision = { action: 'masked', maskedText: SAME }; // 마스킹이 바꾼 게 없다
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed19.inserts !== 0) {
+    throw new Error(`이미 목표 상태인 입력창에 ${ed19.inserts}회 삽입했다 — 그게 2벌이 되는 경로다`);
+  }
+  const body19 = ed19.lines.join(' ');
+  if ((body19.split(SAME).length - 1) !== 1) {
+    throw new Error(`프롬프트가 ${body19.split(SAME).length - 1}벌 있다: ${body19}`);
+  }
+  if (send19.clicks !== 1) {
+    throw new Error(`넣을 게 없어 성공인데 전송되지 않았다 (clicks=${send19.clicks})`);
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
