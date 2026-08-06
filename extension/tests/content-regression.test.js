@@ -56,6 +56,9 @@ class HTMLTextAreaElementStub extends EventTargetStub {
   constructor(value = '') {
     super();
     this.tagName = 'TEXTAREA';
+    // 증거 판정(watchAttachmentEvidence)은 관찰 루트가 진짜 엘리먼트인지 nodeType 으로
+    // 확인한다. 실제 입력창은 당연히 1이므로 stub 도 맞춰준다.
+    this.nodeType = 1;
     this.value = value;
     // 진짜 입력창은 DOM 에 붙어 있다. 재주입 폴백이 "이 요소가 살아 있나"를
     // isConnected 로 보므로 기본값이 true 여야 실제와 같다(테스트 12).
@@ -85,7 +88,53 @@ class FileStub {
   }
 }
 class DataTransferStub {
-  constructor() { this.files = []; this.items = { add: f => this.files.push(f) }; }
+  constructor() {
+    this.files = [];
+    this.items = { add: f => this.files.push(f) };
+    this._data = new Map();
+  }
+  setData(type, value) { this._data.set(type, String(value)); }
+  getData(type) { return this._data.get(type) ?? ''; }
+}
+
+/** 프레임워크형 contenteditable(Lexical/Quill 계열) 흉내 — 테스트 18.
+ *  · 자기 모델만 신뢰한다: textContent 직접 대입은 무시한다
+ *  · 문단을 블록으로 렌더한다 → innerText 에 개행이 하나 더 낀다(Chrome 실측 동작)
+ *  · acceptDelete=false 면 지우기를 무시한다(= clear() 가 안 먹는 에디터) */
+class ContentEditableStub {
+  constructor(initial, { acceptDelete = false } = {}) {
+    this.tagName = 'DIV';
+    this.nodeType = 1;
+    this.isContentEditable = true;
+    this.isConnected = true;
+    this.acceptDelete = acceptDelete;
+    this.lines = initial ? String(initial).split('\n') : [];
+    this.inserts = 0;
+    const props = new Map();
+    this.style = {
+      getPropertyValue: (k) => props.get(k)?.value ?? '',
+      getPropertyPriority: (k) => props.get(k)?.priority ?? '',
+      setProperty: (k, v, p = '') => props.set(k, { value: v, priority: p }),
+      removeProperty: (k) => props.delete(k),
+    };
+  }
+  get innerText() { return this.lines.join('\n\n'); }   // 블록 사이 개행 2개
+  get textContent() { return this.lines.join('\n\n'); }
+  set textContent(_v) { /* 프레임워크는 DOM 직접수정을 무시한다 */ }
+  focus() { documentStub.activeElement = this; }
+  acceptInsert(v) {
+    if (!v) return;
+    for (const line of String(v).split('\n')) this.lines.push(line);
+    this.inserts += 1;
+  }
+  acceptDeleteAll() { if (this.acceptDelete) this.lines = []; }
+  dispatchEvent(ev) {
+    if (ev?.type === 'paste') this.acceptInsert(ev.clipboardData?.getData?.('text/plain') ?? '');
+    return true;
+  }
+  closest() { return null; }
+  contains() { return false; }
+  getAttribute() { return null; }
 }
 // 합성 이벤트의 type/dataTransfer 를 검사할 수 있게 init 을 그대로 보관한다.
 class DragEventStub {
@@ -102,6 +151,24 @@ class SendButtonStub extends EventTargetStub {
   getAttribute() { return null; }
   click() { this.clicks++; }
 }
+
+// content.js 가 콘솔에 찍은 줄 (테스트 14-a: 진단 로그가 필요한 때만 나오는지).
+// 실제 콘솔로도 그대로 흘려보내 기존처럼 눈으로 볼 수 있게 둔다.
+const consoleLines = [];
+function captureConsole(fn) {
+  return (...args) => {
+    consoleLines.push(args.map(a => String(a)).join(' '));
+    fn(...args);
+  };
+}
+const consoleStub = {
+  log: captureConsole(console.log.bind(console)),
+  warn: captureConsole(console.warn.bind(console)),
+  error: captureConsole(console.error.bind(console)),
+  info: captureConsole(console.info.bind(console)),
+  debug: () => {},
+};
+const diagCount = () => consoleLines.filter(l => l.includes('[SecureDoc][진단]')).length;
 
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
@@ -148,6 +215,10 @@ const domBySelector = new Map([
   ['#prompt-textarea', promptEditorStub],
   ['[data-testid="send-button"]', sendButtonStub],
 ]);
+
+// querySelectorAll 용 — waitForAttachmentReady 의 "진행 중 표시" 탐지(테스트 15)에서
+// 진행률 바가 떴다가 사라지는 것을 흉내내려면 이게 제어 가능해야 한다.
+const domBySelectorAll = new Map();
 
 // 인라인 스타일 최소 구현 — 페이지(html/body)를 건드리지 않는지 보는 데 쓴다(테스트 7).
 function makeStyleStub() {
@@ -197,8 +268,16 @@ const documentStub = {
   addEventListener: (t, l) => addListener(documentListeners, t, l),
   createElement: (tag) => makeElementStub(tag),
   querySelector: (sel) => domBySelector.get(sel) ?? null,
-  querySelectorAll: () => [],
-  execCommand: () => true,
+  querySelectorAll: (sel) => domBySelectorAll.get(sel) ?? [],
+  // 실제 execCommand 는 "지금 포커스된 편집 요소"에 작용한다. 테스트 18의 프레임워크
+  // 에디터가 그 동작을 받아볼 수 있어야 삽입/지우기 시도를 셀 수 있다. 다른 테스트의
+  // 입력창 stub 에는 이 메서드들이 없으므로 예전처럼 아무 일도 일어나지 않는다.
+  execCommand: (cmd, _showUI, value) => {
+    const ed = documentStub.activeElement;
+    if (cmd === 'insertText') ed?.acceptInsert?.(value);
+    if (cmd === 'delete') ed?.acceptDeleteAll?.();
+    return true;
+  },
 };
 
 const chromeStub = {
@@ -241,7 +320,7 @@ const sandbox = {
   document: documentStub,
   chrome: chromeStub,
   location: { hostname: 'chatgpt.com' },
-  console,
+  console: consoleStub,
   setTimeout,
   clearTimeout,
   crypto: { randomUUID: () => 'uuid-' + Math.random().toString(36).slice(2) },
@@ -253,10 +332,11 @@ const sandbox = {
   HTMLTextAreaElement: HTMLTextAreaElementStub,
   Event: class { constructor(type) { this.type = type; } },
   requestAnimationFrame: (cb) => setTimeout(cb, 0),
-  InputEvent: class {},
-  KeyboardEvent: class {},
+  // init 을 보관해야 setEditorText 의 붙여넣기/삭제 시도를 에디터 stub 이 받아볼 수 있다.
+  InputEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
+  KeyboardEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
   DragEvent: DragEventStub,
-  ClipboardEvent: class {},
+  ClipboardEvent: class { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } },
   atob: v => Buffer.from(v, 'base64').toString('binary'),
   btoa: v => Buffer.from(v, 'binary').toString('base64'),
 };
@@ -434,6 +514,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 살아 있어 Enter 가 통째로 무시됐다).
   await new Promise(r => setTimeout(r, 12000));
   // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
+  // 2026-08-05: 신호 없음 경로가 "2.5초 관측 + 900ms 고정 대기"에서 "1.5초 관측"으로
+  // 짧아져 테스트 4 가 약 1.9초 빨리 끝난다. 이 값은 하한이라 그대로 둬도 안전하고,
+  // 여유를 남겨 두면 되돌리기 실험(수정 전 코드로 되돌려 돌려보기)도 그대로 돌아간다.
 
   sendButtonStub.disabled = true;
   sendButtonStub.clicks = 0;
@@ -811,6 +894,394 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   const drops13 = promptEditorStub.dispatched.filter(e => e.type === 'drop');
   if (drops13.length) {
     throw new Error('되돌리기로 충분한데 합성 drop 까지 쐈다 — 사이트 핸들러를 터뜨릴 수 있다');
+  }
+
+  // (14) 전송 버튼이 업로드 내내 활성인 사이트(Gemini)에서도, 첨부 업로드가 끝날
+  //      때까지 기다렸다가 전송해야 한다.
+  //
+  // 배경(실사용자 gemini.google.com 콘솔):
+  //   [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+  //   [SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다
+  //   [SecureDoc] 재전송: 버튼 클릭 성공 (207ms, sel=button[aria-label="메시지 보내기"])
+  // 파일 주입은 성공했는데 207ms 만에 전송됐다. Gemini 는 업로드 중에도 전송 버튼을
+  // 잠그지 않아서 "버튼 잠김 → 열림" 신호가 아예 안 잡히고 900ms 폴백으로 떨어진
+  // 것이다. 그 900ms 안에 업로드가 끝날 리 없으니 프롬프트만 먼저 나가고 첨부가 빠진다.
+  //
+  // 이제는 MAIN world(interceptor.js)가 XHR/fetch 로 관측한 "파일 업로드 진행 중"을
+  // UPS_UPLOAD_ACTIVITY 로 알려주고, content.js 가 그게 끝날 때까지 기다린다.
+  // 여기서는 그 사이트를 모사한다: 전송 버튼은 처음부터 끝까지 활성이고, 업로드는
+  // 5초 걸린다. 그 5초 동안 단 한 번도 눌리면 안 된다.
+  //
+  // 앞 테스트(13)의 재전송 + promptApproved(3초) 해제 대기.
+  // 지금 코드에서 (13)이 끝나는 데 걸리는 시간은 첨부 대기 1.5초 + 재전송 폴링 0.2초
+  // + promptApproved 3초 = 약 4.7초다. 그런데 이 값을 4.7초에 맞춰 깎으면, 수정을
+  // 되돌렸을 때(첨부 대기가 2.5초 관측 + 900ms 고정 = 3.4초로 길어진다) (13)이 6.6초에
+  // 끝나면서 이 테스트의 Enter 가 promptApproved 에 통째로 먹혀 "검사가 시작되지
+  // 않았다"로 엉뚱하게 실패한다 — 되돌리기 실험이 무의미해진다. 두 경우를 모두 덮도록
+  // 9초로 잡는다.
+  await new Promise(r => setTimeout(r, 9000));
+
+  // (14-a) 신호를 하나도 못 본 경로에서는 진단 기록이 남아야 한다.
+  //
+  // Gemini 가 딱 그 경로인데, 지금까지는 "신호 없음" 한 줄만 찍고 끝나서 왜 못 봤는지
+  // 알 방법이 없었다. 그 결과 같은 사이트에서 신호를 세 번이나 헛짚었다. 앞선 테스트
+  // (4)(12)(13)이 모두 이 경로였으므로 여기까지 왔으면 진단 줄이 있어야 한다.
+  if (diagCount() === 0) {
+    throw new Error('업로드 신호를 하나도 못 봤는데 진단 기록이 남지 않았다 — 원인 파악용 데이터가 없다');
+  }
+
+  // (14-b) 반대로 신호가 정상적으로 잡히는 경로에서는 진단이 조용해야 한다.
+  //        최종 사용자에게 상시 노이즈가 되면 안 되므로 아래 (14) 구간 동안 진단 줄이
+  //        하나도 늘지 않는 것을 확인한다.
+  const diagBefore = diagCount();
+
+  const send14 = new SendButtonStub();
+  send14.disabled = false;                    // Gemini: 업로드 중에도 계속 활성
+  domBySelector.set('[data-testid="send-button"]', send14);
+
+  const file14 = new FileStub(['pdf bytes'], 'gemini-upload.pdf', { type: 'application/pdf' });
+  const input14 = new HTMLInputElementStub(file14, 'live14');
+  dispatchDocumentEvent('change', {
+    target: input14,
+    composedPath: () => [input14, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf', fileName: 'gemini-upload.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 사이트가 마스킹본을 자기 서버로 올리기 시작했다(MAIN world 관측기의 브로드캐스트).
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
+  });
+
+  // 업로드가 5초 걸린다. 예전 코드는 2.5초 관측 + 900ms 고정 대기 후 약 3.6초에
+  // 눌러버렸다 — 그 회귀를 여기서 잡는다.
+  await new Promise(r => setTimeout(r, 5000));
+  if (send14.clicks !== 0) {
+    throw new Error(`첨부 업로드가 아직 끝나지 않았는데 전송했다 (clicks=${send14.clicks}) — 프롬프트만 먼저 나가고 첨부가 빠진다`);
+  }
+
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+  });
+  for (let i = 0; i < 40 && send14.clicks < 1; i += 1) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (send14.clicks !== 1) {
+    throw new Error(`업로드가 끝났는데도 전송되지 않았다 (clicks=${send14.clicks})`);
+  }
+  if (diagCount() !== diagBefore) {
+    throw new Error(
+      `업로드 신호가 정상적으로 잡힌 경로에서 진단 로그가 나왔다 (${diagCount() - diagBefore}줄) — 평소엔 조용해야 한다`,
+    );
+  }
+
+  // (15) 네트워크 신호를 못 받는 경우엔 진행률/스피너 표시를 신호로 쓴다.
+  //
+  // interceptor.js 가 못 보는 경로(워커 업로드 등)로 올리는 사이트를 대비한 2차 신호.
+  // 중요한 건 "대기 시작 시점보다 늘어난 것"만 신호로 본다는 점이다 — 답변 스트리밍
+  // 인디케이터처럼 원래부터 떠 있는 progressbar 에 걸리면 매번 60초를 기다리게 된다.
+  // 그래서 여기서는 기준선으로 하나를 미리 띄워두고, 그 위에 업로드용 하나를 더
+  // 얹었다가 내린다.
+  // (14)의 재전송 직후부터 promptApproved 3초가 흐른다 — 여유를 두고 5초 기다린다.
+  await new Promise(r => setTimeout(r, 5000));
+
+  const send15 = new SendButtonStub();
+  send15.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send15);
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]); // 기준선
+
+  const file15 = new FileStub(['pdf bytes'], 'spinner.pdf', { type: 'application/pdf' });
+  const input15 = new HTMLInputElementStub(file15, 'live15');
+  dispatchDocumentEvent('change', {
+    target: input15,
+    composedPath: () => [input15, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf', fileName: 'spinner.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 주입 직후(= 기준선을 잡은 뒤) 첨부 칩의 진행률 표시가 하나 더 뜬다.
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }, { id: 'upload' }]);
+  await new Promise(r => setTimeout(r, 4500));
+  if (send15.clicks !== 0) {
+    throw new Error(`진행률 표시가 떠 있는데 전송했다 (clicks=${send15.clicks}) — 업로드 도중 전송이다`);
+  }
+
+  // 업로드 완료 → 진행률 표시만 사라지고 기준선은 그대로 남는다.
+  domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]);
+  for (let i = 0; i < 40 && send15.clicks < 1; i += 1) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (send15.clicks !== 1) {
+    throw new Error(`진행률 표시가 사라졌는데도 전송되지 않았다 (clicks=${send15.clicks}) — 기준선 progressbar 에 걸려 계속 기다린다`);
+  }
+
+  // (16) 주입은 "넣었다"가 아니라 "사이트가 받았다"로 판정해야 한다.
+  //
+  // 배경(실사용자 gemini.google.com 진단, 2026-08-06):
+  //   [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+  //   [진단] ===== 컴포저 DOM 변화 · 첨부 대기 창 · 0건 =====
+  //   [진단] 요청 추적 · 첨부 대기 창 · 3건 — 최대 바디 str(167B)
+  //   [진단] 요청 추적 · 전송 후 8초 · 15건 — 파일 업로드 0건
+  // revive 는 노드를 되붙이고 files 를 채우고 change 를 쏘는 데까지 "성공" 했지만,
+  // Gemini 는 그 파일을 받은 적이 없었다. Angular 가 컴포넌트를 파괴하면서 리스너까지
+  // 걷어갔기 때문이다 — 노드를 되붙여도 파괴된 바인딩은 돌아오지 않는다.
+  //
+  // 진짜 문제는 그 다음이다: revive 가 성공을 반환해 버려서 합성 drop 폴백까지
+  // 내려가지 못했다. 사용자가 "첨부는 됐다"고 했던 예전 빌드에는 그 drop 이 살아
+  // 있었으니, revive 도입이 실제로 되던 경로를 가로챈 회귀였을 수 있다.
+  //
+  // 여기서는 관찰이 가능한 환경(MutationObserver 존재)을 만들어, revive 가 기계적으로
+  // 성공해도 컴포저에 아무 변화가 없으면 합성 drop 까지 내려가는지 확인한다.
+  await new Promise(r => setTimeout(r, 5000)); // (15)의 promptApproved(3초) 해제 대기
+
+  // 사이트가 첨부를 받으면 컴포저에 무언가를 그린다 — 그 반응을 흉내내는 최소 stub.
+  class MutationObserverStub {
+    constructor(cb) { this.cb = cb; MutationObserverStub.instances.push(this); }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+    static emitAdded(node) {
+      for (const o of MutationObserverStub.instances) {
+        if (o.disconnected) continue;
+        o.cb([{ target: {}, addedNodes: [node], removedNodes: [] }]);
+      }
+    }
+  }
+  MutationObserverStub.instances = [];
+  sandbox.MutationObserver = MutationObserverStub;
+
+  const send16 = new SendButtonStub();
+  send16.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send16);
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  domBySelector.delete('input[type="file"]');      // 살아 있는 input 은 없다
+  domBySelectorAll.delete('[role="progressbar"]');
+
+  // 컴포저(부모)는 살아 있고 그 안의 input 만 떼어진 상황 = (13)과 같은 조건.
+  const parent16 = new DropTargetStub();
+  parent16.appended = [];
+  parent16.appendChild = function (node) { this.appended.push(node); node.isConnected = true; };
+  const input16 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'evidence.pdf', { type: 'application/pdf' }), 'orphan16',
+  );
+  input16.parentElement = parent16;
+
+  // 사이트는 "합성 drop 을 받았을 때만" 첨부 칩을 그린다 — 되돌린 input 의 change 는
+  // 죽은 바인딩이라 무시한다(= Gemini 에서 실제로 벌어진 일).
+  const editorDispatch = promptEditorStub.dispatchEvent.bind(promptEditorStub);
+  promptEditorStub.dispatchEvent = (event) => {
+    const r = editorDispatch(event);
+    if (event?.type === 'drop' && event?.dataTransfer?.files?.length) {
+      setTimeout(() => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV' }), 100);
+    }
+    return r;
+  };
+
+  dispatchDocumentEvent('change', {
+    target: input16,
+    composedPath: () => [input16, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input16.isConnected = false;                     // 사이트가 떼어냈다
+  const linesBefore16 = consoleLines.length;
+  promptEditorStub.dispatched.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'evidence.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  // 전략 체인: 살아있는input(즉시 실패) → 되돌리기(700ms 증거 대기) → 합성drop(≈160ms)
+  await new Promise(r => setTimeout(r, 4000));
+
+  if (!parent16.appended.includes(input16)) {
+    throw new Error('되돌리기 전략을 아예 시도하지 않았다 — 체인 순서가 깨졌다');
+  }
+  const drops16 = promptEditorStub.dispatched.filter(e => e.type === 'drop' && e.dataTransfer?.files?.length);
+  if (!drops16.length) {
+    throw new Error(
+      '되돌리기가 기계적으로만 성공했는데 합성 drop 까지 내려가지 않았다 — '
+      + '사이트가 파일을 받은 적 없어도 성공으로 단정하는 그 회귀 그대로다',
+    );
+  }
+  if (drops16[0].dataTransfer.files[0]?.name !== 'evidence.pdf') {
+    throw new Error(`합성 drop 에 실린 파일이 다르다: ${drops16[0].dataTransfer.files[0]?.name}`);
+  }
+  const chainLines = consoleLines.slice(linesBefore16);
+  if (!chainLines.some(l => l.includes('먹힌 방법: 합성drop'))) {
+    throw new Error(`어느 전략이 먹혔는지 알려주는 로그가 없다: ${chainLines.filter(l => l.includes('첨부 주입')).join(' | ')}`);
+  }
+  if (!chainLines.some(l => l.includes('input되돌리기=증거없음'))) {
+    throw new Error('되돌리기가 증거 없이 성공으로 기록됐다 — 판정이 우리 쪽 상태만 보고 있다');
+  }
+  // 이 테스트에서만 쓰는 "사이트가 drop 에 반응한다" 흉내를 되돌린다.
+  // 안 되돌리면 다음 테스트의 합성 drop 도 증거를 얻어버려 전제가 깨진다.
+  promptEditorStub.dispatchEvent = editorDispatch;
+
+  // (17) 문서를 끝내 못 붙였으면 **전송하지 않는다**.
+  //
+  // 예전에는 주입에 실패해도 프롬프트를 그대로 보내고 콘솔에만 남겼다
+  // ("문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다"). 사용자는 문서가
+  // 갔다고 믿은 채 대화를 이어간다. 보안 제품에서 가장 나쁜 실패 모드다.
+  // 실사용자 Gemini 에서 실제로 이 경로가 나왔다(네 전략 모두 증거 없음).
+  await new Promise(r => setTimeout(r, 5000)); // (16)의 promptApproved 해제 대기
+
+  const send17 = new SendButtonStub();
+  send17.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send17);
+  domBySelector.delete('input[type="file"]');
+
+  // 어떤 전략도 증거를 못 얻는 상황: 살아있는 input 없음, 되돌릴 부모 없음,
+  // 합성 drop 을 쏴도 사이트가 아무 반응 없음(MutationObserverStub 이 아무것도 안 쏨).
+  const input17 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'blocked.pdf', { type: 'application/pdf' }), 'gone17',
+  );
+  dispatchDocumentEvent('change', {
+    target: input17,
+    composedPath: () => [input17, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  input17.isConnected = false;
+  appendedToRoot.length = 0;
+  const lines17 = consoleLines.length;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'blocked.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 3500)); // 전략 체인(증거 대기 포함) 통과 시간
+
+  if (send17.clicks !== 0) {
+    throw new Error(`문서를 못 붙였는데 프롬프트를 전송했다 (clicks=${send17.clicks}) — 사용자는 문서가 갔다고 믿는다`);
+  }
+  const badge17 = appendedToRoot.find(el => el?.id === '__ups_pending_badge');
+  if (!badge17) {
+    throw new Error('전송을 멈췄는데 화면에 아무 안내도 띄우지 않았다 — 콘솔은 아무도 안 본다');
+  }
+  const badgeText = (badge17.children || []).map(c => String(c?.textContent || '')).join(' ');
+  if (!/다시 첨부/.test(badgeText)) {
+    throw new Error(`뱃지 문구가 "다시 첨부" 안내를 담고 있지 않다: ${badgeText}`);
+  }
+  if (!consoleLines.slice(lines17).some(l => l.includes('전송을 중단했습니다'))) {
+    throw new Error('전송 중단 사실이 로그에 남지 않았다');
+  }
+
+  delete sandbox.MutationObserver; // 증거 판정 뒷정리 — 아래 (18)은 텍스트 경로만 본다
+
+  // (18) 프레임워크형 입력창에서 마스킹 텍스트가 여러 벌 쌓이면 안 된다.
+  //
+  // 배경(실사용자 perplexity): "프롬프트가 4번" → 한 번 고쳐 3번 → 여전히 쌓임.
+  // setEditorText 의 contenteditable 경로에는 삽입 전략이 정확히 3개 있는데, 각 전략은
+  // done() 이 true 여야 멈춘다. 그 판정이 깨지면 3개가 전부 실행되어 그대로 쌓인다.
+  // 헤드리스 Chrome 실측으로 확인한 두 원인:
+  //   ① 프레임워크가 문단을 블록으로 렌더하면 Chrome innerText 가 블록 사이에 개행을
+  //      "두 개" 넣는다 → 글자는 같은데 === 가 false → 성공을 실패로 오판
+  //   ② 지우기(execCommand delete)가 무시되어 원문이 그대로 남는다
+  await new Promise(r => setTimeout(r, 5000)); // (17)에서 promptApproved 는 즉시 내려가지만 여유
+
+  // (18-a) 지우기가 먹는 에디터: 개행 때문에 판정만 깨지던 경우 → 정확히 1벌, 전송됨.
+  const ed18a = new ContentEditableStub('원래 프롬프트\n둘째 줄', { acceptDelete: true });
+  domBySelector.set('#prompt-textarea', ed18a);
+  const send18a = new SendButtonStub();
+  send18a.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send18a);
+  documentStub.activeElement = ed18a;
+  nextDecision = { action: 'masked', maskedText: '마스킹된 프롬프트\n둘째 줄' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed18a.inserts !== 1) {
+    throw new Error(`삽입이 ${ed18a.inserts}회 일어났다 — 판정이 깨져 전략이 연달아 덧씌운 그 회귀다`);
+  }
+  const bodyA = ed18a.lines.join(' ');
+  if ((bodyA.split('마스킹된 프롬프트').length - 1) !== 1) {
+    throw new Error(`마스킹 텍스트가 ${bodyA.split('마스킹된 프롬프트').length - 1}벌 들어갔다: ${bodyA}`);
+  }
+  if (bodyA.includes('원래 프롬프트')) {
+    throw new Error(`원문이 지워지지 않고 남았다: ${bodyA}`);
+  }
+  if (send18a.clicks !== 1) {
+    throw new Error(`정상적으로 넣었는데 전송되지 않았다 (clicks=${send18a.clicks})`);
+  }
+
+  // (18-b) 지우기가 아예 안 먹는 에디터: 삽입은 1회로 막고, 원문이 남았으므로 전송 금지.
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', { acceptDelete: false });
+  domBySelector.set('#prompt-textarea', ed18b);
+  const send18b = new SendButtonStub();
+  send18b.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send18b);
+  documentStub.activeElement = ed18b;
+  nextDecision = { action: 'masked', maskedText: '주민번호 [RRN_1] 알려줘' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed18b.inserts > 1) {
+    throw new Error(`지우지 못한 입력창에 ${ed18b.inserts}회 삽입했다 — 쌓임을 막지 못했다`);
+  }
+  if (send18b.clicks !== 0) {
+    throw new Error('마스킹본을 못 넣었는데 전송했다 — 입력창에 남은 원문이 그대로 나간다');
   }
 
   console.log('content regression ok');
