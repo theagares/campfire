@@ -1069,48 +1069,83 @@
     // 넣기 직전에 전체를 선택해 두면 지우기와 넣기가 한 번에 끝난다. 지우기가 안 먹는
     // 에디터에서 특히 그렇다 — 못 지우는 것과 못 대체하는 것은 다른 문제다.
     //
-    // 쌓임은 다음 두 규칙으로 막는다:
-    //   · 전략이 입력창을 "전혀 바꾸지 못했으면" 아무것도 안 쌓였으므로 다음 전략을
-    //     시도해도 안전하다.
-    //   · 바꿨는데 목표가 아니면 거기서 멈춘다 — 단, DOM직접처럼 통째로 대입하는
-    //     (selects=false) 전략은 덧붙는 게 원리적으로 불가능하므로 마지막으로 한 번
-    //     더 허용한다.
+    // ★ 넣기 전에 지우지 않는다 — 조각이 남는 원인이었다.
+    //
+    // 실사용자(2026-08-06): 입력창에 "마스킹][이름 마스킹] [전화번호 마스킹]" 이 들어갔다.
+    // 앞에 붙은 "마스킹][" 는 마스킹 토큰([이름 마스킹] 형식)의 조각이다. 즉 지우기가
+    // 통째로가 아니라 **부분적으로** 먹어 조각을 남겼고, 그 위에 삽입이 얹혔다.
+    //
+    // 삽입(insertText/paste)은 원래 선택 영역을 대체하므로 지우기는 애초에 필요 없다.
+    // 지우기를 먼저 하는 건 이득 없이 "부분 삭제로 조각이 남을" 위험만 만든다.
+    // 그래서 순서를 뒤집는다:
+    //   A. 전체 선택 후 삽입 (가장 덜 침습적 — 이걸로 끝나는 게 정상 경로다)
+    //   B. A 가 안 통했으면, **비었음을 확인한 뒤에만** 삽입 (검증된 빈 상태에서는
+    //      쌓이거나 조각이 남을 수 없다)
+    //   C. 통째로 대입 (덧붙는 게 원리적으로 불가능)
+    // 각 단계는 실행 후 반드시 결과를 확인하고, 목표가 아니면 다음으로만 넘어간다.
+    const original = current();
     let inserted = 0;
     let reason = '시도 없음';
-    let dirty = false; // 입력창이 이미 우리 손에 의해 목표 아닌 상태로 바뀌었는가
-    for (const [name, selects, run] of strategies) {
-      if (dirty && selects) {
-        reason = `${name} 건너뜀 — 이미 바뀐 입력창에 선택 대체를 또 하면 쌓일 수 있다`;
-        continue;
-      }
 
+    const tryRun = (label, run) => {
       const before = current();
-      clear();     // 먹는 에디터는 여기서 비워진다. 선택을 부수는 단계까지는 안 간다.
-      selectAll(); // ★ 넣기 직전에 선택을 다시 잡는다 — 삽입은 "선택 영역 대체" 다
-      try { run(); } catch (_) { reason = `${name} 실행 중 예외`; continue; }
-
-      if (done()) return true;
-
-      const after = current();
-      if (after === before) { // 전혀 반응하지 않았다 — 쌓인 것도 없으니 다음 전략으로
-        reason = `${name}: 입력창이 전혀 반응하지 않음`;
-        continue;
-      }
-
+      try { run(); } catch (_) { reason = `${label} 실행 중 예외`; return 'error'; }
+      if (done()) return 'ok';
+      if (current() === before) { reason = `${label}: 입력창이 전혀 반응하지 않음`; return 'noop'; }
       inserted += 1;
-      const n = copies();
-      if (n >= 2) { // 쌓였다 — 명백한 이상이므로 되돌리고 중단
-        reason = `${name} 후 같은 내용이 ${n}벌 감지 → 중단`;
-        clear(true); // 되돌리기 — 여기서는 선택을 부숴도 된다(더 넣지 않는다)
-        break;
+      reason = `${label} 후 내용 불일치`;
+      return 'changed';
+    };
+
+    // A. 선택 영역 대체
+    for (const [name, selects, run] of strategies) {
+      if (!selects) continue;
+      selectAll();
+      const r = tryRun(name, run);
+      if (r === 'ok') return true;
+      if (r === 'changed') break; // 바뀌었는데 목표가 아니다 — 선택 대체는 더 안 쓴다
+    }
+
+    // B. 비었음을 확인한 뒤에만 넣는다
+    if (!done() && clear(true)) {
+      for (const [name, selects, run] of strategies) {
+        if (!selects) continue;
+        if (!isEmpty()) break; // 비어 있지 않으면 넣지 않는다 — 조각/쌓임의 유일한 입구다
+        selectAll();
+        if (tryRun(`비운뒤-${name}`, run) === 'ok') return true;
       }
-      reason = `${name} 후 내용 불일치(원문이 남았을 수 있다)`;
-      dirty = true;
+    }
+
+    // C. 통째로 대입
+    if (!done()) {
+      const domStrategy = strategies.find(([, selects]) => !selects);
+      if (domStrategy && tryRun(domStrategy[0], domStrategy[2]) === 'ok') return true;
+    }
+
+    // 실패 — 입력창을 원래대로 되돌린다. 조각이 남으면 다음 시도가 그 위에서 시작해
+    // 상태가 계속 나빠진다(실사용자의 "마스킹][" 가 정확히 그 누적이다). 원문을 되돌려
+    // 놓으면 사용자가 직접 지우고 다시 시도할 수 있고, 전송은 어차피 막힌다.
+    let restored = true;
+    if (current() !== original) {
+      restored = false;
+      if (clear(true)) {
+        selectAll();
+        try { document.execCommand('insertText', false, original); } catch (_) { /* 아래 확인 */ }
+      }
+      if (current() !== original) {
+        try {
+          editor.textContent = original;
+          editor.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (_) { /* 아래 확인 */ }
+      }
+      restored = current() === original;
     }
 
     console.warn(
       `[SecureDoc] 입력창에 마스킹본을 넣지 못했습니다 — ${reason}. `
-      + `삽입 ${inserted}회, 현재 ${copies()}벌 감지. 원문이 그대로 남아 있을 수 있어 전송하지 않습니다.`,
+      + `삽입 ${inserted}회, 현재 ${copies()}벌 감지. `
+      + (restored ? '입력창은 원래 내용으로 되돌렸습니다. ' : '입력창을 되돌리지 못했습니다 — 내용을 직접 확인해 주세요. ')
+      + '원문이 그대로 남아 있을 수 있어 전송하지 않습니다.',
     );
     return false;
   }
