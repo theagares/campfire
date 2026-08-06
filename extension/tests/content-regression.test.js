@@ -115,7 +115,10 @@ const selectionStub = {
  *    그리고 textContent 대입은 값 자체는 무시하더라도 **선택을 부순다** — 자식 노드가
  *    통째로 갈리기 때문이며, 이게 perplexity 에서 원문과 마스킹본이 공존한 기전이다. */
 class ContentEditableStub {
-  constructor(initial, { acceptDelete = false, acceptSelectionReplace = true } = {}) {
+  constructor(initial, {
+    acceptDelete = false, acceptSelectionReplace = true, partialDelete = false,
+  } = {}) {
+    this.partialDelete = partialDelete;
     this.tagName = 'DIV';
     this.nodeType = 1;
     this.isContentEditable = true;
@@ -125,6 +128,7 @@ class ContentEditableStub {
     this.acceptSelectionReplace = acceptSelectionReplace;
     this.lines = initial ? String(initial).split('\n') : [];
     this.inserts = 0;
+    this.deletesBeforeFirstInsert = 0;
     const props = new Map();
     this.style = {
       getPropertyValue: (k) => props.get(k)?.value ?? '',
@@ -147,7 +151,21 @@ class ContentEditableStub {
     selectedNode = null;                        // 삽입하면 선택은 접힌다
     this.inserts += 1;
   }
-  acceptDeleteAll() { if (this.acceptDelete) { this.lines = []; selectedNode = null; } }
+  acceptDeleteAll() {
+    if (this.inserts === 0) this.deletesBeforeFirstInsert += 1; // (21) 이 보는 값
+    if (!this.acceptDelete) return;
+    if (this.partialDelete) {
+      // 지우기가 "부분적으로만" 먹는 에디터 — 실사용자 증상의 기전이다. 앞부분만
+      // 지워지고 꼬리가 조각으로 남는다. 조각이 남는다는 사실 자체가 핵심이라
+      // 얼마나 남는지는 중요하지 않다.
+      const tail = this.lines.join('\n').slice(-6);
+      this.lines = tail ? [tail] : [];
+      selectedNode = null; // 부분 삭제도 선택을 무너뜨린다
+      return;
+    }
+    this.lines = [];
+    selectedNode = null;
+  }
   dispatchEvent(ev) {
     if (ev?.type === 'paste') this.acceptInsert(ev.clipboardData?.getData?.('text/plain') ?? '');
     return true;
@@ -1387,6 +1405,53 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (send20.clicks !== 1) {
     throw new Error(`정상적으로 넣었는데 전송되지 않았다 (clicks=${send20.clicks})`);
+  }
+
+  // (21) 넣기 전에 지우지 않는다 — 부분 삭제가 조각을 남길 기회를 아예 주지 않는다.
+  //
+  // 배경(실사용자, v0.2.16): 이름·전화번호를 넣고 보냈더니 입력창에
+  //   "마스킹][이름 마스킹] [전화번호 마스킹]"
+  // 이 들어갔다. 앞에 붙은 "마스킹][" 는 마스킹 토큰([이름 마스킹] 형식)의 조각이다 —
+  // 온전한 삽입이 아니라 부분 치환이 일어났다는 뜻이다.
+  //
+  // ※ 이 테스트는 그 증상 자체를 재현하지 못한다. 실제 기전(어느 사이트에서, 삭제가
+  //   왜 부분적으로만 먹었는지)은 확인되지 않았다. 대신 그 기전이 **작동할 기회 자체가
+  //   없어졌는지**를 본다: 삽입(insertText/paste)은 원래 선택 영역을 대체하므로 지우기는
+  //   필요 없고, 지우기를 먼저 하는 건 이득 없이 "부분 삭제로 조각이 남을" 위험만 만든다.
+  //   그래서 첫 삽입 전에는 지우기를 단 한 번도 부르지 않아야 한다.
+  //   (지우기는 A 가 실패한 뒤 B 단계에서만 쓰이고, 거기서는 "비었음을 확인한 뒤에만"
+  //    넣으므로 조각이 남을 수 없다.)
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const ORIG21 = '홍길동이고 번호는 010-1234-5678 이야';
+  const ed21 = new ContentEditableStub(ORIG21, { acceptDelete: true, partialDelete: true });
+  domBySelector.set('#prompt-textarea', ed21);
+  const send21 = new SendButtonStub();
+  send21.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send21);
+  documentStub.activeElement = ed21;
+  selectedNode = null;
+  nextDecision = { action: 'masked', maskedText: '[이름 마스킹] 이고 번호는 [전화번호 마스킹] 이야' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (ed21.deletesBeforeFirstInsert !== 0) {
+    throw new Error(
+      `첫 삽입 전에 지우기를 ${ed21.deletesBeforeFirstInsert}회 불렀다 — `
+      + '부분 삭제가 조각을 남길 기회를 그대로 열어둔 것이다',
+    );
+  }
+  const body21 = ed21.lines.join(' ');
+  // 성공했다면 마스킹본 1벌만, 실패했다면 원문 그대로. 그 사이의 "조각 + 본문" 은 없어야 한다.
+  const clean21 = body21 === '[이름 마스킹] 이고 번호는 [전화번호 마스킹] 이야' || body21 === ORIG21;
+  if (!clean21) {
+    throw new Error(`입력창에 조각이 남았다 — 그게 "마스킹][" 회귀다: ${body21}`);
+  }
+  if (body21 === ORIG21 && send21.clicks !== 0) {
+    throw new Error('마스킹본을 못 넣었는데 전송했다');
   }
 
   console.log('content regression ok');
