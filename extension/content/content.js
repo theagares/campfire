@@ -85,6 +85,26 @@
 
   sendBridgeTokenToMain();
 
+  // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
+  //
+  // content.js 는 isolated world 라 페이지의 XHR/fetch 를 직접 볼 수 없다. 반면
+  // interceptor.js 는 MAIN world 에서 이미 그 둘을 후킹하고 있어서, 파일처럼 생긴
+  // 바디를 가진 요청의 진행 중 개수를 여기로 브로드캐스트해준다(그쪽 파일 맨 아래
+  // "첨부 업로드 관측기" 참고). waitForAttachmentReady 가 이 값을 쓴다.
+  let uploadInflight = 0;
+  // 시작 이벤트 누적 카운터. "대기를 시작한 뒤 업로드가 하나라도 있었나"를 보려면
+  // 진행 중 개수만으론 부족하다 — 업로드가 폴링 간격보다 빨리 끝나면 inflight 는
+  // 계속 0 으로만 보이기 때문이다.
+  let uploadStartCount = 0;
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data?.__campfire_config || data.direction !== 'main-to-isolated') return;
+    if (data.type !== 'UPS_UPLOAD_ACTIVITY') return;
+    uploadInflight = Math.max(0, Number(data.inflight) || 0);
+    if (data.phase === 'start') uploadStartCount += 1;
+  });
+
   chrome.storage?.local?.get?.(
     { protectionEnabled: true, fileInterceptEnabled: true },
     ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled }) => {
@@ -200,7 +220,6 @@
       target.dispatchEvent(new DragEvent('dragenter', init));
       target.dispatchEvent(new DragEvent('dragover', init));
       target.dispatchEvent(new DragEvent('drop', init));
-      console.log('[SecureDoc] 파일 재주입: input 이 없어 합성 drop 으로 넣었습니다');
       return true;
     } catch (e) {
       console.error('[SecureDoc] 파일 재주입 폴백(drop) 실패:', e);
@@ -229,7 +248,15 @@
     try {
       host.appendChild(orphan);
       if (!orphan.isConnected) return null;
-      console.log('[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다');
+      // "어디에" 되돌려 붙였는지가 결정적이다. 원래 부모가 이미 사라졌으면 host 가
+      // document.body 로 떨어지는데, 그러면 컴포저에 위임된 사이트 리스너가 이 노드의
+      // change 를 영영 못 듣는다 — 예전 로그에는 "되돌려 놓았습니다" 만 찍혀서
+      // 붙인 자리가 어디였는지 알 수 없었다.
+      const outside = host === document.body || host === document.documentElement;
+      console.log(
+        `[SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다 (붙인 곳: ${describeNode(host)}`
+        + `${outside ? ' ← 컴포저 바깥이라 사이트가 못 들을 수 있습니다' : ''})`,
+      );
       return orphan;
     } catch (e) {
       console.warn('[SecureDoc] 파일 input 되돌리기 실패:', e);
@@ -237,27 +264,123 @@
     }
   }
 
-  function injectFileIntoInput(preferred, finalFile, parentHint) {
-    // input 이 사라진 사이트(Gemini 등)는 여기서 끝내면 파일이 통째로 없어진다.
-    // 되돌려 놓기 → 그래도 안 되면 합성 drop 순으로 시도한다.
-    const input = liveFileInput(preferred) || reviveFileInput(preferred, parentHint);
-    if (!input) {
-      return injectFileByDrop(finalFile, null);
+  // ══════════════════════════════════════════════════════════════════════════
+  // 첨부 주입 — "넣었다"가 아니라 "사이트가 받았다"를 확인하며 전략을 내려간다
+  //
+  // (2026-08-06 재정정) 예전에는 이 순서였다:
+  //     liveFileInput(preferred) || reviveFileInput(preferred, parentHint)
+  // revive 는 노드를 다시 붙이고 files 를 채우고 change 를 쏘면 "성공"으로 쳤다.
+  // 그런데 그건 전부 **우리 쪽 상태**다. 실사용자 Gemini 진단에서 드러난 것:
+  //   · 대기 창 3초 동안 나간 요청은 167B 짜리 RPC 하나뿐 — 파일 업로드 없음
+  //   · 전송 후 8초 창 15건에도 업로드 없음(최대 바디 167B)
+  //   · 컴포저 DOM 변화 0건 — 첨부 칩이 아예 안 그려졌다
+  // 즉 Gemini 는 그 파일을 받은 적이 없다. Angular 가 컴포넌트를 파괴할 때 리스너까지
+  // 걷어갔으므로, 노드를 되붙여도 죽은 노드에 이벤트를 쏜 것이다. DOM 노드는 돌아와도
+  // 파괴된 컴포넌트의 바인딩은 돌아오지 않는다.
+  //
+  // 게다가 revive 가 "성공"해 버리는 바람에 합성 drop 까지 내려가지도 못했다. 사용자가
+  // 예전에 "첨부는 됐다"고 했던 빌드에는 그 drop 폴백이 살아 있었으니, revive 도입이
+  // 실제로 되던 경로를 가로챈 회귀일 수 있다.
+  //
+  // 그래서 각 전략을 "증거"로 판정한다. 증거 기준은 watchAttachmentEvidence 참고 —
+  // 사이트의 선택자·클래스명을 하나도 쓰지 않는다.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // 한 전략이 먹혔는지 지켜보는 시간. 사이트 핸들러 → 프레임워크 상태 갱신 → 렌더까지
+  // 한 틱이면 끝나므로(보통 100ms 미만) 넉넉한 여유다. 증거가 잡히면 즉시 빠져나오고,
+  // 세 전략을 다 태워도 최악 2.1초다.
+  const INJECT_EVIDENCE_MS = 700;
+  let lastInjectionReport = null;
+
+  async function injectFileWithEvidence(finalFile, opts = {}) {
+    const cfg = getPromptConfig();
+    const { preferred = null, parentHint = null, dropTarget = null } = opts;
+    const attempts = [];
+    let winner = null;
+    let target = null;
+
+    // run(beginWatch) 은 "DOM 을 실제로 건드리기 직전"에 beginWatch() 를 불러야 한다.
+    // 사이트 첨부 UI 를 구동하는 전략은 메뉴를 여느라 DOM 을 바꾸는데, 그걸 증거로
+    // 세면 무조건 성공으로 오판하기 때문이다.
+    const attempt = async (name, run) => {
+      if (winner) return;
+      let watcher = null;
+      const beginWatch = () => { if (!watcher) watcher = watchAttachmentEvidence(cfg); };
+      let mechanical = false;
+      let note = '';
+      try {
+        mechanical = (await run(beginWatch)) !== false;
+      } catch (e) {
+        note = `예외:${e?.message || e}`;
+      }
+      if (!mechanical) {
+        watcher?.stop();
+        attempts.push(`${name}=주입못함${note ? `(${note})` : ''}`);
+        return;
+      }
+      beginWatch(); // 전략이 안 불렀으면 지금이라도
+      const res = await watcher.settle(INJECT_EVIDENCE_MS);
+      watcher.stop();
+      attempts.push(`${name}=${res.ok ? '증거있음' : '증거없음'}(${res.why})`);
+      if (res.ok) winner = { name, why: res.why };
+    };
+
+    // 1) 지금 살아 있는 파일 input — 사이트가 자기 리스너를 그대로 갖고 있는 정상 경로.
+    await attempt('살아있는input', (beginWatch) => {
+      const input = liveFileInput(preferred);
+      if (!input?.isConnected) return false;
+      beginWatch();
+      setFileOnInput(input, finalFile);
+      target = describeInjectionTarget('살아있는input', input);
+      return input.files?.length === 1;
+    });
+
+    // 2) 사이트가 떼어낸 input 을 되돌려 붙이기 — 노드가 살아 있는 사이트에서만 먹는다.
+    await attempt('input되돌리기', (beginWatch) => {
+      const revived = reviveFileInput(preferred, parentHint);
+      if (!revived) return false;
+      beginWatch();
+      setFileOnInput(revived, finalFile);
+      target = describeInjectionTarget('input되돌리기', revived);
+      return revived.files?.length === 1;
+    });
+
+    // 3) 합성 drop — 사이트 핸들러가 내부에서 터질 수 있지만(this.drop is not a
+    //    function) 그건 사이트 리스너 안의 예외라 우리 흐름을 끊지 않고, 첨부 자체는
+    //    되는 경우가 있다. 앞의 둘이 증거를 못 얻었을 때만 온다.
+    await attempt('합성drop', (beginWatch) => {
+      beginWatch();
+      return injectFileByDrop(finalFile, dropTarget);
+    });
+
+    // 4) 사이트의 첨부 버튼을 눌러 사이트가 직접 input 을 만들게 한다.
+    //    Gemini 처럼 승인 시점에 살아 있는 input 이 아예 없는 사이트를 위한 마지막 수단.
+    //    UI 를 건드리므로 앞의 셋이 모두 실패했을 때만 온다.
+    let uiCleanup = null;
+    await attempt('사이트첨부UI', async (beginWatch) => {
+      const acquired = await driveSiteAttachUI(cfg);
+      if (!acquired) return false;
+      uiCleanup = acquired.cleanup;
+      beginWatch(); // 메뉴가 열리며 생긴 DOM 변화는 증거에서 제외된다
+      setFileOnInput(acquired.input, finalFile);
+      target = describeInjectionTarget('사이트첨부UI', acquired.input);
+      return acquired.input.files?.length === 1;
+    });
+    if (uiCleanup) { try { await uiCleanup(); } catch (_) { /* ignore */ } }
+
+    lastInjectionReport = { winner, attempts: attempts.slice(), target };
+
+    // 사용자가 한 줄만 보고 "어느 전략이 먹혔는지" 알 수 있어야 한다.
+    if (winner) {
+      console.log(`[SecureDoc] 첨부 주입 성공 — 먹힌 방법: ${winner.name} (증거: ${winner.why})`);
+    } else {
+      console.error(
+        '[SecureDoc] 첨부 주입 실패 — 어떤 방법으로도 사이트가 문서를 받았다는 증거를 얻지 못했습니다. '
+        + '프롬프트만 전송됩니다. 문서를 다시 첨부해 주세요.',
+      );
     }
-    // 성공 판정은 "쏘기 전에 DOM 에 붙어 있었나" 로 한다. 쏜 "뒤" 의 isConnected 를
-    // 보면 안 된다 — 사이트가 change 를 처리하면서 그 input 을 곧바로 떼어내는 게
-    // 정상 동작이기 때문이다(실사용자 Gemini 로그: files:1 인데 connected:false).
-    // 그걸 실패로 오판하면 이미 잘 들어간 파일에 합성 drop 을 한 번 더 쏘게 되고,
-    // 그 drop 이 사이트 핸들러를 터뜨리거나 첨부가 중복될 수 있다.
-    const wasConnected = input.isConnected;
-    setFileOnInput(input, finalFile);
-    if (!wasConnected || input.files?.length !== 1) {
-      console.warn('[SecureDoc] input 주입이 반영되지 않았습니다 — 합성 drop 으로 재시도합니다', {
-        connectedBefore: wasConnected, files: input.files?.length,
-      });
-      return injectFileByDrop(finalFile, null);
-    }
-    return true;
+    console.log(`[SecureDoc] 첨부 주입 시도 경로: ${attempts.join(' → ')}`);
+    return !!winner;
   }
 
   /** 사이트가 파일 선택(📎) 버튼용으로 이미 갖고 있는 숨은 input[type=file]을 찾는다
@@ -451,6 +574,50 @@
     badgeRoot = null;
   }
 
+  /** 문서를 끝내 못 붙여 전송을 멈췄을 때 띄우는 경고 뱃지.
+   *
+   *  왜 콘솔이 아니라 화면인가: 주입 실패는 사용자가 반드시 알아야 하는 사건이다.
+   *  예전에는 실패해도 프롬프트를 그냥 보내고 콘솔에만 남겼는데, 사용자는 문서가 갔다고
+   *  믿은 채 대화를 이어갔다. 보안 제품에서 가장 나쁜 실패 모드다. 콘솔은 아무도 안 본다. */
+  function showAttachFailedBadge(fileName) {
+    showBlockedBadge(`⚠️ ${fileName || '문서'} 를 첨부하지 못해 전송을 멈췄습니다. `
+      + '입력하신 내용은 그대로 두었으니, 문서를 다시 첨부한 뒤 보내주세요.');
+  }
+
+  function showBlockedBadge(message) {
+    hidePendingBadge();
+    try {
+      badgeRoot = document.createElement('div');
+      badgeRoot.id = '__ups_pending_badge';
+      badgeRoot.style.cssText = [
+        'all: initial', 'position: fixed', 'right: 16px', 'bottom: 16px',
+        'z-index: 2147483646', 'background: #7f1d1d', 'color: #fff',
+        'font: 12px/1.5 -apple-system, BlinkMacSystemFont, sans-serif', 'padding: 11px 13px',
+        'border-radius: 10px', 'box-shadow: 0 4px 16px rgba(0,0,0,.3)',
+        'display: flex', 'align-items: flex-start', 'gap: 8px', 'max-width: 360px',
+      ].join(' !important; ') + ' !important;';
+
+      const label = document.createElement('span');
+      label.textContent = message;
+      label.style.cssText = 'flex: 1 !important;';
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '✕';
+      closeBtn.title = '닫기';
+      closeBtn.style.cssText = 'all: unset !important; cursor: pointer !important; opacity: .75 !important; padding: 0 2px !important; flex-shrink: 0 !important;';
+      closeBtn.addEventListener('click', () => { hidePendingBadge(); });
+
+      badgeRoot.appendChild(label);
+      badgeRoot.appendChild(closeBtn);
+      (document.documentElement || document.body).appendChild(badgeRoot);
+
+      // 계속 남겨두면 다음 첨부의 대기 뱃지와 헷갈린다. 충분히 읽을 시간만 준다.
+      const mine = badgeRoot;
+      setTimeout(() => { if (badgeRoot === mine) hidePendingBadge(); }, 30000);
+    } catch (_) { /* context invalidated */ }
+  }
+
   function clearPendingAttachment() {
     pendingAttachment = null;
     hidePendingBadge();
@@ -571,7 +738,9 @@
     // 지금 부모를 기억해 둔다 — 사이트가 나중에 이 input 을 DOM 에서 떼어내면
     // 여기로 되돌려 붙여야 사이트의 위임 리스너까지 살아난다(reviveFileInput).
     const originalParent = input.parentElement;
-    await stageFileAttachment(file, (finalFile) => injectFileIntoInput(input, finalFile, originalParent));
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: input, parentHint: originalParent,
+    }));
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
@@ -596,33 +765,14 @@
     // 합성 이벤트로 드래그 상태만 즉시 정리해준다(clearSiteDragState 주석 참고).
     clearSiteDragState(target, clientX, clientY);
 
-    await stageFileAttachment(file, (finalFile) => {
-      // (2026-08-01 재정정) 원래는 드롭 지점(target)에 합성 drop 이벤트를 재생해
-      // 재주입했다. 하지만 target은 검토 패널에서 승인될 때까지(수 초~수십 초, 길게는
-      // 프롬프트를 다 입력할 때까지) 지난 뒤에야 이 콜백에 도달하는데, 그 사이 SPA가
-      // 컴포저 주변을 다시 그려버리면 드롭 재생이 의존하는 사이트의 내부 드래그
-      // 상태 머신 자체가 사라져 있을 수 있다(실측: ChatGPT에서 "this.drop is not a
-      // function" 크래시 + 드롭 오버레이 고착 재현). 드래그 제스처를 흉내내는 대신,
-      // 아예 원래 drop 이벤트를 취소해버리고 사이트가 이미 갖고 있는 파일 선택
-      // input[type=file]에 "새로 파일을 선택한 것"처럼 흘려보낸다 — 이 경로는
-      // change 이벤트 하나로 끝나며 드래그 상태와 전혀 무관하다.
-      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
-
-      // 폴백: 이 사이트에 파일 선택 input이 따로 없는 경우에만 기존 방식(합성 drop
-      // 재생)을 시도한다. isConnected로 detached 여부를 확인해 document.body로
-      // 폴백하고, 사이트 쪽 핸들러 예외가 우리 흐름을 끊지 않도록 try/catch로 감싼다.
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new DragEvent('drop', {
-          bubbles: true, cancelable: true, composed: true,
-          dataTransfer: dt, clientX, clientY,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 drop 디스패치 실패:', e);
-      }
-    });
+    // (2026-08-06 재정정) 파일 선택 input 경로를 먼저 쓰고 합성 drop 을 폴백으로 두는
+    // 구조는 그대로지만, 이제 각 단계를 "사이트가 받았다는 증거"로 판정한다
+    // (injectFileWithEvidence 주석 참고). 예전에는 input 에 넣기만 하면 성공으로 쳐서,
+    // 사이트가 그 이벤트를 못 들었을 때 폴백까지 내려가지 못했다.
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: findFileInput(target),
+      dropTarget: target?.isConnected ? target : null,
+    }));
   }, true);
 
   // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
@@ -634,22 +784,11 @@
     event.stopImmediatePropagation();
     const target = event.target;
 
-    await stageFileAttachment(file, (finalFile) => {
-      // drop 재주입과 동일한 이유(위 주석 참고)로 파일 선택 input을 우선 사용한다.
-      if (injectFileIntoInput(findFileInput(target), finalFile)) return;
-
-      // 폴백: 파일 선택 input이 없는 경우에만 기존 합성 paste 재생을 시도한다.
-      const dt = new DataTransfer();
-      dt.items.add(finalFile);
-      const dispatchTarget = target.isConnected ? target : document.body;
-      try {
-        dispatchTarget.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, composed: true, clipboardData: dt,
-        }));
-      } catch (e) {
-        console.error('[SecureDoc] 마스킹본 재주입 paste 디스패치 실패:', e);
-      }
-    });
+    // drop 경로와 같은 증거 기반 체인을 쓴다(위 주석 참고).
+    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+      preferred: findFileInput(target),
+      dropTarget: target?.isConnected ? target : null,
+    }));
   }, true);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -797,14 +936,31 @@
     // 그만큼 여러 번 삽입되고, 게다가 Lexical 은 execCommand('selectAll'+'delete')를
     // 무시해서 원래 있던 글까지 남는다 — 합쳐서 프롬프트가 4벌로 들어갔다
     // (실사용자 리포트: "프롬프트가 4번 반복돼서 넘어간다").
-    const target = text.trim();
-    const current = () => (editor.innerText || editor.textContent || '').trim();
+    // (2026-08-06 재정정) 4벌 → 3벌로 줄었을 뿐 여전히 쌓였다(실사용자 perplexity).
+    // 헤드리스 Chrome 으로 재보니 원인이 둘 다였다:
+    //   ① 판정이 깨진다 — 프레임워크가 문단을 블록(<p>)으로 렌더하면 Chrome 의
+    //      innerText 는 블록 사이에 개행을 "두 개" 넣는다. 실측:
+    //        innerText "…정리해줘\n\n두 번째 줄도 있다"
+    //        target    "…정리해줘\n두 번째 줄도 있다"
+    //      글자는 같은데 === 가 false 다. 성공한 삽입을 실패로 오판한다.
+    //   ② 지우기가 안 먹는다 — 실측에서 원문이 그대로 남아 원문+마스킹본이 됐다.
+    // ①이 다음 전략을 부르고, ②가 그 결과를 덧쌓는다. 전략이 셋이니 최대 3벌이다.
+    //
+    // 그래서 판정 정확도만 올리지 않고 "쌓임 자체가 구조적으로 불가능"하게 만든다:
+    // 삽입 직전에 반드시 비었는지 확인하고, 비우지 못한 상태에서는 삽입을 한 번까지만
+    // 허용한다(선택 영역 대체로 성공하는 에디터를 살리기 위해). 그 한 번이 실패하면
+    // 더 넣지 않고 중단한다.
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const target = norm(text);
+    const current = () => norm(editor.innerText || editor.textContent || '');
     const done = () => current() === target;
+    const isEmpty = () => current() === '';
+    const copies = () => (target ? current().split(target).length - 1 : 0);
 
     // 기존 내용을 지운다. execCommand('selectAll') 만으로는 Lexical 같은 에디터에서
     // 안 먹는 경우가 있어, 실제 DOM 선택 영역을 직접 잡아준다 — insertText/paste 는
     // "선택 영역을 대체" 하므로 선택만 제대로 잡혀 있으면 지우기와 넣기가 한 번에 된다.
-    const clear = () => {
+    const selectAll = () => {
       try {
         const sel = window.getSelection?.();
         if (sel) {
@@ -814,37 +970,98 @@
           sel.addRange(range);
         }
       } catch (_) { /* 아래 execCommand 로도 시도한다 */ }
-      try {
-        document.execCommand('selectAll', false, null);
-        document.execCommand('delete', false, null);
-      } catch (_) { /* 아래 수단이 알아서 덮어쓴다 */ }
+      try { document.execCommand('selectAll', false, null); } catch (_) { /* 무시 */ }
     };
 
-    // 1) execCommand — 가장 "진짜 입력"에 가까워 대부분의 에디터가 자기 이벤트를 낸다.
-    clear();
-    try { document.execCommand('insertText', false, text); } catch (_) { /* 다음 수단 */ }
-    if (done()) return true;
+    /** 비우기를 단계적으로 세게 시도한다. 한 방법이 안 먹는 에디터가 많은데, 예전엔
+     *  execCommand 하나만 쓰고 결과를 확인하지도 않았다. 비우기 성공 여부가 이제
+     *  "다음 전략을 시도해도 되는가"를 가르는 기준이라 정확해야 한다.
+     *  (실측: 프레임워크형 에디터에서 execCommand('delete')가 무시되어 원문이 그대로
+     *   남았고, 그 위에 삽입이 겹쳐 여러 벌이 됐다.) */
+    const clear = () => {
+      selectAll();
+      try { document.execCommand('delete', false, null); } catch (_) { /* 다음 단계 */ }
+      if (isEmpty()) return true;
 
-    // 2) 합성 paste — Lexical 등 execCommand 를 무시하는 에디터용.
-    clear();
-    try {
-      const dt = new DataTransfer();
-      dt.setData('text/plain', text);
-      editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    } catch (_) { /* 다음 수단 */ }
-    if (done()) return true;
+      // 빈 문자열 붙여넣기 — "선택 영역을 대체"하는 에디터는 이걸로 비워진다.
+      selectAll();
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', '');
+        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      } catch (_) { /* 다음 단계 */ }
+      if (isEmpty()) return true;
 
-    // 3) 최후 — DOM 을 직접 갈아끼우고 input 을 알린다. 프레임워크가 자기 상태와
-    //    어긋난 것으로 보고 되돌릴 수 있어 마지막에만 쓴다.
-    clear();
-    editor.textContent = text;
-    // 알림용 이벤트에는 data/inputType 을 싣지 않는다. insertText + data 를 실으면
-    // 프레임워크가 "또 넣으라는 뜻" 으로 읽어 방금 세팅한 내용 뒤에 한 벌 더 붙는다
-    // (실측: 이 한 줄 때문에 마지막 수단에서도 2벌이 됐다).
-    editor.dispatchEvent(new Event('input', { bubbles: true }));
-    if (done()) return true;
+      // 합성 beforeinput/input 으로 삭제를 알린다 — 자기 모델만 보는 에디터용.
+      selectAll();
+      try {
+        const opts = { bubbles: true, cancelable: true, inputType: 'deleteContentBackward' };
+        editor.dispatchEvent(new InputEvent('beforeinput', opts));
+        editor.dispatchEvent(new InputEvent('input', opts));
+      } catch (_) { /* 다음 단계 */ }
+      if (isEmpty()) return true;
 
-    console.warn('[SecureDoc] 입력창에 마스킹본을 넣지 못했습니다 — 현재 내용이 의도와 다를 수 있습니다');
+      // 최후 — DOM 을 직접 비운다. 프레임워크가 되돌릴 수 있어 마지막에만 쓴다.
+      try {
+        editor.textContent = '';
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch (_) { /* 결과는 아래에서 확인한다 */ }
+      return isEmpty();
+    };
+
+    const strategies = [
+      // 1) execCommand — 가장 "진짜 입력"에 가까워 대부분의 에디터가 자기 이벤트를 낸다.
+      ['execCommand', () => { document.execCommand('insertText', false, text); }],
+      // 2) 합성 paste — Lexical 등 execCommand 를 무시하는 에디터용.
+      ['합성paste', () => {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      }],
+      // 3) 최후 — DOM 을 직접 갈아끼우고 input 을 알린다. 프레임워크가 자기 상태와
+      //    어긋난 것으로 보고 되돌릴 수 있어 마지막에만 쓴다.
+      //    알림용 이벤트에 data/inputType 을 싣지 않는 이유: insertText + data 를 실으면
+      //    프레임워크가 "또 넣으라는 뜻"으로 읽어 한 벌 더 붙는다(예전 실측).
+      ['DOM직접', () => {
+        editor.textContent = text;
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      }],
+    ];
+
+    let inserted = 0;
+    let reason = '시도 없음';
+    for (const [name, run] of strategies) {
+      const emptied = clear();
+
+      // ★ 쌓임 차단의 핵심: 못 비웠는데 이미 넣은 적이 있으면 여기서 멈춘다.
+      //   이 경로를 없애면 "원문 + 삽입 + 삽입 + …" 이 원리적으로 불가능해진다.
+      if (!emptied && inserted > 0) {
+        reason = `${name} 직전 지우기 실패 + 이미 ${inserted}회 삽입 → 더 넣으면 쌓이므로 중단`;
+        break;
+      }
+
+      try { run(); } catch (_) { reason = `${name} 실행 중 예외`; continue; }
+      inserted += 1;
+
+      if (done()) return true;
+
+      const n = copies();
+      if (n >= 2) { // 이미 쌓였다 — 명백한 이상이므로 되돌리고 중단
+        reason = `${name} 후 같은 내용이 ${n}벌 감지 → 중단`;
+        clear();
+        break;
+      }
+      if (!emptied) {
+        reason = `${name}: 입력창을 비우지 못한 채 넣었고 결과도 불일치 → 중단`;
+        break;
+      }
+      reason = `${name} 후 내용 불일치`;
+    }
+
+    console.warn(
+      `[SecureDoc] 입력창에 마스킹본을 넣지 못했습니다 — ${reason}. `
+      + `삽입 ${inserted}회, 현재 ${copies()}벌 감지. 원문이 그대로 남아 있을 수 있어 전송하지 않습니다.`,
+    );
     return false;
   }
 
@@ -871,6 +1088,460 @@
    *  그 시점엔 업로드가 아직 진행 중이라 버튼이 비활성 → 클릭이 먹지 않고 그대로
    *  끝나버렸다(실사용자 재현: 검토는 되는데 전송이 안 됨). 그래서 한 번만 시도하지
    *  않고 버튼이 활성화될 때까지 폴링한다. */
+  // 사이트를 안 가리는 "무언가 진행 중" 표시. 첨부 칩의 스피너/진행률 바가 보통
+  // 이 중 하나로 그려진다. 문서 전체에서 세되 "대기 시작 시점의 개수"를 기준선으로
+  // 잡고 그보다 늘어난 것만 신호로 본다 — 답변 스트리밍 인디케이터처럼 원래부터
+  // 떠 있는 것에 걸려 영원히 기다리는 일을 막기 위해서다.
+  const BUSY_INDICATOR_SELS = [
+    '[role="progressbar"]',
+    'progress',
+    '[aria-busy="true"]',
+  ];
+
+  function countBusyIndicators() {
+    let n = 0;
+    for (const sel of BUSY_INDICATOR_SELS) {
+      try { n += document.querySelectorAll(sel)?.length ?? 0; } catch (_) { /* 무시 */ }
+    }
+    return n;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 컴포저 범위 찾기 + 첨부 수신 증거 판정
+  // ══════════════════════════════════════════════════════════════════════════
+
+  function findSendButtonEl(cfg) {
+    for (const sel of sendButtonSelectors(cfg)) {
+      try { const b = document.querySelector(sel); if (b) return b; } catch (_) { /* 무시 */ }
+    }
+    return null;
+  }
+
+  function describeNode(el) {
+    try {
+      if (!el) return '(없음)';
+      if (el === document.body) return 'body';
+      if (el === document.documentElement) return 'html';
+      const tag = String(el.tagName || el.nodeName || '?').toLowerCase();
+      const role = el.getAttribute?.('role');
+      const cls = el.className;
+      const tokens = typeof cls === 'string' && cls.trim()
+        ? '.' + cls.trim().split(/\s+/).slice(0, 2).map(c => c.slice(0, 24)).join('.')
+        : '';
+      return `${tag}${role ? `[role=${role}]` : ''}${tokens}`;
+    } catch (_) { return '?'; }
+  }
+
+  /** 부모 체인. 클래스명·role 같은 구조 메타만 남기고 텍스트는 읽지 않는다. */
+  function describeAncestry(el, max = 8) {
+    const out = [];
+    let n = el;
+    for (let i = 0; i < max && n; i += 1) { out.push(describeNode(n)); n = n.parentElement; }
+    if (n) out.push('…');
+    return out.join(' < ');
+  }
+
+  /** 글자 입력창과 전송 버튼을 "둘 다" 품는 가장 작은 조상 = 컴포저.
+   *
+   *  선택자·클래스명을 전혀 안 쓴다. 어떤 챗 UI 든 입력창과 전송 버튼은 한 덩어리로
+   *  묶여 있고, 첨부 칩도 그 덩어리 안(또는 바로 위)에 그려지기 때문이다.
+   *
+   *  예전에는 editor.closest('form') 이나 부모 2단계만 봤는데, Gemini 처럼 form 이
+   *  없는 사이트에서는 Quill 컨테이너 언저리에서 멈춰 첨부 칩이 그려지는 영역을 아예
+   *  못 봤을 수 있다(실사용자 진단에서 컴포저 변화 0건). 그래서 전송 버튼을 기준으로
+   *  올라가고, 칩이 형제로 그려지는 경우까지 덮도록 두 단계 여유를 더 둔다. */
+  function findComposerRoot(cfg) {
+    const editor = findEditor(cfg);
+    if (!editor) return null;
+    const btn = findSendButtonEl(cfg);
+    let node = editor;
+    let hops = 0;
+    while (hops < 12) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.body || parent === document.documentElement) break;
+      node = parent;
+      hops += 1;
+      if (btn && node.contains?.(btn)) break;
+      if (!btn && hops >= 5) break; // 전송 버튼을 못 찾으면 몇 단계만 올라간다
+    }
+    for (let i = 0; i < 2; i += 1) {
+      const p = node.parentElement;
+      if (!p || p === document.body || p === document.documentElement) break;
+      node = p;
+    }
+    return node;
+  }
+
+  function describeInjectionTarget(strategy, input) {
+    try {
+      let underComposer = null;
+      try { underComposer = !!findComposerRoot(getPromptConfig())?.contains?.(input); } catch (_) { underComposer = null; }
+      return {
+        strategy,
+        files: input?.files?.length,
+        connected: !!input?.isConnected,
+        underComposer,
+        chain: describeAncestry(input),
+      };
+    } catch (_) { return { strategy }; }
+  }
+
+  /** "사이트가 첨부를 받아들였다"는 증거를 기다린다.
+   *
+   *  판정 기준(둘 중 하나면 증거로 본다):
+   *    (a) 컴포저 하위에 **글자 입력창 바깥으로** 요소 노드가 새로 추가됐다.
+   *    (b) 사이트가 파일 업로드를 시작했다(MAIN world 네트워크 관측).
+   *
+   *  왜 이게 사이트-무관한가: 첨부를 받아들인 챗 UI 는 예외 없이 둘 중 하나를 한다 —
+   *  그 첨부를 나타내는 무언가(칩·썸네일·파일명 줄)를 그리거나, 곧바로 서버로 올리기
+   *  시작한다. 무엇을 그리는지(클래스명·구조)는 사이트마다 다르지만 "무언가 생긴다"는
+   *  사실 자체는 다르지 않다. 반대로 사이트가 우리 이벤트를 아예 못 들었다면 둘 다
+   *  일어나지 않는다.
+   *
+   *  글자 입력창 안쪽 변화를 증거에서 빼는 이유: 우리가 넣은 프롬프트 텍스트 때문에
+   *  p/br 이 생겼다 사라지는 건 첨부와 무관하다(실사용자 진단에서 전송 후 잡힌 변화가
+   *  정확히 -p/+p/+br 셋뿐이었다). 그걸 증거로 세면 항상 "성공"으로 오판한다.
+   *
+   *  관찰 자체가 불가능한 환경(MutationObserver 없음, 컴포저를 못 찾음)에서는 판정을
+   *  포기하고 기계적 성공을 그대로 인정한다 — 확인할 방법이 없는데 실패로 단정해
+   *  멀쩡한 경로를 버리는 게 더 나쁘다. 그 사실은 사유에 남긴다. */
+  function watchAttachmentEvidence(cfg) {
+    const editor = findEditor(cfg);
+    const root = findComposerRoot(cfg);
+    const netBase = uploadStartCount;
+    let added = null;
+    let mo = null;
+
+    if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
+      try {
+        mo = new MutationObserver((list) => {
+          if (added) return;
+          for (const m of list) {
+            if (editor && (m.target === editor || editor.contains?.(m.target))) continue;
+            for (const n of m.addedNodes || []) {
+              if (n?.nodeType !== 1) continue;
+              added = describeNode(n);
+              return;
+            }
+          }
+        });
+        mo.observe(root, { childList: true, subtree: true });
+      } catch (_) { mo = null; }
+    }
+
+    return {
+      root,
+      async settle(ms) {
+        if (!mo) return { ok: true, why: '관찰 불가 — 기계적 성공으로 인정' };
+        const deadline = Date.now() + ms;
+        for (;;) {
+          if (added) return { ok: true, why: `컴포저에 ${added} 추가됨` };
+          if (uploadStartCount > netBase) return { ok: true, why: '업로드 시작 관측' };
+          if (Date.now() >= deadline) break;
+          await new Promise(r => setTimeout(r, 60));
+        }
+        return { ok: false, why: `${ms}ms 동안 컴포저 변화·업로드 모두 없음` };
+      },
+      stop() { try { mo?.disconnect(); } catch (_) { /* ignore */ } },
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 사이트의 첨부 UI 를 우리가 구동한다 (마지막 전략)
+  //
+  // 실사용자 Gemini 진단으로 확정된 것:
+  //   살아있는input=주입못함 → input되돌리기=증거없음 → 합성drop=증거없음
+  //   (되돌리기가 붙은 곳: body ← 컴포저 바깥)
+  // 승인 시점에 Gemini DOM 에는 input[type=file] 이 아예 없다. 떼어낸 노드를 되붙여도
+  // Angular 가 컴포넌트를 파괴하며 리스너를 걷어간 뒤라 죽은 노드고, 합성 drop 도 안
+  // 먹는다. 죽은 노드를 되살리거나 이벤트를 흉내내는 접근은 이 사이트에서 원리적으로
+  // 막혔다.
+  //
+  // 확인된 유일한 사실은 "살아 있고 사이트에 바인딩된 input 이 필요하다"는 것이고,
+  // 그런 input 은 **사이트가 직접 만들게** 하는 수밖에 없다. 그래서 승인 시점에 컴포저의
+  // 첨부 버튼을 눌러 사이트가 input 을 만들게 하고, 방금 만들어져 바인딩이 살아 있는 그
+  // 노드에 파일을 넣는다.
+  //
+  // 부작용 통제(이 접근의 가장 큰 위험):
+  //   · OS 파일 선택창 — 사이트 핸들러가 input.click() 을 부르면 사용자가 누른 적 없는
+  //     창이 뜬다. MAIN world 에서 그 호출을 막고(interceptor.js 의 파일 선택창 억제),
+  //     **차단이 확인(ACK)되기 전에는 버튼을 누르지 않는다.**
+  //   · 열린 메뉴 — 끝나면 Escape 로 닫고 입력창에 포커스를 되돌린다.
+  //   · 억제가 켜진 채 남는 것 — MAIN world 쪽에 자동 만료 타이머가 있다.
+  //   · 엉뚱한 버튼 — 컴포저 안에 있으면서 이름이 첨부/파일/attach/upload 류에 맞는
+  //     버튼만, 최대 3개까지만 눌러본다. 하나도 못 찾으면 조용히 물러난다.
+  //
+  // 선택자 하드코딩은 없다. 사이트별 클래스명 대신 ARIA/접근성 이름으로만 고른다.
+  // ══════════════════════════════════════════════════════════════════════════
+  const ATTACH_NAME_RE = /(attach|upload|add\s*(file|photo|image)|첨부|파일|업로드)/i;
+  const ATTACH_CLICK_WAIT_MS = 700;
+  const pickerAckWaiters = new Map();
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const d = event.data;
+    if (!d?.__campfire_config || d.direction !== 'main-to-isolated') return;
+    if (d.type !== 'UPS_SUPPRESS_FILE_PICKER_ACK') return;
+    const w = pickerAckWaiters.get(d.nonce);
+    if (w) { pickerAckWaiters.delete(d.nonce); w(d.on); }
+  });
+
+  /** MAIN world 에 OS 파일 선택창 억제를 켜고 끈다. ACK 를 받아야 true 를 돌려준다 —
+   *  postMessage 는 태스크 큐를 거치므로, 확인 없이 버튼을 누르면 그 사이에 진짜 창이
+   *  뜰 수 있다. */
+  function setFilePickerSuppression(on) {
+    return new Promise((resolve) => {
+      const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; pickerAckWaiters.delete(nonce); resolve(v); };
+      pickerAckWaiters.set(nonce, (acked) => finish(!!acked === !!on));
+      try {
+        window.postMessage({
+          __campfire_config: true, direction: 'isolated-to-main',
+          type: 'UPS_SUPPRESS_FILE_PICKER', on: !!on, nonce,
+        }, '*');
+      } catch (_) { finish(false); return; }
+      setTimeout(() => finish(false), 400);
+    });
+  }
+
+  function accessibleName(el) {
+    try {
+      return [
+        el.getAttribute?.('aria-label'),
+        el.getAttribute?.('title'),
+        el.getAttribute?.('data-testid'),
+        el.getAttribute?.('data-test-id'),
+        (el.textContent || '').trim().slice(0, 80),
+      ].filter(Boolean).join(' ');
+    } catch (_) { return ''; }
+  }
+
+  function listFileInputs() {
+    try { return Array.from(document.querySelectorAll('input[type="file"]') || []); } catch (_) { return []; }
+  }
+
+  async function waitForNewFileInput(before, ms) {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      for (const el of listFileInputs()) {
+        if (!before.has(el) && el.isConnected) return el;
+      }
+      if (Date.now() >= deadline) return null;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  function findAttachButtons(cfg) {
+    const root = findComposerRoot(cfg);
+    if (!root?.querySelectorAll) return [];
+    let nodes = [];
+    try { nodes = Array.from(root.querySelectorAll('button, [role="button"]') || []); } catch (_) { return []; }
+    const hits = [];
+    for (const el of nodes) {
+      if (!el?.isConnected) continue;
+      if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
+      if (!ATTACH_NAME_RE.test(accessibleName(el))) continue;
+      hits.push(el);
+      if (hits.length >= 3) break;
+    }
+    return hits;
+  }
+
+  /** 첨부 버튼이 메뉴를 여는 사이트를 위한 한 단계 더. ARIA 표준 역할만 보고,
+   *  이름이 첨부/파일 류에 맞는 항목만 누른다(예: "Google Drive" 는 안 눌린다). */
+  function findMenuUploadItem() {
+    let nodes = [];
+    try {
+      nodes = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]') || []);
+    } catch (_) { return null; }
+    for (const el of nodes) {
+      if (el?.isConnected && ATTACH_NAME_RE.test(accessibleName(el))) return el;
+    }
+    return null;
+  }
+
+  function closeTransientMenus(cfg) {
+    try {
+      const init = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+      document.activeElement?.dispatchEvent?.(new KeyboardEvent('keydown', init));
+      document.dispatchEvent?.(new KeyboardEvent('keydown', init));
+    } catch (_) { /* ignore */ }
+    try { findEditor(cfg)?.focus?.(); } catch (_) { /* ignore */ }
+  }
+
+  /** 성공하면 { input, cleanup } 을 돌려준다. cleanup 은 파일을 넣고 증거를 확인한
+   *  "뒤에" 호출부가 부른다 — 여기서 미리 메뉴를 닫으면 그 input 이 같이 사라진다. */
+  async function driveSiteAttachUI(cfg) {
+    const buttons = findAttachButtons(cfg);
+    if (!buttons.length) return null;
+
+    const before = new Set(listFileInputs());
+    if (!(await setFilePickerSuppression(true))) {
+      // 차단을 확인하지 못했으면 누르지 않는다. 사용자가 누른 적 없는 OS 파일창이
+      // 뜨는 것은 우리가 만들 수 있는 최악의 부작용이다.
+      console.warn('[SecureDoc] 첨부 UI 구동: OS 파일창 차단을 확인하지 못해 중단합니다');
+      return null;
+    }
+
+    let opened = false;
+    let acquired = null;
+    let usedBtn = null;
+    for (const btn of buttons) {
+      try { btn.click(); opened = true; } catch (_) { continue; }
+      let input = await waitForNewFileInput(before, ATTACH_CLICK_WAIT_MS);
+      if (!input) {
+        const item = findMenuUploadItem();
+        if (item) {
+          try { item.click(); } catch (_) { /* 무시 */ }
+          input = await waitForNewFileInput(before, ATTACH_CLICK_WAIT_MS);
+        }
+      }
+      if (input) { acquired = input; usedBtn = btn; break; }
+    }
+
+    const cleanup = async () => {
+      if (opened) closeTransientMenus(cfg);
+      await setFilePickerSuppression(false);
+    };
+
+    if (!acquired) {
+      await cleanup();
+      console.log(`[SecureDoc] 첨부 UI 구동: 버튼 ${buttons.length}개를 눌러봤지만 새 input 이 생기지 않았습니다`);
+      return null;
+    }
+    console.log(`[SecureDoc] 첨부 UI 구동: 사이트가 새 input 을 만들었습니다 (버튼=${describeNode(usedBtn)})`);
+    return { input: acquired, cleanup };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 진단 — "첨부가 왜 안 붙는지"를 사용자가 한 번에 복사해 보고할 수 있게
+  //
+  // 같은 증상에 신호를 세 번 바꿔 달았고 세 번 다 빗나갔다(버튼 잠김 → 합성 drop →
+  // 네트워크 관측). 네 번째를 찍어 넣는 대신, 첨부 대기가 "신호 없음"으로 끝난 그
+  // 순간에 무슨 일이 있었는지를 기록으로 남긴다.
+  //
+  // 두 덩어리를 낸다:
+  //   1) 컴포저 DOM 변화 — 우리가 파일을 넣은 뒤 사이트가 자기 UI 를 바꿨는가.
+  //      첨부 칩이 생겼다면 사이트는 파일을 "받았다". 아무 변화도 없다면 주입 자체가
+  //      사이트 상태에 반영되지 않은 것이다. 이 둘은 고쳐야 할 지점이 완전히 다르다.
+  //   2) 요청 추적 — interceptor.js(MAIN world)가 모아둔 것을 두 번 출력한다.
+  //      "첨부 대기 창"과 "전송 후 8초". 업로드가 후자에만 나타나면 이 사이트는 첨부를
+  //      전송 시점에 올리는 구조이고, 그렇다면 "전송 전에 업로드를 기다린다"는 접근
+  //      자체가 성립하지 않는다 — 기다릴 업로드가 애초에 없기 때문이다.
+  //
+  // 조용함: 평소엔 아무것도 안 찍는다. 버그가 재현된 순간에만, 그것도 페이지당 한 번만
+  // 덤프한다. 다시 보고 싶으면 콘솔에서 __campfireTrace() 를 부르면 된다.
+  // ══════════════════════════════════════════════════════════════════════════
+  let diagnosticsDumped = false;
+
+  /** MAIN world 에 "모아둔 요청 기록을 콘솔에 찍어라"고 알린다. 응답을 기다리지
+   *  않으므로 전송이 그만큼 늦어지지 않는다. */
+  function requestTracePrint(label, windowMs) {
+    try {
+      window.postMessage({
+        __campfire_config: true,
+        direction: 'isolated-to-main',
+        type: 'UPS_TRACE_PRINT',
+        label,
+        windowMs,
+      }, '*');
+    } catch (_) { /* context invalidated */ }
+  }
+
+  const NO_MUTATION_TRACE = { dump() {}, stop() {} };
+
+  /** 컴포저 주변 DOM 변화를 기록한다. 텍스트는 하나도 읽지 않는다 — 태그명과 role
+   *  값(ARIA 표준 어휘)만 남기므로 문서 내용·파일명이 콘솔에 새지 않는다. */
+  function startComposerMutationTrace(cfg) {
+    if (typeof MutationObserver === 'undefined') return NO_MUTATION_TRACE;
+    let root = null;
+    try { root = findComposerRoot(cfg); } catch (_) { root = null; }
+    if (!root) return NO_MUTATION_TRACE;
+
+    const t0 = Date.now();
+    const recs = [];
+    let printed = 0; // 이미 출력한 개수 — 두 번째 덤프에서 같은 줄을 반복하지 않도록
+    const desc = (n) => {
+      try {
+        const tag = String(n.tagName || n.nodeName || '?').toLowerCase();
+        const role = n.getAttribute?.('role');
+        return role ? `${tag}[role=${role}]` : tag;
+      } catch (_) { return '?'; }
+    };
+
+    let mo = null;
+    try {
+      mo = new MutationObserver((list) => {
+        for (const m of list) {
+          if (recs.length >= 80) return;
+          const add = Array.from(m.addedNodes || []).filter(n => n.nodeType === 1).map(desc);
+          const rm = Array.from(m.removedNodes || []).filter(n => n.nodeType === 1).map(desc);
+          if (!add.length && !rm.length) continue;
+          recs.push({ t: Date.now() - t0, add, rm });
+        }
+      });
+      mo.observe(root, { childList: true, subtree: true });
+    } catch (_) {
+      return NO_MUTATION_TRACE;
+    }
+
+    return {
+      dump(label) {
+        const rows = recs.slice(printed);
+        printed = recs.length;
+        console.log(`[SecureDoc][진단] ===== 컴포저 DOM 변화 · ${label} · ${rows.length}건 · 관찰루트=${describeNode(root)} =====`);
+        if (!rows.length) {
+          console.log('[SecureDoc][진단] (이 구간에 컴포저 주변 DOM 이 전혀 바뀌지 않았습니다)');
+        }
+        for (const r of rows) {
+          const parts = [];
+          if (r.add.length) parts.push('+ ' + r.add.slice(0, 8).join(','));
+          if (r.rm.length) parts.push('- ' + r.rm.slice(0, 8).join(','));
+          console.log(`[SecureDoc][진단] +${(r.t / 1000).toFixed(2)}s ${parts.join('   ')}`);
+        }
+        console.log('[SecureDoc][진단] ===== 컴포저 DOM 변화 끝 =====');
+      },
+      stop() { try { mo.disconnect(); } catch (_) { /* ignore */ } },
+    };
+  }
+
+  /** 첨부 대기가 아무 신호도 못 본 채 끝났을 때(= 버그 재현 순간) 한 번만 부른다. */
+  function dumpAttachmentDiagnostics(trace, probeMs) {
+    if (diagnosticsDumped) {
+      trace.stop();
+      console.log('[SecureDoc][진단] 이 페이지에서는 이미 한 번 기록을 남겼습니다 — 다시 보려면 콘솔에 __campfireTrace() 를 입력하세요.');
+      return;
+    }
+    diagnosticsDumped = true;
+    console.log(
+      '[SecureDoc][진단] 첨부가 사이트에 다 올라가기 전에 전송될 수 있는 상태입니다. '
+      + '아래에 이어지는 [진단] 줄들을 통째로 복사해 개발자에게 전달해 주세요. '
+      + '(문서 내용·파일명·요청 바디는 기록하지 않습니다. 8초 뒤 두 번째 묶음이 더 출력됩니다.)',
+    );
+    // 주입이 실제로 먹혔는지 — "우리가 넣었다"가 아니라 "사이트가 받았다" 관점의 사실.
+    // 이 세 줄이 "주입 실패"와 "전송 시점 업로드"를 한 번의 수집으로 가른다.
+    const rep = lastInjectionReport;
+    console.log(
+      `[SecureDoc][진단] 주입 판정: ${rep?.winner ? `성공(${rep.winner.name} / ${rep.winner.why})` : '증거 없음'}`
+      + ` | 시도: ${(rep?.attempts || []).join(' → ') || '(기록 없음)'}`,
+    );
+    if (rep?.target) {
+      const t = rep.target;
+      console.log(`[SecureDoc][진단] 주입 대상: ${t.strategy} files=${t.files} connected=${t.connected} 컴포저안=${t.underComposer}`);
+      console.log(`[SecureDoc][진단] 주입 대상 부모 체인: ${t.chain}`);
+    }
+    trace.dump('첨부 대기 창');
+    requestTracePrint('첨부 대기 창(주입 직후)', probeMs + 1500);
+    // 전송 "후"에야 업로드가 일어나는 구조인지를 가르는 두 번째 창.
+    setTimeout(() => {
+      trace.dump('전송 후 8초');
+      trace.stop();
+      requestTracePrint('전송 후 8초', 8000);
+      console.log('[SecureDoc][진단] 여기까지입니다. 위 [진단] 줄 전체를 복사해 주세요.');
+    }, 8000);
+  }
+
   /** 첨부가 사이트에 실제로 올라갈 때까지 기다린다.
    *
    *  왜 필요한가: 예전엔 파일을 넣고 고정 900ms 만 기다린 뒤 전송했다. 사이트는
@@ -878,11 +1549,30 @@
    *  업로드가 끝나기 전에 눌려 프롬프트만 먼저 나갔다(실사용자 Gemini 리포트:
    *  "첨부는 됐는데 요약하기가 먼저 들어갔어").
    *
-   *  고정 시간을 늘리는 건 추측이라, 사이트가 주는 신호를 쓴다. 대부분의 챗 UI 는
-   *  첨부를 올리는 동안 전송 버튼을 잠갔다가 끝나면 다시 연다. 그 "잠김 → 열림"
-   *  전환을 기다린다. 잠기는 걸 못 봤으면(그렇게 동작하지 않는 사이트) 판단 불가라
-   *  예전과 같은 짧은 대기로 물러난다 — 없던 신호를 지어내지 않는다. */
-  async function waitForAttachmentReady(cfg, busyProbeMs = 2500, readyWaitMs = 60000) {
+   *  (2026-08-05 재정정) 그 다음 시도는 "업로드 중엔 전송 버튼이 잠긴다"를 신호로
+   *  썼다. ChatGPT 는 그렇게 동작하지만 Gemini 는 아니다 — 업로드 내내 전송 버튼이
+   *  활성이라 신호가 안 잡히고 900ms 폴백으로 떨어졌다(실사용자 Gemini 콘솔:
+   *    [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+   *    [SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다
+   *    [SecureDoc] 재전송: 버튼 클릭 성공 (207ms, sel=button[aria-label="메시지 보내기"])
+   *  주입은 성공했는데 207ms 만에 전송됐다 = 업로드 도중 전송).
+   *
+   *  그래서 신호를 하나에 걸지 않고, 사이트에 덜 의존하는 순서로 셋을 함께 본다:
+   *    1) network — MAIN world(interceptor.js)가 세는 "파일 바디를 가진 요청"의
+   *                 진행 중 개수. 어떤 사이트의 DOM 에도 의존하지 않는다.
+   *    2) dom     — 진행률/스피너 요소가 대기 시작 시점보다 늘어났는지.
+   *    3) button  — 전송 버튼 잠김(예전 신호). ChatGPT 처럼 실제로 잠그는 사이트용.
+   *  셋 중 하나라도 "시작"을 보면 그것들이 전부 풀릴 때까지 기다린다. 사이트별
+   *  선택자나 클래스명은 하나도 쓰지 않는다 — 그런 하드코딩은 사이트 개편 때마다
+   *  조용히 깨져왔다(이 파일의 "선택자가 깨졌을 때의 폴백" 섹션 참고).
+   *
+   *  아무 신호도 못 보면 그대로 전송한다. 예전의 900ms 추가 대기는 근거 없는
+   *  값이었다 — 어디서 온 숫자인지 설명할 수 없고, 실제로 Gemini 를 못 구했다.
+   *  지금은 그 시간을 "가만히 자는" 데 쓰지 않고 probeMs 동안 세 신호를 실제로
+   *  관측하는 데 쓴다. 신호가 잡히면 그 즉시 빠져나오므로 정상 경로는 오히려 빨라지고,
+   *  끝까지 아무것도 안 잡히면 그건 "모르겠다"가 아니라 "이 페이지는 업로드를
+   *  시작하지 않았다"는 관측 결과다. */
+  async function waitForAttachmentReady(cfg, probeMs = 1500, readyWaitMs = 60000) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const sendBtn = () => {
       for (const sel of sendButtonSelectors(cfg)) {
@@ -898,26 +1588,73 @@
       return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
     };
 
+    // 기준선은 반드시 주입 "직후"인 지금 잡는다 — 이 뒤에 늘어난 것만 우리 첨부
+    // 때문이라고 볼 수 있다.
+    const startCountBase = uploadStartCount;
+    const busyBase = countBusyIndicators();
+
+    const netBusy = () => uploadInflight > 0;
+    const netFinished = () => uploadStartCount > startCountBase && uploadInflight === 0;
+    const domBusy = () => countBusyIndicators() > busyBase;
+
+    const fired = new Set();
+    const probe = () => {
+      if (netBusy()) fired.add('network');
+      if (domBusy()) fired.add('dom');
+      if (locked()) fired.add('button');
+      return fired.size > 0;
+    };
+    const stillBusy = () => (
+      (fired.has('network') && netBusy())
+      || (fired.has('dom') && domBusy())
+      || (fired.has('button') && locked())
+    );
+
+    // 신호를 하나도 못 봤을 때 무슨 일이 있었는지 남기기 위한 기록(위 "진단" 참고).
+    // 신호가 정상적으로 잡히면 아무것도 출력하지 않고 조용히 멈춘다.
+    const trace = startComposerMutationTrace(cfg);
+
     const startedAt = Date.now();
-    let sawBusy = false;
-    while (Date.now() - startedAt < busyProbeMs) {
-      if (locked()) { sawBusy = true; break; }
-      await sleep(100);
-    }
-    if (!sawBusy) {
-      // 업로드 중임을 알려주는 신호가 없다 — 예전 동작(짧은 대기)으로 물러난다.
-      await sleep(900);
-      console.log('[SecureDoc] 첨부 대기: 업로드 신호 없음 — 900ms 후 전송합니다');
-      return false;
-    }
-    while (Date.now() - startedAt < readyWaitMs) {
-      if (!locked()) {
-        console.log(`[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${Date.now() - startedAt}ms)`);
+    while (Date.now() - startedAt < probeMs) {
+      if (probe()) break;
+      // 업로드가 폴링 간격보다 빨리 끝나버린 경우 — 시작을 못 봤어도 이미 끝났다.
+      if (netFinished()) {
+        trace.stop();
+        console.log(`[SecureDoc] 첨부 대기: 업로드가 즉시 끝났습니다 (network, ${Date.now() - startedAt}ms)`);
         return true;
       }
-      await sleep(150);
+      await sleep(80);
     }
-    console.warn(`[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 전송 버튼이 다시 열리지 않았습니다 — 그대로 전송을 시도합니다`);
+
+    if (!fired.size) {
+      console.log(
+        `[SecureDoc] 첨부 대기: 업로드 신호 없음 — ${probeMs}ms 동안 network/dom/button 셋 다 무반응이라 그대로 전송합니다`,
+      );
+      dumpAttachmentDiagnostics(trace, probeMs);
+      return false;
+    }
+
+    const signal = [...fired].join('+');
+    console.log(`[SecureDoc] 첨부 대기: 업로드 진행 감지 (${signal}) — 끝날 때까지 기다립니다`);
+    while (Date.now() - startedAt < readyWaitMs) {
+      if (!stillBusy()) {
+        // 업로드 응답을 받은 뒤 사이트가 첨부를 컴포저 상태에 반영하는 데 한 틱이
+        // 더 걸린다. 그 사이에 눌리면 다시 첨부 없이 나갈 수 있어 짧게 양보한다.
+        // (이 값은 안전 여유일 뿐 신호가 아니다 — 실기 계측으로 정한 값은 아니다.)
+        await sleep(250);
+        trace.stop();
+        console.log(
+          `[SecureDoc] 첨부 대기: 업로드 완료로 보고 전송합니다 (${signal}, ${Date.now() - startedAt}ms)`,
+        );
+        return true;
+      }
+      probe(); // 늦게 켜지는 신호도 이후 대기에 반영한다
+      await sleep(120);
+    }
+    trace.stop();
+    console.warn(
+      `[SecureDoc] 첨부 대기: ${readyWaitMs}ms 안에 업로드가 끝나지 않았습니다 (${signal}) — 그대로 전송을 시도합니다`,
+    );
     return false;
   }
 
@@ -1015,30 +1752,61 @@
         // 그 다음 파일을 넣었을 때 사이트가 업로드하느라 버튼을 잠그는 것을
         // 신호로 쓸 수 있다(waitForAttachmentReady). 순서가 반대면 대기 내내
         // 입력창이 비어 버튼이 계속 잠겨 있어 업로드 중인지 구분할 수 없다.
-        setEditorText(latestCfg, finalText);
+        // 마스킹본을 못 넣었으면 입력창엔 "원문"이 그대로 남아 있다. 그대로 보내면
+        // 마스킹 전 원본이 전송된다 — 실측(헤드리스)에서 실제로 원문이 살아남는 걸
+        // 확인했다. 예전엔 반환값을 버려서 이 경로로 원문이 나갈 수 있었다.
+        if (!setEditorText(latestCfg, finalText)) {
+          promptApproved = false;
+          clearPendingAttachment();
+          showBlockedBadge('⚠️ 입력창에 마스킹된 내용을 넣지 못해 전송을 멈췄습니다. 원문이 그대로 나가지 않도록 막았습니다.');
+          console.error('[SecureDoc] 마스킹본을 입력창에 넣지 못해 전송을 중단했습니다 — 원문 유출을 막기 위함입니다.');
+          return;
+        }
 
         let injected = true;
         if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
           const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
           await announceContentApprovedFile(maskedFile);
-          injected = staged.inject(maskedFile) !== false;
+          // inject 는 이제 "사이트가 받았다는 증거"를 확인하느라 비동기다.
+          injected = (await staged.inject(maskedFile)) !== false;
         } else if (decision.file?.action === 'passthrough') {
           await announceContentApprovedFile(staged.file);
-          injected = staged.inject(staged.file) !== false;
-        }
-        if (!injected) {
-          console.error(
-            '[SecureDoc] 문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다. '
-            + '문서를 다시 첨부해 주세요.',
-          );
+          injected = (await staged.inject(staged.file)) !== false;
         }
         // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
+        const stagedName = staged.fileName;
         clearPendingAttachment();
+
+        if (!injected) {
+          // ── 전송 중단 (fail-closed) ────────────────────────────────────────
+          // 예전에는 주입에 실패해도 프롬프트를 그대로 보내고 콘솔에만 남겼다. 사용자는
+          // 문서가 갔다고 믿은 채 대화를 이어간다 — 보안 제품에서 가장 나쁜 실패 모드다.
+          // 이제는 보내지 않는다. 입력창의 마스킹 텍스트는 그대로 두어 사용자가 문서를
+          // 다시 첨부해 직접 보낼 수 있게 하고, 화면 뱃지로 눈에 띄게 알린다.
+          //
+          // promptApproved 를 즉시 내리는 이유: 이 플래그가 켜져 있는 동안은 사용자의
+          // Enter 가 검사 없이 사이트로 그대로 나간다(우리 재전송을 통과시키려는 장치).
+          // 전송을 안 할 거면 그 구멍을 열어둘 이유가 없다.
+          promptApproved = false;
+          showAttachFailedBadge(stagedName);
+          console.error(
+            '[SecureDoc] 문서를 첨부하지 못해 전송을 중단했습니다 — 입력창 내용은 그대로 두었습니다. '
+            + '문서를 다시 첨부한 뒤 보내주세요.',
+          );
+          return; // finally 의 restoreEditor() 가 입력창을 다시 보이게 한다
+        }
+
         // 첨부가 사이트에 실제로 올라갈 때까지 기다린 뒤 전송한다.
-        if (injected) await waitForAttachmentReady(latestCfg);
+        await waitForAttachmentReady(latestCfg);
       } else {
         const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
-        setEditorText(latestCfg, finalText);
+        // 마스킹 결정인데 넣지 못했으면 입력창엔 원문이 남아 있다 — 보내면 안 된다.
+        if (!setEditorText(latestCfg, finalText) && decision.action === 'masked') {
+          promptApproved = false;
+          showBlockedBadge('⚠️ 입력창에 마스킹된 내용을 넣지 못해 전송을 멈췄습니다. 원문이 그대로 나가지 않도록 막았습니다.');
+          console.error('[SecureDoc] 마스킹본을 입력창에 넣지 못해 전송을 중단했습니다 — 원문 유출을 막기 위함입니다.');
+          return;
+        }
       }
 
       await resubmitPrompt(latestCfg);
