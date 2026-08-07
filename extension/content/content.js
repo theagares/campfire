@@ -241,9 +241,23 @@
    *  try/catch 로 잡을 수도 없어서, 사이트의 드롭 처리만 조용히 중단된다. */
   function reviveFileInput(orphan, parentHint) {
     if (!orphan || orphan.isConnected) return orphan || null;
-    const host = parentHint?.isConnected
-      ? parentHint
-      : (findEditor(getPromptConfig())?.closest?.('form') || document.body);
+    // 붙이는 자리가 결정적이다. 사이트 리스너는 대개 컴포저에 위임돼 있어서, body 에
+    // 붙이면 change 를 아무도 안 듣는다 — 실사용자 Gemini 로그가 정확히 그랬다:
+    //   "되돌려 놓았습니다 (붙인 곳: body ← 컴포저 바깥이라 사이트가 못 들을 수 있습니다)"
+    //   → input되돌리기=증거없음
+    // 그래서 원래 부모가 사라졌으면 form 다음으로 **컴포저 루트**를 먼저 본다.
+    // body 는 정말 아무 데도 못 붙일 때의 마지막 수단이다.
+    const cfg = getPromptConfig();
+    let host = null;
+    if (parentHint?.isConnected) {
+      host = parentHint;
+    } else {
+      try { host = findEditor(cfg)?.closest?.('form') || null; } catch (_) { host = null; }
+      if (!host?.isConnected) {
+        try { host = findComposerRoot(cfg) || null; } catch (_) { host = null; }
+      }
+      if (!host?.isConnected) host = document.body;
+    }
     if (!host) return null;
     try {
       host.appendChild(orphan);
@@ -336,14 +350,25 @@
     });
 
     // 2) 사이트가 떼어낸 input 을 되돌려 붙이기 — 노드가 살아 있는 사이트에서만 먹는다.
+    let revivedNode = null;
     await attempt('input되돌리기', (beginWatch) => {
       const revived = reviveFileInput(preferred, parentHint);
       if (!revived) return false;
+      revivedNode = revived;
       beginWatch();
       setFileOnInput(revived, finalFile);
       target = describeInjectionTarget('input되돌리기', revived);
       return revived.files?.length === 1;
     });
+    // 이 전략이 증거를 못 얻었으면 되돌려 붙인 노드를 다시 떼어낸다.
+    //
+    // 두 가지 이유다. (a) 사이트가 만들지 않은 input 을 DOM 에 남겨두지 않는다.
+    // (b) 아래 4)는 "새로 생긴 input" 으로 성공을 판정하는데, 이 노드가 연결된 채
+    //     남아 있으면 기준 스냅샷에 들어가버린다 — 사이트가 같은 노드를 다시 쓰는
+    //     구조라면 새로 생긴 걸 영영 못 알아본다.
+    if (!winner && revivedNode?.isConnected) {
+      try { revivedNode.remove(); } catch (_) { /* 남아도 치명적이진 않다 */ }
+    }
 
     // 3) 합성 drop — 사이트 핸들러가 내부에서 터질 수 있지만(this.drop is not a
     //    function) 그건 사이트 리스너 안의 예외라 우리 흐름을 끊지 않고, 첨부 자체는
@@ -1362,7 +1387,14 @@
   // 선택자 하드코딩은 없다. 사이트별 클래스명 대신 ARIA/접근성 이름으로만 고른다.
   // ══════════════════════════════════════════════════════════════════════════
   const ATTACH_NAME_RE = /(attach|upload|add\s*(file|photo|image)|첨부|파일|업로드)/i;
-  const ATTACH_CLICK_WAIT_MS = 700;
+  // 버튼을 누른 뒤 사이트가 input 을 만들 때까지 기다리는 시간. 700ms 는 짧았다 —
+  // 메뉴가 애니메이션과 함께 열리고, 항목을 한 번 더 눌러야 비로소 input 이 생기는
+  // 사이트에서는 두 단계가 그 안에 안 끝난다(실사용자 Gemini: 버튼은 눌렸는데 새
+  // input 이 안 생겼다). 새 input 이 보이면 즉시 빠져나오므로 성공 경로는 안 느려지고,
+  // 이 시간이 다 소모되는 건 어차피 전송을 막을 실패 경로뿐이다.
+  const ATTACH_CLICK_WAIT_MS = 1500;
+  // 그래도 사용자를 오래 세워두진 않는다 — 버튼 3개 × 2단계가 다 헛돌아도 여기서 끊는다.
+  const ATTACH_UI_BUDGET_MS = 5000;
   const pickerAckWaiters = new Map();
 
   window.addEventListener('message', (event) => {
@@ -1449,6 +1481,58 @@
     return null;
   }
 
+  /** 클릭 이후 문서에 "새로 추가된" 노드를 모은다.
+   *
+   *  메뉴 항목을 ARIA 역할로 추측하는 건 사이트 마크업에 대한 도박이다(Gemini 는
+   *  role=menuitem 을 안 쓸 수도 있다). 대신 "우리가 버튼을 누른 뒤에 나타난 것"
+   *  이라는, 마크업과 무관한 사실을 쓴다. 오탐 위험도 이쪽이 낮다 — 첨부 버튼 클릭에
+   *  반응해 나타난 것 중에서만 고르기 때문이다. */
+  function startAddedNodeWatch() {
+    const added = [];
+    let mo = null;
+    try {
+      mo = new MutationObserver((list) => {
+        for (const m of list) {
+          for (const n of m.addedNodes || []) {
+            if (n?.nodeType === 1) added.push(n);
+          }
+        }
+      });
+      mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (_) { mo = null; }
+    return { added, stop() { try { mo?.disconnect(); } catch (_) { /* ignore */ } } };
+  }
+
+  const MENU_ITEM_SELS = 'button, [role="menuitem"], [role="option"], [role="menuitemradio"], [role="button"], li, a';
+
+  /** 새로 나타난 노드들 중 이름이 첨부/파일 류에 맞는 클릭 대상을 고른다. */
+  function findUploadItemAmong(roots) {
+    for (const root of roots) {
+      if (root?.nodeType !== 1 || !root.isConnected) continue;
+      let cands = [root];
+      try { cands = cands.concat(Array.from(root.querySelectorAll?.(MENU_ITEM_SELS) || [])); } catch (_) { /* ignore */ }
+      for (const el of cands) {
+        if (!el?.isConnected) continue;
+        if (el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
+        if (!ATTACH_NAME_RE.test(accessibleName(el))) continue;
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /** 실패했을 때 "무엇이 있었는지" 를 한 줄로 남기기 위한 요약.
+   *  사이트 UI 의 접근성 이름만 쓰고(사용자 문서 내용이 아니다) 길이를 자른다. */
+  function summarizeNames(els, limit = 4) {
+    const names = [];
+    for (const el of els) {
+      const n = accessibleName(el).replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (n && !names.includes(n)) names.push(n);
+      if (names.length >= limit) break;
+    }
+    return names.length ? names.join(' | ') : '(이름 없음)';
+  }
+
   function closeTransientMenus(cfg) {
     try {
       const init = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
@@ -1475,16 +1559,31 @@
     let opened = false;
     let acquired = null;
     let usedBtn = null;
+    const diag = []; // 실패했을 때 "어디까지 갔는지" 를 남긴다
+    const deadline = Date.now() + ATTACH_UI_BUDGET_MS;
     for (const btn of buttons) {
-      try { btn.click(); opened = true; } catch (_) { continue; }
+      if (Date.now() >= deadline) { diag.push('시간 예산 초과로 나머지 버튼은 안 눌러봄'); break; }
+      const watch = startAddedNodeWatch();
+      try { btn.click(); opened = true; } catch (_) { watch.stop(); continue; }
+
       let input = await waitForNewFileInput(before, ATTACH_CLICK_WAIT_MS);
       if (!input) {
-        const item = findMenuUploadItem();
+        // 메뉴가 열리는 사이트다. 역할 추측(findMenuUploadItem)보다 "방금 나타난 것"
+        // 에서 먼저 찾는다 — 사이트 마크업에 덜 의존한다.
+        const item = findUploadItemAmong(watch.added) || findMenuUploadItem();
         if (item) {
+          diag.push(`메뉴항목="${summarizeNames([item], 1)}" 클릭`);
           try { item.click(); } catch (_) { /* 무시 */ }
           input = await waitForNewFileInput(before, ATTACH_CLICK_WAIT_MS);
+        } else {
+          diag.push(
+            watch.added.length
+              ? `클릭 후 ${watch.added.length}개 노드가 생겼지만 첨부 항목 이름이 없음(${summarizeNames(watch.added)})`
+              : '클릭 후 DOM 변화 없음(버튼이 안 먹었거나 메뉴가 안 열림)',
+          );
         }
       }
+      watch.stop();
       if (input) { acquired = input; usedBtn = btn; break; }
     }
 
@@ -1495,7 +1594,11 @@
 
     if (!acquired) {
       await cleanup();
-      console.log(`[SecureDoc] 첨부 UI 구동: 버튼 ${buttons.length}개를 눌러봤지만 새 input 이 생기지 않았습니다`);
+      console.log(
+        `[SecureDoc] 첨부 UI 구동: 새 input 이 생기지 않았습니다 — `
+        + `버튼 ${buttons.length}개(${summarizeNames(buttons)})`
+        + `${diag.length ? ` / ${diag.join(' · ')}` : ''}`,
+      );
       return null;
     }
     console.log(`[SecureDoc] 첨부 UI 구동: 사이트가 새 input 을 만들었습니다 (버튼=${describeNode(usedBtn)})`);
