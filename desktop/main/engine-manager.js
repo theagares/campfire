@@ -16,6 +16,8 @@
 
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const http = require('http');
 const { app } = require('electron');
 
@@ -31,6 +33,11 @@ const paths = require('./paths');
  * 배포본에서는 끈다 — ipc.js 의 dev 판정과 같은 기준을 쓴다.
  */
 const DEV = process.argv.includes('--dev') || !app?.isPackaged;
+
+/** 비정상 종료 메시지에 붙일 단서를 뽑기 위해 들고 있는 최근 엔진 로그 줄 수. */
+const RECENT_LOG_LINES = 80;
+/** 엔진 로그 파일 상한 — 넘으면 비우고 다시 쓴다(접근 로그가 계속 쌓인다). */
+const ENGINE_LOG_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
  * @typedef {Object} EngineStatus
@@ -55,6 +62,7 @@ class EngineManager extends EventEmitter {
     this.restartAttempts = 0;
     this.maxRestartAttempts = 3;
     this.intentionalStop = false;
+    this.recentLog = [];
     this.engineDir = paths.resolveEngineDir(app);
     this.pythonExe = paths.resolvePythonExe(this.engineDir);
   }
@@ -116,11 +124,43 @@ class EngineManager extends EventEmitter {
       SECUREDOC_UPSTAGE_API_KEY: this.config.get('upstageApiKey') || '',
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
+      // ── 앱 번들에 아무것도 쓰지 않게 한다 (macOS 에서 앱을 못 쓰게 만들던 원인) ──
+      //
+      // 실사용자 mac(0.2.17, 신규 설치)에서 확인된 것:
+      //   codesign --verify → "file added: .../.venv/lib/python3.11/re/__pycache__/*.pyc"
+      //   /Applications/Campfire.app/.../engine/app/store/data/securedoc.sqlite3 존재
+      //   xattr → com.apple.quarantine 살아 있음
+      // 빌드가 __pycache__ 를 빼고 패키징하므로 첫 실행 때 Python 이 stdlib 을 컴파일하며
+      // 번들 안에 .pyc 를 쓰고, 엔진은 DB 를 번들 안에 쓴다. 둘 다 서명 이후의 파일이라
+      // ad-hoc 서명(진짜 인증서가 없어 codesign --sign - 로만 서명한다)이 첫 실행에
+      // 스스로 깨진다. 격리 속성까지 살아 있으면 Gatekeeper 가 개입하고, Apple Silicon 은
+      // 서명이 깨진 바이너리 실행을 거부할 수 있다.
+      // Windows 에서 같은 코드가 멀쩡했던 건 번들 서명 검증이 없어서일 뿐이다.
+      PYTHONPYCACHEPREFIX: paths.resolvePycacheDir(),
+      SECUREDOC_STORE_DIR: paths.resolveStoreDir(),
+      // cwd 를 번들 밖으로 뺐으므로 app 패키지를 PYTHONPATH 로 알려준다(아래 주석).
+      PYTHONPATH: this.engineDir,
     };
 
     try {
+      // cwd 를 engineDir(=앱 번들 내부)로 잡지 않는다.
+      //
+      // 번들이 교체·재배치되면 실행 중인 엔진의 CWD 가 사라지고, 그러면 Python 은
+      // import 도중 os.getcwd() 에서 죽는다. 실사용자 트레이스백이 정확히 그 모양이었다:
+      //   import torch → inspect.getmodule → getabsfile → posixpath.abspath
+      //   → FileNotFoundError: [Errno 2]
+      // abspath 가 ENOENT 를 내는 경로는 내부의 os.getcwd() 뿐이다. 엔진이 안 뜨니
+      // 마스킹 결정이 안 나오고, 사용자 눈에는 "사이트에서 아무 일도 안 일어남" 으로만
+      // 보였다.
+      //
+      // 그래서 항상 존재하는 사용자 데이터 폴더를 cwd 로 쓰고, app 패키지는
+      // PYTHONPATH 로 찾게 한다(`-m app.main` 은 sys.path 에서 찾으므로 동작이 같다).
+      // 엔진은 경로를 전부 __file__ 기준 절대경로로 잡으므로 cwd 에 의존하지 않는다.
+      const cwd = paths.userDataRoot();
+      try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) { /* 아래 spawn 이 알려준다 */ }
+
       this.child = spawn(this.pythonExe, ['-m', 'app.main'], {
-        cwd: this.engineDir,
+        cwd,
         env,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -142,12 +182,52 @@ class EngineManager extends EventEmitter {
     this._startPolling();
   }
 
+  /** 엔진이 뱉은 것을 기록한다.
+   *
+   *  예전엔 배포본에서 이걸 통째로 버렸다(`if (!DEV) return`). 그래서 실사용자 mac 에서
+   *  엔진이 import 도중 죽었을 때 앱에는 흔적이 하나도 안 남았고, 증상은 "사이트에서
+   *  아무 일도 안 일어남" 뿐이었다 — 앱을 터미널에서 직접 띄우지 않았으면 원인을 영영
+   *  못 찾았을 것이다. 터미널로 쏟아내지 않는다는 원래 의도(설치본을 cmd 에서 실행했을
+   *  때 로그가 계속 뜨던 문제)는 그대로 지키면서, 파일과 메모리에는 남긴다. */
   _onEngineLog(buf) {
-    if (!DEV) return; // 배포본에서는 터미널로 흘리지 않는다(위 DEV 주석 참고)
-    const line = buf.toString('utf-8').trim();
-    if (line) {
-      console.log('[engine]', line);
+    const text = buf.toString('utf-8');
+    const line = text.trim();
+    if (!line) return;
+
+    if (DEV) console.log('[engine]', line);
+
+    // 최근 줄은 메모리에 — 비정상 종료 시 사용자에게 보여줄 근거로 쓴다.
+    for (const l of line.split('\n')) {
+      this.recentLog.push(l);
     }
+    if (this.recentLog.length > RECENT_LOG_LINES) {
+      this.recentLog.splice(0, this.recentLog.length - RECENT_LOG_LINES);
+    }
+
+    this._appendLogFile(text);
+  }
+
+  _appendLogFile(text) {
+    try {
+      const p = paths.resolveEngineLogPath();
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      // 무한히 자라지 않게 한다. uvicorn 접근 로그가 계속 쌓이므로 상한이 필요하다.
+      try {
+        if (fs.statSync(p).size > ENGINE_LOG_MAX_BYTES) fs.rmSync(p, { force: true });
+      } catch (_) { /* 파일이 아직 없다 */ }
+      fs.appendFileSync(p, text.endsWith('\n') ? text : `${text}\n`);
+    } catch (_) {
+      // 로그를 못 남기는 것으로 엔진 기동을 막지 않는다.
+    }
+  }
+
+  /** 비정상 종료를 사용자에게 설명할 때 붙일 마지막 단서. */
+  _lastErrorLines(n = 3) {
+    const meaningful = this.recentLog
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((l) => !/^INFO:/.test(l)); // 평범한 기동 로그는 단서가 못 된다
+    return meaningful.slice(-n).join(' / ');
   }
 
   _onExit(code, signal) {
@@ -166,7 +246,14 @@ class EngineManager extends EventEmitter {
       this._setState('starting', `엔진이 예기치 않게 종료됨 — 재시작 시도 ${this.restartAttempts}/${this.maxRestartAttempts}`);
       setTimeout(() => this.start(), 1200 * this.restartAttempts);
     } else {
-      this._setState('error', '엔진이 반복적으로 종료됩니다. 로그를 확인하세요.');
+      // 무엇 때문에 죽었는지를 화면에 그대로 붙인다 — "로그를 확인하세요" 만으로는
+      // 사용자가 확인할 로그가 어디에도 없었다.
+      const clue = this._lastErrorLines();
+      this._setState(
+        'error',
+        `엔진이 반복적으로 종료됩니다${clue ? ` — ${clue}` : ''} `
+        + `(로그: ${paths.resolveEngineLogPath()})`,
+      );
     }
   }
 

@@ -42,8 +42,8 @@ function readStats(app) {
   if (!sqliteAvailable) {
     return { available: false, reason: 'node:sqlite 미지원 (Node 22+ 필요) — 통계는 플레이스홀더로 표시' };
   }
-  const engineDir = paths.resolveEngineDir(app);
-  const dbPath = paths.resolveStoreDbPath(engineDir);
+  // store 는 앱 번들 밖(사용자 데이터 폴더)에 있다 — engineDir 과 무관하다.
+  const dbPath = paths.resolveStoreDbPath();
 
   let db;
   try {
