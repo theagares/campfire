@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # 옮겨져 구버전 앱이 모델을 잃는 사고가 실제로 났다. 테스트는 실사용자 상태를
 # 건드리지 않는다.
 os.environ.setdefault("SECUREDOC_SKIP_LEGACY_MIGRATION", "1")
+
+# store(탐지 통계 DB + audit.log)의 기본 위치가 앱 번들 안에서 사용자 데이터 폴더로
+# 옮겨졌다(config.STORE_DIR 주석 — macOS 에서 번들에 쓰면 코드 서명이 깨진다).
+# 그 전까지는 기본값이 저장소 안이라 테스트가 거기 써도 실사용자와 무관했지만, 이제는
+# 그냥 두면 pytest 가 **설치된 앱의 진짜 통계 DB** 에 쓰게 된다. 모델 605MB 를 옮겨
+# 버렸던 사고와 같은 종류라, 위와 같은 이유로 여기서 막는다.
+os.environ.setdefault(
+    "SECUREDOC_STORE_DIR", str(Path(tempfile.gettempdir()) / "campfire-test-store")
+)
 
 
 @pytest.fixture(autouse=True)

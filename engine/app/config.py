@@ -212,7 +212,28 @@ PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_S
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
 RULES_DIR: Path = APP_DIR / "rules"
-STORE_DIR: Path = Path(os.environ.get("SECUREDOC_STORE_DIR", str(APP_DIR / "store" / "data")))
+
+# store 는 "사용자 기기에 쌓이는 것" 이므로 모델 가중치와 같은 자리에 둔다 —
+# 앱 번들 안이 아니다.
+#
+# 예전엔 APP_DIR/store/data, 즉 **앱 번들 내부**였다. macOS 에서 이게 실제로 앱을
+# 못 쓰게 만들었다(실사용자 확인):
+#   · /Applications/Campfire.app/.../engine/app/store/data/securedoc.sqlite3 가 생기고
+#   · codesign --verify 가 "file added" 로 실패한다 = 코드 서명이 깨진다
+# 우리 mac 빌드는 진짜 인증서가 없어 ad-hoc 서명(codesign --sign -)만 하는데,
+# 그 서명이 첫 실행에서 스스로 무효화된다. 격리(quarantine) 속성까지 살아 있으면
+# Gatekeeper 가 개입하고, Apple Silicon 은 서명이 깨진 바이너리 실행을 거부할 수 있다.
+# 게다가 번들이 교체·재배치되면 실행 중인 엔진의 CWD 가 사라져 import 도중
+# os.getcwd() 가 ENOENT 로 죽는다(실사용자 트레이스백이 정확히 그 모양이었다).
+# Windows 에서 같은 코드가 멀쩡했던 건 번들 서명 검증이 없어서일 뿐이다.
+#
+# 데스크탑 앱은 SECUREDOC_STORE_DIR 로 이 경로를 명시해서 넘긴다 — 앱이 통계를 읽는
+# 경로와 엔진이 쓰는 경로가 어긋나면 안 되므로 한쪽(앱)만 정하게 한다. 아래 기본값은
+# 엔진을 단독으로 띄웠을 때 쓰이며, 앱이 넘기는 값과 같은 규칙이다.
+LEGACY_STORE_DIR: Path = APP_DIR / "store" / "data"
+STORE_DIR: Path = Path(
+    os.environ.get("SECUREDOC_STORE_DIR", str(_models_base() / "Campfire" / "store"))
+)
 DB_PATH: Path = STORE_DIR / "securedoc.sqlite3"
 AUDIT_LOG_PATH: Path = STORE_DIR / "audit.log"
 
