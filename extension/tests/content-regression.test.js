@@ -51,6 +51,13 @@ class HTMLInputElementStub extends EventTargetStub {
   }
   // setFileOnInput 이 마스킹본을 넣고 input/change 를 쏘는 시점을 순서 로그에 남긴다.
   dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id }); return true; }
+  // 되돌려 붙인 노드를 다시 떼어내는 경로((22))가 실제로 떼어냈는지 보려면 필요하다.
+  // host.appended 는 "붙인 적이 있다"는 **기록**이므로 여기서 건드리지 않는다 — (16)이
+  // 그걸로 "되돌리기 전략을 시도했는지" 를 판정한다. 떼어냈는지는 isConnected 로 본다.
+  remove() {
+    this.isConnected = false;
+    this.parentElement = null;
+  }
 }
 class HTMLTextAreaElementStub extends EventTargetStub {
   constructor(value = '') {
@@ -1452,6 +1459,72 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (body21 === ORIG21 && send21.clicks !== 0) {
     throw new Error('마스킹본을 못 넣었는데 전송했다');
+  }
+
+  // (22) 되돌려 붙일 자리가 없으면 body 가 아니라 컴포저 안에 붙이고,
+  //      증거를 못 얻었으면 그 노드를 **다시 떼어낸다**.
+  //
+  // 배경(실사용자 Gemini, 0.2.18):
+  //   [SecureDoc] 파일 재주입: 사이트가 떼어낸 input 을 되돌려 놓았습니다
+  //               (붙인 곳: body ← 컴포저 바깥이라 사이트가 못 들을 수 있습니다)
+  //   → input되돌리기=증거없음
+  // 사이트 리스너는 대개 컴포저에 위임돼 있어서 body 에 붙이면 change 를 아무도 안
+  // 듣는다. 코드가 그 사실을 로그로 경고하면서도 정작 body 에 붙이고 있었다.
+  //
+  // 그리고 실패한 되돌리기를 DOM 에 남겨두면 안 된다. 뒤따르는 "사이트 첨부 UI" 전략은
+  // **새로 생긴 input** 으로 성공을 판정하는데, 우리가 붙여둔 노드가 기준 스냅샷에
+  // 들어가면 사이트가 같은 노드를 재사용하는 구조일 때 영영 못 알아본다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  sandbox.MutationObserver = MutationObserverStub; // 관찰 가능 = 증거 판정이 실제로 돈다
+  MutationObserverStub.instances.length = 0;       // 아무 변화도 안 쏜다 → 증거 없음
+
+  // 컴포저 루트로 쓰일 입력창. 하니스에는 부모 사슬이 없어 findComposerRoot 가 이걸
+  // 그대로 돌려준다.
+  const composer22 = new HTMLTextAreaElementStub('이 문서 요약해줘');
+  composer22.appended = [];
+  composer22.appendChild = function (node) {
+    this.appended.push(node); node.isConnected = true; node.parentElement = this;
+  };
+  domBySelector.set('#prompt-textarea', composer22);
+  const send22 = new SendButtonStub();
+  send22.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send22);
+  domBySelector.delete('input[type="file"]');   // 살아 있는 input 은 없다
+  documentStub.activeElement = composer22;
+
+  const input22 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'revive22.pdf', { type: 'application/pdf' }), 'orphan22',
+  );
+  input22.parentElement = null;                 // 원래 부모까지 사라졌다 = body 로 떨어지던 조건
+
+  dispatchDocumentEvent('change', {
+    target: input22,
+    composedPath: () => [input22, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input22.isConnected = false;                  // 사이트가 떼어냈다
+
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'revive22.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 6000)); // 증거 대기(700ms) × 전략 + 첨부 UI 예산
+
+  if (!composer22.appended.includes(input22) && input22.parentElement !== composer22) {
+    throw new Error('되돌린 input 을 컴포저에 붙이지 않았다 — body 로 떨어지면 사이트가 못 듣는다');
+  }
+  if (input22.isConnected) {
+    throw new Error('증거를 못 얻었는데 되돌린 input 을 DOM 에 남겨뒀다 — 다음 전략의 판정을 망친다');
   }
 
   console.log('content regression ok');
