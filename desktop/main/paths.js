@@ -26,6 +26,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 /** @returns {string} 엔진 루트 디렉터리 (cwd 로 사용) */
 function resolveEngineDir(app) {
@@ -75,16 +76,64 @@ function resolvePythonExe(engineDir) {
 }
 
 /**
- * 엔진 SQLite store 경로 (PLAN §9.1). REST 로 통계 엔드포인트가 없으므로
- * 앱은 이 파일을 read-only 로 읽어 탐지 카운트를 얻는다(engine 수정 금지 준수).
- * config.py: STORE_DIR = engine/app/store/data, DB = securedoc.sqlite3
+ * 사용자 데이터 루트 — **앱 번들 밖**. 엔진 config.py 의 _models_base() 와 같은 규칙을
+ * 쓴다(win: %LOCALAPPDATA%, mac: ~/Library/Application Support, linux: XDG).
+ *
+ * Electron 의 app.getPath('userData') 를 쓰지 않는 이유: Windows 에서 그건 Roaming
+ * (%APPDATA%)인데 엔진의 모델 보관 위치는 %LOCALAPPDATA% 라 서로 갈린다. 한 앱의
+ * 데이터가 두 군데로 흩어지지 않게, 엔진이 이미 쓰는 규칙에 맞춘다.
  */
-function resolveStoreDbPath(engineDir) {
+function userDataRoot() {
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA
+      || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(base, 'Campfire');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Campfire');
+  }
+  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(base, 'Campfire');
+}
+
+/**
+ * 엔진 SQLite store 디렉터리 (PLAN §9.1).
+ *
+ * 예전엔 engineDir/app/store/data, 즉 **앱 번들 내부**였다. macOS 에서 이게 실제로
+ * 앱을 못 쓰게 만들었다(실사용자 확인): 번들 안에 securedoc.sqlite3 가 생기면서
+ * codesign --verify 가 "file added" 로 실패했다 — ad-hoc 서명이 첫 실행에 스스로
+ * 깨진 것이다. 그래서 사용자 데이터 폴더로 옮긴다.
+ *
+ * 이 값은 앱이 정하고 SECUREDOC_STORE_DIR 로 엔진에 넘긴다(engine-manager). 앱이
+ * 읽는 경로와 엔진이 쓰는 경로가 어긋나면 통계가 통째로 빈 채로 보이므로, 결정은
+ * 반드시 한 곳에서만 한다.
+ */
+function resolveStoreDir() {
   const override = process.env.SECUREDOC_STORE_DIR;
-  const dir = override && override.trim()
-    ? path.resolve(override.trim())
-    : path.join(engineDir, 'app', 'store', 'data');
-  return path.join(dir, 'securedoc.sqlite3');
+  if (override && override.trim()) return path.resolve(override.trim());
+  return path.join(userDataRoot(), 'store');
+}
+
+function resolveStoreDbPath() {
+  return path.join(resolveStoreDir(), 'securedoc.sqlite3');
+}
+
+/**
+ * Python 바이트코드 캐시(.pyc) 위치 — 반드시 번들 밖이어야 한다.
+ *
+ * 빌드가 __pycache__ 를 전부 빼고 패키징하므로, 첫 실행 때 Python 이 stdlib 전체를
+ * 컴파일하며 번들 안에 .pyc 를 쓴다. 실사용자 mac 에서 codesign --verify 가 바로 그
+ * .pyc 들을 "file added" 로 나열하며 실패했다 — 서명이 깨지는 직접 원인이다.
+ * PYTHONPYCACHEPREFIX(3.8+)로 캐시를 여기로 돌리면 컴파일 캐시의 속도 이점은 그대로
+ * 두면서 번들은 손대지 않는다.
+ */
+function resolvePycacheDir() {
+  return path.join(userDataRoot(), 'pycache');
+}
+
+/** 엔진 로그 파일 — 배포본에서 사이드카가 죽었을 때 흔적을 남길 유일한 곳. */
+function resolveEngineLogPath() {
+  return path.join(userDataRoot(), 'logs', 'engine.log');
 }
 
 /** 실행 가능 여부 진단 (스폰 전에 명확한 에러 메시지를 주기 위함) */
@@ -110,6 +159,10 @@ module.exports = {
   resolveEngineDir,
   resolveExtensionDir,
   resolvePythonExe,
+  userDataRoot,
+  resolveStoreDir,
   resolveStoreDbPath,
+  resolvePycacheDir,
+  resolveEngineLogPath,
   diagnose,
 };

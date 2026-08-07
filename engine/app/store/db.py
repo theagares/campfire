@@ -11,6 +11,8 @@ SQLite job 메타데이터 + audit.log(JSONL) (PLAN §9.1 / §9.2).
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -22,9 +24,40 @@ _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
 
+def _adopt_legacy_store() -> None:
+    """예전에 앱 번들 안(APP_DIR/store/data)에 쌓이던 기록을 새 위치로 이어붙인다.
+
+    **옮기지 않고 복사한다.** 모델 가중치 마이그레이션이 shutil.move 를 쓰는 바람에
+    개발 체크아웃에서 테스트를 돌리는 것만으로 설치된 앱의 605MB 가중치가 사라진
+    사고가 실제로 났다(models_sync._migrate_legacy_models_root 주석 참고). 여기서
+    지키려는 건 탐지 통계뿐이라 원본을 지울 이유가 전혀 없고, 남은 사본은 새 위치를
+    쓰기 시작한 이상 아무도 읽지 않는다.
+
+    새 위치에 이미 DB 가 있으면 그쪽이 최신이므로 손대지 않는다.
+    """
+    if os.environ.get("SECUREDOC_SKIP_LEGACY_MIGRATION") == "1":
+        return
+    legacy_db = config.LEGACY_STORE_DIR / config.DB_PATH.name
+    if config.DB_PATH.exists() or not legacy_db.is_file():
+        return
+    try:
+        config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(legacy_db), str(config.DB_PATH))
+        legacy_audit = config.LEGACY_STORE_DIR / config.AUDIT_LOG_PATH.name
+        if legacy_audit.is_file() and not config.AUDIT_LOG_PATH.exists():
+            shutil.copy2(str(legacy_audit), str(config.AUDIT_LOG_PATH))
+    except OSError:
+        # 권한/볼륨 문제로 못 가져와도 기동을 막지 않는다 — 통계가 0부터 시작할 뿐이다.
+        pass
+
+
 def init_db() -> None:
     global _conn
     config.STORE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _adopt_legacy_store()
+    except Exception:  # noqa: BLE001 - 이어붙이기 실패로 엔진을 못 뜨게 하지 않는다
+        pass
     _conn = sqlite3.connect(str(config.DB_PATH), check_same_thread=False)
     _conn.execute(
         """
