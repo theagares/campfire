@@ -1154,7 +1154,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.dispatchEvent = (event) => {
     const r = editorDispatch(event);
     if (event?.type === 'drop' && event?.dataTransfer?.files?.length) {
-      setTimeout(() => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV' }), 100);
+      // 첨부 칩에는 그 파일의 이름이 실린다 — 증거 판정은 이제 그걸 본다(아래 (23)).
+      setTimeout(
+        () => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: 'evidence.pdf' }),
+        100,
+      );
     }
     return r;
   };
@@ -1525,6 +1529,89 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (input22.isConnected) {
     throw new Error('증거를 못 얻었는데 되돌린 input 을 DOM 에 남겨뒀다 — 다음 전략의 판정을 망친다');
+  }
+
+  // (23) 첨부와 무관한 재렌더를 "사이트가 받았다" 로 오판하지 않는다.
+  //
+  // 배경(실사용자 Gemini, 0.2.19):
+  //   [SecureDoc] 첨부 주입 성공 — 먹힌 방법: input되돌리기
+  //               (증거: 컴포저에 div.model-picker-container 추가됨)
+  // model-picker-container 는 모델 선택 드롭다운이지 첨부 칩이 아니다. 되돌린 input 을
+  // 컴포저 안에 붙이자 Angular 가 그 안을 다시 그렸고, 예전 기준("컴포저 하위에 요소가
+  // 추가됨")이 그 재렌더를 증거로 셌다. 같은 로그의 진단은 정반대를 말한다 — 대기 창
+  // DOM 변화 0건, 요청 15건 모두 batchexecute(최대 1654B), 전송 후 49건에도 업로드 없음.
+  // 파일은 가지 않았다.
+  //
+  // 이 오탐이 특히 나쁜 이유: 성공을 선언해 뒤 전략으로 내려가지 못하게 막고, fail-closed
+  // 까지 우회해 **문서 없이 프롬프트만 전송**시킨다. 우리가 막으려던 바로 그 실패다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  sandbox.MutationObserver = MutationObserverStub;
+  MutationObserverStub.instances.length = 0;
+
+  const composer23 = new HTMLTextAreaElementStub('이 문서 요약해줘');
+  composer23.appended = [];
+  composer23.appendChild = function (node) {
+    this.appended.push(node); node.isConnected = true; node.parentElement = this;
+  };
+  domBySelector.set('#prompt-textarea', composer23);
+  const send23 = new SendButtonStub();
+  send23.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send23);
+  domBySelector.delete('input[type="file"]');
+  documentStub.activeElement = composer23;
+
+  const input23 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'secret-report.pdf', { type: 'application/pdf' }), 'orphan23',
+  );
+  input23.parentElement = null;
+
+  // 사이트는 파일을 받지 않았지만, 우리가 노드를 붙인 탓에 무관한 컨테이너를 다시 그린다.
+  const origDispatch23 = HTMLInputElementStub.prototype.dispatchEvent;
+  HTMLInputElementStub.prototype.dispatchEvent = function (ev) {
+    const r = origDispatch23.call(this, ev);
+    setTimeout(
+      () => MutationObserverStub.emitAdded({
+        nodeType: 1, tagName: 'DIV', textContent: '모델 선택 2.5 Pro 2.5 Flash',
+      }),
+      50,
+    );
+    return r;
+  };
+
+  dispatchDocumentEvent('change', {
+    target: input23,
+    composedPath: () => [input23, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input23.isConnected = false;
+
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'secret-report.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 8000));
+  HTMLInputElementStub.prototype.dispatchEvent = origDispatch23;
+
+  if (send23.clicks !== 0) {
+    throw new Error(
+      '첨부와 무관한 재렌더를 증거로 삼아 문서 없이 전송했다 — fail-closed 가 우회됐다',
+    );
+  }
+  const claimedSuccess23 = consoleLines.some(
+    (l) => l.includes('첨부 주입 성공') && l.includes('모델 선택'),
+  );
+  if (claimedSuccess23) {
+    throw new Error('무관한 컨테이너 추가를 첨부 증거로 판정했다');
   }
 
   console.log('content regression ok');

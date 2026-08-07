@@ -319,7 +319,9 @@
     const attempt = async (name, run) => {
       if (winner) return;
       let watcher = null;
-      const beginWatch = () => { if (!watcher) watcher = watchAttachmentEvidence(cfg); };
+      // 파일 이름을 넘기는 건 "그 파일이 화면에 나타났는가" 를 보기 위해서다. 이름은
+      // 비교에만 쓰이고 로그에는 절대 안 나간다(watchAttachmentEvidence 주석 참고).
+      const beginWatch = () => { if (!watcher) watcher = watchAttachmentEvidence(cfg, finalFile?.name); };
       let mechanical = false;
       let note = '';
       try {
@@ -1302,14 +1304,25 @@
   /** "사이트가 첨부를 받아들였다"는 증거를 기다린다.
    *
    *  판정 기준(둘 중 하나면 증거로 본다):
-   *    (a) 컴포저 하위에 **글자 입력창 바깥으로** 요소 노드가 새로 추가됐다.
+   *    (a) 우리가 넣은 **파일의 이름이 컴포저 화면에 새로 나타났다**(= 첨부 칩).
    *    (b) 사이트가 파일 업로드를 시작했다(MAIN world 네트워크 관측).
    *
-   *  왜 이게 사이트-무관한가: 첨부를 받아들인 챗 UI 는 예외 없이 둘 중 하나를 한다 —
-   *  그 첨부를 나타내는 무언가(칩·썸네일·파일명 줄)를 그리거나, 곧바로 서버로 올리기
-   *  시작한다. 무엇을 그리는지(클래스명·구조)는 사이트마다 다르지만 "무언가 생긴다"는
-   *  사실 자체는 다르지 않다. 반대로 사이트가 우리 이벤트를 아예 못 들었다면 둘 다
-   *  일어나지 않는다.
+   *  ★ (2026-08-07 정정) 예전 기준 (a)는 "컴포저 하위에 요소 노드가 새로 추가됐다"
+   *  였는데, 그건 오탐한다. 실사용자 Gemini 로그:
+   *      증거: 컴포저에 div.model-picker-container 추가됨
+   *  model-picker-container 는 모델 선택 드롭다운이지 첨부 칩이 아니다. 컴포저 안에
+   *  노드를 붙이자 Angular 가 그 안을 다시 그렸고, 우리는 그 재렌더를 "사이트가 파일을
+   *  받았다"로 읽었다. 같은 로그의 진단이 진실을 말한다 — 대기 창 DOM 변화 0건, 요청
+   *  15건 모두 batchexecute(최대 1654B), 전송 후 49건에도 업로드 없음. 파일은 가지
+   *  않았다. 그런데 오탐이 성공을 선언하는 바람에 뒤 전략으로 내려가지도 못했고,
+   *  fail-closed 까지 우회돼 문서 없이 프롬프트만 나갔다 — 가장 나쁜 결과다.
+   *
+   *  그래서 "무언가 생겼다" 가 아니라 "**그 파일이** 보인다" 를 본다. 첨부를 받아들인
+   *  챗 UI 는 예외 없이 그 파일을 식별할 수 있게 이름을 보여주거나(칩·파일명 줄) 곧바로
+   *  서버로 올리기 시작한다. 무엇을 그리는지(클래스명·구조)는 사이트마다 달라도 이 둘은
+   *  다르지 않고, 무관한 재렌더는 여기에 걸리지 않는다.
+   *
+   *  파일 이름은 비교에만 쓰고 로그에 남기지 않는다(사용자 문서 정보다).
    *
    *  글자 입력창 안쪽 변화를 증거에서 빼는 이유: 우리가 넣은 프롬프트 텍스트 때문에
    *  p/br 이 생겼다 사라지는 건 첨부와 무관하다(실사용자 진단에서 전송 후 잡힌 변화가
@@ -1318,23 +1331,44 @@
    *  관찰 자체가 불가능한 환경(MutationObserver 없음, 컴포저를 못 찾음)에서는 판정을
    *  포기하고 기계적 성공을 그대로 인정한다 — 확인할 방법이 없는데 실패로 단정해
    *  멀쩡한 경로를 버리는 게 더 나쁘다. 그 사실은 사유에 남긴다. */
-  function watchAttachmentEvidence(cfg) {
+  /** 파일 이름에서 "이게 그 파일이다" 를 알아볼 조각을 만든다.
+   *
+   *  이 값은 **어디에도 출력하지 않는다** — 비교에만 쓴다(파일명은 사용자 문서 정보다).
+   *  확장자를 뗀 몸통을 쓰는 이유: 사이트가 칩에 "report.pdf" 대신 "report" 만 그리거나
+   *  아이콘으로 확장자를 표시하는 경우가 있다. 너무 짧으면(3자 이하) 우연히 걸릴 수
+   *  있어 쓰지 않는다. */
+  function fileNameNeedle(name) {
+    const n = String(name || '').trim();
+    if (!n) return null;
+    const stem = n.replace(/\.[^.]+$/, '');
+    const pick = (stem.length >= 4 ? stem : n).toLowerCase();
+    return pick.length >= 4 ? pick : null;
+  }
+
+  function watchAttachmentEvidence(cfg, expectedName) {
     const editor = findEditor(cfg);
     const root = findComposerRoot(cfg);
     const netBase = uploadStartCount;
-    let added = null;
+    const needle = fileNameNeedle(expectedName);
+    let named = false;   // 우리 파일 이름이 화면에 나타났다 = 사이트가 받았다
     let mo = null;
+
+    const textOf = (n) => {
+      try { return String(n?.textContent || '').toLowerCase(); } catch (_) { return ''; }
+    };
+    // 기준선: 넣기 전부터 이름이 화면에 있었다면(프롬프트에 파일명을 적었다거나 이전
+    // 칩이 남아 있다거나) 그건 증거가 아니다.
+    const baselineNamed = !!needle && textOf(root).includes(needle);
 
     if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
       try {
         mo = new MutationObserver((list) => {
-          if (added) return;
+          if (named || !needle) return;
           for (const m of list) {
             if (editor && (m.target === editor || editor.contains?.(m.target))) continue;
             for (const n of m.addedNodes || []) {
               if (n?.nodeType !== 1) continue;
-              added = describeNode(n);
-              return;
+              if (textOf(n).includes(needle)) { named = true; return; }
             }
           }
         });
@@ -1348,12 +1382,21 @@
         if (!mo) return { ok: true, why: '관찰 불가 — 기계적 성공으로 인정' };
         const deadline = Date.now() + ms;
         for (;;) {
-          if (added) return { ok: true, why: `컴포저에 ${added} 추가됨` };
           if (uploadStartCount > netBase) return { ok: true, why: '업로드 시작 관측' };
+          // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
+          // textContent 가 아직 비어 있는 프레임워크가 있다).
+          if (needle && !baselineNamed && (named || textOf(root).includes(needle))) {
+            return { ok: true, why: '첨부 칩에 파일 이름이 나타남' };
+          }
           if (Date.now() >= deadline) break;
           await new Promise(r => setTimeout(r, 60));
         }
-        return { ok: false, why: `${ms}ms 동안 컴포저 변화·업로드 모두 없음` };
+        return {
+          ok: false,
+          why: needle
+            ? `${ms}ms 동안 파일 이름이 화면에 안 나타나고 업로드도 없음`
+            : `${ms}ms 동안 업로드 없음(파일 이름이 짧아 화면 확인은 못 함)`,
+        };
       },
       stop() { try { mo?.disconnect(); } catch (_) { /* ignore */ } },
     };
