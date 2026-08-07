@@ -628,6 +628,7 @@ function openSettings() {
   $('#upstage-api-key').value = s.upstageApiKey || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
+  refreshCleanup();
 }
 function closeSettings() { modal.classList.remove('open'); }
 $('#open-settings').addEventListener('click', openSettings);
@@ -640,6 +641,89 @@ $$('#policy-seg button').forEach((b) =>
     $$('#policy-seg button').forEach((x) => x.classList.toggle('active', x === b));
   })
 );
+
+// ── 데이터 삭제 ──────────────────────────────────────────────────────────────
+//
+// 여기서는 "무엇을 고를지" 만 다룬다. 확인 창과 실제 삭제는 메인이 한다 — 되돌릴 수
+// 없는 동작이라 확인 단계가 렌더러 사정으로 건너뛰어지면 안 된다.
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function updateCleanupSummary() {
+  const picked = $$('#cleanup-list input[type=checkbox]:checked');
+  const total = picked.reduce((sum, el) => sum + Number(el.dataset.bytes || 0), 0);
+  $('#cleanup-remove').disabled = picked.length === 0;
+  $('#cleanup-summary').textContent = picked.length
+    ? `${picked.length}개 선택 · ${formatBytes(total)} 확보`
+    : '';
+}
+
+async function refreshCleanup() {
+  const list = $('#cleanup-list');
+  if (!api.scanCleanup) { list.innerHTML = '<div class="hint">이 버전에서는 지원하지 않습니다.</div>'; return; }
+  list.innerHTML = '<div class="hint">불러오는 중…</div>';
+  let data;
+  try {
+    data = await api.scanCleanup();
+  } catch (err) {
+    list.innerHTML = `<div class="hint">목록을 불러오지 못했습니다: ${err.message}</div>`;
+    return;
+  }
+  list.innerHTML = '';
+  for (const item of data.items || []) {
+    const row = document.createElement('label');
+    row.className = 'cleanup-item' + (item.present ? '' : ' empty');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = item.id;
+    cb.dataset.bytes = String(item.bytes || 0);
+    cb.disabled = !item.present;   // 없는 걸 고르게 두면 "지웠다"는 착각만 준다
+    cb.addEventListener('change', updateCleanupSummary);
+    const body = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'cleanup-title';
+    title.textContent = `${item.label} · ${item.present ? formatBytes(item.bytes) : '없음'}`;
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = item.hint;
+    body.append(title, hint);
+    row.append(cb, body);
+    list.append(row);
+  }
+  updateCleanupSummary();
+}
+
+$('#cleanup-remove').addEventListener('click', async () => {
+  const ids = $$('#cleanup-list input[type=checkbox]:checked').map((el) => el.value);
+  if (!ids.length) return;
+  const btn = $('#cleanup-remove');
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = '삭제 중…';
+  try {
+    const res = await api.removeCleanup(ids);
+    if (!res?.cancelled) {
+      const failed = (res.removed || []).filter((r) => !r.ok);
+      if (failed.length) {
+        showGlobalBanner(`일부를 지우지 못했습니다: ${failed.map((f) => f.error).join(', ')}`);
+      } else {
+        showGlobalBanner(`삭제 완료 — ${formatBytes(res.freedBytes || 0)} 확보`, 'progress');
+        setTimeout(hideGlobalBanner, 4000);
+      }
+    }
+  } catch (err) {
+    showGlobalBanner(`삭제하지 못했습니다: ${err.message}`);
+  } finally {
+    btn.textContent = prev;
+    await refreshCleanup();   // 실제로 무엇이 남았는지 다시 재서 보여준다
+  }
+});
 
 function setDetectorProgress(label) {
   const el = $('#detector-progress');
