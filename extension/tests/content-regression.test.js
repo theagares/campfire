@@ -246,6 +246,17 @@ const windowStub = {
     if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
       actionLog.push({ kind: 'approve-msg', meta: data.meta });
     }
+    // MAIN world(interceptor.js)의 파일창 억제 응답을 흉내낸다. content.js 는 이 ACK 를
+    // 받기 전에는 첨부 버튼을 절대 누르지 않는다 — 사용자가 누른 적 없는 OS 파일창이
+    // 뜨는 걸 막으려는 장치다. 하니스에 응답이 없으면 전략 4가 통째로 안 돈다((25)).
+    if (data?.type === 'UPS_SUPPRESS_FILE_PICKER') {
+      setTimeout(() => {
+        dispatchWindowMessage({
+          __campfire_config: true, direction: 'main-to-isolated',
+          type: 'UPS_SUPPRESS_FILE_PICKER_ACK', on: !!data.on, nonce: data.nonce,
+        });
+      }, 0);
+    }
   },
   getSelection: () => selectionStub,
 };
@@ -1026,6 +1037,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error(`첨부 업로드가 아직 끝나지 않았는데 전송했다 (clicks=${send14.clicks}) — 프롬프트만 먼저 나가고 첨부가 빠진다`);
   }
 
+  // 업로드가 끝나면 사이트는 컴포저에 첨부 칩을 그린다 — 그 칩에는 파일 이름이 실린다.
+  // 이게 "바이트가 올라갔다" 와 "그 첨부가 이 메시지에 붙었다" 를 가르는 신호이고,
+  // 전송은 후자를 확인한 뒤에만 이뤄져야 한다((24) 참고).
+  promptEditorStub.textContent = '📎 gemini-upload.pdf';
   await dispatchWindowMessage({
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
@@ -1090,6 +1105,8 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
 
   // 업로드 완료 → 진행률 표시만 사라지고 기준선은 그대로 남는다.
+  // 완료와 함께 사이트가 첨부 칩을 그린다(파일 이름이 실린다) — 전송 관문이 보는 신호.
+  promptEditorStub.textContent = '📎 spinner.pdf';
   domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]);
   for (let i = 0; i < 40 && send15.clicks < 1; i += 1) {
     await new Promise(r => setTimeout(r, 100));
@@ -1154,7 +1171,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.dispatchEvent = (event) => {
     const r = editorDispatch(event);
     if (event?.type === 'drop' && event?.dataTransfer?.files?.length) {
-      setTimeout(() => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV' }), 100);
+      // 첨부 칩에는 그 파일의 이름이 실린다 — 증거 판정은 이제 그걸 본다(아래 (23)).
+      setTimeout(
+        () => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: 'evidence.pdf' }),
+        100,
+      );
     }
     return r;
   };
@@ -1252,7 +1273,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 3500)); // 전략 체인(증거 대기 포함) 통과 시간
+  // 전략 체인(증거 대기 포함) 통과 시간. 증거 관찰 창이 700ms → 3000ms 로 늘고 전략이
+  // 하나(합성paste) 더 붙어서, 전부 헛돌면 최악 4×3초다.
+  await new Promise(r => setTimeout(r, 13000));
 
   if (send17.clicks !== 0) {
     throw new Error(`문서를 못 붙였는데 프롬프트를 전송했다 (clicks=${send17.clicks}) — 사용자는 문서가 갔다고 믿는다`);
@@ -1523,8 +1546,264 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (!composer22.appended.includes(input22) && input22.parentElement !== composer22) {
     throw new Error('되돌린 input 을 컴포저에 붙이지 않았다 — body 로 떨어지면 사이트가 못 듣는다');
   }
-  if (input22.isConnected) {
-    throw new Error('증거를 못 얻었는데 되돌린 input 을 DOM 에 남겨뒀다 — 다음 전략의 판정을 망친다');
+  // (2026-08-07 정정) 예전엔 "증거를 못 얻으면 되돌린 노드를 다시 떼어낸다" 를 검사했다.
+  // 그 동작은 철회했다 — 되돌린 input 은 Gemini 가 실제로 업로드를 시작하는 바로 그
+  // 노드이고(실사용자: input되돌리기 → 업로드 시작 관측 → 768ms 후 완료), 관찰 창 안에
+  // 업로드가 안 보인다고 뽑아버리면 막 시작하려던 업로드의 대상을 우리가 없애는 셈이다.
+  // 그래서 이제는 **그대로 남아 있어야** 한다.
+  if (!input22.isConnected) {
+    throw new Error(
+      '되돌린 input 을 DOM 에서 뽑았다 — 사이트가 그 노드로 업로드를 시작하려던 참일 수 있다',
+    );
+  }
+
+  // (23) 첨부와 무관한 재렌더를 "사이트가 받았다" 로 오판하지 않는다.
+  //
+  // 배경(실사용자 Gemini, 0.2.19):
+  //   [SecureDoc] 첨부 주입 성공 — 먹힌 방법: input되돌리기
+  //               (증거: 컴포저에 div.model-picker-container 추가됨)
+  // model-picker-container 는 모델 선택 드롭다운이지 첨부 칩이 아니다. 되돌린 input 을
+  // 컴포저 안에 붙이자 Angular 가 그 안을 다시 그렸고, 예전 기준("컴포저 하위에 요소가
+  // 추가됨")이 그 재렌더를 증거로 셌다. 같은 로그의 진단은 정반대를 말한다 — 대기 창
+  // DOM 변화 0건, 요청 15건 모두 batchexecute(최대 1654B), 전송 후 49건에도 업로드 없음.
+  // 파일은 가지 않았다.
+  //
+  // 이 오탐이 특히 나쁜 이유: 성공을 선언해 뒤 전략으로 내려가지 못하게 막고, fail-closed
+  // 까지 우회해 **문서 없이 프롬프트만 전송**시킨다. 우리가 막으려던 바로 그 실패다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  sandbox.MutationObserver = MutationObserverStub;
+  MutationObserverStub.instances.length = 0;
+
+  const composer23 = new HTMLTextAreaElementStub('이 문서 요약해줘');
+  composer23.appended = [];
+  composer23.appendChild = function (node) {
+    this.appended.push(node); node.isConnected = true; node.parentElement = this;
+  };
+  domBySelector.set('#prompt-textarea', composer23);
+  const send23 = new SendButtonStub();
+  send23.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send23);
+  domBySelector.delete('input[type="file"]');
+  documentStub.activeElement = composer23;
+
+  const input23 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'secret-report.pdf', { type: 'application/pdf' }), 'orphan23',
+  );
+  input23.parentElement = null;
+
+  // 사이트는 파일을 받지 않았지만, 우리가 노드를 붙인 탓에 무관한 컨테이너를 다시 그린다.
+  const origDispatch23 = HTMLInputElementStub.prototype.dispatchEvent;
+  HTMLInputElementStub.prototype.dispatchEvent = function (ev) {
+    const r = origDispatch23.call(this, ev);
+    setTimeout(
+      () => MutationObserverStub.emitAdded({
+        nodeType: 1, tagName: 'DIV', textContent: '모델 선택 2.5 Pro 2.5 Flash',
+      }),
+      50,
+    );
+    return r;
+  };
+
+  dispatchDocumentEvent('change', {
+    target: input23,
+    composedPath: () => [input23, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input23.isConnected = false;
+
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'secret-report.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 8000));
+  HTMLInputElementStub.prototype.dispatchEvent = origDispatch23;
+
+  if (send23.clicks !== 0) {
+    throw new Error(
+      '첨부와 무관한 재렌더를 증거로 삼아 문서 없이 전송했다 — fail-closed 가 우회됐다',
+    );
+  }
+  const claimedSuccess23 = consoleLines.some(
+    (l) => l.includes('첨부 주입 성공') && l.includes('모델 선택'),
+  );
+  if (claimedSuccess23) {
+    throw new Error('무관한 컨테이너 추가를 첨부 증거로 판정했다');
+  }
+
+  // (24) 업로드가 끝나도 첨부가 컴포저에 붙지 않았으면 전송하지 않는다.
+  //
+  // 배경(실사용자 Gemini, 2026-08-07):
+  //   첨부 주입 성공 — 먹힌 방법: input되돌리기 (증거: 업로드 시작 관측)
+  //   첨부 대기: 업로드 완료로 보고 전송합니다 (network, 768ms)
+  //   재전송: 버튼 클릭 성공
+  //   → 그런데 문서가 안 갔다.
+  // 업로드는 진짜였다(관측 기준이 Blob/FormData 또는 64KB 이상이라 batchexecute 의
+  // 123B~3583B 는 안 걸린다). 즉 바이트는 올라갔는데 그게 메시지에 붙기 전에 전송을
+  // 눌렀다. 예전 코드는 업로드 완료 후 250ms 만 양보했는데, 그 값은 계측이 아니라
+  // 안전 여유로 고른 것이었다(그 자리 주석이 그렇게 말하고 있었다).
+  //
+  // 시간이 아니라 신호를 기다려야 한다 — 컴포저에 그 파일 이름이 나타나는 것.
+  // 여기서는 사이트가 끝내 칩을 그리지 않는 상황을 만들고, 그때 전송하지 않는지 본다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  delete sandbox.MutationObserver;             // 증거 판정은 여기서 관심사가 아니다
+  const send24 = new SendButtonStub();
+  send24.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send24);
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  promptEditorStub.textContent = '';           // 칩이 끝내 안 그려진다
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+
+  const input24 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'unbound-doc.pdf', { type: 'application/pdf' }), 'input24',
+  );
+  domBySelector.set('input[type="file"]', input24);
+
+  dispatchDocumentEvent('change', {
+    target: input24,
+    composedPath: () => [input24, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
+      mimeType: 'application/pdf', fileName: 'unbound-doc.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+
+  // 사이트가 파일을 올렸다가 끝낸다 — 그런데 칩은 끝내 안 그려진다.
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
+  });
+  await new Promise(r => setTimeout(r, 300));
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+  });
+
+  // 첨부 반영 대기(8초)가 끝날 때까지 지켜본다.
+  await new Promise(r => setTimeout(r, 10000));
+
+  // (2026-08-08 정정) 예전엔 여기서 "전송을 막아야 한다" 를 검사했다. 실사용자가 그
+  // 판단이 틀렸음을 알려줬다 — "실제로는 첨부도 됐고 메시지도 들어가서 보내기만 하면
+  // 되는데 보내지지 않음". 첨부는 멀쩡히 붙어 있었고 못 본 건 우리 쪽이었다(칩이 이름을
+  // 줄여 그리거나 우리가 보는 범위 밖에 그리면 얼마든지 놓친다).
+  //
+  // 업로드가 관측된 이상 바이트는 사이트에 있다. 우리 관측의 한계를 근거로 준비된
+  // 전송을 막으면 제품이 아예 안 쓰인다. 문서가 도달하지 못한 경우는 주입 증거가
+  // 아예 없는 쪽에서 이미 걸러진다((17) 참고).
+  if (send24.clicks !== 1) {
+    throw new Error(
+      `업로드가 확인됐는데 전송하지 않았다 (clicks=${send24.clicks}) — `
+      + '첨부가 붙어 있어도 우리가 칩을 못 보면 영영 못 보내게 된다',
+    );
+  }
+  if (!consoleLines.some((l) => l.includes('첨부 표시를 찾지 못했습니다'))) {
+    throw new Error('못 본 사실을 기록하지 않았다 — 다음에 원인을 못 찾는다');
+  }
+
+  // (25) 되던 주입을 "시간이 모자라서" 버리지 않는다.
+  //
+  // 배경(실사용자 Gemini, 2026-08-07): 되돌린 input 으로 실제 업로드가 일어난 로그가
+  // 있었다 — "input되돌리기=증거있음(업로드 시작 관측)" → 768ms 만에 완료. 그런데 증거
+  // 관찰 창이 700ms 뿐이라, 사이트가 그 안에 업로드를 시작하지 못한 다음 라운드에는
+  // 같은 경로를 실패로 단정하고 합성drop·메뉴 열기 같은 파괴적 폴백으로 내려갔다.
+  //
+  // 여기서는 업로드가 1.2초 뒤에야 시작되는 사이트를 만든다. 700ms 창이면 놓치고,
+  // 넉넉한 창이면 잡는다. 잘못된 "증거없음" 의 대가는 크다 — 되던 주입을 버린다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  // 관찰이 가능한 환경이어야 한다. MutationObserver 가 없으면 settle() 이 "관찰 불가 —
+  // 기계적 성공" 으로 즉시 통과해 창 길이가 아무 의미도 없어진다(처음에 그렇게 썼다가
+  // 되돌리기 실험이 통과해버렸다). 칩은 안 그려지므로 증거는 업로드 신호뿐이다.
+  sandbox.MutationObserver = MutationObserverStub;
+  MutationObserverStub.instances.length = 0;
+  const send25 = new SendButtonStub();
+  send25.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send25);
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  promptEditorStub.textContent = '';
+  promptEditorStub.value = '이 문서를 요약해줘';
+  documentStub.activeElement = promptEditorStub;
+
+  const parent25 = new DropTargetStub();
+  parent25.appended = [];
+  parent25.appendChild = function (node) { this.appended.push(node); node.isConnected = true; };
+  const input25 = new HTMLInputElementStub(
+    new FileStub(['pdf bytes'], 'slow-upload.pdf', { type: 'application/pdf' }), 'orphan25',
+  );
+  input25.parentElement = parent25;
+  domBySelector.delete('input[type="file"]');
+
+  // 사이트는 되돌린 input 에 파일이 들어오면 1.2초 뒤에 업로드를 시작한다.
+  const origInject25 = HTMLInputElementStub.prototype.dispatchEvent;
+  let uploadArmed25 = false;
+  HTMLInputElementStub.prototype.dispatchEvent = function (ev) {
+    const r = origInject25.call(this, ev);
+    if (this === input25 && !uploadArmed25) {
+      uploadArmed25 = true;
+      setTimeout(() => {
+        dispatchWindowMessage({
+          __campfire_config: true, direction: 'main-to-isolated',
+          type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
+        });
+      }, 1200);
+    }
+    return r;
+  };
+
+  dispatchDocumentEvent('change', {
+    target: input25,
+    composedPath: () => [input25, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input25.isConnected = false; // 사이트가 떼어냈다
+
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'slow-upload.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 4000));
+  HTMLInputElementStub.prototype.dispatchEvent = origInject25;
+
+  const chain25 = consoleLines.filter(l => l.includes('첨부 주입 시도 경로')).slice(-1)[0] || '';
+  if (!chain25.includes('input되돌리기=증거있음')) {
+    throw new Error(
+      `늦게 시작한 업로드를 놓쳐 되던 주입을 버렸다 — ${chain25 || '(시도 경로 로그 없음)'}`,
+    );
+  }
+  if (chain25.includes('합성drop')) {
+    throw new Error('되돌리기가 성공했는데도 파괴적인 폴백까지 내려갔다');
   }
 
   console.log('content regression ok');
