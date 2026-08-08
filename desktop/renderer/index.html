@@ -273,6 +273,21 @@
           </div>
         </div>
 
+        <div class="divider"></div>
+
+        <!-- 데이터 삭제 — 되돌릴 수 없으므로 크기를 함께 보여주고, 확인 창은 메인이 띄운다 -->
+        <div class="field">
+          <label>데이터 삭제</label>
+          <div class="hint">이 컴퓨터에 쌓인 데이터를 골라서 지웁니다. 지운 데이터는 되돌릴 수 없습니다.</div>
+          <div id="cleanup-list" class="cleanup-list">
+            <div class="hint">불러오는 중…</div>
+          </div>
+          <div class="cleanup-foot">
+            <span class="hint" id="cleanup-summary"></span>
+            <button class="btn danger" id="cleanup-remove" disabled>선택 항목 삭제</button>
+          </div>
+        </div>
+
         <div class="banner info">포트는 엔진이 48200~48209 범위에서 자동 관리하므로 설정 항목이 아닙니다. 현재 포트: <b id="settings-port" style="margin-left:4px">–</b></div>
       </div>
       <div class="modal-foot">

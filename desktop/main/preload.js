@@ -14,6 +14,7 @@ const api = {
   getMetrics: () => ipcRenderer.invoke('metrics:get'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getModelsStatus: () => ipcRenderer.invoke('models:status'),
+  scanCleanup: () => ipcRenderer.invoke('cleanup:scan'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
@@ -23,6 +24,8 @@ const api = {
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   fetchModels: () => ipcRenderer.invoke('models:fetch'),
   openExtensionFolder: () => ipcRenderer.invoke('extension:openFolder'),
+  // 삭제는 되돌릴 수 없다. 확인 창은 메인이 띄우므로 렌더러는 "무엇을" 만 넘긴다.
+  removeCleanup: (ids) => ipcRenderer.invoke('cleanup:remove', ids),
   detectMcpClients: () => ipcRenderer.invoke('mcp:detectClients'),
   connectMcpClient: (id) => ipcRenderer.invoke('mcp:connect', id),
   disconnectMcpClient: (id) => ipcRenderer.invoke('mcp:disconnect', id),
