@@ -4,12 +4,13 @@
  * ipcMain 핸들러 등록 + 실시간 push 브로드캐스트.
  */
 
-const { ipcMain, BrowserWindow, shell, app } = require('electron');
+const { ipcMain, BrowserWindow, dialog, shell, app } = require('electron');
 const systemMetrics = require('./system-metrics');
 const engineStats = require('./engine-stats');
 const models = require('./models');
 const mcpClients = require('./mcp-clients');
 const paths = require('./paths');
+const cleanup = require('./cleanup');
 const { PipelineActivity } = require('./pipeline-activity');
 
 let pipelineActivity = null;
@@ -122,6 +123,48 @@ function register(ctx) {
   ipcMain.handle('models:fetch', () =>
     models.fetchModels(engineManager, (ev) => broadcast('models:fetchProgress', ev))
   );
+
+  // ── 데이터 삭제 (설정 화면) ────────────────────────────────────────────────
+  //
+  // 확인 창을 렌더러가 아니라 여기서 띄운다. 되돌릴 수 없는 동작이라, 렌더러 쪽 실수나
+  // 사고로 확인 단계가 통째로 건너뛰어지는 경로를 만들지 않는다. 또 무엇을 얼마나
+  // 지우는지(항목 이름 + 실제 용량)를 확인 창 본문에 그대로 실어, 사용자가 무엇을
+  // 잃는지 모르고 누르는 일이 없게 한다.
+  ipcMain.handle('cleanup:scan', () => cleanup.scan());
+
+  ipcMain.handle('cleanup:remove', async (evt, ids) => {
+    const wanted = (Array.isArray(ids) ? ids : []).map(cleanup.itemById).filter(Boolean);
+    if (!wanted.length) return { cancelled: true, removed: [], freedBytes: 0 };
+
+    const scanned = cleanup.scan();
+    const sizeOf = (id) => scanned.items.find((i) => i.id === id)?.bytes || 0;
+    const lines = wanted.map((it) => `· ${it.label} (${cleanup.formatBytes(sizeOf(it.id))})`);
+    const willRestart = wanted.some((it) => it.needsEngineStop);
+
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    const opts = {
+      type: 'warning',
+      buttons: ['삭제', '취소'],
+      defaultId: 1,   // 기본 선택은 "취소" — Enter 를 눌렀다고 지워지면 안 된다
+      cancelId: 1,
+      title: '데이터 삭제',
+      message: '고른 데이터를 삭제할까요?',
+      detail:
+        `${lines.join('\n')}\n\n되돌릴 수 없습니다.`
+        + (wanted.some((it) => it.id === 'models')
+          ? '\n모델 가중치는 다음 검사 전에 다시 내려받아야 합니다.'
+          : '')
+        + (willRestart ? '\n삭제하는 동안 엔진이 잠시 멈췄다가 다시 시작됩니다.' : ''),
+    };
+    const { response } = win
+      ? await dialog.showMessageBox(win, opts)
+      : await dialog.showMessageBox(opts);
+    if (response !== 0) return { cancelled: true, removed: [], freedBytes: 0 };
+
+    const result = await cleanup.remove(wanted.map((it) => it.id), { engineManager, config });
+    broadcast('stats:tick', buildStats(engineManager)); // 통계를 지웠으면 화면도 바로 반영
+    return { cancelled: false, ...result };
+  });
 
   // ── 확장 프로그램 폴더(설치 파일에 함께 번들됨 — chrome://extensions 에서 그대로 로드) ──
   ipcMain.handle('extension:openFolder', async () => {
