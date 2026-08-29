@@ -33,14 +33,14 @@
 시작 메뉴/바탕화면에 아이콘이 생깁니다. 아이콘 클릭으로 실행.
 
 ```powershell
-irm https://github.com/theagares/campfire/releases/latest/download/Campfire-Setup-0.1.0.exe -OutFile Campfire-Setup.exe
+irm ((irm https://api.github.com/repos/theagares/campfire/releases/latest).assets | ? name -like 'Campfire-Setup-*.exe').browser_download_url -OutFile Campfire-Setup.exe
 ```
 
 **macOS** — Apple Silicon(M1/M2/M3...)이면 `-arm64.dmg`, Intel이면 확장자 앞에
 아무것도 안 붙은 `.dmg`를 받으세요.
 
 ```bash
-curl -L -o Campfire.dmg https://github.com/theagares/campfire/releases/latest/download/Campfire-0.1.0-arm64.dmg
+curl -fsSL -o Campfire.dmg "$(curl -fsSL https://api.github.com/repos/theagares/campfire/releases/latest | grep -o '"browser_download_url": *"[^"]*-arm64\.dmg"' | cut -d'"' -f4)"
 ```
 
 dmg를 열어 `Campfire.app`을 `Applications` 폴더로 드래그하면 됩니다.
