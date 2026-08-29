@@ -39,3 +39,15 @@ engine/app/models/*/models/
 engine/app/models/*/attn/
 engine/app/models/*/hybrid/
 engine/*.egg-info/
+
+# 저장소 루트에 놓인 로컬 전용 아티팩트 — 실수로 커밋되면 GitHub 100MB 파일 제한에
+# 걸려 push 자체가 깨진다. PIImodel 은 568MB safetensors 3개(seed42/43/44)를 포함.
+/PIImodel/
+/INJECTIONmodel/
+
+# 데모/문서용 캡처·이미지 (로컬 보관용)
+/image/
+/screenshot/
+
+# Claude Code 로컬 작업 공간 (worktrees 등) — 전부 로컬 전용, 1.8GB 규모
+/.claude/
