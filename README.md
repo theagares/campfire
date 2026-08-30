@@ -33,14 +33,21 @@
 시작 메뉴/바탕화면에 아이콘이 생깁니다. 아이콘 클릭으로 실행.
 
 ```powershell
-irm ((irm https://api.github.com/repos/theagares/campfire/releases/latest).assets | ? name -like 'Campfire-Setup-*.exe').browser_download_url -OutFile Campfire-Setup.exe
+$asset = (irm https://api.github.com/repos/theagares/campfire/releases/latest).assets |
+  Where-Object name -like 'Campfire-Setup-*.exe'
+if (-not $asset) { throw '릴리스에서 설치 파일을 찾지 못했습니다 (GitHub API 요청 제한일 수 있습니다)' }
+irm $asset.browser_download_url -OutFile Campfire-Setup.exe
 ```
 
 **macOS** — Apple Silicon(M1/M2/M3...)이면 `-arm64.dmg`, Intel이면 확장자 앞에
-아무것도 안 붙은 `.dmg`를 받으세요.
+아무것도 안 붙은 `.dmg`입니다. 아래 명령은 `uname -m` 으로 알아서 골라 받습니다.
 
 ```bash
-curl -fsSL -o Campfire.dmg "$(curl -fsSL https://api.github.com/repos/theagares/campfire/releases/latest | grep -o '"browser_download_url": *"[^"]*-arm64\.dmg"' | cut -d'"' -f4)"
+dmgs=$(curl -fsSL https://api.github.com/repos/theagares/campfire/releases/latest \
+  | grep -o '"browser_download_url": *"[^"]*\.dmg"' | cut -d'"' -f4)
+if [ "$(uname -m)" = arm64 ]; then url=$(echo "$dmgs" | grep arm64); else url=$(echo "$dmgs" | grep -v arm64); fi
+[ -n "$url" ] || { echo '릴리스에서 dmg 를 찾지 못했습니다 (GitHub API 요청 제한일 수 있습니다)'; exit 1; }
+curl -fL -o Campfire.dmg "$url"
 ```
 
 dmg를 열어 `Campfire.app`을 `Applications` 폴더로 드래그하면 됩니다.
