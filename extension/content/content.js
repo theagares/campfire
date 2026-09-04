@@ -183,6 +183,14 @@
     if (preferred?.isConnected) return preferred;
     const byForm = preferred?.closest?.('form')?.querySelector?.('input[type="file"]');
     if (byForm?.isConnected) return byForm;
+    // 컴포저 안에 있는 것을 먼저 본다. 문서 전체에서 아무거나 집으면 프로필 사진
+    // 업로드처럼 첨부와 무관한 input 을 고를 수 있는데, 거기에 넣으면 files 는 채워져
+    // "기계적 성공" 이 되어 증거 창을 통째로 날리고 남의 input 에 파일만 남긴다.
+    try {
+      const root = findComposerRoot(getPromptConfig());
+      const inComposer = root?.querySelector?.('input[type="file"]');
+      if (inComposer?.isConnected) return inComposer;
+    } catch (_) { /* 루트를 못 잡으면 아래 전역 폴백 */ }
     // querySelector 는 문서에 붙어 있는 노드만 돌려주므로 이건 항상 살아 있다.
     return document.querySelector('input[type="file"]');
   }
@@ -220,7 +228,23 @@
    *  한 곳에만 쏘지 않는 이유: 합성 이벤트도 bubbles 로 조상에 닿지만, 핸들러가
    *  event.target 을 확인하는 구현이면 안쪽에서 쏜 건 무시된다. 사이트별 클래스명은
    *  쓰지 않는다 — 위 사실은 "어디까지 올라가야 하는가" 를 정하는 데만 썼다. */
-  const DROP_TARGET_ABOVE_ROOT = 3;
+  // 입력창에서 위로 몇 단계까지 후보로 볼 것인가.
+  //
+  // (2026-08-12 정정) 예전엔 "컴포저 루트 + 3단계" 까지만 올라갔다. 그게 실제로 되는
+  // 경로를 잘라먹고 있었다 — 크롬을 띄워 Gemini 를 직접 계측했다:
+  //     depth  0  div[role=textbox].ql-editor      ← paste
+  //     depth  6  div.text-input-field             ← paste, drop, dragenter, dragover
+  //     depth 11  div.xap-uploader-dropzone        ← drop, dragenter, dragover   ★
+  //     document                                   ← drop
+  // 그런데 같은 계측에서 Gemini 의 sendBtnSel 이 **하나도 안 맞았다**(일반 폴백 7개까지
+  // 전부 실패). 전송 버튼을 못 찾으면 findComposerRoot 는 "5단계만 올라가기" 분기로
+  // 떨어져 루트를 depth 7 로 잡고, 거기에 +3 이면 depth 10 에서 멈춘다 — drop 리스너를
+  // 가진 단 둘 중 하나인 **depth 11 전용 드롭존이 후보에서 통째로 빠졌다.**
+  //
+  // 루트를 기준으로 상대 계산하는 것 자체가 취약하다(루트는 전송 버튼 선택자가
+  // 깨지면 같이 틀어진다). 고정 깊이로 바꾼다. 후보가 늘어나도 이제는 한 곳씩 쏘고
+  // 증거가 잡히면 즉시 멈추므로(injectOneByOne), 넓혀서 잃는 건 실패 경로의 시간뿐이다.
+  const MAX_DROP_TARGET_DEPTH = 14;
 
   function dropTargets(preferredTarget) {
     const cfg = getPromptConfig();
@@ -231,24 +255,51 @@
     push(preferredTarget);
     const editor = findEditor(cfg);
     push(editor);
-    let root = null;
-    try { root = findComposerRoot(cfg); } catch (_) { root = null; }
 
     let n = editor?.parentElement || null;
-    let past = 0;
-    for (let i = 0; i < 16 && n; i += 1) {
+    for (let i = 0; i < MAX_DROP_TARGET_DEPTH && n; i += 1) {
       push(n);
-      if (root && n === root) past = 1;          // 루트를 지난 뒤부터 세기 시작
-      else if (past) past += 1;
-      if (past > DROP_TARGET_ABOVE_ROOT) break;  // 전용 드롭존까지만 올라간다
       if (n === document.body) break;
       n = n.parentElement;
     }
-    push(root);
+    try { push(findComposerRoot(cfg)); } catch (_) { /* 루트를 못 잡아도 위 체인이 있다 */ }
     if (!out.length) push(document.body);
-    // document 에도 위임 핸들러가 있다(실측: change/drop/dragover/paste). 마지막 후보.
+    // document 에도 위임 핸들러가 있다(실측: Gemini 는 drop). 마지막 후보.
     if (document.dispatchEvent) out.push(document);
     return out;
+  }
+
+  // 한 후보를 쏜 뒤 다음으로 넘어가기 전에 지켜보는 시간.
+  //
+  // 사이트 핸들러는 동기로 돌고 업로드는 그 직후 시작되므로 짧아도 된다. 짧게 여러 번
+  // 보는 게 핵심이지 한 번에 오래 보는 게 아니다 — 어차피 전략 전체의 마지막에
+  // INJECT_EVIDENCE_MS 만큼 한 번 더 본다.
+  const PER_TARGET_EVIDENCE_MS = 200;
+
+  /** 후보를 하나씩 쏘고, 증거가 잡히면 그 자리에서 멈춘다.
+   *
+   *  ★ 예전엔 후보 전부에게 한꺼번에 쐈다. 그게 "여러 번 하면 될 때도 있다" 의 정체였다:
+   *    · 핸들러를 가진 조상이 둘이면(Gemini 의 text-input-field 와 xap-uploader-dropzone)
+   *      같은 파일이 두 번 첨부되거나, 사이트의 드래그 상태 머신이 꼬인다.
+   *    · 어디가 먹었는지 알 수 없어 로그로도 원인을 좁힐 수 없었다.
+   *  한 곳씩 쏘면 성공한 지점에서 멈추므로 중복이 구조적으로 안 생긴다. */
+  async function injectOneByOne(kind, targets, fire, watcher) {
+    let sent = false;
+    for (const target of targets) {
+      try {
+        fire(target);
+        sent = true;
+      } catch (e) {
+        // 사이트 리스너 안에서 난 예외는 우리 흐름을 끊지 않는다(this.drop is not a
+        // function 같은 것). 다음 후보로 계속 간다.
+        console.warn(`[SecureDoc] 파일 재주입 폴백(${kind}) 대상 하나 실패:`, e?.message || e);
+        continue;
+      }
+      if (!watcher) continue;
+      const res = await watcher.settle(PER_TARGET_EVIDENCE_MS);
+      if (res.ok) return true; // 먹혔다 — 더 쏘지 않는다
+    }
+    return sent;
   }
 
   function makeFileTransfer(file) {
@@ -257,28 +308,19 @@
     return dt;
   }
 
-  function injectFileByDrop(finalFile, preferredTarget) {
+  function injectFileByDrop(finalFile, preferredTarget, watcher) {
     const targets = dropTargets(preferredTarget);
     if (!targets.length) return false;
-    let sent = false;
-    for (const target of targets) {
-      try {
-        // DataTransfer 를 대상마다 새로 만든다 — 한 번 소비한 뒤 재사용하면 빈 채로
-        // 전달되는 구현이 있다.
-        const init = {
-          bubbles: true, cancelable: true, composed: true, dataTransfer: makeFileTransfer(finalFile),
-        };
-        target.dispatchEvent(new DragEvent('dragenter', init));
-        target.dispatchEvent(new DragEvent('dragover', init));
-        target.dispatchEvent(new DragEvent('drop', init));
-        sent = true;
-      } catch (e) {
-        // 사이트 리스너 안에서 난 예외는 우리 흐름을 끊지 않는다(this.drop is not a
-        // function 같은 것). 다음 후보로 계속 간다.
-        console.warn('[SecureDoc] 파일 재주입 폴백(drop) 대상 하나 실패:', e?.message || e);
-      }
-    }
-    return sent;
+    return injectOneByOne('drop', targets, (target) => {
+      // DataTransfer 를 대상마다 새로 만든다 — 한 번 소비한 뒤 재사용하면 빈 채로
+      // 전달되는 구현이 있다.
+      const init = {
+        bubbles: true, cancelable: true, composed: true, dataTransfer: makeFileTransfer(finalFile),
+      };
+      target.dispatchEvent(new DragEvent('dragenter', init));
+      target.dispatchEvent(new DragEvent('dragover', init));
+      target.dispatchEvent(new DragEvent('drop', init));
+    }, watcher);
   }
 
   /** 파일을 "붙여넣기" 로 넣는다.
@@ -287,22 +329,15 @@
    *  처리는 드래그 상태 머신이나 input[type=file] 과 무관한 별도 경로라 — 컴포넌트가
    *  재생성돼 우리가 붙들고 있던 input 이 죽은 뒤에도 살아 있을 수 있다. UI 를 전혀
    *  건드리지 않는다(메뉴를 열지 않는다). */
-  function injectFileByPaste(finalFile, preferredTarget) {
+  function injectFileByPaste(finalFile, preferredTarget, watcher) {
     const targets = dropTargets(preferredTarget);
     if (!targets.length) return false;
-    let sent = false;
-    for (const target of targets) {
-      try {
-        target.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, composed: true,
-          clipboardData: makeFileTransfer(finalFile),
-        }));
-        sent = true;
-      } catch (e) {
-        console.warn('[SecureDoc] 파일 재주입 폴백(paste) 대상 하나 실패:', e?.message || e);
-      }
-    }
-    return sent;
+    return injectOneByOne('paste', targets, (target) => {
+      target.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, composed: true,
+        clipboardData: makeFileTransfer(finalFile),
+      }));
+    }, watcher);
   }
 
   /** 사이트가 DOM 에서 떼어낸 파일 input 을 원래 자리에 되돌려 놓는다.
@@ -398,6 +433,19 @@
   async function injectFileWithEvidence(finalFile, opts = {}) {
     const cfg = getPromptConfig();
     const { preferred = null, parentHint = null, dropTarget = null } = opts;
+
+    // ★ 주입할 파일을 "우리 것"으로 등록한다 — 안 하면 우리가 우리 첨부를 삼킨다.
+    //
+    // 합성 drop/paste 는 document 캡처 단계를 지나가는데, 거기 우리 리스너가 앉아
+    // 있다. 마스킹본은 base64ToFile() 이 이미 여기 넣어두므로 걸러지지만,
+    // **passthrough(원본 그대로 전송)** 는 사용자가 처음 첨부한 그 File 객체를 그대로
+    // 다시 쏘는 거라 등록된 적이 없다. 그러면 우리 리스너가 "처음 보는 원본" 으로 보고
+    // preventDefault + stopImmediatePropagation 으로 삼킨 뒤 pendingAttachment 로
+    // 되돌려 놓는다 — 사이트는 아무것도 못 받고, 다음 전송에 같은 파일을 또 검사한다.
+    // 전략 1·2(input 경로)는 _upsContentDone 플래그로 이미 막고 있었는데 3·4 만
+    // 뚫려 있었다.
+    if (finalFile) contentOwnedFiles.add(finalFile);
+
     const attempts = [];
     let winner = null;
     let target = null;
@@ -410,7 +458,12 @@
       let watcher = null;
       // 파일 이름을 넘기는 건 "그 파일이 화면에 나타났는가" 를 보기 위해서다. 이름은
       // 비교에만 쓰이고 로그에는 절대 안 나간다(watchAttachmentEvidence 주석 참고).
-      const beginWatch = () => { if (!watcher) watcher = watchAttachmentEvidence(cfg, finalFile?.name); };
+      // 관찰자를 돌려준다 — 주입 함수가 후보를 하나씩 쏘며 직접 증거를 확인할 수 있게
+      // (injectOneByOne 참고).
+      const beginWatch = () => {
+        if (!watcher) watcher = watchAttachmentEvidence(cfg, finalFile?.name);
+        return watcher;
+      };
       let mechanical = false;
       let note = '';
       try {
@@ -440,40 +493,51 @@
       return input.files?.length === 1;
     });
 
-    // 2) 사이트가 떼어낸 input 을 되돌려 붙이기 — 노드가 살아 있는 사이트에서만 먹는다.
-    let revivedNode = null;
+    // ── 순서 = "침습도 낮은 순" (2026-08-12 재정정) ──────────────────────────────
+    //
+    // 예전 순서는 살아있는input → input되돌리기 → 합성drop → 합성paste 였다. 그건
+    // 침습도의 **역순**이었고, 그게 "처음엔 안 되는데 여러 번 하면 되기도 한다" 의
+    // 정체였다. 앞 전략이 실패해도 흔적을 남기기 때문이다:
+    //   · input되돌리기 는 죽은 노드를 컴포저 DOM 안에 다시 붙인다(Angular 가 그 안을
+    //     다시 그린다).
+    //   · 합성drop 은 사이트의 드래그 상태 머신을 건드리고, 사이트 핸들러가 내부에서
+    //     터지면(this.drop is not a function) 그 상태가 어그러진 채로 남는다.
+    // 그 두 개를 먼저 태운 뒤에야 합성paste 에 도달하는데 — Gemini 에서 실제로 되는 건
+    // 그 paste 다(크롬 계측: 입력창과 div.text-input-field 에 paste 리스너가 있다).
+    // 되는 경로를 매번 오염된 상태에서 마지막에 실행하고 있었으니, 될 때도 있고 안 될
+    // 때도 있는 게 당연하다.
+    //
+    // 이제 아무것도 안 건드리는 것부터 간다. 실패해도 다음 전략의 조건이 그대로다.
+
+    // 2) 붙여넣기 — DOM 도 드래그 상태도 건드리지 않는다. Angular 가 컴포저를 다시
+    //    만들어 우리가 붙들고 있던 input 이 죽은 뒤에도 붙여넣기 처리는 살아 있다.
+    await attempt('합성paste', (beginWatch) => (
+      injectFileByPaste(finalFile, dropTarget, beginWatch())
+    ));
+
+    // 3) 사이트가 떼어낸 input 을 되돌려 붙이기 — 컴포저 DOM 을 바꾸지만, 붙이는 건
+    //    사이트가 만든 자기 노드이고 사이트 자신의 리스너를 쓴다.
     await attempt('input되돌리기', (beginWatch) => {
       const revived = reviveFileInput(preferred, parentHint);
       if (!revived) return false;
-      revivedNode = revived;
       beginWatch();
       setFileOnInput(revived, finalFile);
       target = describeInjectionTarget('input되돌리기', revived);
       return revived.files?.length === 1;
     });
     // (2026-08-07 철회) 여기서 "증거를 못 얻었으면 되돌린 input 을 다시 떼어낸다" 를
-    // 하고 있었다. 뒤따르던 4)번 전략의 판정을 깨끗하게 하려던 것인데, 그 전략을
-    // 걷어냈으니 이유가 사라졌고 — 무엇보다 **위험했다.** 되돌린 input 은 Gemini 가
-    // 실제로 업로드를 시작하는 바로 그 노드다(같은 날 로그: input되돌리기 → 업로드
-    // 시작 관측 → 768ms 후 완료). 700ms 안에 업로드가 안 보인다고 그 노드를 뽑으면,
-    // 막 시작하려던 업로드의 대상을 우리가 없애는 셈이 된다. 그대로 둔다.
-    void revivedNode;
+    // 하고 있었다. 위험했다 — 되돌린 input 은 Gemini 가 실제로 업로드를 시작하는 바로
+    // 그 노드다(실사용자 로그: input되돌리기 → 업로드 시작 관측 → 768ms 후 완료).
+    // 업로드가 안 보인다고 그 노드를 뽑으면, 막 시작하려던 업로드의 대상을 우리가
+    // 없애는 셈이 된다. 그대로 둔다.
 
-    // 3) 합성 drop — 사이트 핸들러가 내부에서 터질 수 있지만(this.drop is not a
-    //    function) 그건 사이트 리스너 안의 예외라 우리 흐름을 끊지 않고, 첨부 자체는
-    //    되는 경우가 있다. 앞의 둘이 증거를 못 얻었을 때만 온다.
-    await attempt('합성drop', (beginWatch) => {
-      beginWatch();
-      return injectFileByDrop(finalFile, dropTarget);
-    });
-
-    // 4) 붙여넣기 — 앞의 셋이 전부 노드/드래그 상태에 기대는 반면 이건 다른 경로다.
-    //    Angular 가 컴포저를 다시 만들어 우리가 붙들고 있던 input 이 죽은 뒤에도
-    //    붙여넣기 처리는 살아 있을 수 있다. UI 는 전혀 건드리지 않는다.
-    await attempt('합성paste', (beginWatch) => {
-      beginWatch();
-      return injectFileByPaste(finalFile, dropTarget);
-    });
+    // 4) 합성 drop — 마지막이다. 사이트의 드래그 상태 머신에 기대는데, 그 상태가 없으면
+    //    사이트 핸들러가 "this.drop is not a function" 으로 터진다(실사용자 Gemini
+    //    콘솔). 리스너 안에서 난 예외라 우리 try/catch 로도 못 잡고, 사이트의 드롭
+    //    처리만 조용히 망가진 채 남는다 — 앞의 어떤 방법도 안 통했을 때만 감수한다.
+    await attempt('합성drop', (beginWatch) => (
+      injectFileByDrop(finalFile, dropTarget, beginWatch())
+    ));
 
     // 5) 사이트의 첨부 UI(메뉴)를 눌러 input 을 만들게 하던 전략은 걷어냈다.
     //    한 번도 성공하지 못했고 메뉴를 잘못 눌러 부작용만 냈다 — 자세한 경위는 아래
@@ -972,14 +1036,79 @@
 
   /** 지금 실제로 글을 쓰고 있는 입력창. 선택자가 맞으면 그걸 쓰고, 아니면 포커스된
    *  편집 가능한 요소로 폴백한다. */
+  /** 마지막으로 실제로 쓴 입력창. 포커스가 옮겨가도 같은 창을 다시 찾기 위한 기억이다. */
+  let lastKnownEditor = null;
+
+  function isVisibleEl(el) {
+    try {
+      if (!el?.getBoundingClientRect) return true; // 잴 수 없으면 배제하지 않는다
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    } catch (_) { return true; }
+  }
+
+  /** 선택자도 포커스도 못 쓸 때, 화면에 실제로 있는 입력창을 찾는다.
+   *
+   *  전송 버튼과 같은 덩어리에 있는 것을 우선하고, 없으면 가장 큰 것을 고른다.
+   *  사이트별 선택자는 쓰지 않는다. */
+  function genericEditor(cfg) {
+    let nodes = [];
+    try {
+      nodes = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]') || []);
+    } catch (_) { return null; }
+    const cands = nodes.filter((el) => isEditableEl(el) && el.isConnected && isVisibleEl(el));
+    if (!cands.length) return null;
+    let btn = null;
+    try { btn = findSendButtonEl(cfg); } catch (_) { btn = null; }
+    const area = (el) => {
+      try { const r = el.getBoundingClientRect?.(); return r ? r.width * r.height : 1; } catch (_) { return 1; }
+    };
+    if (btn) {
+      // 전송 버튼과 조상을 공유하는 것 = 같은 컴포저. 여러 개면 가장 가까운(작은) 조상.
+      const near = cands.filter((el) => {
+        let n = el.parentElement;
+        for (let i = 0; i < 12 && n; i += 1) {
+          if (n.contains?.(btn)) return true;
+          n = n.parentElement;
+        }
+        return false;
+      });
+      if (near.length) return near.sort((a, b) => area(b) - area(a))[0];
+    }
+    return cands.sort((a, b) => area(b) - area(a))[0];
+  }
+
+  /** 지금 글을 쓰고 있는 입력창.
+   *
+   *  ★ 포커스에만 기대면 안 된다. 실사용자 perplexity 는 editorSel 이 하나도 안 잡히는
+   *  상태인데(사이트 개편), 예전에는 폴백이 document.activeElement 뿐이었다. 그래서
+   *  검토 패널에서 승인을 누른 뒤처럼 포커스가 입력창 밖에 있으면 null 이 되고,
+   *    · setEditorText 가 false 를 반환해 **전송이 중단됐다**
+   *      (실사용자: "퍼플렉시티에서 안 보내지는 경우가 많다" — 간헐적인 게 포커스
+   *       의존이라는 증거다)
+   *    · 더 나쁜 경우, getEditorText 가 빈 문자열을 주면 interceptPromptSubmit 이
+   *      그대로 물러나 **검사 없이 원문이 나간다**(마우스로 전송 버튼을 누른 경우).
+   *
+   *  그래서 순서를 넷으로 둔다: 사이트 선택자 → 포커스된 편집 요소 → 직전에 쓰던 입력창
+   *  → 화면에 있는 입력창 탐색. 찾은 것은 기억해 다음에 포커스가 없어도 쓴다. */
   function findEditor(cfg) {
     let bySel = null;
     try { bySel = cfg?.editorSel ? document.querySelector(cfg.editorSel) : null; } catch (_) { bySel = null; }
-    if (bySel) return bySel;
+    if (bySel) { lastKnownEditor = bySel; return bySel; }
+
     const active = document.activeElement;
-    if (!isEditableEl(active)) return null;
+    if (isEditableEl(active)) {
+      warnStaleSelector('editorSel', cfg?.editorSel);
+      lastKnownEditor = active;
+      return active;
+    }
+
     warnStaleSelector('editorSel', cfg?.editorSel);
-    return active;
+    if (lastKnownEditor?.isConnected && isEditableEl(lastKnownEditor)) return lastKnownEditor;
+
+    const generic = genericEditor(cfg);
+    if (generic) { lastKnownEditor = generic; return generic; }
+    return null;
   }
 
   // 사이트를 안 가리는 전송 버튼 후보. aria-label 은 언어별로 다르므로 부분 일치를
