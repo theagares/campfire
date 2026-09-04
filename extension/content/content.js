@@ -265,7 +265,7 @@
     try { push(findComposerRoot(cfg)); } catch (_) { /* 루트를 못 잡아도 위 체인이 있다 */ }
     if (!out.length) push(document.body);
     // document 에도 위임 핸들러가 있다(실측: Gemini 는 drop). 마지막 후보.
-    if (document.dispatchEvent) out.push(document);
+    push(document); // push() 가 중복을 걸러준다 — raw push 라 preferredTarget 이 document 면 두 번 들어갔다
     return out;
   }
 
@@ -428,6 +428,12 @@
   // 이 시간을 다 쓰는 건 어차피 전송을 막을 실패 경로뿐이다. 잘못된 "증거없음" 의
   // 대가가 훨씬 크다 — 되던 주입을 버리고 파괴적인 폴백으로 내려간다.
   const INJECT_EVIDENCE_MS = 3000;
+  // 전략마다 INJECT_EVIDENCE_MS 를 통째로 쓰면 4전략 × 3초 = 12초가 그대로 쌓인다.
+  // 그 시간 내내 컴포저는 opacity:0 이라 사용자에겐 빈 화면으로 보인다 — 답답해서
+  // Enter 를 누르면 그 키는 promptApproved 때문에 검사 없이 사이트로 직행한다.
+  // 개별 전략의 창을 줄이면 "잘못된 증거없음" 이 늘어 되던 주입을 버리게 되므로,
+  // 전략별 창은 그대로 두고 합계에만 상한을 둔다. 첫 전략은 여전히 3초를 다 쓴다.
+  const INJECT_EVIDENCE_BUDGET_MS = 8000;
   let lastInjectionReport = null;
 
   async function injectFileWithEvidence(finalFile, opts = {}) {
@@ -449,6 +455,7 @@
     const attempts = [];
     let winner = null;
     let target = null;
+    const budgetDeadline = Date.now() + INJECT_EVIDENCE_BUDGET_MS;
 
     // run(beginWatch) 은 "DOM 을 실제로 건드리기 직전"에 beginWatch() 를 불러야 한다.
     // 사이트 첨부 UI 를 구동하는 전략은 메뉴를 여느라 DOM 을 바꾸는데, 그걸 증거로
@@ -467,7 +474,7 @@
       let mechanical = false;
       let note = '';
       try {
-        mechanical = (await run(beginWatch)) !== false;
+        mechanical = (await run(beginWatch, () => !!watcher?.seen())) !== false;
       } catch (e) {
         note = `예외:${e?.message || e}`;
       }
@@ -477,7 +484,10 @@
         return;
       }
       beginWatch(); // 전략이 안 불렀으면 지금이라도
-      const res = await watcher.settle(INJECT_EVIDENCE_MS);
+      // 남은 예산 안에서만 기다린다(최소 300ms 는 준다 — 0 으로 깎아 판정을 못 하게
+      // 만들면 그게 곧 잘못된 '증거없음' 이 된다).
+      const left = Math.max(300, Math.min(INJECT_EVIDENCE_MS, budgetDeadline - Date.now()));
+      const res = await watcher.settle(left);
       watcher.stop();
       attempts.push(`${name}=${res.ok ? '증거있음' : '증거없음'}(${res.why})`);
       if (res.ok) winner = { name, why: res.why };
@@ -1561,6 +1571,24 @@
     return pick.slice(0, 12);
   }
 
+  /** 컴포저에서 "에디터 밖" 텍스트만 모은다.
+   *
+   *  첨부 증거로 파일 이름을 찾을 때 에디터(입력창) 안을 보면 안 된다. 재전송 경로는
+   *  주입 직전에 마스킹된 프롬프트를 에디터에 먼저 넣는데, 사용자가 프롬프트에 파일명을
+   *  적었다면("report_2025_q3.pdf 요약해줘") 그 글자가 그대로 컴포저 textContent 에
+   *  들어온다. 그러면 (a) 기준선이 항상 참이 되어 이름 증거가 통째로 죽고, (b) 첨부가
+   *  붙기도 전에 "이미 붙었다" 로 판정된다. MutationObserver 는 이미 에디터를 건너뛰고
+   *  있었는데(아래 mo 콜백) 텍스트 스냅샷만 같은 규칙을 안 따르던 상태였다. */
+  function textOutsideEditor(node, editor) {
+    if (!node) return '';
+    if (editor && (node === editor || editor.contains?.(node))) return '';
+    const own = () => { try { return String(node.textContent || ''); } catch (_) { return ''; } };
+    if (!editor || !node.contains?.(editor)) return own();
+    let acc = '';
+    for (const child of node.childNodes || []) acc += textOutsideEditor(child, editor);
+    return acc;
+  }
+
   function watchAttachmentEvidence(cfg, expectedName) {
     const editor = findEditor(cfg);
     const root = findComposerRoot(cfg);
@@ -1574,7 +1602,7 @@
     };
     // 기준선: 넣기 전부터 이름이 화면에 있었다면(프롬프트에 파일명을 적었다거나 이전
     // 칩이 남아 있다거나) 그건 증거가 아니다.
-    const baselineNamed = !!needle && textOf(root).includes(needle);
+    const baselineNamed = !!needle && textOutsideEditor(root, editor).toLowerCase().includes(needle);
 
     if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
       try {
@@ -1592,18 +1620,27 @@
       } catch (_) { mo = null; }
     }
 
+    /** 지금 이 순간 증거가 있는가 — settle 과 같은 기준이되 기다리지 않는다.
+     *  주입 팬아웃 도중 "이미 받았으니 그만 쏴도 된다" 를 판단하는 데 쓴다. */
+    const seenWhy = () => {
+      if (uploadStartCount > netBase) return '업로드 시작 관측';
+      // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
+      // textContent 가 아직 비어 있는 프레임워크가 있다).
+      if (needle && !baselineNamed && (named || textOutsideEditor(root, editor).toLowerCase().includes(needle))) {
+        return '첨부 칩에 파일 이름이 나타남';
+      }
+      return null;
+    };
+
     return {
       root,
+      seen() { return !!seenWhy(); },
       async settle(ms) {
         if (!mo) return { ok: true, why: '관찰 불가 — 기계적 성공으로 인정' };
         const deadline = Date.now() + ms;
         for (;;) {
-          if (uploadStartCount > netBase) return { ok: true, why: '업로드 시작 관측' };
-          // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
-          // textContent 가 아직 비어 있는 프레임워크가 있다).
-          if (needle && !baselineNamed && (named || textOf(root).includes(needle))) {
-            return { ok: true, why: '첨부 칩에 파일 이름이 나타남' };
-          }
+          const why = seenWhy();
+          if (why) return { ok: true, why };
           if (Date.now() >= deadline) break;
           await new Promise(r => setTimeout(r, 60));
         }
@@ -1813,22 +1850,33 @@
    *  그래서 시간 대신 신호를 기다린다 — 컴포저에 그 파일 이름이 나타나는 것. 첨부가
    *  메시지에 붙었다는 유일한 눈에 보이는 증거다. 파일 이름은 비교에만 쓰고 로그에는
    *  남기지 않는다. */
-  async function waitForAttachmentBound(cfg, needle, ms) {
+  /** 컴포저에서 "첨부 칩이 있으면 이름이 보일 만한 글자" 를 모은다(소문자).
+   *  칩은 이름을 줄여 그리면서 전체 이름을 title/aria-label 에 담는 경우가 많다. */
+  function composerHaystack(cfg) {
+    try {
+      const root = findComposerRoot(cfg);
+      if (!root) return '';
+      let acc = String(root.textContent || '');
+      const labelled = root.querySelectorAll?.('[title],[aria-label]') || [];
+      for (const el of labelled) {
+        acc += ` ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`;
+      }
+      return acc.toLowerCase();
+    } catch (_) { return ''; }
+  }
+
+  async function waitForAttachmentBound(cfg, needle, ms, baselineHay = '') {
     if (!needle) return null; // 확인할 방법이 없다 — 판단을 만들지 않는다
     const root = findComposerRoot(cfg);
     if (!root) return null;
-    // 화면 글자만 보지 않는다. 첨부 칩은 이름을 줄여 그리면서 전체 이름을 title 이나
-    // aria-label 에 담는 경우가 많다.
-    const has = () => {
-      try {
-        let hay = String(root.textContent || '');
-        const labelled = root.querySelectorAll?.('[title],[aria-label]') || [];
-        for (const el of labelled) {
-          hay += ` ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`;
-        }
-        return hay.toLowerCase().includes(needle);
-      } catch (_) { return false; }
-    };
+    // 기준선이 없으면 이 대기는 무의미해질 수 있다. 재전송 경로는 주입 직전에 마스킹된
+    // 프롬프트를 에디터에 먼저 쓰고, 컴포저 루트는 그 에디터를 품는다 — 사용자가
+    // 프롬프트에 파일명을 적었다면("report_2025_q3.pdf 요약해줘") 첫 호출부터 true 가
+    // 되어 첨부를 기다리지 않고 그대로 보낸다. 그래서 기준선은 반드시 "쓰기 전"
+    // 시점의 것을 받아온다. 그때 이미 이름이 있었다면 새로 나타난 칩과 구분할 방법이
+    // 없으므로 판단을 만들지 않는다(null).
+    if (String(baselineHay || '').includes(needle)) return null;
+    const has = () => composerHaystack(cfg).includes(needle);
     if (has()) return true; // 이미 붙어 있다
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
@@ -1838,17 +1886,21 @@
     return false;
   }
 
-  /** @returns {Promise<'ok'|'unbound'|'unknown'>}
-   *   ok      — 보내도 된다
-   *   unbound — 업로드는 됐는데 첨부가 컴포저에 붙지 않았다(보내면 문서 없이 나간다)
-   *   unknown — 관측할 수 있는 게 없었다(예전과 같이 그대로 진행한다) */
-  async function waitForAttachmentReady(cfg, expectedName, probeMs = 1500, readyWaitMs = 60000) {
+  /** @returns {Promise<'ok'|'unknown'>}
+   *   ok      — 첨부가 컴포저에 붙은 것을 확인했다
+   *   unknown — 확인하지 못했다(관측 수단이 없었거나 시간 안에 못 봤다)
+   *
+   *  한때 'unbound'(업로드는 됐는데 안 붙음)를 따로 돌려주려 했지만 이제 그 경우도
+   *  'unknown' 으로 합친다 — 아래 gate() 주석대로 그걸 근거로 전송을 막지 않기로
+   *  했기 때문이다. 호출부도 결과로 분기하지 않는다. 나오지 않는 값을 시그니처에
+   *  남겨두면 다음 사람이 있는 줄 알고 분기를 짠다. */
+  async function waitForAttachmentReady(cfg, expectedName, baselineHay = '', probeMs = 1500, readyWaitMs = 60000) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const needle = fileNameNeedle(expectedName);
     const BIND_WAIT_MS = 5000;
     /** 업로드가 끝났을 때 공통으로 거치는 마지막 관문. */
     const gate = async (why, elapsed) => {
-      const bound = await waitForAttachmentBound(cfg, needle, BIND_WAIT_MS);
+      const bound = await waitForAttachmentBound(cfg, needle, BIND_WAIT_MS, baselineHay);
       if (bound === null) {
         console.log(`[SecureDoc] 첨부 대기: 업로드 완료 (${why}, ${elapsed}ms) — 첨부 반영은 확인할 수 없어 그대로 전송합니다`);
         return 'unknown';
@@ -2053,6 +2105,10 @@
         // 마스킹본을 못 넣었으면 입력창엔 "원문"이 그대로 남아 있다. 그대로 보내면
         // 마스킹 전 원본이 전송된다 — 실측(헤드리스)에서 실제로 원문이 살아남는 걸
         // 확인했다. 예전엔 반환값을 버려서 이 경로로 원문이 나갈 수 있었다.
+        // 첨부 확인용 기준선은 반드시 여기서 — 마스킹 프롬프트를 에디터에 쓰기 전에
+        // 뜬다. 쓰고 난 뒤에 재면 우리가 넣은 글자가 기준선에 섞여, 사용자가 프롬프트에
+        // 파일명을 적은 경우를 "첨부가 이미 붙었다" 로 오인한다.
+        const composerBaseline = composerHaystack(latestCfg);
         if (!setEditorText(latestCfg, finalText)) {
           promptApproved = false;
           clearPendingAttachment();
@@ -2073,6 +2129,11 @@
           injected = (await staged.inject(maskedFile)) !== false;
         } else if (decision.file?.action === 'passthrough') {
           sentFileName = staged.file?.name || staged.fileName || null;
+          // 원본 그대로 재주입. "우리 것" 등록은 injectFileWithEvidence 진입부에서
+          // 한꺼번에 한다(모든 주입이 그리로 모인다). 그게 없으면 우리 캡처 리스너가
+          // 자기 첨부를 삼키고, 삼켜진 이벤트가 stageFileAttachment 를 다시 타면서
+          // 방금 지운 pendingAttachment 가 유령 첨부로 되살아난다 — 마스킹할 게 없는
+          // 깨끗한 문서가 오히려 차단되던 원인이다.
           await announceContentApprovedFile(staged.file);
           injected = (await staged.inject(staged.file)) !== false;
         }
@@ -2104,7 +2165,7 @@
         // 업로드가 끝났다는 것만으로는 부족하다 — 바이트가 올라간 것과 그게 보낼
         // 메시지에 붙은 것은 다른 일이다. 실사용자 Gemini 에서 업로드를 관측하고
         // 전송했는데도 문서가 안 갔다. 'unbound' 는 그 상태를 정확히 가리킨다.
-        const readiness = await waitForAttachmentReady(latestCfg, sentFileName);
+        const readiness = await waitForAttachmentReady(latestCfg, sentFileName, composerBaseline);
         // readiness 는 이제 전송을 막지 않는다 — 업로드가 관측된 뒤의 "칩을 못 봤다" 는
         // 우리 관측의 한계이지 사이트의 실패가 아니다(gate() 주석 참고). 문서가 사이트에
         // 도달하지 못한 경우는 위 injected 검사에서 이미 걸러진다.
