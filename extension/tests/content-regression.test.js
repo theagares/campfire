@@ -187,7 +187,11 @@ class DragEventStub {
 }
 // 드롭 지점 엘리먼트 — 우리가 어떤 합성 이벤트를 쐈는지 기록한다.
 class DropTargetStub extends EventTargetStub {
-  constructor() { super(); this.isConnected = true; this.dispatched = []; }
+  // nodeType 이 있어야 증거 판정(watchAttachmentEvidence)이 관찰자를 실제로 만든다.
+  // 없으면 settle() 이 무조건 "관찰 불가 — 기계적 성공으로 인정" 을 돌려주는 바람에,
+  // 이 노드가 컴포저 루트가 되는 테스트에서는 첫 후보가 무조건 이겨버려 전략·후보
+  // 순서를 아예 검증할 수 없다. 진짜 드롭 타깃은 당연히 엘리먼트다.
+  constructor() { super(); this.nodeType = 1; this.isConnected = true; this.dispatched = []; }
   dispatchEvent(event) { this.dispatched.push(event); return true; }
 }
 // 전송 버튼 — 비활성 상태를 흉내내고 클릭 횟수를 센다.
@@ -214,6 +218,23 @@ const consoleStub = {
   debug: () => {},
 };
 const diagCount = () => consoleLines.filter(l => l.includes('[SecureDoc][진단]')).length;
+
+// 사이트가 첨부를 받으면 컴포저에 무언가를 그린다 — 그 반응을 흉내내는 최소 stub.
+// 증거 판정(watchAttachmentEvidence)이 실제로 도는 환경을 만들 때 쓴다. 이게 없으면
+// settle() 이 "관찰 불가 — 기계적 성공으로 인정" 을 돌려주므로, 맨 앞 전략이 기계적으로
+// 성공하기만 하면 무조건 이겨서 전략 사이의 우선순위를 아예 검증할 수 없다.
+class MutationObserverStub {
+  constructor(cb) { this.cb = cb; MutationObserverStub.instances.push(this); }
+  observe() {}
+  disconnect() { this.disconnected = true; }
+  static emitAdded(node) {
+    for (const o of MutationObserverStub.instances) {
+      if (o.disconnected) continue;
+      o.cb([{ target: {}, addedNodes: [node], removedNodes: [] }]);
+    }
+  }
+}
+MutationObserverStub.instances = [];
 
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
@@ -887,13 +908,29 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  // 되돌릴 부모가 없는 경우(원래 부모까지 사라짐)라 최후 수단인 합성 drop 으로 간다.
-  const dropped = promptEditorStub.dispatched.filter(e => e.type === 'drop' && e.dataTransfer?.files?.length);
-  if (!dropped.length) {
+  // 되돌릴 부모가 없는 경우(원래 부모까지 사라짐)라 합성 이벤트 폴백으로 간다.
+  //
+  // (2026-08-12) 예전엔 여기서 "합성 drop 이 왔는가" 만 봤다. 그건 결과가 아니라
+  // **수단**을 박아둔 것이었고, 실제로 되는 수단이 바뀌자 이 테스트가 코드를 막았다.
+  // 크롬으로 Gemini 를 직접 계측해보니 입력창에 붙어 있는 건 drop 이 아니라 paste 다.
+  // 그래서 보는 것을 결과로 바꾼다 — "그 파일을 실은 합성 이벤트가 페이지에 닿았는가",
+  // 그리고 "더 험한 수단(drop)까지 가지 않았는가".
+  const carried12 = promptEditorStub.dispatched.filter(e => (
+    (e.type === 'paste' && e.clipboardData?.files?.length)
+    || (e.type === 'drop' && e.dataTransfer?.files?.length)
+  ));
+  if (!carried12.length) {
     throw new Error('input 이 사라진 사이트에서 문서가 페이지로 전혀 들어가지 않았다 — 프롬프트만 전송된다');
   }
-  if (dropped[0].dataTransfer.files[0]?.name !== 'gemini.pdf') {
-    throw new Error(`합성 drop 에 실린 파일이 다르다: ${dropped[0].dataTransfer.files[0]?.name}`);
+  const firstCarried12 = carried12[0];
+  const files12 = firstCarried12.clipboardData?.files || firstCarried12.dataTransfer?.files;
+  if (files12[0]?.name !== 'gemini.pdf') {
+    throw new Error(`합성 이벤트에 실린 파일이 다르다: ${files12[0]?.name}`);
+  }
+  // 순서: 아무것도 안 건드리는 paste 를 drop 보다 먼저 써야 한다. drop 은 사이트의
+  // 드래그 상태 머신을 건드리고 사이트 핸들러를 터뜨릴 수 있어 최후 수단이다.
+  if (firstCarried12.type !== 'paste') {
+    throw new Error(`첫 폴백이 paste 가 아니다(${firstCarried12.type}) — 더 험한 수단을 먼저 썼다`);
   }
 
   // (13) 원래 부모가 살아 있으면 합성 drop 이 아니라 "input 되돌리기" 를 쓴다.
@@ -909,6 +946,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   await flush();
   await new Promise(r => setTimeout(r, 7000));
 
+  // 증거 판정이 실제로 도는 환경에서 본다. 이게 없으면 맨 앞 전략이 기계적으로 성공만
+  // 해도 이겨버려서 "paste 가 안 먹었을 때 되돌리기로 가는가" 를 확인할 수가 없다.
+  MutationObserverStub.instances.length = 0;
+  sandbox.MutationObserver = MutationObserverStub;
+
   // 사이트의 컴포저(부모)는 살아 있고, 그 안의 input 만 떼어진 상황.
   const parent13 = new DropTargetStub();
   parent13.appended = [];
@@ -917,6 +959,19 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     new FileStub(['pdf bytes'], 'revive.pdf', { type: 'application/pdf' }), 'orphan',
   );
   input13.parentElement = parent13;
+
+  // 이 사이트는 붙여넣기를 무시하고(=컴포저에 아무 변화 없음), 되돌린 input 의 change
+  // 는 받아들여 첨부 칩을 그린다. 그러면 체인은 paste → (증거 없음) → 되돌리기 로
+  // 내려가야 한다.
+  const inputDispatch13 = input13.dispatchEvent.bind(input13);
+  input13.dispatchEvent = (event) => {
+    const r = inputDispatch13(event);
+    setTimeout(
+      () => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: 'revive.pdf' }),
+      50,
+    );
+    return r;
+  };
 
   dispatchDocumentEvent('change', {
     target: input13,
@@ -945,6 +1000,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
+  // paste 가 증거 없이 끝날 때까지 기다린다 — 이제 되돌리기는 그 다음 차례다.
+  // (후보마다 200ms + 전략 끝에 3초 관찰)
+  await new Promise(r => setTimeout(r, 5000));
+
   if (!parent13.appended.includes(input13)) {
     throw new Error('원래 부모가 살아 있는데 input 을 되돌려 놓지 않았다');
   }
@@ -955,6 +1014,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (drops13.length) {
     throw new Error('되돌리기로 충분한데 합성 drop 까지 쐈다 — 사이트 핸들러를 터뜨릴 수 있다');
   }
+  // paste 는 시도했어야 한다. 아무것도 안 건드리는 수단이라 되돌리기보다 먼저다.
+  if (!promptEditorStub.dispatched.some(e => e.type === 'paste')) {
+    throw new Error('되돌리기 전에 붙여넣기를 시도하지 않았다 — 더 침습적인 수단을 먼저 썼다');
+  }
+  delete sandbox.MutationObserver; // 아래 (14)(15)는 증거 판정 없는 환경 전제다
 
   // (14) 전송 버튼이 업로드 내내 활성인 사이트(Gemini)에서도, 첨부 업로드가 끝날
   //      때까지 기다렸다가 전송해야 한다.
@@ -1134,19 +1198,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 성공해도 컴포저에 아무 변화가 없으면 합성 drop 까지 내려가는지 확인한다.
   await new Promise(r => setTimeout(r, 5000)); // (15)의 promptApproved(3초) 해제 대기
 
-  // 사이트가 첨부를 받으면 컴포저에 무언가를 그린다 — 그 반응을 흉내내는 최소 stub.
-  class MutationObserverStub {
-    constructor(cb) { this.cb = cb; MutationObserverStub.instances.push(this); }
-    observe() {}
-    disconnect() { this.disconnected = true; }
-    static emitAdded(node) {
-      for (const o of MutationObserverStub.instances) {
-        if (o.disconnected) continue;
-        o.cb([{ target: {}, addedNodes: [node], removedNodes: [] }]);
-      }
-    }
-  }
-  MutationObserverStub.instances = [];
+  MutationObserverStub.instances.length = 0;
   sandbox.MutationObserver = MutationObserverStub;
 
   const send16 = new SendButtonStub();
@@ -1204,8 +1256,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  // 전략 체인: 살아있는input(즉시 실패) → 되돌리기(700ms 증거 대기) → 합성drop(≈160ms)
-  await new Promise(r => setTimeout(r, 4000));
+  // 전략 체인: 살아있는input(즉시 실패) → 합성paste(증거없음) → 되돌리기(증거없음)
+  //           → 합성drop(사이트가 받아들임). 앞의 두 전략이 각각 증거 창을 다 쓴다.
+  await new Promise(r => setTimeout(r, 9000));
 
   if (!parent16.appended.includes(input16)) {
     throw new Error('되돌리기 전략을 아예 시도하지 않았다 — 체인 순서가 깨졌다');
@@ -1793,7 +1846,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 4000));
+  // 합성paste 가 증거 없이 끝난 뒤(≈3.2초)에야 되돌리기 차례고, 거기서 다시 1.2초 뒤에
+  // 업로드가 시작된다. 그 둘을 다 덮을 만큼 기다린다.
+  await new Promise(r => setTimeout(r, 9000));
   HTMLInputElementStub.prototype.dispatchEvent = origInject25;
 
   const chain25 = consoleLines.filter(l => l.includes('첨부 주입 시도 경로')).slice(-1)[0] || '';
@@ -1805,6 +1860,262 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (chain25.includes('합성drop')) {
     throw new Error('되돌리기가 성공했는데도 파괴적인 폴백까지 내려갔다');
   }
+  // 업로드를 끝내준다. 안 그러면 첨부 대기가 60초까지 물고 있어 promptInProcess 가
+  // 안 풀리고, 뒤 테스트의 입력이 "검사 중" 으로 통째로 삼켜진다((26)이 그렇게 깨졌다).
+  await dispatchWindowMessage({
+    __campfire_config: true, direction: 'main-to-isolated',
+    type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+  });
+  await new Promise(r => setTimeout(r, 6500)); // 첨부 반영 대기(5초) + 재전송
+
+  // (26) 사이트 선택자가 깨졌고 입력창에 포커스도 없을 때 — 그래도 찾아내야 한다.
+  //
+  // 배경(실사용자 perplexity): editorSel 이 하나도 안 잡히는 상태다(사이트 개편,
+  // 콘솔에 "선택자가 낡았을 수 있어 일반 후보로 폴백합니다" 가 찍힌다). 그런데 예전
+  // 폴백은 document.activeElement 하나뿐이라, 포커스가 입력창 밖에 있으면 findEditor 가
+  // null 이 됐다. 그 결과 둘 중 하나가 일어난다.
+  //   · setEditorText 가 false → **전송 중단** ("퍼플렉시티에서 안 보내지는 경우가 많다"
+  //     — 간헐적인 게 포커스 의존이라는 증거다)
+  //   · getEditorText 가 빈 문자열 → interceptPromptSubmit 이 그대로 물러나
+  //     **검사 없이 원문이 나간다**(마우스로 전송 버튼을 누른 경우)
+  // 후자가 특히 나쁘다 — 조용히 원문이 유출된다.
+  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+
+  // keydown 경로에는 "포커스가 입력창 안인가" 가드가 따로 있고 그건 옳다. 위험한 건
+  // **마우스로 전송 버튼을 누르는 경로** 다 — 그때 activeElement 는 버튼이라 편집
+  // 요소가 아니고, 예전 폴백으로는 findEditor 가 null 이 된다.
+  const editor26 = promptEditorStub;
+  editor26.value = '내 번호 010-1234-5678 이야';
+  editor26.isConnected = true; // 진짜 입력창은 DOM 에 붙어 있다(탐색 후보 조건)
+  editor26.dispatched.length = 0;
+  const send26 = new SendButtonStub();
+  send26.disabled = false;
+  // 클릭 경로는 event.target.closest(선택자) 로 전송 버튼인지 판별한다.
+  send26.closest = () => send26;
+  domBySelector.set('[data-testid="send-button"]', send26);
+  domBySelector.delete('#prompt-textarea');   // 사이트 개편으로 선택자가 죽었다
+  domBySelector.delete('input[type="file"]');
+  domBySelectorAll.set('textarea, [contenteditable="true"]', [editor26]);
+  documentStub.activeElement = send26;        // 포커스는 버튼에 있다(마우스 클릭)
+  const scansBefore26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+
+  nextDecision = { action: 'masked', maskedText: '내 번호 [전화번호 마스킹] 이야' };
+  dispatchDocumentEvent('click', {
+    target: send26,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 2000));
+
+  const scans26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore26;
+  if (scans26 !== 1) {
+    throw new Error(
+      `입력창을 못 찾아 검사를 아예 시작하지 않았다 (START_SCAN ${scans26}건) — 원문이 그대로 나간다`,
+    );
+  }
+  if (send26.clicks !== 1) {
+    throw new Error(`마스킹은 됐는데 전송하지 못했다 (clicks=${send26.clicks})`);
+  }
+  if (editor26.value !== '내 번호 [전화번호 마스킹] 이야') {
+    throw new Error(`입력창에 마스킹본이 들어가지 않았다: ${editor26.value}`);
+  }
+
+  // (27) 우리가 쏜 첨부를 우리 리스너가 삼키면 안 된다 (passthrough 경로).
+  //
+  // 배경: 합성 drop/paste 는 document 캡처 단계를 지나가는데 거기 우리 리스너가 앉아
+  // 있다. 마스킹본은 base64ToFile() 이 contentOwnedFiles 에 넣어두니 걸러지지만,
+  // **passthrough(원본 그대로 전송)** 는 사용자가 처음 첨부한 그 File 객체를 그대로
+  // 다시 쏘는 거라 등록된 적이 없었다. 그러면 우리 리스너가 "처음 보는 원본" 으로 보고
+  // preventDefault + stopImmediatePropagation 으로 삼켜버린다 — 사이트는 문서를 못
+  // 받고, 우리는 그걸 pendingAttachment 로 되돌려 놔서 다음 전송에 또 검사한다.
+  // 전략 1·2(input 경로)는 _upsContentDone 으로 막고 있었는데 합성 이벤트만 뚫려 있었다.
+  await new Promise(r => setTimeout(r, 4000)); // 앞 테스트의 promptApproved 해제 대기
+
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  domBySelector.delete('input[type="file"]');
+  const send27 = new SendButtonStub();
+  send27.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send27);
+
+  // 합성 이벤트가 실제 브라우저처럼 document 캡처 리스너를 지나가게 만든다.
+  // 이 되먹임이 없으면 자기 삼킴은 하네스에서 재현 자체가 안 된다.
+  const swallowed27 = [];
+  const editorDispatch27 = promptEditorStub.dispatchEvent.bind(promptEditorStub);
+  promptEditorStub.dispatchEvent = (event) => {
+    const r = editorDispatch27(event);
+    if (event?.type === 'paste' || event?.type === 'drop') {
+      const files = event.clipboardData?.files || event.dataTransfer?.files || [];
+      dispatchDocumentEvent(event.type, {
+        type: event.type,
+        target: promptEditorStub,
+        clipboardData: event.clipboardData,
+        dataTransfer: event.dataTransfer,
+        composedPath: () => [promptEditorStub, documentStub],
+        preventDefault() { swallowed27.push(`${event.type}:preventDefault`); },
+        stopImmediatePropagation() { swallowed27.push(`${event.type}:stop`); },
+      });
+      void files;
+    }
+    return r;
+  };
+
+  const file27 = new FileStub(['pdf bytes'], 'passthrough.pdf', { type: 'application/pdf' });
+  const input27 = new HTMLInputElementStub(file27, 'pt27');
+  dispatchDocumentEvent('change', {
+    target: input27,
+    composedPath: () => [input27, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input27.isConnected = false;             // 사이트가 떼어냈다 → 합성 이벤트 폴백으로 간다
+
+  promptEditorStub.dispatched.length = 0;
+  swallowed27.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 그대로 보내줘';
+  const scansBefore27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 그대로 보내줘',
+    file: { action: 'passthrough' },       // ★ 원본을 그대로 다시 쏜다
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 5000));
+
+  const pasted27 = promptEditorStub.dispatched.filter(e => e.type === 'paste' && e.clipboardData?.files?.length);
+  if (!pasted27.length) {
+    throw new Error('passthrough 첨부가 페이지로 아예 나가지 않았다');
+  }
+  if (pasted27[0].clipboardData.files[0]?.name !== 'passthrough.pdf') {
+    throw new Error(`합성 이벤트에 실린 파일이 다르다: ${pasted27[0].clipboardData.files[0]?.name}`);
+  }
+  // ★ 핵심: 우리 리스너가 우리 파일을 가로채지 않았어야 한다.
+  if (swallowed27.length) {
+    throw new Error(
+      `우리가 쏜 passthrough 첨부를 우리 리스너가 삼켰다 (${swallowed27.join(',')}) — `
+      + '사이트는 문서를 받지 못하고, 같은 파일이 다시 보류 상태로 돌아간다',
+    );
+  }
+  // 삼켰다면 stageFileAttachment 가 다시 돌아 다음 전송 때 또 검사한다. 검사가 새로
+  // 시작되지 않았는지도 함께 본다.
+  const scans27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore27;
+  if (scans27 !== 1) {
+    throw new Error(`검사가 ${scans27}건 발생했다 — 주입한 파일이 다시 검사 흐름을 탔다`);
+  }
+  promptEditorStub.dispatchEvent = editorDispatch27;
+
+  // (28) 후보 하나가 받아들이면 나머지에는 더 쏘지 않는다 + 컴포저 루트보다 위에 있는
+  //      전용 드롭존도 후보에 들어가야 한다.
+  //
+  // 배경(2026-08-12, 크롬으로 gemini.google.com 직접 계측):
+  //     depth  0  div[role=textbox].ql-editor   ← paste
+  //     depth  6  div.text-input-field          ← paste, drop, dragenter, dragover
+  //     depth 11  div.xap-uploader-dropzone     ← drop, dragenter, dragover   ★
+  // 그런데 같은 계측에서 Gemini 의 sendBtnSel 이 하나도 안 맞았고(일반 폴백 7개까지
+  // 전부), 전송 버튼을 못 찾으면 findComposerRoot 가 루트를 depth 7 로 잡는다. 예전
+  // 후보 범위는 "루트 + 3단계" 라 depth 10 에서 멈췄다 — drop 리스너를 가진 단 둘 중
+  // 하나가 통째로 빠져 있었다.
+  //
+  // 그리고 예전엔 후보 **전부에게 한꺼번에** 쐈다. 핸들러를 가진 조상이 둘이면 같은
+  // 파일이 두 번 첨부되거나 사이트 상태가 꼬인다 — "여러 번 하면 될 때도 있다" 의 정체.
+  await new Promise(r => setTimeout(r, 4000));
+
+  MutationObserverStub.instances.length = 0;
+  sandbox.MutationObserver = MutationObserverStub;
+
+  // 입력창 위로 11단계짜리 조상 사슬을 세운다. 맨 위(깊이 11)만 첨부를 받아들인다.
+  const chain28 = [];
+  let prev28 = promptEditorStub;
+  for (let i = 0; i < 11; i += 1) {
+    const node = new DropTargetStub();
+    prev28.parentElement = node;
+    chain28.push(node);
+    prev28 = node;
+  }
+  const deepest28 = chain28[chain28.length - 1]; // = xap-uploader-dropzone 자리
+  const afterWinner28 = [];                      // 승자 뒤에 오는 후보들
+  const deepDispatch28 = deepest28.dispatchEvent.bind(deepest28);
+  deepest28.dispatchEvent = (event) => {
+    const r = deepDispatch28(event);
+    if (event?.type === 'paste' && event?.clipboardData?.files?.length) {
+      setTimeout(
+        () => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: 'deep.pdf' }),
+        30,
+      );
+    }
+    return r;
+  };
+  // document 는 후보 목록의 맨 마지막이다 — 승자가 정해진 뒤에는 여기까지 오면 안 된다.
+  const docDispatch28 = documentStub.dispatchEvent?.bind(documentStub);
+  documentStub.dispatchEvent = (event) => {
+    afterWinner28.push(event?.type);
+    return docDispatch28 ? docDispatch28(event) : true;
+  };
+
+  // ★ 전송 버튼이 하나도 안 잡히는 상태로 둔다 — 이게 실측된 Gemini 조건이다.
+  //   sendBtnSel 2개도, 일반 폴백 7개도 전부 안 맞았다. 그러면 findComposerRoot 는
+  //   "전송 버튼을 못 찾으면 5단계만 올라간다" 분기로 떨어져 루트를 깊이 7 로 잡고,
+  //   예전 규칙(루트+3)은 깊이 10 에서 멈춘다 — 깊이 11 의 전용 드롭존이 빠진다.
+  //   이 조건이 없으면 루트가 사슬 꼭대기로 잡혀 옛 규칙으로도 통과해버려서, 이
+  //   테스트가 회귀를 못 잡는다(실제로 되돌리기 실험에서 그렇게 새어나갔다).
+  //   일반 폴백 7개까지 전부 지워야 한다 — 앞 테스트가 남겨둔 button[type="submit"] 하나만
+  //   살아 있어도 루트가 사슬 꼭대기로 잡혀 옛 규칙으로도 통과해버린다(실제로 그랬다).
+  for (const sel of [
+    '[data-testid="send-button"]',
+    'button[type="submit"]', 'button[aria-label*="send" i]', 'button[aria-label*="submit" i]',
+    'button[aria-label*="보내기"]', 'button[aria-label*="제출"]',
+    'button[data-testid*="send" i]', 'button[data-testid*="submit" i]',
+  ]) domBySelector.delete(sel);
+  domBySelector.set('#prompt-textarea', promptEditorStub);
+  domBySelector.delete('input[type="file"]');
+
+  const file28 = new FileStub(['pdf bytes'], 'deep.pdf', { type: 'application/pdf' });
+  const input28 = new HTMLInputElementStub(file28, 'deep28');
+  dispatchDocumentEvent('change', {
+    target: input28,
+    composedPath: () => [input28, documentStub],
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await flush();
+  input28.isConnected = false;
+
+  promptEditorStub.dispatched.length = 0;
+  for (const n of chain28) n.dispatched.length = 0;
+  afterWinner28.length = 0;
+  documentStub.activeElement = promptEditorStub;
+  promptEditorStub.value = '이 문서를 요약해줘';
+  nextDecision = {
+    action: 'send',
+    maskedText: '이 문서를 요약해줘',
+    file: {
+      action: 'upload', maskedBase64: btoa('masked'),
+      mimeType: 'application/pdf', fileName: 'deep.pdf',
+    },
+  };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 6000));
+
+  // ★ 컴포저 루트보다 위에 있어도 후보에 들어가야 한다.
+  if (!deepest28.dispatched.some(e => e.type === 'paste' && e.clipboardData?.files?.length)) {
+    throw new Error(
+      '입력창에서 11단계 위에 있는 전용 드롭존에 아무것도 쏘지 않았다 — '
+      + 'Gemini 의 xap-uploader-dropzone 이 후보에서 빠지던 그 범위 그대로다',
+    );
+  }
+  // ★ 그 지점이 받아들였으면 뒤 후보(document)에는 더 쏘지 않아야 한다.
+  if (afterWinner28.length) {
+    throw new Error(
+      `첨부가 먹힌 뒤에도 다음 후보에 계속 쐈다 (${afterWinner28.join(',')}) — `
+      + '핸들러가 둘이면 같은 파일이 두 번 붙는다',
+    );
+  }
+  delete sandbox.MutationObserver;
+  documentStub.dispatchEvent = docDispatch28;
 
   console.log('content regression ok');
   process.exit(0);
