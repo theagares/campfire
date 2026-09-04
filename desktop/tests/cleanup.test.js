@@ -60,9 +60,10 @@ function fakeEngine(state = 'running') {
 const fakeConfig = (securityEnabled = true) => ({ get: (k) => (k === 'securityEnabled' ? securityEnabled : undefined) });
 
 test('scan 은 실제 용량을 재고, 없는 항목은 present:false 로 준다', async () => {
-  await withTempRoot((root) => {
+  await withTempRoot(async (root) => {
     seed(root, 'logs', 100);
-    const { items } = cleanup.scan();
+    // scan 은 메인 프로세스를 막지 않도록 비동기다(cleanup.js dirSize 주석).
+    const { items } = await cleanup.scan();
     const logs = items.find((i) => i.id === 'logs');
     const models = items.find((i) => i.id === 'models');
     assert.equal(logs.present, true);

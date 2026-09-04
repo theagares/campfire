@@ -194,6 +194,7 @@ app.whenReady().then(async () => {
     config,
     onShowDashboard: () => showDashboard('dashboard'),
     onQuit: quitApp,
+    onEnsureModels: ensureModelsAutoDownload,
   });
 
   createMainWindow();

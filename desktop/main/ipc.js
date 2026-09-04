@@ -68,7 +68,7 @@ function buildStats(engineManager) {
 }
 
 function register(ctx) {
-  const { engineManager, config, onShowDashboard, onQuit } = ctx;
+  const { engineManager, config, onShowDashboard, onQuit, onEnsureModels } = ctx;
 
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
@@ -130,14 +130,16 @@ function register(ctx) {
   // 사고로 확인 단계가 통째로 건너뛰어지는 경로를 만들지 않는다. 또 무엇을 얼마나
   // 지우는지(항목 이름 + 실제 용량)를 확인 창 본문에 그대로 실어, 사용자가 무엇을
   // 잃는지 모르고 누르는 일이 없게 한다.
-  ipcMain.handle('cleanup:scan', () => cleanup.scan());
+  ipcMain.handle('cleanup:scan', async () => cleanup.scan());
 
   ipcMain.handle('cleanup:remove', async (evt, ids) => {
     const wanted = (Array.isArray(ids) ? ids : []).map(cleanup.itemById).filter(Boolean);
     if (!wanted.length) return { cancelled: true, removed: [], freedBytes: 0 };
 
-    const scanned = cleanup.scan();
+    const scanned = await cleanup.scan();
     const sizeOf = (id) => scanned.items.find((i) => i.id === id)?.bytes || 0;
+    // 방금 잰 값을 remove 로 넘겨 같은 트리를 다시 훑지 않게 한다.
+    const sizes = Object.fromEntries(wanted.map((it) => [it.id, sizeOf(it.id)]));
     const lines = wanted.map((it) => `· ${it.label} (${cleanup.formatBytes(sizeOf(it.id))})`);
     const willRestart = wanted.some((it) => it.needsEngineStop);
 
@@ -161,8 +163,21 @@ function register(ctx) {
       : await dialog.showMessageBox(opts);
     if (response !== 0) return { cancelled: true, removed: [], freedBytes: 0 };
 
-    const result = await cleanup.remove(wanted.map((it) => it.id), { engineManager, config });
+    const result = await cleanup.remove(wanted.map((it) => it.id), { engineManager, config, sizes });
     broadcast('stats:tick', buildStats(engineManager)); // 통계를 지웠으면 화면도 바로 반영
+
+    // 가중치를 지웠으면 즉시 다시 받기 시작한다.
+    //
+    // 안 그러면 앱을 완전히 재시작할 때까지 보호가 비어 있다 — 가중치가 없는 동안
+    // 엔진의 model_status 게이트는 문서·프롬프트를 검사 없이 통과시키는데(main.js 의
+    // ensureModelsAutoDownload 주석), 트레이는 그대로 "보호 ON" 을 보여준다. 확인
+    // 창도 "다음 검사 전에 다시 내려받아야 합니다" 라고 안내하므로 실제로 그렇게
+    // 만들어 준다. 다운로드는 오래 걸리므로 기다리지 않고 진행률만 브로드캐스트한다.
+    if (onEnsureModels && result.removed?.some((r) => r.id === 'models' && r.ok)) {
+      Promise.resolve()
+        .then(() => onEnsureModels())
+        .catch((err) => console.error('[ipc] 삭제 후 모델 재다운로드 실패:', err.message));
+    }
     return { cancelled: false, ...result };
   });
 
