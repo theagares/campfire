@@ -37,6 +37,12 @@ def _adopt_legacy_store() -> None:
     """
     if os.environ.get("SECUREDOC_SKIP_LEGACY_MIGRATION") == "1":
         return
+    # 사용자가 설정 > 데이터 삭제에서 "탐지 기록" 을 직접 지웠다면 승계하지 않는다.
+    # 데스크탑 앱이 store 를 지운 뒤 이 표시를 남긴다(main/cleanup.js 의
+    # LEGACY_CLEARED_MARKER — 문자열이 양쪽에서 같아야 한다). 표시가 없을 때만
+    # 리브랜딩 전 통계를 이어붙인다. 없으면 지운 감사 로그가 다음 기동에 되살아난다.
+    if (config.STORE_DIR / ".legacy-store-cleared").exists():
+        return
     legacy_db = config.LEGACY_STORE_DIR / config.DB_PATH.name
     if config.DB_PATH.exists() or not legacy_db.is_file():
         return

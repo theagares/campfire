@@ -108,10 +108,26 @@ function userDataRoot() {
  * 읽는 경로와 엔진이 쓰는 경로가 어긋나면 통계가 통째로 빈 채로 보이므로, 결정은
  * 반드시 한 곳에서만 한다.
  */
-function resolveStoreDir() {
+// root 를 인자로 받는 이유: 호출부(cleanup)가 이미 정한 루트를 그대로 쓰게 하고,
+// 테스트가 임시 폴더로 갈아끼울 수 있게 하기 위해서다. 규칙(환경변수 우선, 하위
+// 폴더 이름)은 여기 한 곳에만 둔다.
+function resolveStoreDir(root = userDataRoot()) {
   const override = process.env.SECUREDOC_STORE_DIR;
   if (override && override.trim()) return path.resolve(override.trim());
-  return path.join(userDataRoot(), 'store');
+  return path.join(root, 'store');
+}
+
+/**
+ * 탐지 모델 가중치 디렉터리.
+ *
+ * 엔진(app/config.py 의 MODELS_ROOT)과 반드시 같은 값이어야 한다 — 앱이 지우는 곳과
+ * 엔진이 받아두는 곳이 어긋나면 "지웠는데 그대로" 가 된다. 엔진이 SECUREDOC_MODELS_DIR
+ * 를 먼저 보므로 여기서도 같은 순서로 본다.
+ */
+function resolveModelsDir(root = userDataRoot()) {
+  const override = process.env.SECUREDOC_MODELS_DIR;
+  if (override && override.trim()) return path.resolve(override.trim());
+  return path.join(root, 'models');
 }
 
 function resolveStoreDbPath() {
@@ -127,8 +143,8 @@ function resolveStoreDbPath() {
  * PYTHONPYCACHEPREFIX(3.8+)로 캐시를 여기로 돌리면 컴파일 캐시의 속도 이점은 그대로
  * 두면서 번들은 손대지 않는다.
  */
-function resolvePycacheDir() {
-  return path.join(userDataRoot(), 'pycache');
+function resolvePycacheDir(root = userDataRoot()) {
+  return path.join(root, 'pycache');
 }
 
 /** 엔진 로그 파일 — 배포본에서 사이드카가 죽었을 때 흔적을 남길 유일한 곳. */
@@ -161,6 +177,7 @@ module.exports = {
   resolvePythonExe,
   userDataRoot,
   resolveStoreDir,
+  resolveModelsDir,
   resolveStoreDbPath,
   resolvePycacheDir,
   resolveEngineLogPath,
