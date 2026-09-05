@@ -45,20 +45,47 @@
   let _fileInterceptEnabled = true;
   let _bridgeToken = '';
 
+  /** isolated world(content.js)가 보낸 것이라는 증거.
+   *
+   *  한계를 분명히 적어둔다: content.js 는 이 토큰을 postMessage(..., '*') 로 보내는데
+   *  MAIN world 는 페이지의 힙이라 페이지도 그 메시지를 읽을 수 있다. 그래서 이 검사는
+   *  토큰을 줍지 않은 공격과 우연히 겹치는 메시지까지만 막는다 — 작정하고 주운 페이지는
+   *  못 막는다. 근본 해결은 보안 판단을 MAIN world 밖에 두는 것이고 그건 별도 작업이다.
+   *  그때까지의 방어선이지, 경계선이라고 믿으면 안 된다. */
+  const fromIsolated = (data) => !!_bridgeToken && data.bridgeToken === _bridgeToken;
+
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (!event.data?.__campfire_config || event.data.direction !== 'isolated-to-main') return;
     if (event.data.type === 'SECUREDOC_BRIDGE_TOKEN') {
+      // 한 번만 받는다. 예전엔 올 때마다 덮어썼는데, 그러면 페이지가 나중에 자기 토큰을
+      // 밀어넣어 아래 검사들을 전부 통과시킬 수 있다 — 검사를 넣는 의미가 사라진다.
+      if (_bridgeToken) return;
       _bridgeToken = String(event.data.token || '');
       return;
     }
     if (event.data.type === 'UPS_CONTENT_APPROVED_FILE') {
+      // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅(_isContentApproved*)이
+      // 그냥 통과시킨다. 게다가 등록 단계 대조는 파일명만 본다. 즉 사용자가 방금 고른 파일명을
+      // 아는 페이지(자기 input 이니 당연히 안다)가 그 이름만 등록하면, 마스킹되지 않은 원본이
+      // 그대로 올라간다. 증거 없는 등록은 받지 않는다.
+      if (!fromIsolated(event.data)) return;
       _rememberContentApproved(event.data.meta);
       return;
     }
     if (event.data.type !== 'UPS_PROTECTION_STATE') return;
-    _protectionEnabled = Boolean(event.data.enabled);
-    _fileInterceptEnabled = Boolean(event.data.fileInterceptEnabled);
+    // 켜는 건 누가 시켜도 해가 없다. 끄는 건 이 MAIN world 인터셉트 전체(XHR/fetch/drop/
+    // file input)를 무력화하는데 사용자 팝업 토글은 ON 인 채로 남는다 — 꺼진 걸 알 방법이
+    // 없다. 그래서 끄는 방향에만 증거를 요구한다(fail-closed).
+    const nextEnabled = Boolean(event.data.enabled);
+    const nextFileEnabled = Boolean(event.data.fileInterceptEnabled);
+    const turningOff = (!nextEnabled && _protectionEnabled) || (!nextFileEnabled && _fileInterceptEnabled);
+    if (turningOff && !fromIsolated(event.data)) {
+      debugLog('[SecureDoc] 보호 해제 요청 무시 — isolated world 증거 없음');
+      return;
+    }
+    _protectionEnabled = nextEnabled;
+    _fileInterceptEnabled = nextFileEnabled;
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
   });
 
