@@ -48,9 +48,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Campfire engine", version="0.1.0", lifespan=lifespan)
+# 확장 프로그램 오리진만 허용한다 (chrome-extension://<32자 ID>).
+#
+# 예전 값은 allow_origins=["*"] 였다. 이 API 는 인증이 없고 GET 두 번이면 최근 job 의
+# 결과(originalText 포함)까지 닿을 수 있는데, "*" 는 **아무 웹사이트나** 그 응답을 읽어도
+# 좋다고 브라우저에 명시적으로 허락하는 값이다. 로컬 서비스에서 이건 공짜로 주는 권한이다.
+#
+# 정상 호출자는 "*" 가 필요 없다는 것을 확인했다:
+#   - 확장: engine 을 부르는 곳은 background/service-worker.js 하나뿐이고, 사이드패널·
+#     팝업·content 는 chrome.runtime 메시징만 쓴다.
+#   - 데스크탑: main 프로세스(Node http/fetch)만 부른다 — 브라우저 컨텍스트가 아니라
+#     CORS 대상이 아니고, Origin 헤더도 안 보내므로 이 미들웨어가 개입하지 않는다.
+#   - MCP 클라이언트: 브라우저가 아니다.
+#
+# 정규식을 쓰는 이유: manifest.json 에 key 가 없어 확장 ID 가 설치 방식(스토어/언팩)에
+# 따라 달라진다. 고정 ID 를 박으면 개발 설치에서 조용히 깨진다. Chrome 확장 ID 는 a-p
+# 32자라 그 형태만 허용한다 — http(s) 웹사이트는 어떤 것도 통과하지 못한다.
+#
+# 이건 브라우저 벡터만 닫는다. 같은 PC 의 다른 프로세스는 CORS 와 무관하게 그대로
+# 접근할 수 있다 — 그쪽은 토큰 인증이 필요하고 별도 작업이다.
+EXTENSION_ORIGIN_REGEX = r"^chrome-extension://[a-p]{32}$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=EXTENSION_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
