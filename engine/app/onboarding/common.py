@@ -152,3 +152,23 @@ def is_our_hook(entry: object) -> bool:
     if not isinstance(entry, dict):
         return False
     return any(entry.get(k) for k in (HOOK_MARKER, *LEGACY_HOOK_MARKERS))
+
+
+def manual_notice(reason: str, checklist: list[str], log_path: object | None = None) -> dict[str, Any]:
+    """자동 조치를 할 수 없는 클라이언트의 보고 형태.
+
+    왜 필요한가: 예전에는 훅 스펙이 확정되지 않은 클라이언트에도 "골격" 훅을 써 넣었다.
+    그 훅의 command 는 campfire-block-read 였는데 이 이름의 스크립트는 저장소에도
+    배포 패키지에도 **없다** — 적용하면 사용자 설정에 실행 불가능한 훅이 박힌다.
+    차단은 당연히 안 되고, 클라이언트에 따라서는 Read 마다 훅 실행 오류가 난다.
+
+    "차단해 준 것처럼 보이지만 실제로는 아무것도 막지 않는" 상태가 제품에서 가장
+    나쁘다 — 사용자는 우회가 막혔다고 믿는다. 그래서 확정되지 않은 스펙에는 아무것도
+    쓰지 않고, 무엇을 손으로 해야 하는지만 정직하게 돌려준다.
+    """
+    return {
+        "supported": False,
+        "reason": reason,
+        "logPath": str(log_path) if log_path else None,
+        "manualChecklist": list(checklist),
+    }

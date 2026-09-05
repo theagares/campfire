@@ -1,17 +1,22 @@
 """
 app/onboarding/cline.py
-Cline 온보딩 (PLAN §4.2 표, "Cline (macOS/Linux)" / "Cline (Windows)" 행):
-    - macOS/Linux: 공식 PreToolUse 훅(v3.36+) 자동 등록.
-    - Windows: Hooks 미지원 -> api_conversation_history.json(Anthropic 네이티브
-      tool_use 블록 그대로, 순수 JSON) 파싱 기반 사후 경고 + 수동 체크리스트 안내로 대체.
+Cline 온보딩 (PLAN §4.2 표, "Cline (macOS/Linux)" / "Cline (Windows)" 행).
+
+Windows 는 애초에 Hooks 미지원이라 api_conversation_history.json 파싱 기반 사후
+경고 + 수동 체크리스트로 대체해 왔다.
+
+**macOS/Linux 의 자동 등록도 지금은 하지 않는다.** 예전 구현은 PreToolUse 훅을
+써 넣었는데 그 훅의 command(campfire-block-read)는 저장소에도 배포 패키지에도
+없다 — 적용해도 Read 는 그대로 통과하고, 사용자만 "우회를 막았다" 고 믿게 된다.
+차단하지 못하는 것보다, 차단했다고 오인시키는 쪽이 보안 제품에서 더 나쁘다.
+
+실제 훅 커맨드 스펙이 확정되고 배포에 실릴 검증 스크립트가 생기면 build_action()
+이 다시 SettingsDiff 를 돌려주도록 바꾸면 된다.
 
 autoApprove.readFiles:false 는 승인 프롬프트만 띄울 뿐 진짜 deny 가 아니므로
 (§4.2) 참고용 안내로만 다룬다.
 
-안전 수칙: settings_path 는 호출자가 넘긴 경로만 사용한다. 테스트는 tempfile
-경로만 사용하고, 파일 쓰기는 common.apply_diff(diff, apply=True) 명시 호출
-시에만 일어난다. windows_manual_notice() 는 애초에 파일을 쓰지 않는다(읽기용
-경로 문자열만 보고서에 표시).
+안전 수칙: 이 모듈은 어떤 파일도 읽거나 쓰지 않는다(경로는 안내용 문자열).
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import platform
 from pathlib import Path
 from typing import Any
 
-from .common import MutationError, SettingsDiff, build_diff, is_our_hook
+from .common import manual_notice
 
 DEFAULT_SETTINGS_PATH = Path.home() / ".cline" / "settings.json"
 
@@ -31,53 +36,28 @@ _MANUAL_CHECKLIST = [
     "정기적으로 api_conversation_history.json 의 tool_use(Read) 호출 이력을 점검한다.",
 ]
 
-
-def _mutate_register_hooks(after: dict) -> tuple[bool, str]:
-    hooks = after.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise MutationError("hooks 필드가 예상한 객체 형식이 아니어서 자동 수정을 건너뜁니다.")
-    pre_tool_use = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre_tool_use, list):
-        raise MutationError("hooks.PreToolUse 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
-
-    if any(is_our_hook(e) for e in pre_tool_use):
-        return False, "이미 PreToolUse 훅이 등록돼 있습니다."
-
-    # TODO: 실제 Cline PreToolUse 훅 커맨드 스펙 확정되면 command 교체.
-    pre_tool_use.append(
-        {"matcher": "readFile", "command": "campfire-block-read", "_campfire": True}
-    )
-    return True, "PreToolUse 훅을 등록해 내장 Read 호출을 실시간 차단합니다(macOS/Linux, PLAN §4.2)."
-
-
-def build_hooks_diff(settings_path: Path) -> SettingsDiff:
-    """macOS/Linux 전용 자동 등록 diff. Windows 에서는 windows_manual_notice() 를 대신 쓴다."""
-    return build_diff(Path(settings_path), _mutate_register_hooks)
-
-
-def windows_manual_notice(history_path: Path | None = None) -> dict[str, Any]:
-    """Windows: Hooks 미지원 -> 자동 diff 대신 로그 파싱 기반 경고 + 수동 체크리스트를 반환한다.
-
-    이 함수는 파일을 절대 쓰지 않는다 — history_path 는 "이 경로를 참고해 사후
-    점검하라"는 안내용 표시일 뿐이다.
-    """
-    return {
-        "supported": False,
-        "reason": "Cline PreToolUse 훅은 macOS/Linux만 지원한다(Windows 미지원, PLAN §4.2).",
-        "logPath": str(history_path) if history_path else None,
-        "manualChecklist": list(_MANUAL_CHECKLIST),
-    }
+_WINDOWS_REASON = "Cline PreToolUse 훅은 macOS/Linux 만 지원한다(Windows 미지원, PLAN §4.2)."
+_SPEC_REASON = (
+    "Cline PreToolUse 훅의 커맨드 스펙과 배포용 차단 스크립트가 아직 없어 자동 등록을 하지 않는다"
+    " — 실행되지 않는 훅을 심으면 막지도 못하면서 막았다고 믿게 된다."
+)
 
 
 def detect_os() -> str:
     return platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
+def windows_manual_notice(history_path: Path | None = None) -> dict[str, Any]:
+    """Windows: Hooks 미지원 -> 로그 파싱 기반 경고 + 수동 체크리스트."""
+    return manual_notice(_WINDOWS_REASON, _MANUAL_CHECKLIST, log_path=history_path)
+
+
 def build_action(
-    settings_path: Path, *, os_name: str | None = None, history_path: Path | None = None
-) -> SettingsDiff | dict[str, Any]:
-    """OS 분기: macOS/Linux 는 SettingsDiff(자동 등록), Windows 는 수동 안내 dict 를 반환한다."""
+    settings_path: Path | None = None, *, os_name: str | None = None,
+    history_path: Path | None = None,
+) -> dict[str, Any]:
+    """OS 와 무관하게 수동 안내를 돌려준다 — 사유만 다르다(파일 접근 없음)."""
     os_name = os_name or detect_os()
     if os_name == "Windows":
         return windows_manual_notice(history_path)
-    return build_hooks_diff(settings_path)
+    return manual_notice(_SPEC_REASON, _MANUAL_CHECKLIST, log_path=history_path)
