@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 import time
 from typing import Any
 
@@ -33,7 +34,7 @@ _QUEUE_MAX = 64
 
 _subscribers: set[asyncio.Queue] = set()
 
-# job_id -> {"jobId","stage","label","source","startedAt"}
+# 진짜 job_id -> {"jobId"(방송용 불투명 id),"stage","label","source","startedAt"}
 _active: dict[str, dict[str, Any]] = {}
 
 # orchestrator 가 내보내는 step 번호 → 처리현황이 아는 단계 이름.
@@ -77,8 +78,18 @@ def _publish(event: dict[str, Any]) -> None:
 
 
 def job_started(job_id: str, source: str = "job") -> None:
+    # 방송에 실리는 jobId 는 진짜 job id 가 아니라 이 방송 채널에서만 쓰는 불투명 id 다.
+    #
+    # 이 스트림은 인증이 없고(설계상 "job id 를 모르는 관찰자"도 봐야 한다), 진짜 job id 를
+    # 실어 보내면 그걸 주운 쪽이 GET /jobs/{id}/events 로 그 job 의 done 이벤트를 그대로
+    # 받아갈 수 있다 — 거기엔 originalText(문서 원문)와 항목별 실값(주민번호·카드번호)이
+    # 들어 있다. 즉 "원문을 외부로 안 넘기려고" 만든 제품이 자기 API 로 원문을 내주게 된다.
+    #
+    # 소비자(대시보드 처리현황)는 이 값을 Map 키로만 쓰고 이걸로 아무것도 조회하지 않으므로
+    # (desktop/main/pipeline-activity.js, renderer/app.js) 불투명해도 화면은 그대로 동작한다.
+    # 진짜 job id 는 _active 의 키로만 남아 프로세스 밖으로 나가지 않는다.
     _active[job_id] = {
-        "jobId": job_id,
+        "jobId": secrets.token_hex(8),
         "stage": "receive",
         "label": "요청 접수",
         "source": source,
@@ -117,7 +128,9 @@ def job_finished(job_id: str, ok: bool = True, error: str | None = None) -> None
         {
             "type": "activity",
             "phase": "finish",
-            "jobId": job_id,
+            # 시작 때 발급한 불투명 id 로 마감한다(위 job_started 주석 참고). 항목이 이미
+            # 사라졌으면 새로 뽑는다 — 소비자는 모르는 키를 지우려 할 뿐이라 무해하다.
+            "jobId": (entry or {}).get("jobId") or secrets.token_hex(8),
             "stage": "done" if ok else "error",
             "label": "처리 완료" if ok else (error or "처리 실패"),
             "source": (entry or {}).get("source", "job"),

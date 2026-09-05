@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -97,8 +98,9 @@ def test_slow_subscriber_does_not_block_producer():
     drained = []
     while not q.empty():
         drained.append(q.get_nowait())
-    # 오래된 것이 버려지고 최신이 남는다
-    assert drained[-1]["jobId"] == "job-499"
+    # 오래된 것이 버려지고 최신이 남는다. 방송 id 는 불투명하므로(진짜 job id 를
+    # 흘리지 않는다) 내부 매핑으로 대조한다.
+    assert drained[-1]["jobId"] == activity_bus._active["job-499"]["jobId"]
 
 
 def test_snapshot_lets_late_subscriber_catch_up():
@@ -108,7 +110,9 @@ def test_snapshot_lets_late_subscriber_catch_up():
 
     snap = activity_bus.snapshot()
     assert len(snap) == 1
-    assert snap[0]["jobId"] == "in-flight"
+    # 방송에는 진짜 job id 가 실리지 않는다 — 실리면 그 id 로 /jobs/{id}/events 를 쳐서
+    # 원문(originalText)을 그대로 받아갈 수 있다.
+    assert snap[0]["jobId"] and snap[0]["jobId"] != "in-flight"
     assert snap[0]["stage"] == "pii"
     assert snap[0]["source"] == "extension"
 
@@ -238,6 +242,32 @@ def test_sse_sends_snapshot_then_live_events():
     first, second = asyncio.run(scenario())
 
     assert first["type"] == "snapshot"
-    assert [a["jobId"] for a in first["active"]] == ["streaming-job"]
+    assert len(first["active"]) == 1
+    assert first["active"][0]["jobId"] != "streaming-job"
     assert second["type"] == "activity"
     assert second["stage"] == "injection"
+
+
+def test_broadcast_never_carries_real_job_id():
+    """방송에 진짜 job id 가 실리면 안 된다.
+
+    /activity* 는 설계상 인증이 없다("job id 를 모르는 관찰자"도 봐야 한다). 여기에 진짜
+    job id 가 실리면 그걸 주운 쪽이 GET /jobs/{id}/events 로 done 이벤트를 받아갈 수 있고,
+    거기엔 originalText(문서 원문)와 항목별 실값이 들어 있다 — 원문을 외부에 안 넘기려고
+    만든 제품이 자기 API 로 원문을 내주게 된다. 그 고리를 끊은 것이 이 테스트의 계약이다."""
+    real = "11111111-2222-3333-4444-555555555555"
+    q = activity_bus.subscribe()
+    activity_bus.job_started(real, source="extension")
+    activity_bus.job_event(real, {"type": "step", "step": 2, "label": "PII 탐지 중..."})
+    activity_bus.job_event(real, {"type": "done"})
+    frames = _drain(q)
+
+    assert frames, "방송 프레임이 하나도 없다"
+    assert real not in json.dumps(frames, ensure_ascii=False), "진짜 job id 가 방송에 샜다"
+
+    # 소비자(대시보드)는 이 값을 Map 키로 쓴다 — 한 job 안에서는 값이 일관돼야
+    # 시작한 job 을 마감에서 제대로 지운다.
+    ids = {f["jobId"] for f in frames}
+    assert len(ids) == 1, f"jobId 가 프레임마다 달라 job 을 추적할 수 없다: {ids}"
+    assert frames[0]["phase"] == "start"
+    assert frames[-1]["phase"] == "finish"

@@ -47,6 +47,7 @@
       __campfire_config: true,
       direction: 'isolated-to-main',
       type: 'UPS_PROTECTION_STATE',
+      bridgeToken,
       enabled: Boolean(enabled),
       fileInterceptEnabled: Boolean(fileEnabled),
     }, '*');
@@ -74,6 +75,7 @@
       __campfire_config: true,
       direction: 'isolated-to-main',
       type: 'UPS_CONTENT_APPROVED_FILE',
+      bridgeToken,
       meta: {
         name: file.name,
         size: file.size,
