@@ -101,61 +101,53 @@ def test_claude_code_non_dict_permissions_edge_case(tmp_home):
     assert diff.after is None
 
 
-def test_claude_code_pretooluse_hook_diff(tmp_home):
-    settings_path = tmp_home / "settings.json"
-    diff = claude_code.build_pretooluse_hook_diff(settings_path)
-    assert diff.changed is True
-    hooks = diff.after["hooks"]["PreToolUse"]
-    assert any(h.get("matcher") == "Read" for h in hooks)
+def test_claude_code_does_not_emit_phantom_hook(tmp_home):
+    """PreToolUse "이중 방어" 훅은 더 이상 심지 않는다.
 
-    # 두 번째 호출은 이중 등록하지 않아야 함(멱등)
-    applied = apply_diff(diff, apply=True)
-    assert applied is True
-    diff2 = claude_code.build_pretooluse_hook_diff(settings_path)
-    assert diff2.changed is False
+    그 훅의 command 는 campfire-block-read 였는데 그런 스크립트는 저장소에도 배포
+    패키지에도 없다 — 이중 방어가 아니라 실행되지 않는 훅이 하나 더 박히는 것뿐이었고,
+    사용자는 두 겹으로 막혔다고 믿게 된다. permissions.deny 는 외부 스크립트 없이
+    동작하므로 그대로 남는다."""
+    assert not hasattr(claude_code, "build_pretooluse_hook_diff")
+
+    settings_path = tmp_home / "settings.json"
+    diff = claude_code.build_deny_read_diff(settings_path)
+    assert diff.changed is True
+    assert diff.after["permissions"]["deny"] == ["Read"]
+    assert "hooks" not in diff.after
 
 
 # ── cursor / windsurf ────────────────────────────────────────────────────────
 
 
-def test_cursor_hooks_diff_registers_both_hooks(tmp_home):
-    hooks_path = tmp_home / "cursor_hooks.json"
-    diff = cursor.build_hooks_diff(hooks_path)
-    assert diff.changed is True
-    assert "beforeReadFile" in diff.after["hooks"]
-    assert "beforeMCPExecution" in diff.after["hooks"]
-    assert not hooks_path.exists()  # dry-run
+@pytest.mark.parametrize("mod, name", [(cursor, "cursor"), (windsurf, "windsurf")])
+def test_unconfirmed_spec_clients_return_manual_notice(mod, name, tmp_home):
+    """스펙이 확정되지 않은 클라이언트에는 아무것도 쓰지 않는다.
 
+    예전에는 추정 스키마로 훅을 써 넣었고 그 command 는 실재하지 않는
+    campfire-block-read 였다. 막지도 못하면서 "등록됨" 으로 보고돼, 사용자가 우회를
+    막았다고 믿는 상태가 된다 — 보안 제품에서 가장 나쁜 실패다."""
+    hooks_path = tmp_home / (name + "_hooks.json")
+    action = mod.build_action(hooks_path)
 
-def test_cursor_hooks_diff_idempotent_after_apply(tmp_home):
-    hooks_path = tmp_home / "cursor_hooks.json"
-    diff = cursor.build_hooks_diff(hooks_path)
-    assert apply_diff(diff, apply=True) is True
-
-    diff2 = cursor.build_hooks_diff(hooks_path)
-    assert diff2.changed is False
-
-
-def test_windsurf_hooks_diff_registers_both_hooks(tmp_home):
-    hooks_path = tmp_home / "windsurf_hooks.json"
-    diff = windsurf.build_hooks_diff(hooks_path)
-    assert diff.changed is True
-    assert "pre_read_code" in diff.after["hooks"]
-    assert "pre_mcp_tool_use" in diff.after["hooks"]
+    assert action["supported"] is False
+    assert action["reason"]
+    assert len(action["manualChecklist"]) >= 1
+    assert not hasattr(mod, "build_hooks_diff"), "자동 등록 경로가 되살아났다"
+    assert not hooks_path.exists(), "설정 파일을 건드리면 안 된다"
 
 
 # ── cline (OS 분기) ───────────────────────────────────────────────────────────
 
 
-def test_cline_macos_linux_gets_hook_diff(tmp_home):
+@pytest.mark.parametrize("os_name", ["Darwin", "Linux"])
+def test_cline_macos_linux_is_manual_too(os_name, tmp_home):
+    """훅 커맨드 스펙과 배포용 차단 스크립트가 없으므로 macOS/Linux 도 수동이다."""
     settings_path = tmp_home / "cline_settings.json"
-    action = cline.build_action(settings_path, os_name="Darwin")
-    assert hasattr(action, "changed")  # SettingsDiff
-    assert action.changed is True
-    assert action.after["hooks"]["PreToolUse"]
-
-    action_linux = cline.build_action(settings_path, os_name="Linux")
-    assert hasattr(action_linux, "changed")
+    action = cline.build_action(settings_path, os_name=os_name)
+    assert action["supported"] is False
+    assert len(action["manualChecklist"]) >= 1
+    assert not settings_path.exists()
 
 
 def test_cline_windows_gets_manual_notice(tmp_home):
@@ -173,13 +165,15 @@ def test_cline_windows_gets_manual_notice(tmp_home):
 # ── vscode_copilot ───────────────────────────────────────────────────────────
 
 
-def test_vscode_copilot_build_action_has_hook_and_manual_checklist(tmp_home):
+def test_vscode_copilot_is_manual_with_log_path(tmp_home):
+    """Agent Hooks 는 Preview 라 추정 스키마로 심지 않는다 — 로그 점검 + 수동 안내만."""
     settings_path = tmp_home / "vscode_settings.json"
     log_path = tmp_home / "chatSessions"
     action = vscode_copilot.build_action(settings_path, log_glob_path=log_path)
-    assert action["hookDiff"]["changed"] is True
+    assert action["supported"] is False
     assert action["logPath"] == str(log_path)
     assert len(action["manualChecklist"]) >= 1
+    assert not settings_path.exists()
 
 
 # ── claude_desktop (읽기 전용 감지) ───────────────────────────────────────────
@@ -250,18 +244,21 @@ def test_build_report_covers_all_seven_clients(tmp_home):
     # Windows 에서는 cline 이 수동 체크리스트 경로를 타야 한다
     assert clients["cline"]["status"] == "manual"
     assert clients["cline"]["action"]["supported"] is False
-    # 나머지 자동 등록 가능한 클라이언트들은 diff 를 만들었어야 한다
+    # 자동 조치가 가능한 것은 Claude Code 의 permissions.deny 하나뿐이다.
     assert clients["claude_code"]["denyReadDiff"]["changed"] is True
-    assert clients["cursor"]["hookDiff"]["changed"] is True
-    assert clients["windsurf"]["hookDiff"]["changed"] is True
+    assert clients["claude_code"]["status"] == "auto"
+    for name in ("cursor", "windsurf", "vscode_copilot"):
+        assert clients[name]["status"] == "manual", name
+        assert clients[name]["action"]["supported"] is False, name
 
     # target_dir 아래에 어떤 파일도 실제로 쓰이지 않아야 한다(dry-run 전용)
     assert list(tmp_home.iterdir()) == []
 
 
-def test_build_report_macos_cline_is_auto(tmp_home):
+def test_build_report_macos_cline_is_manual(tmp_home):
+    """예전엔 macOS 에서 cline 이 auto 였다 — 실행되지 않는 훅을 심는 auto 였다."""
     report = checklist.build_report(target_dir=tmp_home, os_name="Darwin")
-    assert report["clients"]["cline"]["status"] == "auto"
+    assert report["clients"]["cline"]["status"] == "manual"
 
 
 def test_cli_dry_run_json_output(tmp_home, capsys):
@@ -290,3 +287,21 @@ def test_cli_apply_with_target_dir_writes_only_inside_it(tmp_home, capsys):
     assert written_path.exists()
     data = json.loads(written_path.read_text(encoding="utf-8"))
     assert data["permissions"]["deny"] == ["Read"]
+
+
+def test_apply_never_writes_the_phantom_block_read_command(tmp_home):
+    """--apply 가 쓴 어떤 파일에도 campfire-block-read 가 들어가면 안 된다.
+
+    이 이름의 스크립트는 저장소에도 배포 패키지에도 없다. 예전에는 5개 클라이언트가
+    이 command 로 훅을 등록했고, 적용하면 사용자 설정에 실행 불가능한 훅이 박혔다.
+    차단은 안 되는데 보고서에는 "등록됨" 으로 나온다.
+
+    이 테스트는 그 command 가 어떤 경로로든 다시 들어오면 깨진다."""
+    assert checklist.main(["--apply", "--target-dir", str(tmp_home)]) == 0
+
+    written = sorted(x.name for x in tmp_home.iterdir())
+    assert written == ["claude_code_settings.json"], "예상 밖의 파일을 썼다: " + str(written)
+
+    for path in tmp_home.iterdir():
+        body = path.read_text(encoding="utf-8")
+        assert "campfire-block-read" not in body, path.name + " 에 유령 커맨드가 들어갔다"

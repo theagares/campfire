@@ -4,9 +4,13 @@ MCP 우회 방지 온보딩 체크리스트 CLI (PLAN §4.2, §10 Phase 6 완료
 
     python -m app.onboarding.checklist --dry-run
 
-7개 클라이언트(Claude Code/Cursor/Windsurf/Cline mac·linux/Cline Windows/
-VS Code Copilot Chat/Claude Desktop) 를 순회하며 감지 + 상태 + 권장 조치를
-종합한 보고서(JSON/텍스트)를 생성한다.
+클라이언트(Claude Code/Cursor/Windsurf/Cline/VS Code Copilot Chat/Claude Desktop)를
+순회하며 감지 + 상태 + 권장 조치를 종합한 보고서(JSON/텍스트)를 생성한다.
+
+자동 조치가 가능한 것은 Claude Code 의 permissions.deny 하나뿐이다(외부 스크립트 없이
+동작한다). 나머지는 공식 훅 스펙이 확정되지 않아 status=manual 로 수동 체크리스트만
+돌려준다 — 예전에는 추정 스키마로 훅을 써 넣었는데 그 command(campfire-block-read)가
+실재하지 않아, 막지도 못하면서 "등록됨" 으로 보고되고 있었다.
 
 안전 수칙(필독, 이 CLI 를 실행하는 모든 사람에게 적용됨):
     - 기본은 항상 dry-run 이다 — diff 를 보여줄 뿐 어떤 파일도 쓰지 않는다.
@@ -59,43 +63,42 @@ def build_report(*, target_dir: Path | None = None, os_name: str | None = None) 
         vscode_path = vscode_copilot.DEFAULT_SETTINGS_PATH
         claude_desktop_path = claude_desktop.DEFAULT_CONFIG_PATH
 
+    # 자동 조치가 가능한 것은 Claude Code 의 permissions.deny 하나뿐이다.
+    # 나머지 클라이언트는 공식 훅 스펙이 확정되지 않아 "수동 안내" 만 돌려준다 —
+    # 예전에는 추정 스키마로 훅을 써 넣었는데 그 훅의 command 가 실재하지 않아,
+    # 막지도 못하면서 "등록됨" 으로 보고되고 있었다(각 모듈 docstring 참고).
     cc_deny = claude_code.build_deny_read_diff(claude_code_path)
-    cc_hook = claude_code.build_pretooluse_hook_diff(claude_code_path)
-    cursor_diff = cursor.build_hooks_diff(cursor_path)
-    windsurf_diff = windsurf.build_hooks_diff(windsurf_path)
+    cursor_action = cursor.build_action(cursor_path)
+    windsurf_action = windsurf.build_action(windsurf_path)
     cline_action = cline.build_action(cline_path, os_name=os_name)
     vscode_action = vscode_copilot.build_action(vscode_path)
     desktop_detect = claude_desktop.detect_filesystem_servers(claude_desktop_path)
 
-    cline_is_manual = isinstance(cline_action, dict) and cline_action.get("supported") is False
-    cline_action_dict = cline_action if cline_is_manual else cline_action.to_dict()
-
     clients = {
         "claude_code": {
-            "mechanism": "설정파일 자동 편집(permissions.deny) + PreToolUse 훅 이중 방어",
+            "mechanism": "설정파일 자동 편집(permissions.deny)",
             "denyReadDiff": cc_deny.to_dict(),
-            "hookDiff": cc_hook.to_dict(),
             "status": "manual" if cc_deny.error else "auto",
         },
         "cursor": {
-            "mechanism": "공식 Hooks 자동 등록(beforeReadFile/beforeMCPExecution)",
-            "hookDiff": cursor_diff.to_dict(),
-            "status": "manual" if cursor_diff.error else "auto",
+            "mechanism": "공식 Hooks(beforeReadFile/beforeMCPExecution) — 스펙 미확정으로 수동",
+            "action": cursor_action,
+            "status": "manual",
         },
         "windsurf": {
-            "mechanism": "공식 Cascade Hooks 자동 등록(pre_read_code/pre_mcp_tool_use)",
-            "hookDiff": windsurf_diff.to_dict(),
-            "status": "manual" if windsurf_diff.error else "auto",
+            "mechanism": "Cascade Hooks(pre_read_code/pre_mcp_tool_use) — 스펙 미확정으로 수동",
+            "action": windsurf_action,
+            "status": "manual",
         },
         "cline": {
-            "mechanism": "macOS/Linux: PreToolUse 훅 자동 등록 / Windows: 로그 파싱 + 수동 체크리스트",
-            "action": cline_action_dict,
-            "status": "manual" if cline_is_manual else "auto",
+            "mechanism": "PreToolUse 훅 — 커맨드 스펙 미확정 / Windows 는 미지원. 로그 점검 + 수동 체크리스트",
+            "action": cline_action,
+            "status": "manual",
         },
         "vscode_copilot": {
-            "mechanism": "Agent Hooks(Preview) 등록 시도 + 로그 파싱 병행 + 수동 체크리스트",
+            "mechanism": "Agent Hooks(Preview) — 스펙 미확정. 로그 파싱 + 수동 체크리스트",
             "action": vscode_action,
-            "status": "manual",  # Preview 라 완전 자동으로 신뢰하지 않음(PLAN §4.2)
+            "status": "manual",
         },
         "claude_desktop": {
             "mechanism": "claude_desktop_config.json mcpServers 읽기 전용 감지(수정 안 함)",
