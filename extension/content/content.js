@@ -1003,13 +1003,21 @@
       editorType: 'prosemirror',
     },
     'perplexity.ai': {
-      editorSel: 'textarea[placeholder], [contenteditable="true"][aria-label]',
-      sendBtnSel: 'button[aria-label="Submit"]',
+      // 2026-09-06 실측 정정: 컴포저가 #ask-input(Lexical) 로 바뀌었고 aria-label 이
+      // 없어져 예전 선택자(textarea[placeholder], [contenteditable][aria-label])는
+      // **아무것도 잡지 못한다**. 전송 버튼도 한국어 UI 에서는 aria-label="제출" 이라
+      // "Submit" 정확일치가 빗나간다. id 가 가장 안정적이라 그걸 먼저 본다.
+      editorSel: '#ask-input, [data-lexical-editor="true"], [contenteditable="true"][role="textbox"]',
+      sendBtnSel: 'button[aria-label="제출"], button[aria-label="Submit"], button[aria-label*="submit" i]',
       editorType: 'lexical',
     },
     'copilot.microsoft.com': {
-      editorSel: 'textarea, [contenteditable="true"]',
-      sendBtnSel: 'button[aria-label="제출"], button[aria-label="Submit"]',
+      // 2026-09-06 실측 정정: 전송 버튼 aria-label 이 "메시지 제출" 로 바뀌어 "제출"
+      // 정확일치가 빗나간다. 지금은 GENERIC_SEND_SELS 의 부분일치가 구제하고 있는데,
+      // 그건 "사이트 선택자가 하나도 안 맞을 때" 만 붙는 안전망이라 거기 기대면 안 된다.
+      // data-testid 는 언어를 타지 않아 aria-label 보다 안정적이라 그걸 먼저 본다.
+      editorSel: '[data-testid="composer-input"], #userInput, textarea, [contenteditable="true"]',
+      sendBtnSel: '[data-testid="submit-button"], button[aria-label*="제출"], button[aria-label*="submit" i]',
       editorType: 'unknown',
     },
   };
