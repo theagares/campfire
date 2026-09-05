@@ -16,13 +16,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .common import MutationError, SettingsDiff, build_diff, is_our_hook
+from .common import MutationError, SettingsDiff, build_diff
 
 # 실 사용 시 참고용 기본 경로 — 사용자가 명시적으로 경로를 넘기지 않을 때만 쓰인다.
 # 이 저장소의 테스트/자동검증 코드는 이 기본값을 절대 사용하지 않는다(항상 override).
 DEFAULT_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
-_PRETOOLUSE_HOOK_MATCHER = "Read"
 
 
 def _mutate_deny_read(after: dict) -> tuple[bool, str]:
@@ -47,40 +46,3 @@ def build_deny_read_diff(settings_path: Path) -> SettingsDiff:
     JSON 파싱 실패 등 엣지케이스는 error 필드로 표시하고 after=None 을 반환한다.
     """
     return build_diff(Path(settings_path), _mutate_deny_read)
-
-
-def _mutate_pretooluse_hook(after: dict) -> tuple[bool, str]:
-    hooks = after.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise MutationError("hooks 필드가 예상한 객체 형식이 아니어서 자동 수정을 건너뜁니다.")
-    pre_tool_use = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre_tool_use, list):
-        raise MutationError("hooks.PreToolUse 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
-
-    for entry in pre_tool_use:
-        if isinstance(entry, dict) and entry.get("matcher") == _PRETOOLUSE_HOOK_MATCHER:
-            for h in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
-                if is_our_hook(h):
-                    return False, "이미 campfire PreToolUse 이중 방어 훅이 등록돼 있습니다."
-
-    # 이중 방어용 훅: permissions.deny 강제가 실패하는 버그 이력(GH #24846 등) 대비.
-    # command 는 실제 배포 패키지에 포함될 검증 스크립트 경로로 교체해야 한다(TODO) —
-    # 여기서는 "Read 호출을 감지해 차단 신호(exit code 2)를 보낸다"는 골격만 남긴다.
-    pre_tool_use.append(
-        {
-            "matcher": _PRETOOLUSE_HOOK_MATCHER,
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "campfire-block-read",  # TODO: 실제 배포 스크립트 경로로 교체
-                    "_campfire": True,
-                }
-            ],
-        }
-    )
-    return True, "hooks.PreToolUse 에 Read 차단 이중 방어 훅을 등록합니다(PLAN §4.2)."
-
-
-def build_pretooluse_hook_diff(settings_path: Path) -> SettingsDiff:
-    """permissions.deny 강제 실패에 대비한 PreToolUse 훅 이중 방어 diff 를 생성한다."""
-    return build_diff(Path(settings_path), _mutate_pretooluse_hook)

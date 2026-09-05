@@ -1,16 +1,20 @@
 """
 app/onboarding/vscode_copilot.py
 VS Code Copilot Chat 온보딩 (PLAN §4.2 표, "VS Code Copilot Chat" 행):
-    Agent Hooks(Preview) 등록 시도 + chatSessions/*.jsonl(toolInvocationSerialized)
-    파싱 병행(저장 누락 버그, GH #285535 등, 있어 카운트를 완전히 신뢰하지 않음)
+    chatSessions/*.jsonl(toolInvocationSerialized) 파싱 병행(저장 누락 버그,
+    GH #285535 등이 있어 카운트를 완전히 신뢰하지 않는다)
     + 수동 체크리스트(커스텀 Chat Mode 로 기본 Agent 모드에서 파일 read 툴 제외).
 
-Agent Hooks 는 아직 Preview 라 스펙 변경 가능성이 있어 의존도를 낮춘다 — 그래서
-등록 diff 를 만들되(성공하든 실패하든) 수동 체크리스트를 항상 함께 반환한다.
+**Agent Hooks(Preview) 자동 등록은 하지 않는다.** 예전 구현은 Preview 스펙이
+확정되지 않은 상태에서 chat.agent.hooks 아래에 훅을 써 넣었는데, 그 훅의
+command(campfire-block-read)는 저장소에도 배포 패키지에도 없다. 키 구조도 추정이라
+VS Code 가 무시할 가능성이 높다 — 결국 사용자 설정만 더럽히고 차단은 안 되면서,
+"등록됐다" 는 보고만 남는다.
 
-안전 수칙: settings_path 는 호출자가 넘긴 경로만 사용한다. 테스트는 tempfile
-경로만 사용하고, 파일 쓰기는 common.apply_diff(diff, apply=True) 명시 호출
-시에만 일어난다.
+Preview 스펙이 확정되고 배포용 차단 스크립트가 생기면 build_action() 이 등록 diff 를
+함께 돌려주도록 바꾸면 된다.
+
+안전 수칙: 이 모듈은 어떤 파일도 읽거나 쓰지 않는다(경로는 안내용 문자열).
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .common import MutationError, SettingsDiff, build_diff, is_our_hook
+from .common import manual_notice
 
 DEFAULT_SETTINGS_PATH = Path.home() / "AppData" / "Roaming" / "Code" / "User" / "settings.json"
 
@@ -30,41 +34,16 @@ _MANUAL_CHECKLIST = [
     "가능하면 secure_read_file MCP 도구를 기본 Read 대신 쓰도록 팀 규칙으로 안내한다.",
 ]
 
-_HOOK_ROOT_KEY = "chat.agent.hooks"  # TODO: 실제 Preview 스펙 확정되면 키 교체
-
-
-def _mutate_register_agent_hook(after: dict) -> tuple[bool, str]:
-    hooks = after.setdefault(_HOOK_ROOT_KEY, {})
-    if not isinstance(hooks, dict):
-        raise MutationError(f"{_HOOK_ROOT_KEY} 필드가 예상한 객체 형식이 아니어서 자동 수정을 건너뜁니다.")
-    pre_tool_use = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre_tool_use, list):
-        raise MutationError(f"{_HOOK_ROOT_KEY}.PreToolUse 필드가 배열이 아니어서 자동 수정을 건너뜁니다.")
-
-    if any(is_our_hook(e) for e in pre_tool_use):
-        return False, "이미 Agent Hooks(Preview) 등록이 있습니다."
-
-    # TODO: 실제 Agent Hooks(Preview) 스펙 확정되면 command/키 구조 교체.
-    pre_tool_use.append(
-        {"matcher": "readFile", "command": "campfire-block-read", "_campfire": True}
-    )
-    return True, "Agent Hooks(Preview) 에 Read 차단을 등록 시도합니다(스펙 변경 가능성 있어 수동 체크리스트 병행 필수)."
-
-
-def build_agent_hook_diff(settings_path: Path) -> SettingsDiff:
-    """Agent Hooks(Preview) 등록 diff 를 생성한다(적용 안 함). Preview 라 신뢰도 낮음."""
-    return build_diff(Path(settings_path), _mutate_register_agent_hook)
+_SPEC_REASON = (
+    "Agent Hooks 는 아직 Preview 이고 배포용 차단 스크립트도 없어 자동 등록을 하지 않는다"
+    " — 추정 스키마로 심은 훅은 무시되거나 실행에 실패한다."
+)
 
 
 def manual_checklist() -> list[str]:
     return list(_MANUAL_CHECKLIST)
 
 
-def build_action(settings_path: Path, log_glob_path: Path | None = None) -> dict[str, Any]:
-    """Agent Hooks 등록 diff + 로그 파싱 경로 안내 + 수동 체크리스트를 종합한다."""
-    diff = build_agent_hook_diff(settings_path)
-    return {
-        "hookDiff": diff.to_dict(),
-        "logPath": str(log_glob_path) if log_glob_path else None,
-        "manualChecklist": manual_checklist(),
-    }
+def build_action(settings_path: Path | None = None, log_glob_path: Path | None = None) -> dict[str, Any]:
+    """자동 조치 불가 — 로그 점검 경로와 수동 체크리스트를 돌려준다(파일 접근 없음)."""
+    return manual_notice(_SPEC_REASON, _MANUAL_CHECKLIST, log_path=log_glob_path)
