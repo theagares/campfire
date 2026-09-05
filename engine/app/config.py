@@ -64,8 +64,24 @@ CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1000"))
 MAX_UPLOAD_BYTES: int = int(os.environ.get("SECUREDOC_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 MAX_PROMPT_CHARS: int = int(os.environ.get("SECUREDOC_MAX_PROMPT_CHARS", "100000"))
 
+# 파싱 결과 텍스트의 상한(자).
+#
+# 업로드는 MAX_UPLOAD_BYTES 로 막지만 "추출된 텍스트" 길이는 아무도 안 봤다. 청크는
+# CHUNK_SIZE(1,000) / step 900 이라 텍스트가 길어지면 청크 수가 그대로 따라 늘고,
+# 청크마다 PII·인젝션 추론이 붙는다 — 20MB 짜리가 텍스트로 풀리면 청크 2만 개가 넘는다.
+# 값의 근거: 이 파일 아래 DETECT_CONCURRENCY 주석의 실측치(10만 자 = 111청크,
+# 15만 자 = 167청크)를 기준으로, 그 배쯤에서 끊는다(20만 자 ≈ 222청크).
+# 넘으면 앞부분만 검사하고 결과에 truncated 로 알린다(조용히 자르지 않는다).
+MAX_TEXT_CHARS: int = int(os.environ.get("SECUREDOC_MAX_TEXT_CHARS", "200000"))
+
 # ── 타임아웃 (PLAN §9.2) ──────────────────────────────────────────────────────
-REQUEST_TIMEOUT_SEC: int = int(os.environ.get("SECUREDOC_REQUEST_TIMEOUT_SEC", "30"))
+# 파싱 한 건의 상한(초).
+#
+# 예전 이름은 REQUEST_TIMEOUT_SEC 였는데 코드 어디에서도 쓰이지 않는 죽은 값이었다.
+# "타임아웃이 있다" 고 보이지만 실제로는 없었고, parser 의 STATUS_TIMEOUT 도 만드는
+# 쪽이 없어 같이 죽어 있었다. 둘을 실제로 잇는다 — 이 상한을 넘긴 파싱은 STATUS_TIMEOUT
+# 으로 "미검사 통과" 처리되고 사용자에게 고지된다.
+PARSE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PARSE_TIMEOUT_SEC", "30"))
 
 # 검출기 서브프로세스에 요청을 써넣고 응답 한 줄을 기다리는 상한(초).
 # 없으면 서브프로세스가 멎었을 때 readline() 이 영원히 대기하는데, 그 대기가

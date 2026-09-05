@@ -24,6 +24,26 @@ def _ext(file_name: str) -> str:
     return os.path.splitext(file_name or "")[1].lower()
 
 
+def _looks_textual(file_bytes: bytes, mime_type: str) -> bool:
+    """이 바이트열을 텍스트로 읽어도 되는지."""
+    if mime_type.startswith("text/"):
+        return True
+    sample = file_bytes[:8192]
+    if not sample:
+        return False
+    if 0 in sample:
+        return False  # NUL 바이트는 바이너리라는 가장 확실한 신호
+    for enc in ("utf-8", "cp949"):
+        try:
+            sample.decode(enc)
+            return True
+        except UnicodeDecodeError as exc:
+            # 8KB 로 자르느라 마지막 글자가 반토막 난 것뿐이면 텍스트로 본다.
+            if exc.start >= len(sample) - 4:
+                return True
+    return False
+
+
 def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[str, str, str | None]:
     """포맷 분기 후 텍스트 추출.
 
@@ -83,10 +103,18 @@ def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[s
     except Exception as exc:  # noqa: BLE001 - 정책상 절대 죽지 않음 (PLAN §9.2)
         return "", STATUS_FAILED, f"파서 오류: {exc}"
 
-    # 확장자/MIME 모두 매칭 안 됨 → txt 로 폴백 시도
-    try:
-        from .txt import extract_txt
+    # 확장자/MIME 모두 매칭 안 됨.
+    #
+    # 예전엔 무조건 txt 로 폴백했다. 그런데 extract_txt 는 최후에 errors="replace" 로
+    # **무조건 성공**한다 — zip/png/exe 가 깨진 문자열과 함께 STATUS_OK 로 나왔다.
+    # 사용자에겐 정상 검사로 보이지만 실제로 검사된 건 모지바케다. 파싱 실패
+    # (failed/unsupported)는 사이드패널이 "이 입력은 검사되지 않았습니다" 라고 정직하게
+    # 알리는데 이 경로만 그 고지를 우회했다. 모르면 "검사했다" 고 하지 않는다.
+    if _looks_textual(file_bytes, mime_type):
+        try:
+            from .txt import extract_txt
 
-        return extract_txt(file_bytes), STATUS_OK, None
-    except Exception:  # noqa: BLE001
-        return "", STATUS_UNSUPPORTED, f"지원하지 않는 포맷: {ext or mime_type}"
+            return extract_txt(file_bytes), STATUS_OK, None
+        except Exception:  # noqa: BLE001
+            pass
+    return "", STATUS_UNSUPPORTED, f"지원하지 않는 포맷: {ext or mime_type or '알 수 없음'}"
