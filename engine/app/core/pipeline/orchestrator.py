@@ -19,7 +19,7 @@ from app.core import model_status
 from app.core.detectors import registry
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
-from app.core.parser import STATUS_OK, parse_document
+from app.core.parser import STATUS_OK, STATUS_TIMEOUT, parse_document
 
 Emit = Callable[[dict], Awaitable[None]]
 
@@ -30,6 +30,26 @@ MODELS_NOT_READY = "models_not_ready"
 
 async def _noop_emit(_event: dict) -> None:
     return None
+
+
+async def _parse_off_loop(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[str, str, str | None]:
+    """파싱을 이벤트 루프 밖에서 돌리고 상한을 건다.
+
+    parse_document 는 동기 함수인데 예전엔 async 안에서 그대로 불렀다. pdfplumber 가
+    무거운 PDF 를 붙들고 있는 동안 **이벤트 루프 전체가 멎어** /health·SSE·처리현황이
+    같이 멈췄다 — 데스크탑 앱이 엔진이 죽은 걸로 오인할 수 있다.
+
+    ponytail: wait_for 는 스레드를 죽이지 못한다 — 상한을 넘겨도 파싱 스레드는 뒤에서
+    계속 돈다(요청만 제때 끝난다). 진짜로 끊으려면 파싱을 별도 프로세스로 빼야 하고
+    그건 이 변경의 범위가 아니다. 지금 막는 것은 "한 파일이 엔진 전체를 붙잡는 것".
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(parse_document, file_bytes, mime_type, file_name),
+            timeout=config.PARSE_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        return "", STATUS_TIMEOUT, f"파싱이 {config.PARSE_TIMEOUT_SEC:g}초를 넘겨 중단했습니다"
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int = 100) -> list[dict]:
@@ -160,8 +180,22 @@ async def run_pipeline(
     # ── Step 1: 파싱 ──────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 1, "label": "입력 파싱 중..."})
     if text is None:
-        text, scan_status, reason = parse_document(file_bytes or b"", mime_type, file_name)
+        text, scan_status, reason = await _parse_off_loop(file_bytes or b"", mime_type, file_name)
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
+
+    # 추출된 텍스트의 상한. 업로드는 바이트로 막지만 "풀린 길이" 는 아무도 안 봤다 —
+    # 청크 수가 그대로 따라 늘고 청크마다 추론이 붙는다(config.MAX_TEXT_CHARS 주석 참고).
+    # 조용히 자르지 않는다: 잘랐다는 사실을 결과(truncated)와 경고로 함께 내보낸다.
+    truncated = False
+    if scan_status == STATUS_OK and text and len(text) > config.MAX_TEXT_CHARS:
+        full_len = len(text)
+        text = text[: config.MAX_TEXT_CHARS]
+        truncated = True
+        await emit({
+            "type": "warning",
+            "partial": True,
+            "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {full_len:,}자)",
+        })
 
     # 미검사 통과 (PLAN §9.2): 파싱 실패/미지원이면 탐지 없이 통과
     if scan_status != STATUS_OK:
@@ -197,6 +231,7 @@ async def run_pipeline(
             reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
             blocked=False,
             masked_file=None,
+            truncated=truncated,
         )
 
     # ── Step 2~3: 청크 + PII 탐지 ─────────────────────────────────────────────
@@ -256,6 +291,7 @@ async def run_pipeline(
         reason=reason,
         blocked=blocked,
         masked_file=masked_file,
+        truncated=truncated,
         user_prompt=user_prompt,
         user_prompt_masked=user_prompt_masked,
         user_prompt_pii_items=user_prompt_pii_items,
@@ -272,6 +308,7 @@ def _build_result(
     reason: str | None,
     blocked: bool,
     masked_file: dict | None,
+    truncated: bool = False,
     user_prompt: str | None = None,
     user_prompt_masked: str | None = None,
     user_prompt_pii_items: list[Detection] | None = None,
@@ -282,7 +319,9 @@ def _build_result(
         "maskedText": masked_text,
         "piiItems": pii_items,
         "injectionItems": injection_items,
-        "truncated": False,
+        # 상한(config.MAX_TEXT_CHARS)을 넘겨 앞부분만 검사했는가. 소비자는 이 값으로
+        # "전부 검사했다" 와 "일부만 검사했다" 를 구분한다.
+        "truncated": truncated,
         "scanStatus": scan_status,
         "reason": reason,
         "blocked": blocked,
