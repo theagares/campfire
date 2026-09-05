@@ -367,7 +367,11 @@ function applyProgress(event) {
   if (!event) return;
   if (event.type === 'warning') {
     el.progressWarn.hidden = false;
-    el.progressWarn.textContent = `이 입력은 검사되지 않았습니다 (사유: ${event.reason || event.scanStatus || '알 수 없음'})`;
+    // partial 은 "검사는 했는데 일부만" 이다(문서가 길어 앞부분만 본 경우). 파싱 실패로
+    // 아예 검사를 못 한 것과 상황이 다른데 같은 문구를 쓰면 거짓말이 된다 — 나눈다.
+    el.progressWarn.textContent = event.partial
+      ? (event.reason || '문서의 일부만 검사했습니다')
+      : `이 입력은 검사되지 않았습니다 (사유: ${event.reason || event.scanStatus || '알 수 없음'})`;
     return;
   }
   if (event.type !== 'step') return;
