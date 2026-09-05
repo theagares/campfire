@@ -82,11 +82,21 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
 
 
 def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[dict]:
-    """원문 기준 PII 좌표를 이 청크 기준으로 옮긴다.
+    """원문 기준 PII 좌표를 이 청크 기준으로 옮긴다. 경계를 걸친 항목은 잘라서 넘긴다.
 
-    청크 경계를 걸친 항목은 제외한다 — 잘린 조각만 가리면 나머지 절반이 그대로
-    남아 결국 새어나간다. 청크는 100자씩 겹치게 자르므로(_split_chunks) 경계에
-    걸친 항목도 이웃 청크에서는 온전히 들어온다.
+    예전엔 걸친 항목을 통째로 **제외**했다. 근거는 "청크는 100자씩 겹치므로 걸친
+    항목도 이웃 청크에서는 온전히 들어온다" 였는데, 그 보장은 항목이 겹침보다 짧을
+    때만 성립한다. chunk_size=1000 / step=900 에서 어느 청크에도 온전히 담기지
+    못하는 최소 길이는 **102자**다(항목이 청크 시작에서 최대 899자 뒤에 놓일 수
+    있으므로 1000-899=101자까지만 보장된다).
+
+    그보다 긴 항목은 모든 청크에서 빠지고, 그러면 meta["pii_spans"] 가 비어
+    build_redaction 이 "가릴 게 없다" 고 판단해 **그 자리를 원문 그대로 외부(Solar)로**
+    보낸다. 주소가 공백으로 이어지면 계속 병합되는 경로가 실제로 있어
+    (models/pii_engine/runtime/local_pii_inference.merge_lc_address) 가능성이 0 이 아니다.
+
+    잘라서 넘기면 이 청크에 실제로 들어있는 부분은 전부 가려지고, 밖에 남은 부분은
+    그 부분을 담은 청크가 자기 몫으로 가린다. 조각만 가려도 새는 것보다 낫다.
     """
     if not pii_items:
         return []
@@ -94,10 +104,12 @@ def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[di
     hi = lo + len(ch["text"])
     out: list[dict] = []
     for it in pii_items:
-        s, e = int(it["start"]), int(it["end"])
-        if s >= lo and e <= hi:
-            out.append({"start": s - lo, "end": e - lo, "type": it.get("type", "OTHER_PII"),
-                        "confidence": it.get("confidence", 1.0)})
+        s = max(int(it["start"]), lo)
+        e = min(int(it["end"]), hi)
+        if s >= e:
+            continue  # 이 청크와 겹치지 않는다
+        out.append({"start": s - lo, "end": e - lo, "type": it.get("type", "OTHER_PII"),
+                    "confidence": it.get("confidence", 1.0)})
     return out
 
 
