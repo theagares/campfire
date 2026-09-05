@@ -109,7 +109,14 @@ def _safe_extract(tar: tarfile.TarFile, dest_dir: Path) -> None:
         member_path = (dest_dir / member.name).resolve()
         if dest_resolved != member_path and dest_resolved not in member_path.parents:
             raise ValueError(f"압축 파일에 안전하지 않은 경로가 포함되어 있습니다: {member.name}")
-    tar.extractall(dest_dir)  # noqa: S202 - 위에서 각 멤버 경로를 이미 검증함
+    # 위 검사는 멤버의 "경로" 만 본다 — 링크의 **대상** 은 못 본다. 바깥을 가리키는
+    # 심볼릭 링크를 먼저 풀고 그 링크를 통해 파일을 쓰면 dest_dir 밖으로 나갈 수 있다
+    # (고전적 tar 심볼릭 링크 우회). data 필터가 링크까지 함께 걸러준다.
+    # 파이썬 3.11.4+/3.12+ 에만 있으므로 없는 런타임에서는 위 경로 검사만으로 간다.
+    if hasattr(tarfile, "data_filter"):
+        tar.extractall(dest_dir, filter="data")
+    else:
+        tar.extractall(dest_dir)  # noqa: S202 - 위에서 각 멤버 경로를 이미 검증함
 
 
 async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable) -> None:
