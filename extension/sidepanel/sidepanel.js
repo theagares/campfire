@@ -468,15 +468,10 @@ function renderError(error, meta) {
 
 // ── 결정 전송 ────────────────────────────────────────────────────────────────
 /** 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음).
- *  두 호스팅 방식을 한 번에 커버한다: 네이티브 사이드패널은 window.close() 로 닫히고
- *  (그때 window.parent 는 자기 자신이라 postMessage 는 아무도 안 받는다), iframe
- *  오버레이 폴백으로 열렸을 때는 window.close() 가 무효인 대신 content.js 가 이
- *  postMessage 를 받아 DOM 에서 제거한다. */
+ *  검토 UI 는 네이티브 사이드패널 하나뿐이므로 window.close() 면 충분하다
+ *  (iframe 오버레이 폴백과 그쪽을 닫던 UPS_CLOSE_OVERLAY 는 걷어냈다). */
 function closeSelf() {
-  setTimeout(() => {
-    try { window.parent.postMessage({ type: 'UPS_CLOSE_OVERLAY' }, '*'); } catch (_) {}
-    window.close();
-  }, 150);
+  setTimeout(() => { window.close(); }, 150);
 }
 
 /** 결정이 아무 데도 전달되지 못했음을 화면에 남긴다.
