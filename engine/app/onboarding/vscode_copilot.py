@@ -40,10 +40,6 @@ _SPEC_REASON = (
 )
 
 
-def manual_checklist() -> list[str]:
-    return list(_MANUAL_CHECKLIST)
-
-
 def build_action(settings_path: Path | None = None, log_glob_path: Path | None = None) -> dict[str, Any]:
     """자동 조치 불가 — 로그 점검 경로와 수동 체크리스트를 돌려준다(파일 접근 없음)."""
     return manual_notice(_SPEC_REASON, _MANUAL_CHECKLIST, log_path=log_glob_path)
