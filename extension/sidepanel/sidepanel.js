@@ -39,6 +39,7 @@ const PROGRESS_STEP_ORDER = [1, 2, 4, 5];
 
 let state = {
   sessionId: null,
+  seq: null,        // 지금 그리고 있는 세션의 시작 순번(SW 가 매긴다) — 아래 리스너 주석 참고
   myTabId: null,    // 이 패널 인스턴스가 속한 탭 — 다른 탭 대상 브로드캐스트를 걸러내는 데 씀
   kind: null,       // 'file' | 'prompt' | 'combined'
   result: null,
@@ -571,16 +572,34 @@ chrome.runtime.onMessage.addListener((msg) => {
   // (이게 없으면, 아직 세션이 없는 상태의 패널이 다른 탭의 이벤트를 "내 것"으로
   // 잘못 채택해버린다 — 탭 스코핑이 안 먹히는 것처럼 보인 실제 원인 중 하나.)
   if (msg.tabId != null && state.myTabId != null && msg.tabId !== state.myTabId) return;
-  // 이미 다른 세션을 추적 중인데 이번 이벤트가 그 세션이 아니면 무시.
-  if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) return;
+  // 같은 탭 안에서는 **나중에 시작된 세션이 이긴다.**
+  //
+  // 예전에는 "추적 중인 세션이 아니면 무조건 무시" 였다. 그런데 패널은 로드될 때 한 번만
+  // 세션을 받아오고(pullSnapshot) 그 뒤엔 이 브로드캐스트로만 갱신된다. 그래서 사용자가
+  // 검토를 결정 없이 두고 다음 작업을 하면, 패널이 옛 세션 id 를 계속 들고 있어서 새
+  // 스캔 결과를 전부 버렸다 — 실측: 파일 스캔이 정상적으로 끝나 job 까지 기록됐는데
+  // 화면엔 이전 검토가 그대로 남아 있었다. 사용자에겐 "검사가 안 된다" 로 보이지만
+  // 실제로는 검사는 됐고 화면만 막힌 것이라, 증상과 원인이 어긋나 찾기 어려운 종류다.
+  //
+  // seq 로 순서를 보는 이유: sessionId 는 UUID 라 어느 쪽이 새것인지 알 수 없다. 순번을
+  // 쓰면 새 세션을 받아들이면서도, 늦게 도착한 옛 세션 메시지가 새 결과를 덮는 것은
+  // 그대로 막을 수 있다(둘 다 필요하다).
+  if (msg.seq != null && state.seq != null) {
+    if (msg.seq < state.seq) return;                     // 지나간 세션의 뒤늦은 메시지
+  } else if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) {
+    return;                                              // seq 가 없는 옛 SW 와의 호환 경로
+  }
   if (msg.type === 'PANEL_PROGRESS') {
     state.sessionId = msg.sessionId;
+    state.seq = msg.seq ?? state.seq;
     applyProgress(msg.event);
   } else if (msg.type === 'PANEL_RESULT') {
     state.sessionId = msg.sessionId;
+    state.seq = msg.seq ?? state.seq;
     renderResult(msg.kind, msg.result, msg.meta);
   } else if (msg.type === 'PANEL_ERROR') {
     state.sessionId = msg.sessionId;
+    state.seq = msg.seq ?? state.seq;
     renderError(msg.error, msg.meta);
   }
 });
@@ -596,6 +615,7 @@ function pullSnapshot() {
     if (!res?.session) { renderProgress(null); return; }
     state.sessionId = res.sessionId;
     const s = res.session;
+    state.seq = s.seq ?? null;
     if (s.status === 'ready' && s.result) renderResult(s.kind, s.result, s.meta);
     else if (s.status === 'error') renderError(s.error, s.meta);
     else renderProgress(s);
