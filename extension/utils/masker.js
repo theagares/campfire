@@ -14,6 +14,9 @@ const TYPE_LABELS = {
   DATE_OF_BIRTH: '생년월일',
   ORGANIZATION:  '기관명',
   BANK_ACCOUNT:  '계좌번호',
+  // 개인정보는 아니지만 밖으로 나가면 안 되는 것 — 엔진이 정규식으로 잡는다
+  // (engine/app/core/detectors/pii/credentials.py).
+  CREDENTIAL:    '자격증명',
   OTHER_PII:     '개인정보',
   // PII (로컬 encoder 모델, chan/pii TARGET_LABELS)
   PS_NAME:             '이름',
