@@ -51,6 +51,7 @@ let state = {
   groups: [],            // 탐지 유형(dtype)별 묶음 — renderItems() 가 채운다
   expanded: new Set(),   // 펼쳐진 그룹의 dtype
   decided: false,
+  stale: false,   // 결정이 만료돼 적용되지 못한 상태 — 아래 renderStaleDecision 참고
 };
 
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
@@ -466,19 +467,46 @@ function renderError(error, meta) {
 }
 
 // ── 결정 전송 ────────────────────────────────────────────────────────────────
-function sendDecision(decision) {
-  if (state.decided) return;
-  state.decided = true;
-  chrome.runtime.sendMessage({ type: 'PANEL_DECISION', sessionId: state.sessionId, decision });
-  // 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음).
-  // 두 호스팅 방식을 한 번에 커버한다: 네이티브 사이드패널은 window.close() 로 닫히고
-  // (그때 window.parent 는 자기 자신이라 postMessage 는 아무도 안 받는다), iframe
-  // 오버레이 폴백으로 열렸을 때는 window.close() 가 무효인 대신 content.js 가 이
-  // postMessage 를 받아 DOM 에서 제거한다.
+/** 결정 후 패널을 닫는다(다음 검사 때 다시 열림 — 유휴 화면 없음).
+ *  두 호스팅 방식을 한 번에 커버한다: 네이티브 사이드패널은 window.close() 로 닫히고
+ *  (그때 window.parent 는 자기 자신이라 postMessage 는 아무도 안 받는다), iframe
+ *  오버레이 폴백으로 열렸을 때는 window.close() 가 무효인 대신 content.js 가 이
+ *  postMessage 를 받아 DOM 에서 제거한다. */
+function closeSelf() {
   setTimeout(() => {
     try { window.parent.postMessage({ type: 'UPS_CLOSE_OVERLAY' }, '*'); } catch (_) {}
     window.close();
   }, 150);
+}
+
+/** 결정이 아무 데도 전달되지 못했음을 화면에 남긴다.
+ *
+ *  조용히 닫으면 성공과 구분이 안 된다 — 2026-09-06 실사용 재현에서 사용자는
+ *  [전송]을 눌렀고 패널은 닫혔는데 사이트로는 아무것도 나가지 않았다. 눌린 줄
+ *  알고 기다리게 되는 이 침묵이 이 버그의 실제 피해였다. */
+function renderStaleDecision() {
+  state.stale = true;
+  showView('error');
+  el.errTitle.textContent = '이 검토는 만료되었습니다';
+  el.errMsg.textContent = '검토 창이 오래되어 결정을 적용하지 못했습니다. 입력창에서 다시 보내주세요.';
+}
+
+function sendDecision(decision) {
+  // 만료 안내가 떠 있는 상태에서 [취소]/[닫기]를 누르면 닫히기만 하면 된다.
+  if (state.stale) { closeSelf(); return; }
+  if (state.decided) return;
+  state.decided = true;
+  // 응답을 반드시 본다. SW 가 모르는 sessionId 였다면 이 결정은 어디에도 전달되지
+  // 않는데(service-worker.js 의 PANEL_DECISION 주석 참고), 예전엔 응답을 보지 않고
+  // 그대로 닫아서 성공한 것처럼 보였다.
+  chrome.runtime.sendMessage(
+    { type: 'PANEL_DECISION', sessionId: state.sessionId, tabId: state.myTabId, decision },
+    (res) => {
+      void chrome.runtime.lastError;
+      if (res && res.ok === false) { renderStaleDecision(); return; }
+      closeSelf();
+    },
+  );
 }
 
 function buildFinalTextFrom(segments) {
