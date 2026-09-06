@@ -48,11 +48,47 @@ _PROJECT_ROOT = Path(os.environ.get("SECUREDOC_PROJECT_ROOT", os.getcwd())).reso
 
 
 # ── 공통 헬퍼 ────────────────────────────────────────────────────────────────
+class PathOutsideRootError(PermissionError):
+    """작업 루트 밖의 경로를 요청했을 때."""
+
+
+def _within_root(p: Path) -> bool:
+    """p 가 _PROJECT_ROOT 안(또는 루트 자신)인가.
+
+    문자열 비교로 하는 이유: Path.is_relative_to 는 대소문자를 구분하는데 Windows
+    경로는 구분하지 않는다. normcase 로 맞춰야 C:\Work 와 c:\work 를 같게 본다.
+    구분자를 붙여서 비교하는 이유: 단순 startswith 는 /srv/app 이 /srv/apple 을
+    통과시킨다.
+    """
+    root = os.path.normcase(str(_PROJECT_ROOT)).rstrip(os.sep)
+    target = os.path.normcase(str(p))
+    return target == root or target.startswith(root + os.sep)
+
+
 def _resolve(path_str: str) -> Path:
+    """경로를 풀되 작업 루트 밖이면 거부한다.
+
+    예전에는 _PROJECT_ROOT 를 "상대 경로를 붙이는 기준" 으로만 썼고 경계로 강제하지
+    않았다. 그래서 절대 경로는 그대로 통과했고 `..` 도 막히지 않아, 파일 도구
+    (secure_read_file / secure_list_files / secure_search_files / scan_file /
+    scan_files)로 디스크 어디든 읽고 열거할 수 있었다.
+
+    이 도구들을 부르는 쪽은 사람이 아니라 AI 에이전트다. 브라우저 확장 경로처럼
+    검토 패널에서 사람이 승인하는 단계가 없으므로, 경계는 여기서 지켜야 한다.
+
+    .resolve() 를 먼저 하는 이유: 심볼릭 링크가 밖을 가리키는 경우까지 잡는다.
+    작업 루트는 SECUREDOC_PROJECT_ROOT 로 넓힐 수 있다.
+    """
     p = Path(path_str)
     if not p.is_absolute():
         p = _PROJECT_ROOT / p
-    return p.resolve()
+    p = p.resolve()
+    if not _within_root(p):
+        raise PathOutsideRootError(
+            f"작업 루트 밖의 경로입니다: {p} (루트: {_PROJECT_ROOT}). "
+            "다른 위치를 열어야 하면 SECUREDOC_PROJECT_ROOT 로 작업 루트를 지정하세요."
+        )
+    return p
 
 
 def _file_kind(path: Path) -> str:
