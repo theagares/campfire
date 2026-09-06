@@ -856,42 +856,6 @@
     entry.resolve(message.decision || { action: 'cancel' });
   });
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // 파일 검토 (사이드패널 경로)
-  // ══════════════════════════════════════════════════════════════════════════
-  async function reviewFileViaPanel(file) {
-    if (!isSupportedFile(file) || contentProcessingFiles.has(file) || contentOwnedFiles.has(file)) return null;
-    contentProcessingFiles.add(file);
-    const panelOpening = openSidePanel(); // 제스처 시점에 먼저 연다
-    try {
-      if (!(await panelOpening)) {
-        showBlockedBadge('⚠️ 검토 패널을 열지 못해 첨부를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
-        return null;
-      }
-      const base64Data = await fileToBase64(file);
-      return await startPanelSession('file', {
-        base64Data,
-        mimeType: file.type || 'application/octet-stream',
-        fileName: file.name,
-        fileSize: file.size,
-      });
-    } finally {
-      contentProcessingFiles.delete(file);
-    }
-  }
-
-  async function buildCurrentFileFromDecision(decision, originalFile) {
-    if (!decision || decision.action === 'cancel' || decision.action === 'download') return null;
-    if (decision.action === 'passthrough') {
-      contentOwnedFiles.add(originalFile);
-      return originalFile;
-    }
-    if (decision.action === 'upload' && decision.maskedBase64) {
-      return base64ToFile(decision.maskedBase64, decision.mimeType, decision.fileName);
-    }
-    return null;
-  }
-
   // ── 파일 인풋 change — 즉시 스캔하지 않고 보류(위 "문서 첨부 보류" 참고) ──────
   document.addEventListener('change', async (event) => {
     const path = event.composedPath?.() ?? [];
