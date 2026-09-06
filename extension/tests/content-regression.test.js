@@ -124,7 +124,12 @@ const selectionStub = {
 class ContentEditableStub {
   constructor(initial, {
     acceptDelete = false, acceptSelectionReplace = true, partialDelete = false,
+    asyncApply = false,
   } = {}) {
+    // asyncApply: 우리 이벤트를 받아 자기 모델은 곧바로 고치지만 **DOM 반영은 다음
+    // 틱**에 하는 에디터(Lexical/perplexity 실측 동작). 삽입 직후 innerText 를 읽으면
+    // 아직 옛 내용이라, 판정을 동기로 하면 성공한 삽입이 "반응 없음" 으로 오판된다.
+    this.asyncApply = asyncApply;
     this.partialDelete = partialDelete;
     this.tagName = 'DIV';
     this.nodeType = 1;
@@ -153,10 +158,15 @@ class ContentEditableStub {
   focus() { documentStub.activeElement = this; }
   acceptInsert(v) {
     if (!v) return;
-    if (selectedNode === this && this.acceptSelectionReplace) this.lines = []; // 선택 영역 대체
-    for (const line of String(v).split('\n')) this.lines.push(line);
-    selectedNode = null;                        // 삽입하면 선택은 접힌다
+    const apply = () => {
+      if (selectedNode === this && this.acceptSelectionReplace) this.lines = []; // 선택 영역 대체
+      for (const line of String(v).split('\n')) this.lines.push(line);
+      selectedNode = null;                      // 삽입하면 선택은 접힌다
+    };
     this.inserts += 1;
+    // 삽입 "횟수" 는 즉시 센다 — 쌓임을 세는 지표라 반영 시점과 무관해야 한다.
+    if (this.asyncApply) { setTimeout(apply, 0); return; }
+    apply();
   }
   acceptDeleteAll() {
     if (this.inserts === 0) this.deletesBeforeFirstInsert += 1; // (21) 이 보는 값
@@ -1406,6 +1416,50 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   if (send18b.clicks !== 0) {
     throw new Error('마스킹본을 못 넣었는데 전송했다 — 입력창에 남은 원문이 그대로 나간다');
+  }
+
+  // (18-c) 반영이 한 틱 늦는 에디터에서도 마스킹본을 넣고 전송해야 한다.
+  //
+  // 배경(2026-09-06 실사용 perplexity): [전송]을 눌렀는데 아무것도 나가지 않았다.
+  // 로그는 "DOM직접: 입력창이 전혀 반응하지 않음. 삽입 0회, 현재 0벌 감지" 였는데,
+  // 실제로는 삽입이 전부 반영돼 있었다 — Lexical 이 DOM 을 다음 틱에 그리는 사이
+  // 우리가 동기로 판정해 성공을 실패로 읽은 것이다. 유출은 없었지만(전송을 막았다)
+  // 그 사이트에서는 아무것도 보낼 수 없었다.
+  //
+  // 오판의 대가는 두 겹이다: 전송이 막히고, 그 전에 남은 전략들이 차례로 실행되어
+  // 앞의 삽입 위에 덧쌓인다((18) 이 막는 그 쌓임과 같은 뿌리다).
+  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+
+  const ed18c = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
+    acceptDelete: true, asyncApply: true,
+  });
+  domBySelector.set('#prompt-textarea', ed18c);
+  const send18c = new SendButtonStub();
+  send18c.disabled = false;
+  domBySelector.set('[data-testid="send-button"]', send18c);
+  documentStub.activeElement = ed18c;
+  nextDecision = { action: 'masked', maskedText: '주민번호 [RRN_1] 알려줘' };
+  dispatchDocumentEvent('keydown', {
+    key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await new Promise(r => setTimeout(r, 2000));
+
+  const body18c = ed18c.lines.join(' ');
+  if (body18c.includes('900101-1234567')) {
+    throw new Error(`원문 주민번호가 입력창에 남았다: ${body18c}`);
+  }
+  if ((body18c.split('[RRN_1]').length - 1) !== 1) {
+    throw new Error(
+      `마스킹 텍스트가 ${body18c.split('[RRN_1]').length - 1}벌 들어갔다 — `
+      + `반영을 기다리지 않아 전략이 덧쌓였다: ${body18c}`,
+    );
+  }
+  if (send18c.clicks !== 1) {
+    throw new Error(
+      '반영이 한 틱 늦는 에디터에서 마스킹본을 넣고도 전송하지 않았다 — '
+      + '성공한 삽입을 "반응 없음" 으로 오판한 그 회귀다 (실사용자 perplexity)',
+    );
   }
 
   // (19) 마스킹이 프롬프트를 하나도 바꾸지 않았으면 입력창에 손대지 않는다.
