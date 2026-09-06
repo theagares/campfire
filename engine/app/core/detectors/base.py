@@ -64,6 +64,10 @@ CREDIT_CARD = "CREDIT_CARD"
 DATE_OF_BIRTH = "DATE_OF_BIRTH"
 ORGANIZATION = "ORGANIZATION"
 BANK_ACCOUNT = "BANK_ACCOUNT"
+# 개인정보는 아니지만 이 게이트웨이를 통과해 외부로 나가면 안 되는 것 —
+# API 키/토큰/개인키/비밀번호. 정규식 전용이라 모델 없이도 탐지된다
+# (detectors/pii/credentials.py).
+CREDENTIAL = "CREDENTIAL"
 OTHER_PII = "OTHER_PII"
 
 PII_TYPES: frozenset[str] = frozenset(
@@ -77,6 +81,7 @@ PII_TYPES: frozenset[str] = frozenset(
         DATE_OF_BIRTH,
         ORGANIZATION,
         BANK_ACCOUNT,
+        CREDENTIAL,
         OTHER_PII,
     }
 )
