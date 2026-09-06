@@ -248,6 +248,59 @@ let activeSessionId = null;   // PANEL_READY 가 sender.tab 없이 물어볼 때
 // sessionId 는 UUID 라 순서를 알 수 없어서, 순번을 따로 실어 보낸다.
 let sessionSeq = 0;
 
+// ── SW 재시작을 넘겨 살아남기 ────────────────────────────────────────────────
+//
+// MV3 서비스워커는 할 일이 없으면 30초쯤 뒤에 종료된다. 사용자가 검토 패널을 보고
+// 있는 동안이 정확히 그 "할 일 없는" 구간이라, 위 세 값은 결정을 누르기도 전에
+// 통째로 사라지는 일이 흔하다. 그러면 두 가지가 한꺼번에 무너진다(2026-09-06 실측):
+//
+//   1) sessions 가 비어 PANEL_DECISION 이 "모르는 세션" 으로 처리된다 — 사용자는
+//      [전송]을 눌렀는데 "이 검토는 만료되었습니다" 만 보게 된다.
+//   2) sessionSeq 가 0 으로 되돌아가 다음 세션이 seq=1 을 받는다. 패널은 이미 더
+//      큰 seq 를 들고 있으므로 새 결과를 "지나간 세션" 으로 오인해 버린다 — 패널에
+//      옛 검토 화면이 그대로 남고, 그 옛 sessionId 로 결정을 보내 다시 1) 이 된다.
+//
+// chrome.storage.session 은 브라우저 세션 동안만 살아 있고 디스크에 남지 않는다 —
+// 검토 중인 문서 내용이 들어가므로 local 이 아니라 session 이어야 한다.
+const SESSION_STATE_KEY = 'campfireSessionState';
+
+let hydrating = null;
+
+/** storage 에 있던 세션 상태를 메모리로 한 번만 복구한다. sessions 를 읽는 모든
+ *  핸들러는 이걸 먼저 await 해야 한다 — 안 그러면 재시작 직후의 첫 메시지가
+ *  빈 Map 을 보고 세션이 없다고 판단한다. */
+function ensureHydrated() {
+  if (!hydrating) {
+    hydrating = chrome.storage.session.get(SESSION_STATE_KEY)
+      .then((data) => {
+        const saved = data?.[SESSION_STATE_KEY];
+        if (!saved) return;
+        for (const [id, s] of Object.entries(saved.sessions || {})) {
+          if (!sessions.has(id)) sessions.set(id, s);
+        }
+        if (activeSessionId == null) activeSessionId = saved.activeSessionId ?? null;
+        // seq 는 반드시 단조 증가여야 한다 — 되돌아가면 위 2) 가 재현된다.
+        sessionSeq = Math.max(sessionSeq, saved.sessionSeq || 0);
+      })
+      .catch(() => { /* storage 가 없으면 메모리만으로 동작한다 */ });
+  }
+  return hydrating;
+}
+
+/** 메모리 상태를 storage 에 덮어쓴다. 실패해도 흐름을 막지 않는다 —
+ *  저장이 안 되면 예전처럼 메모리로만 동작할 뿐이다. */
+function persistSessions() {
+  try {
+    chrome.storage.session.set({
+      [SESSION_STATE_KEY]: {
+        sessions: Object.fromEntries(sessions),
+        activeSessionId,
+        sessionSeq,
+      },
+    })?.catch?.(() => {});
+  } catch (_) { /* ignore */ }
+}
+
 function pushToPanel(message) {
   // chrome.runtime.sendMessage는 특정 탭이 아니라 열려 있는 모든 확장 페이지(iframe으로
   // 주입된 검토 패널 포함)에 전역 broadcast된다 — 그래서 반드시 message.tabId를 실어
@@ -278,12 +331,15 @@ async function runScan(sessionId, kind, payload, tabId) {
           }
         : { textPreview: (payload.text || '').slice(0, 120) },
   };
+  await ensureHydrated();   // 재시작 직후라면 seq 가 이어지도록 먼저 복구한다
   session.seq = ++sessionSeq;
   sessions.set(sessionId, session);
   activeSessionId = sessionId;
+  persistSessions();
 
   const onProgress = (event) => {
     session.progress.push(event);
+    persistSessions();
     pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event });
   };
 
@@ -295,11 +351,13 @@ async function runScan(sessionId, kind, payload, tabId) {
         : await scanPrompt(payload, onProgress);
     session.status = 'ready';
     session.result = result;
+    persistSessions();
     recordSecurityBadge(result);
     pushToPanel({ type: 'PANEL_RESULT', sessionId, tabId, seq: session.seq, kind, result, meta: session.meta });
   } catch (err) {
     session.status = 'error';
     session.error = err.message;
+    persistSessions();
     setActionBadge('!', BADGE_ERROR);
     pushToPanel({ type: 'PANEL_ERROR', sessionId, tabId, seq: session.seq, error: err.message, meta: session.meta });
   }
@@ -358,6 +416,7 @@ function cancelSessionsForTab(tabId) {
     sessions.delete(sid);
     if (activeSessionId === sid) activeSessionId = null;
   }
+  persistSessions();
   // 여기서 패널을 비활성화하지 않는다 — 네이티브 패널은 그 즉시 닫힐 수 있고,
   // 그러면 사용자가 봐야 할 "이 검토는 만료되었습니다" 가 보이기도 전에 사라진다.
 }
@@ -435,58 +494,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // setOptions 할 때 직접 만든 것이라 패널이 임의의 탭을 사칭할 수 없다.
   if (type === 'PANEL_READY') {
     const requesterTabId = sender?.tab?.id ?? asTabId(message.tabId);
-    let sid = null, session = null;
-    if (requesterTabId != null) {
-      for (const [id, s] of sessions) {
-        if (s.tabId === requesterTabId) { sid = id; session = s; }
+    // SW 가 재시작됐을 수 있으므로 storage 에서 먼저 복구한다.
+    ensureHydrated().then(() => {
+      let sid = null, session = null;
+      if (requesterTabId != null) {
+        for (const [id, s] of sessions) {
+          if (s.tabId === requesterTabId) { sid = id; session = s; }
+        }
       }
-    }
-    if (!session && requesterTabId == null && message.sessionId) {
-      // sender.tab이 없는(=탭에 종속되지 않은) 특수 컨텍스트에서의 요청만 예외적으로
-      // 명시적 sessionId를 신뢰한다.
-      session = sessions.get(message.sessionId) || null;
-      sid = session ? message.sessionId : null;
-    }
-    sendResponse({ ok: true, sessionId: sid, session, tabId: requesterTabId });
-    return false;
+      if (!session && requesterTabId == null && message.sessionId) {
+        // sender.tab이 없는(=탭에 종속되지 않은) 특수 컨텍스트에서의 요청만 예외적으로
+        // 명시적 sessionId를 신뢰한다.
+        session = sessions.get(message.sessionId) || null;
+        sid = session ? message.sessionId : null;
+      }
+      sendResponse({ ok: true, sessionId: sid, session, tabId: requesterTabId });
+    });
+    return true; // 응답이 비동기 — 채널을 열어둔다
   }
 
   // 검토 패널의 HITL 결정 → 원본 탭 content.js 로 중계 (제스처 불필요)
   if (type === 'PANEL_DECISION') {
-    const { sessionId, decision } = message;
-    const session = sessions.get(sessionId);
+    // SW 가 재시작됐으면 sessions 가 비어 있다 — 복구하기 전에 판단하면 멀쩡한
+    // 세션을 "모르는 세션" 으로 처리해 사용자에게 만료를 띄우게 된다.
+    ensureHydrated().then(() => {
+      const { sessionId, decision } = message;
+      const session = sessions.get(sessionId);
 
-    // 모르는 sessionId — 낡은 패널이 이미 끝난 검토의 결정을 보냈다.
-    //
-    // 예전엔 여기서 조용히 버렸다. 그러면 (1) 패널은 성공한 것처럼 닫히고 (2) 그
-    // 탭에서 실제로 기다리던 세션은 10분 타임아웃까지 매달린 채 그 탭의 프롬프트
-    // 전송을 전부 삼킨다(content.js 의 blockedWhileScanning). 사용자에게는 "전송을
-    // 눌렀는데 아무 일도 일어나지 않음" 으로만 보인다 — 2026-09-06 실사용 재현.
-    //
-    // 이 결정을 지금 살아 있는 세션에 갖다 붙이지는 않는다: 검토 A 에서 누른 승인이
-    // 검토 B 에 적용되는 건 유실보다 나쁜 실패다. 대신 패널에는 만료를 알리고(ok:false),
-    // 매달린 세션은 cancel 로 즉시 푼다.
-    if (!session) {
-      cancelSessionsForTab(sender?.tab?.id ?? asTabId(message.tabId));
-      sendResponse({ ok: false, reason: 'stale-session' });
-      return false;
-    }
+      // 그래도 모르는 sessionId — 낡은 패널이 이미 끝난 검토의 결정을 보냈다.
+      //
+      // 예전엔 여기서 조용히 버렸다. 그러면 (1) 패널은 성공한 것처럼 닫히고 (2) 그
+      // 탭에서 실제로 기다리던 세션은 10분 타임아웃까지 매달린 채 그 탭의 프롬프트
+      // 전송을 전부 삼킨다(content.js 의 blockedWhileScanning). 사용자에게는 "전송을
+      // 눌렀는데 아무 일도 일어나지 않음" 으로만 보인다 — 2026-09-06 실사용 재현.
+      //
+      // 이 결정을 지금 살아 있는 세션에 갖다 붙이지는 않는다: 검토 A 에서 누른 승인이
+      // 검토 B 에 적용되는 건 유실보다 나쁜 실패다. 대신 패널에는 만료를 알리고
+      // (ok:false), 매달린 세션은 cancel 로 즉시 푼다.
+      if (!session) {
+        cancelSessionsForTab(sender?.tab?.id ?? asTabId(message.tabId));
+        sendResponse({ ok: false, reason: 'stale-session' });
+        return;
+      }
 
-    if (session?.tabId != null) {
-      chrome.tabs.sendMessage(session.tabId, {
-        type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
-      }).catch(() => {});
-    }
-    // 검토가 끝났으니 그 탭의 패널을 꺼둔다 — 패널은 스스로 window.close() 로
-    // 닫지만, 옵션을 켠 채로 두면 나중에 그 탭으로 돌아왔을 때 빈 패널이 되살아난다.
-    disablePanelForTab(session?.tabId);
-    sessions.delete(sessionId);
-    if (activeSessionId === sessionId) activeSessionId = null;
-    sendResponse({ ok: true });
-    return false;
+      if (session.tabId != null) {
+        chrome.tabs.sendMessage(session.tabId, {
+          type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
+        }).catch(() => {});
+      }
+      // 검토가 끝났으니 그 탭의 패널을 꺼둔다 — 패널은 스스로 window.close() 로
+      // 닫지만, 옵션을 켠 채로 두면 나중에 그 탭으로 돌아왔을 때 빈 패널이 되살아난다.
+      disablePanelForTab(session.tabId);
+      sessions.delete(sessionId);
+      if (activeSessionId === sessionId) activeSessionId = null;
+      persistSessions();
+      sendResponse({ ok: true });
+    });
+    return true; // 응답이 비동기 — 채널을 열어둔다
   }
 
-  // 설정 popup: 현재 연결 대상/포트/엔진 상태
   if (type === 'GET_CONNECTION_INFO') {
     checkEngineHealth().then((info) => sendResponse(info));
     return true;
