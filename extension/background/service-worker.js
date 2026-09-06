@@ -244,6 +244,10 @@ async function scanCombined({ text, base64Data, mimeType, fileName }, onProgress
 const sessions = new Map();
 let activeSessionId = null;   // PANEL_READY 가 sender.tab 없이 물어볼 때의 폴백
 
+// 세션이 시작된 순서. 패널이 "어느 쪽이 더 새로운 세션인가" 를 판별하는 유일한 근거다.
+// sessionId 는 UUID 라 순서를 알 수 없어서, 순번을 따로 실어 보낸다.
+let sessionSeq = 0;
+
 function pushToPanel(message) {
   // chrome.runtime.sendMessage는 특정 탭이 아니라 열려 있는 모든 확장 페이지(iframe으로
   // 주입된 검토 패널 포함)에 전역 broadcast된다 — 그래서 반드시 message.tabId를 실어
@@ -274,12 +278,13 @@ async function runScan(sessionId, kind, payload, tabId) {
           }
         : { textPreview: (payload.text || '').slice(0, 120) },
   };
+  session.seq = ++sessionSeq;
   sessions.set(sessionId, session);
   activeSessionId = sessionId;
 
   const onProgress = (event) => {
     session.progress.push(event);
-    pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, event });
+    pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event });
   };
 
   try {
@@ -291,12 +296,12 @@ async function runScan(sessionId, kind, payload, tabId) {
     session.status = 'ready';
     session.result = result;
     recordSecurityBadge(result);
-    pushToPanel({ type: 'PANEL_RESULT', sessionId, tabId, kind, result, meta: session.meta });
+    pushToPanel({ type: 'PANEL_RESULT', sessionId, tabId, seq: session.seq, kind, result, meta: session.meta });
   } catch (err) {
     session.status = 'error';
     session.error = err.message;
     setActionBadge('!', BADGE_ERROR);
-    pushToPanel({ type: 'PANEL_ERROR', sessionId, tabId, error: err.message, meta: session.meta });
+    pushToPanel({ type: 'PANEL_ERROR', sessionId, tabId, seq: session.seq, error: err.message, meta: session.meta });
   }
 }
 
