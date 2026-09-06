@@ -29,16 +29,22 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'sidepanel', 'sidepanel.j
 const noop = () => {};
 
 /** sidepanel.js 를 스텁 DOM 위에 올리고 조작 손잡이를 돌려준다. */
-function loadPanel() {
+function loadPanel(opts = {}) {
   const listeners = [];
   const sent = [];
+  // PANEL_DECISION 에 SW 가 뭐라고 답하는지 — 기본은 정상 접수.
+  const decisionResponse = opts.decisionResponse || { ok: true };
+  let closed = false;
 
   const makeEl = () => {
+    const handlers = {};
     const el = {
       textContent: '', innerHTML: '', hidden: false, value: '', checked: false,
       dataset: {}, style: { setProperty: noop, removeProperty: noop },
       classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
-      addEventListener: noop, removeEventListener: noop,
+      addEventListener: (ev, fn) => { (handlers[ev] = handlers[ev] || []).push(fn); },
+      removeEventListener: noop,
+      _fire: (ev) => (handlers[ev] || []).forEach(fn => fn({ preventDefault: noop, stopPropagation: noop })),
       setAttribute: noop, getAttribute: () => null, removeAttribute: noop,
       appendChild: noop, remove: noop, focus: noop, click: noop, scrollTo: noop,
       querySelector: () => makeEl(), querySelectorAll: () => [],
@@ -72,9 +78,15 @@ function loadPanel() {
         onMessage: { addListener: (fn) => listeners.push(fn) },
         // PANEL_READY 응답은 "세션 없음" 으로 둔다 — 이 테스트의 관심사는 로드 이후의
         // 브로드캐스트 처리이지 스냅샷 복구가 아니다.
-        sendMessage: (msg, cb) => { sent.push(msg); if (cb) cb({ ok: true, tabId: 101 }); },
+        sendMessage: (msg, cb) => {
+          sent.push(msg);
+          if (!cb) return;
+          cb(msg.type === 'PANEL_DECISION' ? decisionResponse : { ok: true, tabId: 101 });
+        },
       },
     },
+    close: () => { closed = true; },
+    parent: { postMessage: noop },
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
@@ -86,7 +98,11 @@ function loadPanel() {
   /** 지금 화면에 그려진 세션의 파일명 — 어느 결과가 렌더됐는지 보는 창. */
   const rendered = () => byId('doc-name').textContent;
 
-  return { send, rendered, sent };
+  /** 버튼을 실제로 눌러 본다 — 결정 경로는 클릭 핸들러를 통해서만 들어간다. */
+  const click = (id) => byId(id)._fire('click');
+  const text = (id) => byId(id).textContent;
+
+  return { send, rendered, sent, click, text, closed: () => closed };
 }
 
 const TAB = 101;
@@ -150,6 +166,41 @@ const meta = (n) => ({ fileName: `file-${n}.docx` });
   assert.strictEqual(
     p.rendered(), 'file-A.docx',
     'seq 없는 경로의 기존 동작(sessionId 일치 요구)이 바뀌었다',
+  );
+}
+
+// ── (5) 전달되지 못한 결정을 조용히 삼키면 안 된다 ──────────────────────────
+//
+// 2026-09-06 실사용 재현: [전송]을 눌렀고 패널은 닫혔는데 사이트로는 아무것도
+// 나가지 않았다. SW 가 모르는 sessionId 였고(낡은 패널) PANEL_DECISION 은 조용히
+// 버려졌는데, 패널이 응답을 보지 않고 그냥 닫혀서 성공과 구분되지 않았다.
+// 그동안 원래 기다리던 세션은 10분 타임아웃까지 그 탭의 전송을 전부 삼켰다.
+{
+  const p = loadPanel({ decisionResponse: { ok: false, reason: 'stale-session' } });
+  p.send({ type: 'PANEL_RESULT', tabId: TAB, sessionId: 'A', seq: 1, kind: 'file', result: result('A'), meta: meta('A') });
+
+  p.click('btn-cancel'); // 승인/취소 모두 sendDecision 한 경로를 탄다
+
+  const decision = p.sent.find(m => m.type === 'PANEL_DECISION');
+  assert.ok(decision, '결정이 SW 로 전송되지 않았다');
+  assert.match(
+    p.text('err-title'), /만료/,
+    '전달되지 못한 결정을 조용히 삼켰다 — 사용자에겐 눌린 것처럼 보이고 아무것도 전송되지 않는다',
+  );
+  assert.strictEqual(
+    decision.tabId, TAB,
+    'tabId 를 같이 보내지 않으면 네이티브 패널의 결정에서 SW 가 탭을 못 찾는다(sender.tab 이 없다)',
+  );
+}
+
+// ── (6) 정상 접수된 결정은 만료 화면을 띄우지 않는다 ────────────────────────
+{
+  const p = loadPanel();
+  p.send({ type: 'PANEL_RESULT', tabId: TAB, sessionId: 'A', seq: 1, kind: 'file', result: result('A'), meta: meta('A') });
+  p.click('btn-cancel');
+  assert.ok(
+    !/만료/.test(p.text('err-title')),
+    '정상 결정인데 만료 화면이 떴다',
   );
 }
 
