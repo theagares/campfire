@@ -340,6 +340,28 @@ function disablePanelForTab(tabId) {
   try { chrome.sidePanel?.setOptions({ tabId, enabled: false })?.catch?.(() => {}); } catch (_) { /* ignore */ }
 }
 
+/** 그 탭에서 결정을 기다리며 매달려 있는 세션을 전부 cancel 로 푼다.
+ *
+ *  cancel 은 사이트로 아무것도 내보내지 않는다 — 그래서 이 경로에서 항상 안전하다.
+ *  엉뚱한 세션을 하나 더 풀더라도 최악이 "사용자가 다시 보내야 함" 이고, 반대로
+ *  풀지 않으면 그 탭의 전송이 10분(HITL 타임아웃) 동안 통째로 막힌다. */
+function cancelSessionsForTab(tabId) {
+  if (tabId == null) return;
+  for (const [sid, s] of [...sessions]) {
+    if (s?.tabId !== tabId) continue;
+    chrome.tabs.sendMessage(tabId, {
+      type: 'PANEL_DECISION',
+      sessionId: sid,
+      kind: s.kind,
+      decision: { action: 'cancel', reason: 'stale-session' },
+    }).catch(() => {});
+    sessions.delete(sid);
+    if (activeSessionId === sid) activeSessionId = null;
+  }
+  // 여기서 패널을 비활성화하지 않는다 — 네이티브 패널은 그 즉시 닫힐 수 있고,
+  // 그러면 사용자가 봐야 할 "이 검토는 만료되었습니다" 가 보이기도 전에 사라진다.
+}
+
 /** 열려 있는 패널까지 닫는다. close() 는 Chrome 141+ 이므로 없을 수 있고, 그때는
  *  비활성화만 남는다 — 정상 흐름에선 패널이 스스로 window.close() 로 닫히므로
  *  이 경로는 타임아웃 등 예외 상황용이다. */
@@ -433,6 +455,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'PANEL_DECISION') {
     const { sessionId, decision } = message;
     const session = sessions.get(sessionId);
+
+    // 모르는 sessionId — 낡은 패널이 이미 끝난 검토의 결정을 보냈다.
+    //
+    // 예전엔 여기서 조용히 버렸다. 그러면 (1) 패널은 성공한 것처럼 닫히고 (2) 그
+    // 탭에서 실제로 기다리던 세션은 10분 타임아웃까지 매달린 채 그 탭의 프롬프트
+    // 전송을 전부 삼킨다(content.js 의 blockedWhileScanning). 사용자에게는 "전송을
+    // 눌렀는데 아무 일도 일어나지 않음" 으로만 보인다 — 2026-09-06 실사용 재현.
+    //
+    // 이 결정을 지금 살아 있는 세션에 갖다 붙이지는 않는다: 검토 A 에서 누른 승인이
+    // 검토 B 에 적용되는 건 유실보다 나쁜 실패다. 대신 패널에는 만료를 알리고(ok:false),
+    // 매달린 세션은 cancel 로 즉시 푼다.
+    if (!session) {
+      cancelSessionsForTab(sender?.tab?.id ?? asTabId(message.tabId));
+      sendResponse({ ok: false, reason: 'stale-session' });
+      return false;
+    }
+
     if (session?.tabId != null) {
       chrome.tabs.sendMessage(session.tabId, {
         type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
