@@ -1148,7 +1148,7 @@
     return (editor.innerText || editor.textContent || '').trim();
   }
 
-  function setEditorText(cfg, text) {
+  async function setEditorText(cfg, text) {
     const editor = findEditor(cfg);
     if (!editor) return false;
     editor.focus();
@@ -1188,6 +1188,29 @@
     const isEmpty = () => current() === '';
     const copies = () => (target ? current().split(target).length - 1 : 0);
 
+    /** 삽입/지우기 직후의 판정은 **기다렸다** 해야 한다.
+     *
+     *  Lexical(perplexity) 같은 에디터는 우리 이벤트를 받아 자기 모델을 고친 뒤 DOM 을
+     *  다음 틱에 다시 그린다. 곧바로 innerText 를 읽으면 아직 옛 내용이라, 성공한 삽입이
+     *  "입력창이 전혀 반응하지 않음" 으로 판정된다. 그러면 다음 전략이 실행되고 그게 앞의
+     *  삽입 위에 덧쌓인다 — 이 파일 위쪽 주석에 남은 "3벌/4벌" 의 뿌리가 이 오판이다.
+     *
+     *  2026-09-06 실사용(perplexity) 로그: "DOM직접: 입력창이 전혀 반응하지 않음.
+     *  삽입 0회, 현재 0벌 감지" → 마스킹본을 못 넣었다고 보고 전송을 중단했다. 그런데
+     *  실제로는 삽입이 전부 반영돼 있었다(나중에 확인하니 세 전략의 결과가 모두 남아
+     *  있었다). 유출은 없었지만 그 사이트에서는 아무것도 보낼 수 없었다.
+     *
+     *  변화가 보이거나 목표에 도달하면 즉시 반환하므로, 동기적으로 반영하는 에디터
+     *  (대부분의 사이트)에서는 첫 확인에 끝나 지연이 없다. */
+    const settle = async (before) => {
+      const deadline = Date.now() + 400;
+      for (;;) {
+        if (done() || current() !== before) return;
+        if (Date.now() >= deadline) return;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+
     // 기존 내용을 지운다. execCommand('selectAll') 만으로는 Lexical 같은 에디터에서
     // 안 먹는 경우가 있어, 실제 DOM 선택 영역을 직접 잡아준다 — insertText/paste 는
     // "선택 영역을 대체" 하므로 선택만 제대로 잡혀 있으면 지우기와 넣기가 한 번에 된다.
@@ -1214,35 +1237,43 @@
      *  insertText/paste 를 할 거라면 치명적이다(선택이 없으면 대체가 아니라 덧붙이기가
      *  된다. 실사용자 perplexity 에서 원문과 마스킹본이 공존한 원인). 그래서 넣기 전
      *  비우기에는 안 쓰고, 되돌리기처럼 "끝내려는" 자리에서만 쓴다. */
-    const clear = (destructive = false) => {
+    const clear = async (destructive = false) => {
+      let before = current();
       selectAll();
       try { document.execCommand('delete', false, null); } catch (_) { /* 다음 단계 */ }
+      await settle(before);
       if (isEmpty()) return true;
 
       // 빈 문자열 붙여넣기 — "선택 영역을 대체"하는 에디터는 이걸로 비워진다.
+      before = current();
       selectAll();
       try {
         const dt = new DataTransfer();
         dt.setData('text/plain', '');
         editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       } catch (_) { /* 다음 단계 */ }
+      await settle(before);
       if (isEmpty()) return true;
 
       // 합성 beforeinput/input 으로 삭제를 알린다 — 자기 모델만 보는 에디터용.
+      before = current();
       selectAll();
       try {
         const opts = { bubbles: true, cancelable: true, inputType: 'deleteContentBackward' };
         editor.dispatchEvent(new InputEvent('beforeinput', opts));
         editor.dispatchEvent(new InputEvent('input', opts));
       } catch (_) { /* 다음 단계 */ }
+      await settle(before);
       if (isEmpty()) return true;
 
       // 최후 — DOM 을 직접 비운다. 선택 영역을 부수므로 destructive 일 때만.
       if (!destructive) return false;
+      before = current();
       try {
         editor.textContent = '';
         editor.dispatchEvent(new Event('input', { bubbles: true }));
       } catch (_) { /* 결과는 아래에서 확인한다 */ }
+      await settle(before);
       return isEmpty();
     };
 
@@ -1318,9 +1349,10 @@
     let inserted = 0;
     let reason = '시도 없음';
 
-    const tryRun = (label, run) => {
+    const tryRun = async (label, run) => {
       const before = current();
       try { run(); } catch (_) { reason = `${label} 실행 중 예외`; return 'error'; }
+      await settle(before);
       if (done()) return 'ok';
       if (current() === before) { reason = `${label}: 입력창이 전혀 반응하지 않음`; return 'noop'; }
       inserted += 1;
@@ -1332,25 +1364,25 @@
     for (const [name, selects, run] of strategies) {
       if (!selects) continue;
       selectAll();
-      const r = tryRun(name, run);
+      const r = await tryRun(name, run);
       if (r === 'ok') return true;
       if (r === 'changed') break; // 바뀌었는데 목표가 아니다 — 선택 대체는 더 안 쓴다
     }
 
     // B. 비었음을 확인한 뒤에만 넣는다
-    if (!done() && clear(true)) {
+    if (!done() && await clear(true)) {
       for (const [name, selects, run] of strategies) {
         if (!selects) continue;
         if (!isEmpty()) break; // 비어 있지 않으면 넣지 않는다 — 조각/쌓임의 유일한 입구다
         selectAll();
-        if (tryRun(`비운뒤-${name}`, run) === 'ok') return true;
+        if (await tryRun(`비운뒤-${name}`, run) === 'ok') return true;
       }
     }
 
     // C. 통째로 대입
     if (!done()) {
       const domStrategy = strategies.find(([, selects]) => !selects);
-      if (domStrategy && tryRun(domStrategy[0], domStrategy[2]) === 'ok') return true;
+      if (domStrategy && await tryRun(domStrategy[0], domStrategy[2]) === 'ok') return true;
     }
 
     // 실패 — 입력창을 원래대로 되돌린다. 조각이 남으면 다음 시도가 그 위에서 시작해
@@ -1359,15 +1391,19 @@
     let restored = true;
     if (current() !== original) {
       restored = false;
-      if (clear(true)) {
+      if (await clear(true)) {
+        const beforeRestore = current();
         selectAll();
         try { document.execCommand('insertText', false, original); } catch (_) { /* 아래 확인 */ }
+        await settle(beforeRestore);
       }
       if (current() !== original) {
+        const beforeDom = current();
         try {
           editor.textContent = original;
           editor.dispatchEvent(new Event('input', { bubbles: true }));
         } catch (_) { /* 아래 확인 */ }
+        await settle(beforeDom);
       }
       restored = current() === original;
     }
@@ -2097,7 +2133,7 @@
         // 뜬다. 쓰고 난 뒤에 재면 우리가 넣은 글자가 기준선에 섞여, 사용자가 프롬프트에
         // 파일명을 적은 경우를 "첨부가 이미 붙었다" 로 오인한다.
         const composerBaseline = composerHaystack(latestCfg);
-        if (!setEditorText(latestCfg, finalText)) {
+        if (!(await setEditorText(latestCfg, finalText))) {
           promptApproved = false;
           clearPendingAttachment();
           showBlockedBadge('⚠️ 입력창에 마스킹된 내용을 넣지 못해 전송을 멈췄습니다. 원문이 그대로 나가지 않도록 막았습니다.');
@@ -2161,7 +2197,7 @@
       } else {
         const finalText = decision.action === 'masked' && decision.maskedText ? decision.maskedText : text;
         // 마스킹 결정인데 넣지 못했으면 입력창엔 원문이 남아 있다 — 보내면 안 된다.
-        if (!setEditorText(latestCfg, finalText) && decision.action === 'masked') {
+        if (!(await setEditorText(latestCfg, finalText)) && decision.action === 'masked') {
           promptApproved = false;
           showBlockedBadge('⚠️ 입력창에 마스킹된 내용을 넣지 못해 전송을 멈췄습니다. 원문이 그대로 나가지 않도록 막았습니다.');
           console.error('[SecureDoc] 마스킹본을 입력창에 넣지 못해 전송을 중단했습니다 — 원문 유출을 막기 위함입니다.');
