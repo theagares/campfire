@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 from app import config
 from app.core import model_status
 from app.core.detectors import registry
+from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_OK, STATUS_TIMEOUT, parse_document
@@ -79,6 +80,24 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
         seen.add(key)
         out.append(it)
     return out
+
+
+async def _detect_pii(text: str, chunks: list[dict]) -> list[Detection]:
+    """PII 탐지 = 모델 탐지 + 자격증명 정규식.
+
+    자격증명(API 키/토큰/개인키/비밀번호)은 개인정보가 아니라서 PII 모델의 라벨
+    체계에 없다. 그런데 이 게이트웨이를 통과한 텍스트는 그대로 외부 AI 서비스로
+    나간다 — 실측(2026-09-06)에서 AWS 키·GitHub 토큰·RSA 개인키가 piiItems 0건으로
+    통과했다.
+
+    _detect_all 안이 아니라 여기에 두는 이유: _detect_all 은 인젝션 탐지도 함께
+    쓰는 공용 경로라, 거기 넣으면 인젝션 패스에서도 같은 자격증명이 한 번 더 잡힌다.
+
+    자격증명 탐지는 청크를 타지 않고 원문 전체를 한 번에 본다. PEM 블록처럼 여러
+    줄에 걸친 항목이 청크 경계에서 잘리면 안 되기 때문이다.
+    """
+    model_items = await _detect_all(registry.get_pii_detector(), text, chunks)
+    return _dedupe(list(model_items) + credentials.detect(text))
 
 
 def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[dict]:
@@ -249,7 +268,7 @@ async def run_pipeline(
     # ── Step 2~3: 청크 + PII 탐지 ─────────────────────────────────────────────
     chunks = _split_chunks(text, config.CHUNK_SIZE)
     await emit({"type": "step", "step": 2, "label": f"PII 탐지 중 (총 {len(chunks)}개 청크)..."})
-    pii_items = await _detect_all(registry.get_pii_detector(), text, chunks)
+    pii_items = await _detect_pii(text, chunks)
     await emit({"type": "step", "step": 2, "label": f"PII 탐지 완료 ({len(pii_items)}개)", "done": True})
 
     # ── user_prompt 자체도 PII 스캔(문서와 함께 보류됐다가 같이 넘어온 경우) ───
@@ -259,7 +278,7 @@ async def run_pipeline(
     user_prompt_pii_items: list[Detection] = []
     if user_prompt:
         prompt_chunks = _split_chunks(user_prompt, config.CHUNK_SIZE)
-        user_prompt_pii_items = await _detect_all(registry.get_pii_detector(), user_prompt, prompt_chunks)
+        user_prompt_pii_items = await _detect_pii(user_prompt, prompt_chunks)
         user_prompt_masked = masker.apply_masking(user_prompt, list(user_prompt_pii_items))["masked_text"]
 
     # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────

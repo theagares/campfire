@@ -26,6 +26,7 @@ TYPE_LABELS: dict[str, str] = {
     "DATE_OF_BIRTH": "생년월일",
     "ORGANIZATION": "기관명",
     "BANK_ACCOUNT": "계좌번호",
+    "CREDENTIAL": "자격증명",
     "OTHER_PII": "개인정보",
 }
 
