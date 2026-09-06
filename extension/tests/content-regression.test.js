@@ -12,7 +12,7 @@
  *      프롬프트를 함께 넘기는 kind:'combined' START_SCAN 이 발생한다.
  *  (7) 검토 패널은 SW 에 OPEN_PANEL 을 보내 브라우저 네이티브 사이드패널로 열고,
  *      페이지 DOM 은 건드리지 않는다(iframe 주입도, 본문 밀어내기도 없음).
- *  (8) 그 OPEN_PANEL 이 거부되면(제스처 전파 실패 등) iframe 오버레이로 폴백한다.
+ *  (8) 그 OPEN_PANEL 이 거부되면(제스처 전파 실패 등) 검사를 시작하지 않고 전송을 멈춘다.
  *
  * 실행: node tests/content-regression.test.js  (exit 0 = 통과)
  */
@@ -651,17 +651,23 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     throw new Error('가짜 resize 를 쐈다 — 무한 재귀로 탭이 멎었던 코드가 되살아났다');
   }
 
-  // (8) 그 OPEN_PANEL 이 거부되면 iframe 오버레이로 폴백해야 한다.
+  // (8) 그 OPEN_PANEL 이 거부되면 검사를 시작하지 말고 전송을 멈춰야 한다.
   //
-  // sidePanel.open() 은 사용자 제스처에 대한 응답으로만 허용되는데, 그 제스처가
-  // content → SW 메시징을 타고 전파되는 건 Chromium 구현에 달려 있다(issue 355266358).
-  // 전파가 깨지는 경로(예: 제스처가 아닌 postMessage 로 시작되는 흐름)에서 패널이 아예
-  // 안 뜨면 검토 없이 원본이 나가버리므로, 사이트를 덮더라도 오버레이로라도 띄운다.
+  // 예전엔 iframe 오버레이로 폴백했다. 사이트 위에 뜨는 팝업이라 네이티브 패널과
+  // 동시에 뜨거나 사이트 레이아웃을 덮었고, 확장 프레임이라 진단도 어려웠다 —
+  // 검토 UI 를 네이티브 사이드패널 하나로 통일하면서 걷어냈다.
+  //
+  // 폴백이 없어진 지금 지켜야 할 것은 두 가지다:
+  //   - 검토 없이 원본이 그냥 나가면 안 된다(이벤트는 여전히 막혀 있어야 한다)
+  //   - 결정해 줄 화면도 없이 검사만 시작하면 안 된다 — 그러면 아무도 결정을
+  //     내려줄 수 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다(#135 와
+  //     같은 종류의 침묵이다).
   await new Promise(r => setTimeout(r, 3200)); // 테스트 6이 세운 promptApproved 해제 대기
 
   failNextOpenPanel = true;
   appendedToRoot.length = 0;
-  promptEditorStub.value = '폴백 확인용 프롬프트';
+  const beforeOpenFail = runtimeMessages.length;
+  promptEditorStub.value = '패널 열기 실패 확인용 프롬프트';
   documentStub.activeElement = promptEditorStub;
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -670,23 +676,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  const overlayHost = injectedOverlays()[0];
-  if (!overlayHost) {
-    throw new Error('OPEN_PANEL 이 거부됐는데 iframe 오버레이 폴백이 뜨지 않았다 — 검토 없이 원본이 나간다');
+  if (injectedOverlays().length !== 0) {
+    throw new Error('iframe 오버레이 폴백이 되살아났다 — 검토 UI 는 네이티브 사이드패널 하나로 통일했다');
   }
-  const overlayFrame = overlayHost.children.find(c => c.tagName === 'IFRAME');
-  if (!overlayFrame || !String(overlayFrame.src).endsWith('sidepanel/sidepanel.html')) {
-    throw new Error('폴백 오버레이가 검토 패널을 로드하지 않는다');
-  }
-
-  // 폴백 오버레이는 자기 iframe 의 contentWindow 에서 온 UPS_CLOSE_OVERLAY 로만 닫힌다
-  // (네이티브 패널은 자기 window.close() 로 닫으므로 이 경로를 타지 않는다).
-  for (const l of windowListeners.get('message') || []) {
-    l({ source: overlayFrame.contentWindow, data: { type: 'UPS_CLOSE_OVERLAY' } });
-  }
-  await flush();
-  if (!overlayHost.removed) {
-    throw new Error('UPS_CLOSE_OVERLAY 를 받고도 폴백 오버레이가 페이지에 남아있다');
+  if (runtimeMessages.slice(beforeOpenFail).some(m => m.type === 'START_SCAN')) {
+    throw new Error('패널을 못 열었는데 검사를 시작했다 — 결정해 줄 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 막힌다');
   }
 
   // (9) 검사가 진행 중일 때 들어온 전송 시도는 사이트로 새어나가면 안 된다.
@@ -702,10 +696,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
   await new Promise(r => setTimeout(r, 7000));
   const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
-  });
-  await flush();
+  if (stuckScan) {
+    decisionListener?.({
+      type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
+    });
+    await flush();
+  }
 
   promptEditorStub.value = '주민번호 900101-1234567 포함된 프롬프트';
   documentStub.activeElement = promptEditorStub;

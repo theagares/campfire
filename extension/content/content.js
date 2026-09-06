@@ -640,76 +640,43 @@
   // 부른다(제스처는 sendMessage 를 타고 전파되지만 await 를 하나라도 끼우면
   // 소실된다 — service-worker.js 의 OPEN_PANEL 핸들러 주석 참고).
   //
-  // 그 전파가 깨지는 경로(예: 제스처가 아닌 postMessage 로 시작된 흐름)에 대비해
-  // open() 이 거부되면 예전 iframe 오버레이로 폴백한다 — 사이트를 덮긴 하지만
-  // 검토 없이 원본이 나가는 것보다는 낫다. 폴백 때문에 manifest 의
-  // web_accessible_resources 에 sidepanel/* 노출은 그대로 남겨둔다.
+  // open() 이 거부되면(제스처가 아닌 흐름 등) 검토를 시작하지 않고 전송을 중단한다.
+  // 예전엔 iframe 오버레이로 폴백했지만 걷어냈다 — 사이트 위에 뜨는 팝업이라
+  // 사이드패널과 동시에 뜨거나 사이트 레이아웃을 덮었고, 확장 프레임이라 진단도
+  // 어려웠다. 검토 UI 는 네이티브 사이드패널 하나로 통일한다.
+  //
+  // 폴백이 없어졌으므로 "패널을 못 열었다" 를 호출부가 반드시 봐야 한다. 그냥
+  // 흘려보내면 검토 없이 원본이 나가고, 조용히 기다리면 HITL 타임아웃까지
+  // 그 탭의 전송이 막힌다(#135 와 같은 종류의 침묵). openSidePanel() 이 성공
+  // 여부를 돌려주고, 실패하면 아무것도 보내지 않고 배지로 알린다.
   // ══════════════════════════════════════════════════════════════════════════
-  let overlayRoot = null;
-  let overlayIframe = null;
-
-  /** 폴백 전용 — 네이티브 패널을 열지 못했을 때만 쓰는 페이지 내 iframe 오버레이.
-   *
-   *  네이티브 패널과 달리 뷰포트를 줄이지 못해 사이트 오른쪽을 덮는다. 그걸 CSS 로
-   *  보정하려던 코드(밀어내기)는 전부 걷어냈다 — 위 섹션 주석대로 원리적으로 안 되고,
-   *  대신 사이트 레이아웃만 두 번 망가뜨렸기 때문. */
-  function openOverlayPanel() {
-    if (overlayIframe) return; // 이미 열려 있으면 그대로 재사용
-    try {
-      overlayRoot = document.createElement('div');
-      overlayRoot.id = '__ups_overlay_host';
-      overlayRoot.style.cssText = [
-        'all: initial', 'position: fixed', 'top: 0', 'right: 0',
-        'width: 560px', 'max-width: 92vw', 'height: 100vh',
-        'z-index: 2147483647', 'box-shadow: -4px 0 24px rgba(0,0,0,.18)',
-        'background: #fff',
-      ].join(' !important; ') + ' !important;';
-
-      overlayIframe = document.createElement('iframe');
-      overlayIframe.src = chrome.runtime.getURL('sidepanel/sidepanel.html');
-      overlayIframe.title = 'Campfire 문서 검토';
-      overlayIframe.style.cssText = 'width: 100% !important; height: 100% !important; border: 0 !important; display: block !important;';
-
-      overlayRoot.appendChild(overlayIframe);
-      (document.documentElement || document.body).appendChild(overlayRoot);
-    } catch (_) { /* context invalidated */ }
-  }
-
-  function closeOverlayPanel() {
-    try { overlayRoot?.remove(); } catch (_) { /* ignore */ }
-    overlayRoot = null;
-    overlayIframe = null;
-  }
 
   /** 반드시 사용자 제스처 핸들러 안에서, await 없이 동기적으로 호출해야 한다.
-   *  여기서 sendMessage 를 거는 시점의 제스처가 SW 의 open() 까지 전파된다. */
+   *  여기서 sendMessage 를 거는 시점의 제스처가 SW 의 open() 까지 전파된다.
+   *
+   *  돌려주는 Promise 는 "패널이 실제로 열렸는가" 다. false 면 검토할 화면이
+   *  없다는 뜻이므로 호출부는 검사를 시작하지 말고 전송을 중단해야 한다. */
   function openSidePanel() {
-    if (overlayIframe) return; // 폴백 오버레이가 떠 있으면 그걸 계속 쓴다
-    try {
-      chrome.runtime.sendMessage({ type: 'OPEN_PANEL' }, (res) => {
-        // lastError 를 읽지 않으면 "Unchecked runtime.lastError" 로 콘솔이 시끄럽다.
-        if (chrome.runtime.lastError || !res?.ok) openOverlayPanel();
-      });
-    } catch (_) {
-      openOverlayPanel(); // context invalidated — 오버레이도 실패하면 조용히 포기
-    }
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'OPEN_PANEL' }, (res) => {
+          // lastError 를 읽지 않으면 "Unchecked runtime.lastError" 로 콘솔이 시끄럽다.
+          void chrome.runtime.lastError;
+          resolve(!!res?.ok);
+        });
+      } catch (_) {
+        resolve(false); // context invalidated
+      }
+    });
   }
 
   /** 정상 흐름에서 패널은 자기가 스스로 닫는다(sidepanel.js 의 window.close()).
    *  여기는 content 쪽 사정으로 닫아야 할 때만 쓴다. */
   function closeSidePanel() {
-    if (overlayIframe) { closeOverlayPanel(); return; }
     try {
       chrome.runtime.sendMessage({ type: 'CLOSE_PANEL' }, () => { void chrome.runtime.lastError; });
     } catch (_) { /* ignore */ }
   }
-
-  // 폴백 오버레이(iframe) 자신이 결정 완료 후 닫아달라고 보내는 postMessage 수신.
-  // 네이티브 패널은 자기 window.close() 로 닫히므로 이 경로를 타지 않는다.
-  window.addEventListener('message', (event) => {
-    if (!overlayIframe || event.source !== overlayIframe.contentWindow) return;
-    if (event.data?.type === 'UPS_CLOSE_OVERLAY') closeOverlayPanel();
-  });
 
   // ══════════════════════════════════════════════════════════════════════════
   // 문서 첨부 보류(pending) — 인젝션 탐지 재설계
@@ -878,8 +845,12 @@
   async function reviewFileViaPanel(file) {
     if (!isSupportedFile(file) || contentProcessingFiles.has(file) || contentOwnedFiles.has(file)) return null;
     contentProcessingFiles.add(file);
-    openSidePanel(); // 제스처 시점에 먼저 연다
+    const panelOpening = openSidePanel(); // 제스처 시점에 먼저 연다
     try {
+      if (!(await panelOpening)) {
+        showBlockedBadge('⚠️ 검토 패널을 열지 못해 첨부를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
+        return null;
+      }
       const base64Data = await fileToBase64(file);
       return await startPanelSession('file', {
         base64Data,
@@ -2065,10 +2036,17 @@
 
     const staged = pendingAttachment; // 보류 중인 첨부가 있으면 결합 검사(combined)
     hidePendingBadge();
-    openSidePanel(); // 제스처 시점에 먼저 연다
+    const panelOpening = openSidePanel(); // 제스처 시점에 먼저 연다
 
     let decision = null;
     try {
+      // 패널을 못 열었으면 검사를 시작조차 하지 않는다. 시작해 버리면 결정해 줄
+      // 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다.
+      if (!(await panelOpening)) {
+        if (staged) clearPendingAttachment();
+        showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+        return;
+      }
       decision = staged
         ? await startPanelSession('combined', {
             text,
@@ -2262,7 +2240,11 @@
       const { inputId, base64Data, mimeType, fileName, fileSize } = event.data.payload;
       if (!protectionEnabled) { sendResultToMain({ inputId, action: 'passthrough' }); return; }
 
-      openSidePanel();
+      if (!(await openSidePanel())) {
+        showBlockedBadge('⚠️ 검토 패널을 열지 못해 업로드를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
+        sendResultToMain({ inputId, action: 'cancel' });
+        return;
+      }
       const decision = await startPanelSession('file', { base64Data, mimeType, fileName, fileSize });
       if (decision?.action === 'upload' && decision.maskedBase64) {
         sendResultToMain({
@@ -2281,7 +2263,11 @@
       const { promptId, text } = event.data.payload;
       if (!protectionEnabled) { sendPromptResultToMain({ promptId, action: 'passthrough' }); return; }
 
-      openSidePanel();
+      if (!(await openSidePanel())) {
+        showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+        sendPromptResultToMain({ promptId, action: 'cancel' });
+        return;
+      }
       const decision = await startPanelSession('prompt', { text });
       if (decision?.action === 'masked' && decision.maskedText) {
         sendPromptResultToMain({ promptId, action: 'masked', maskedText: decision.maskedText });
