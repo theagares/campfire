@@ -288,8 +288,20 @@
   async function injectOneByOne(kind, targets, fire, watcher) {
     let sent = false;
     for (const target of targets) {
+      // 사이트가 preventDefault() 를 부르면 dispatchEvent 가 false 를 준다 = 그 리스너가
+      // 이 파일을 **받아갔다**. 첨부 칩이 그려지기를 기다릴 것 없이 여기서 멈춰야 한다.
+      //
+      // 2026-09-06 실사용(perplexity) 재현: 칩이 뜨기까지 1380ms 가 걸리는데 후보 간
+      // 대기는 200ms(PER_TARGET_EVIDENCE_MS) 뿐이라, 첫 발이 처리되는 중에 다음 후보로
+      // 계속 쐈다. 결과는 첨부 칩 2개 — 같은 문서가 두 번 올라가 사이트가 SYNC_ERROR 를
+      // 내며 문서를 아예 열지 못했다(마스킹은 정상이었는데 문서가 안 읽혔다).
+      //
+      // 후보 목록을 줄이는 방식(조상은 bubbling 으로 이미 받았으니 건너뛰기)은 쓰지
+      // 않는다 — Gemini 의 xap-uploader-dropzone 처럼 **조상에 직접 쏴야** 먹는 사이트가
+      // 있다(테스트 28). 걸러내는 기준은 "이미 받아갔는가" 여야 한다.
+      let consumed = false;
       try {
-        fire(target);
+        consumed = fire(target) === false;
         sent = true;
       } catch (e) {
         // 사이트 리스너 안에서 난 예외는 우리 흐름을 끊지 않는다(this.drop is not a
@@ -297,9 +309,11 @@
         console.warn(`[SecureDoc] 파일 재주입 폴백(${kind}) 대상 하나 실패:`, e?.message || e);
         continue;
       }
-      if (!watcher) continue;
-      const res = await watcher.settle(PER_TARGET_EVIDENCE_MS);
-      if (res.ok) return true; // 먹혔다 — 더 쏘지 않는다
+      if (watcher) {
+        const res = await watcher.settle(PER_TARGET_EVIDENCE_MS);
+        if (res.ok) return true; // 먹혔다 — 더 쏘지 않는다
+      }
+      if (consumed) return true; // 사이트가 받아갔다 — 더 쏘면 같은 파일이 두 번 붙는다
     }
     return sent;
   }
@@ -321,7 +335,9 @@
       };
       target.dispatchEvent(new DragEvent('dragenter', init));
       target.dispatchEvent(new DragEvent('dragover', init));
-      target.dispatchEvent(new DragEvent('drop', init));
+      // drop 의 반환값만 본다 — 앞의 둘은 드래그 상태를 세우는 예비 동작이라
+      // 취소돼도 "파일을 받아갔다" 는 뜻이 아니다.
+      return target.dispatchEvent(new DragEvent('drop', init));
     }, watcher);
   }
 
@@ -334,12 +350,13 @@
   function injectFileByPaste(finalFile, preferredTarget, watcher) {
     const targets = dropTargets(preferredTarget);
     if (!targets.length) return false;
-    return injectOneByOne('paste', targets, (target) => {
+    return injectOneByOne('paste', targets, (target) => (
+      // 반환값이 곧 "사이트가 preventDefault 했는가" 다(injectOneByOne 주석 참고).
       target.dispatchEvent(new ClipboardEvent('paste', {
         bubbles: true, cancelable: true, composed: true,
         clipboardData: makeFileTransfer(finalFile),
-      }));
-    }, watcher);
+      }))
+    ), watcher);
   }
 
   /** 사이트가 DOM 에서 떼어낸 파일 input 을 원래 자리에 되돌려 놓는다.
