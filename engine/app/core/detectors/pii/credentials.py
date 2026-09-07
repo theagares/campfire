@@ -73,15 +73,28 @@ _KEY_VALUE = re.compile(
     # AWS_SECRET_ACCESS_KEY 가 안 걸린다 — '_' 가 단어문자라 AWS_ 와 SECRET 사이에
     # 단어 경계가 없기 때문이다(실측 미탐).
     (?: ^ | [^\w.-] )
-    [\w.-]*
+    # 식별자 앞뒤 꼬리에 상한을 둔다. {0,64} 가 아니라 * 였을 때, 단어문자가 끊기지
+    # 않고 이어지는 긴 런(예: "token" 반복 40KB)에서 키워드 매치마다 뒤쪽 런을 다시
+    # 훑어 **2.9초**가 걸렸다(실측). 식별자가 64자를 넘는 경우는 없다.
+    [\w.-]{0,64}
     (?: password | passwd | passphrase
       | secret | api[_-]?key | access[_-]?key
       | auth[_-]?token | token | bearer
       | credential )
-    [\w.-]*
-    \s* [:=] \s*
+    [\w.-]{0,64}
+    # 키를 따옴표로 감싼 형태(JSON/plist)의 닫는 따옴표. 이게 없으면 {"api_key": "..."}
+    # 가 통째로 미탐이었다 — '"' 는 단어문자도 공백도 아니라 다음 \s*[:=] 에서 깨졌다.
+    # MCP 파일 도구가 읽는 자격증명 파일은 대부분 JSON 이라 이 구멍이 제일 컸다.
     ['"]?
-    (?P<value> [^\s'"]{6,} )
+    \s* [:=] \s*
+    (?:
+        # 따옴표로 연 값은 닫는 따옴표까지가 값이다. 공백에서 끊으면
+        # db_password = "correct horse battery" 의 뒷부분이 그대로 남는다.
+        (?P<q> ['"] ) (?P<qvalue> [^'"\n]{6,} ) (?P=q)
+      # 따옴표가 없거나(bare) 열고 닫히지 않은 경우의 폴백. 값에 따옴표를 넣지 않는 건
+      # 가린 뒤에도 원래 형태를 알아볼 수 있게 하기 위해서다.
+      | ['"]? (?P<value> [^\s'"]{6,} )
+    )
     """,
     re.MULTILINE,
 )
@@ -89,7 +102,10 @@ _KEY_VALUE = re.compile(
 # 값처럼 보이지만 비밀이 아닌 것들. 예제/자리표시자를 가리면 문서만 읽기 어려워진다.
 _PLACEHOLDER = re.compile(
     r"""(?ix) ^(?:
-        (?: your | my | the | some | any )[\w-]* |
+        # 구분자를 요구한다. [\w-]* 였을 때는 접두 매칭이라 mysecret123 /
+        # theRealKey99 / someRandomTokenValue 같은 **진짜 값**이 자리표시자로 버려졌다
+        # (실측 미탐). your_api_key·YOUR-TOKEN 처럼 실제 자리표시자는 늘 구분자를 낀다.
+        (?: your | my | the | some | any )[_-][\w-]* |
         x{3,} | \*{3,} | \.{3,} |
         <[^>]*> | \{\{?[^}]*\}?\} | \$\{[^}]*\} |
         change[_-]?me | replace[_-]?me | example\w* | dummy\w* | sample\w* |
@@ -132,11 +148,13 @@ def detect(text: str) -> list[Detection]:
             _add(out, text, m.start(), m.end(), seen)
 
     for m in _KEY_VALUE.finditer(text):
-        value = m.group("value")
+        # 따옴표로 열린 값은 qvalue, 그 외는 value 로 잡힌다(_KEY_VALUE 참고).
+        group = "qvalue" if m.group("qvalue") is not None else "value"
+        value = m.group(group)
         if _PLACEHOLDER.match(value):
             continue
         # 이미 통째로 잡힌 토큰의 값 부분이면 건너뛴다 — 같은 비밀을 두 번 세지 않는다.
-        vs, ve = m.span("value")
+        vs, ve = m.span(group)
         if any(s <= vs and ve <= e for s, e in seen):
             continue
         _add(out, text, vs, ve, seen)

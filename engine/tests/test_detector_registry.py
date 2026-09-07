@@ -90,6 +90,27 @@ def test_core_pipeline_passes_through_when_models_not_ready(monkeypatch):
     assert result["maskedText"] == text
 
 
+def test_credentials_are_still_masked_when_models_not_ready(monkeypatch):
+    """"모델이 없으면 검사하지 않는다" 는 **모델이 필요한 탐지**에 대한 규칙이다.
+
+    자격증명 탐지는 정규식이라 가중치가 없어도 돈다. 그런데 미검사 통과 분기가
+    _detect_pii 앞에 있어서 통째로 건너뛰었다 — 설치 직후 다운로드 중인 그 창에서
+    secure_read_file(".env") 이 원문 그대로, 심지어 decision:"clean" 으로 나갔다.
+    모델 대기 창은 설치 직후라 가장 길고, 위험도 그때가 가장 높다.
+    """
+    from app.core.pipeline import orchestrator
+    from app.core.pipeline.orchestrator import run_pipeline
+
+    monkeypatch.setattr(orchestrator.model_status, "all_ready", lambda: False)
+
+    text = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    result = asyncio.run(run_pipeline(text=text, file_name=".env"))
+    assert result["scanStatus"] == "models_not_ready"      # 상태는 그대로 알린다
+    assert result["stats"]["piiCount"] >= 1, "자격증명을 못 잡았다"
+    assert "wJalrXUtnFEMI" not in result["maskedText"], "키가 그대로 나간다"
+    assert result["maskedText"].startswith("AWS_SECRET_ACCESS_KEY="), "키 이름은 남아야 한다"
+
+
 @pytest.mark.skipif(not model_status.all_ready(), reason="PII/인젝션 모델이 로컬에 없음")
 def test_core_pipeline_full_scan_when_models_ready():
     """PLAN §5: 코어·어댑터·익스텐션 무변경 — registry 가 반환하는 detector 만

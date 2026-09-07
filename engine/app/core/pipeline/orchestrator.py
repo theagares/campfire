@@ -246,17 +246,23 @@ async def run_pipeline(
     # 가중치가 아직 안 받아진 상태로 detect() 를 부르면 서브프로세스가 로딩에 실패해
     # 예외로 죽는다. 파싱은 이미 끝났으니(원문은 그대로 확보) 탐지만 생략하고 위와
     # 같은 미검사 통과 경로로 넘긴다 — "모델이 없으면 조용히 룰베이스로 격하"가 아니라
-    # "모델이 없으면 아예 검사하지 않는다"는 게 이번 변경의 핵심이다.
+    # "모델이 없으면 모델 탐지를 하지 않는다"는 게 이번 변경의 핵심이다.
     if not model_status.all_ready():
         await emit({
             "type": "warning",
             "scanStatus": MODELS_NOT_READY,
             "reason": "PII/인젝션 모델이 아직 준비되지 않았습니다",
         })
+        # 다만 자격증명은 여기서도 잡는다. credentials.detect 는 가중치가 필요 없는
+        # 정규식이라(모듈 docstring) 모델 상태와 무관하게 돈다. 오히려 이 창(설치
+        # 직후 다운로드 중)이 제일 위험하다 — 여기서 건너뛰면 secure_read_file(".env")
+        # 이 원문 그대로 decision:"clean" 으로 나간다(#147 이 막으려던 그 누출).
+        # "모델이 없으면 검사하지 않는다" 는 원칙은 **모델이 필요한 탐지**에 대한 것이다.
+        cred_items = credentials.detect(text)
         return _build_result(
             original_text=text,
-            masked_text=text,
-            pii_items=[],
+            masked_text=masker.apply_masking(text, list(cred_items))["masked_text"],
+            pii_items=cred_items,
             injection_items=[],
             scan_status=MODELS_NOT_READY,
             reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",

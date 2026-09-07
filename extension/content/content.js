@@ -299,21 +299,41 @@
       // 후보 목록을 줄이는 방식(조상은 bubbling 으로 이미 받았으니 건너뛰기)은 쓰지
       // 않는다 — Gemini 의 xap-uploader-dropzone 처럼 **조상에 직접 쏴야** 먹는 사이트가
       // 있다(테스트 28). 걸러내는 기준은 "이미 받아갔는가" 여야 한다.
+      //
+      // ★ dispatchEvent 의 반환값만 보면 안 된다. 이벤트를 bubbles:true 로 쏘므로
+      //   반환값은 **전파 경로 전체**의 preventDefault 를 반영한다. 챗 UI 는 거의 예외
+      //   없이 "브라우저가 드롭한 파일을 열지 않도록" document/window 에 전역 drop
+      //   가드를 걸어두는데, 그것 하나만 있어도 첫 후보에서 false 가 나온다 →
+      //   여기서 멈춰버려 조상에 **직접** 쏴야 먹는 사이트(Gemini 의
+      //   xap-uploader-dropzone, 테스트 28)를 영영 못 쏜다. 위 주석이 "쓰지 않는다"고
+      //   못박은 바로 그 조상 건너뛰기가 반환값을 통해 되살아나 있었다.
+      //
+      //   그래서 대상 자신에 리스너를 **마지막으로** 걸고 defaultPrevented 를 본다.
+      //   대상 단계까지 취소됐는지만 보므로, 그 뒤(버블 단계)에 도는 전역 가드는
+      //   섞이지 않는다.
       let consumed = false;
+      const probe = (e) => { consumed = e.defaultPrevented; };
+      target.addEventListener(kind, probe);
       try {
-        consumed = fire(target) === false;
+        fire(target);
         sent = true;
       } catch (e) {
         // 사이트 리스너 안에서 난 예외는 우리 흐름을 끊지 않는다(this.drop is not a
         // function 같은 것). 다음 후보로 계속 간다.
         console.warn(`[SecureDoc] 파일 재주입 폴백(${kind}) 대상 하나 실패:`, e?.message || e);
         continue;
+      } finally {
+        target.removeEventListener(kind, probe);
       }
       if (watcher) {
         const res = await watcher.settle(PER_TARGET_EVIDENCE_MS);
         if (res.ok) return true; // 먹혔다 — 더 쏘지 않는다
       }
-      if (consumed) return true; // 사이트가 받아갔다 — 더 쏘면 같은 파일이 두 번 붙는다
+      // ponytail: 사이트 핸들러가 **조상에 위임**돼 있고 칩이 PER_TARGET_EVIDENCE_MS
+      // 보다 늦게 뜨면, 대상 단계에서는 취소가 안 보여 다음 후보(그 조상)까지 쏘게 된다
+      // — 그 경우 중복이 남는다. 실측으로 잡히면 PER_TARGET_EVIDENCE_MS 를 올리거나
+      // 워처 증거만으로 판정하도록 바꾼다.
+      if (consumed) return true; // 이 대상이 받아갔다 — 더 쏘면 같은 파일이 두 번 붙는다
     }
     return sent;
   }

@@ -106,9 +106,13 @@ def test_mcp_tools(server, tmp_path):
     assert gs["policy"]["injection"] in ("mask", "block")
 
 
-def test_mcp_scan_file(server, tmp_path):
+def test_mcp_scan_file(server, tmp_path, monkeypatch):
+    from app.adapters.mcp import tools
     from app.core import model_status
 
+    # 파일 도구는 작업 루트 밖을 거부한다(_resolve). 루트를 tmp_path 로 옮기지 않으면
+    # 도구가 예외로 끝나 structuredContent 가 None 이 된다.
+    monkeypatch.setattr(tools, "_PROJECT_ROOT", tmp_path.resolve())
     f = tmp_path / "sample.txt"
     f.write_text("연락처 010-1234-5678 / 이메일 a@b.com", encoding="utf-8")
 

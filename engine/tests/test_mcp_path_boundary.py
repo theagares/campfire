@@ -11,7 +11,10 @@
     사용자도 "걸러진 값" 으로 취급한다 — 실제로는 PII 만 가리므로, 예컨대 .env 나
     개인키를 읽히면 자격증명이 그대로 나간다(별건으로 추적).
 
-    경계는 _resolve() 한 곳에서만 지키면 된다. 다섯 도구가 모두 그리로 들어온다.
+    경계는 _resolve() 에서 지킨다 — 다섯 도구가 모두 인자를 그리로 넣는다. 다만
+    _resolve 가 지키는 건 **인자로 받은 경로 하나**뿐이고, rglob 이 돌려주는 항목은
+    그 검사를 거치지 않았다(후속 리뷰). 루트 안의 링크가 밖을 가리키면 열거·열람이
+    그대로 됐다 — 그쪽은 _iter_root_files 가 막고, 아래 마지막 두 테스트가 지킨다.
 """
 
 from __future__ import annotations
@@ -84,9 +87,47 @@ def test_symlink_escaping_root_is_rejected(rooted, tmp_path_factory):
     """링크는 .resolve() 로 풀린 뒤 판정돼야 한다 — 루트 안에 두고 밖을 가리켜도 거부."""
     outside_dir = tmp_path_factory.mktemp("linked")
     link = rooted / "escape"
-    try:
-        link.symlink_to(outside_dir, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("이 환경에서는 심볼릭 링크를 만들 수 없다(Windows 권한 등)")
+    _link_dir_or_skip(link, outside_dir)
     with pytest.raises(tools.PathOutsideRootError):
         tools._resolve(str(link / "secret.txt"))
+
+
+# ── 후속 리뷰: rglob 결과도 경계를 지킨다 ────────────────────────────────────
+def _link_dir_or_skip(link: Path, target: Path) -> None:
+    """link 가 루트 밖의 target 디렉터리를 가리키게 만든다.
+
+    Windows 에서 symlink 는 권한이 필요해 늘 skip 되는데, **정션(mklink /J)은 권한
+    없이 만들어진다** — 즉 이 우회로가 실제로 열려 있는 플랫폼에서 테스트만 건너뛰게
+    된다. 그래서 symlink 가 막히면 정션으로 한 번 더 시도한다.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        import subprocess
+        if subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                          capture_output=True).returncode == 0:
+            return
+    pytest.skip("이 환경에서는 링크를 만들 수 없다")
+
+
+def test_search_does_not_follow_link_out_of_root(rooted, tmp_path_factory):
+    """루트 **안**의 링크가 밖을 가리키면 열거·열람 대상이 되어선 안 된다.
+
+    _resolve 는 root 인자만 검사한다. rglob 결과를 그대로 read_text 에 넘기면
+    `ln -s ~/.aws ./notes` 한 줄로 경계가 무의미해진다.
+    """
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "credentials").write_text("aws_secret_access_key = LEAKEDVALUE123", encoding="utf-8")
+    _link_dir_or_skip(rooted / "escape", outside)
+
+    found = [p.name for p in tools._iter_root_files(rooted, "*")]
+    assert "credentials" not in found, "루트 밖을 가리키는 링크 안의 파일이 열거됐다"
+
+
+def test_ordinary_files_still_enumerated(rooted):
+    """경계 검사를 넣었다고 멀쩡한 파일까지 사라지면 안 된다."""
+    found = [p.name for p in tools._iter_root_files(rooted, "*")]
+    assert "doc.txt" in found

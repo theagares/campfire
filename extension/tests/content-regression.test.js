@@ -32,6 +32,9 @@ function addListener(map, type, listener) {
 
 class EventTargetStub {
   addEventListener() {}
+  // injectOneByOne 은 "이 대상이 받아갔는가" 를 보려고 대상에 프로브 리스너를 걸었다
+  // 뗀다. 실제 EventTarget 에는 늘 있는 메서드라 스텁에도 있어야 한다.
+  removeEventListener() {}
   dispatchEvent() { return true; }
   closest() { return null; }
   contains() { return false; }

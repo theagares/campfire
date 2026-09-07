@@ -20,7 +20,7 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mcp.server.fastmcp import FastMCP
 
@@ -53,7 +53,7 @@ class PathOutsideRootError(PermissionError):
 
 
 def _within_root(p: Path) -> bool:
-    """p 가 _PROJECT_ROOT 안(또는 루트 자신)인가.
+    r"""p 가 _PROJECT_ROOT 안(또는 루트 자신)인가.
 
     문자열 비교로 하는 이유: Path.is_relative_to 는 대소문자를 구분하는데 Windows
     경로는 구분하지 않는다. normcase 로 맞춰야 C:\Work 와 c:\work 를 같게 본다.
@@ -89,6 +89,23 @@ def _resolve(path_str: str) -> Path:
             "다른 위치를 열어야 하면 SECUREDOC_PROJECT_ROOT 로 작업 루트를 지정하세요."
         )
     return p
+
+
+def _iter_root_files(root_path: Path, pattern: str) -> Iterator[Path]:
+    """루트 안의 **실제** 파일만 내놓는다.
+
+    _resolve 는 인자로 받은 경로 하나만 지킨다. rglob 이 돌려주는 항목은 그 검사를
+    거치지 않으므로, 루트 안에 밖을 가리키는 심볼릭 링크(`ln -s ~/.aws/credentials
+    ./notes.txt`)가 있으면 열거되고 그대로 읽혔다 — 경계는 세워뒀는데 우회로가
+    열려 있었다. 세 도구(secure_list_files / secure_search_files / scan_files)가
+    모두 rglob 을 돌리므로 여기 한 곳에서 막는다.
+    """
+    for path in sorted(root_path.rglob(pattern)):
+        if not path.is_file():
+            continue
+        if not _within_root(path.resolve()):
+            continue   # 루트 안의 링크가 밖을 가리킨다
+        yield path
 
 
 def _file_kind(path: Path) -> str:
@@ -260,11 +277,9 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
 
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(items) >= max_results:
             break
-        if not path.is_file():
-            continue
         if _file_kind(path) == "binary":
             skipped.append({"path": str(path), "reason": "unsupported-binary"})
             continue
@@ -371,11 +386,10 @@ async def secure_list_files(root: str = ".", pattern: str = "*", max_results: in
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
 
     files: list[dict[str, Any]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(files) >= max_results:
             break
-        if path.is_file():
-            files.append({"path": str(path), "name": path.name, "kind": _file_kind(path)})
+        files.append({"path": str(path), "name": path.name, "kind": _file_kind(path)})
     return {"root": str(root_path), "count": len(files), "files": files}
 
 
@@ -393,10 +407,10 @@ async def secure_search_files(
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
 
     results: list[dict[str, Any]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(results) >= max_results:
             break
-        if not path.is_file() or _file_kind(path) != "text":
+        if _file_kind(path) != "text":
             continue
         try:
             text = path.read_text(encoding="utf-8")

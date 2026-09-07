@@ -15,6 +15,12 @@ const TYPE_LABELS = {
   PERSON_NAME: '이름', EMAIL: '이메일', PHONE: '전화번호', ADDRESS: '주소',
   ID_NUMBER: '신분증번호', CREDIT_CARD: '카드번호', DATE_OF_BIRTH: '생년월일',
   ORGANIZATION: '조직기밀', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
+  // 자격증명은 개인정보가 아니라서 PII 모델 라벨에 없고, 엔진이 정규식으로 잡는다
+  // (engine/app/core/detectors/pii/credentials.py). 여기 빠져 있으면 labelOf 폴백이
+  // 걸려 검토 패널에 raw 'CREDENTIAL' 이 뜬다 — 마스킹 해제 여부를 판단하는 바로
+  // 그 화면이다. utils/masker.js 의 LABELS 와 같은 값을 쓴다(그쪽은 ESM 이라
+  // classic script 인 이 파일에서 그대로 가져다 쓸 수 없다).
+  CREDENTIAL: '자격증명',
   INSTRUCTION_OVERRIDE: '명령 재정의', ROLE_MANIPULATION: '역할 조작',
   SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',
   HIDDEN_COMMAND: '숨겨진 명령', DATA_EXFILTRATION: '데이터 유출 시도',

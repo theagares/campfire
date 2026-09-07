@@ -195,6 +195,9 @@ def test_mcp_search_does_not_flood_activity(monkeypatch, tmp_path):
     from app.adapters.mcp import tools
 
     monkeypatch.setattr(tools, "run_pipeline", _fake_pipeline())
+    # 파일 도구는 작업 루트 밖을 거부한다(_resolve). tmp_path 를 루트로 삼지 않으면
+    # PathOutsideRootError 로 죽어서 이 테스트가 검증하려는 지점까지 가지도 못한다.
+    monkeypatch.setattr(tools, "_PROJECT_ROOT", tmp_path.resolve())
     target = tmp_path / "hits.txt"
     target.write_text("\n".join(f"needle {i}" for i in range(20)), encoding="utf-8")
 
