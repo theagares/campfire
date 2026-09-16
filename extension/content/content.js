@@ -125,11 +125,23 @@
     sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
   });
 
+  // 엔진이 파싱할 수 있는 포맷과 **같아야 한다** (engine config.py SUPPORTED_EXTENSIONS).
+  // 여기 없으면 가로채지 않고, 가로채지 않으면 검사 자체가 일어나지 않는다 — 예전엔
+  // pdf/docx 만 있어서 xlsx·pptx·hwp·hwpx 가 엔진 지원 포맷인데도 그대로 올라갔다.
+  // content.js 와 interceptor.js 에 같은 목록이 있다(MAIN/isolated world 라 공유 불가).
   const SUPPORTED_TYPES = new Set([
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.oasis.opendocument.presentation',
+    'message/rfc822',
+    'text/html',
   ]);
-  const SUPPORTED_EXTS = /\.(pdf|docx)$/i;
+  const SUPPORTED_EXTS =
+    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
   const contentOwnedFiles = new WeakSet();
   const contentProcessingFiles = new WeakSet();
   let promptInProcess = false;

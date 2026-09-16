@@ -258,5 +258,16 @@ AUDIT_LOG_PATH: Path = STORE_DIR / "audit.log"
 # 런타임에 동적으로 unsupported 로 떨어질 수 있다(§9.2, §11) — 그래도 "시도는
 # 하는" 포맷이므로 여기서는 지원 목록에 둔다.
 # XLS/PPT(구버전 바이너리)는 이번 범위 밖이라 UNSUPPORTED 로 유지.
-SUPPORTED_EXTENSIONS: set[str] = {".txt", ".pdf", ".docx", ".hwp", ".hwpx", ".xlsx", ".pptx"}
+#
+# 추가분(의존성 없이 표준 라이브러리만): OpenDocument(odt/ods/odp), 메일(eml/mht),
+# HTML, 그리고 평문 계열(csv/tsv/md/json/xml/log). 평문 계열은 예전에도 _looks_textual
+# 폴백으로 통과하긴 했지만 목록에 없으면 **확장 프로그램이 가로채질 않아** 검사 자체가
+# 일어나지 않았다 — 이 집합은 엔진 능력이자 확장의 가로채기 목록이다.
+SUPPORTED_EXTENSIONS: set[str] = {
+    ".txt", ".pdf", ".docx", ".hwp", ".hwpx", ".xlsx", ".pptx",
+    ".odt", ".ods", ".odp",
+    ".eml", ".mht", ".mhtml",
+    ".html", ".htm",
+    ".csv", ".tsv", ".md", ".json", ".xml", ".log",
+}
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
