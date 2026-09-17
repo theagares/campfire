@@ -26,9 +26,9 @@ function render(info) {
   const isLocal = info?.target === 'local';
   const ok = !!info?.ok;
 
-  targetEl.textContent = info?.target === 'local' ? '로컬 (앱 엔진)'
-    : info?.target === 'remote' ? '원격 (AWS 폴백)'
-    : '알 수 없음';
+  // 로컬 엔진이 없으면 검사 없이 전송하지 않는다(원격 폴백 제거 — service-worker.js
+  // discoverServer 주석 참고). 그래서 표시는 '로컬' 아니면 '연결 안 됨' 둘뿐이다.
+  targetEl.textContent = isLocal ? '로컬 (앱 엔진)' : '연결 안 됨';
   portEl.textContent = isLocal && info?.port ? String(info.port) : '해당 없음';
 
   pill.classList.remove('ok', 'off');

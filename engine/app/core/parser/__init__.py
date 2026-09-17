@@ -62,6 +62,23 @@ def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[s
         return "", STATUS_UNSUPPORTED, unsupported_reason(ext)
 
     try:
+        # HTML 은 text/* 라 아래 txt 분기보다 **먼저** 잡아야 한다. txt 로 흘리면
+        # 탐지기가 태그와 script 안의 토큰을 본문으로 본다(html.py 주석 참고).
+        if ext in (".html", ".htm") or mime_type in ("text/html", "application/xhtml+xml"):
+            from .html import extract_html
+
+            return extract_html(file_bytes), STATUS_OK, None
+
+        if ext in (".eml", ".mht", ".mhtml") or mime_type == "message/rfc822":
+            from .eml import extract_eml
+
+            return extract_eml(file_bytes), STATUS_OK, None
+
+        if ext in (".odt", ".ods", ".odp") or "opendocument" in mime_type:
+            from .odf import extract_odf
+
+            return extract_odf(file_bytes), STATUS_OK, None
+
         if ext == ".txt" or mime_type.startswith("text/"):
             from .txt import extract_txt
 

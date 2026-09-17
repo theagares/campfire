@@ -42,6 +42,20 @@ async def _fail(job_id: str, exc: Exception) -> None:
     raise HTTPException(status_code=500, detail=f"파이프라인 처리 중 오류: {exc}") from exc
 
 
+def _record(job_id: str, *, file_name: str, source: str, result: dict) -> None:
+    """탐지 통계 기록. **실패해도 응답을 깨지 않는다.**
+
+    호출 시점이 이미 emit({"type":"done"}) 뒤라, 여기서 예외가 나면 SSE 구독자는
+    done+결과를 받아 마스킹을 진행하는데 같은 요청의 HTTP 는 500 으로 끝난다 —
+    두 경로가 서로 다른 결론을 갖는다. 기록은 통계용이고 마스킹 결과와 무관하므로
+    디스크가 가득 차거나 항목 모양이 예상과 달라도 사용자 흐름을 막을 이유가 없다.
+    """
+    try:
+        db.record_job(job_id, file_name=file_name, source=source, result=result)
+    except Exception:  # noqa: BLE001 - 기록 실패로 마스킹 결과를 버리지 않는다
+        logger.exception("job 기록 실패 (job=%s) — 응답은 그대로 진행", job_id)
+
+
 @router.post("/jobs/prompt")
 async def create_prompt_job(text: str = Form(...)):
     if len(text) > config.MAX_PROMPT_CHARS:
@@ -58,7 +72,7 @@ async def create_prompt_job(text: str = Form(...)):
         await _fail(job_id, exc)
     await emit({"type": "done", "result": _public(result)})
 
-    db.record_job(job_id, file_name="prompt.txt", source="prompt", result=result)
+    _record(job_id, file_name="prompt.txt", source="prompt", result=result)
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 
@@ -103,7 +117,7 @@ async def create_job(
         await _fail(job_id, exc)
     await emit({"type": "done", "result": _public(result)})
 
-    db.record_job(job_id, file_name=name, source="extension", result=result)
+    _record(job_id, file_name=name, source="extension", result=result)
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 
