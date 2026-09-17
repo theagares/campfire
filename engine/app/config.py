@@ -227,8 +227,6 @@ PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", s
 PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
-RULES_DIR: Path = APP_DIR / "rules"
-
 # store 는 "사용자 기기에 쌓이는 것" 이므로 모델 가중치와 같은 자리에 둔다 —
 # 앱 번들 안이 아니다.
 #

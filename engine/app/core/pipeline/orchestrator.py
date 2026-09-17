@@ -305,7 +305,7 @@ async def run_pipeline(
 
     masked_file = None
     if wrap_file and not blocked:
-        wrapped = docwrapper.wrap_masked_file(masked_text, file_name, fmt="docx")
+        wrapped = docwrapper.wrap_masked_file(masked_text, file_name)
         masked_file = {
             "base64": base64.b64encode(wrapped["bytes"]).decode("ascii"),
             "mimeType": wrapped["mime_type"],
