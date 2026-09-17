@@ -17,7 +17,7 @@
 
 import { wrapMaskedFile } from '../utils/docwrapper.js';
 import {
-  REMOTE_URL, LOCAL_HOST, BASE_PORT, PORT_SCAN_COUNT,
+  LOCAL_HOST, BASE_PORT, PORT_SCAN_COUNT,
   HEALTH_TIMEOUT_MS, isOurEngine, CACHE_KEY,
 } from './config.js';
 
@@ -55,19 +55,30 @@ async function probePort(port) {
   }
 }
 
-/** 10개 포트 병렬 스캔 → 시그니처 일치하는 가장 낮은 포트 채택. 없으면 원격 폴백. */
+/**
+ * 10개 포트 병렬 스캔 → 시그니처 일치하는 가장 낮은 포트 채택. 없으면 **실패**한다.
+ *
+ * 예전엔 전부 실패하면 원격(AWS)으로 폴백했다. 그런데 이 경로로 나가는 것은 사용자의
+ * 프롬프트 전문과 **첨부 파일 바이트 전체**이고, 원격 호출엔 인증도 없다(config.js 의
+ * "원격 인증 토큰은 하드코딩하지 않는다" 주석 참고). 즉 데스크탑 앱이 꺼져 있기만 하면
+ * 로컬 우선 게이트웨이가 조용히 제3자 업로더로 바뀌었다 — 검토 패널에는 아무 표시도
+ * 없었고, popup 을 열어야만 '원격 (AWS 폴백)' 한 줄이 보였다.
+ *
+ * 마스킹을 못 하는 상황에서 원문을 어디로든 보내는 것보다 **막고 알리는 쪽**이 맞다.
+ */
 async function discoverServer() {
   const ports = Array.from({ length: PORT_SCAN_COUNT }, (_, i) => BASE_PORT + i);
   const results = await Promise.all(ports.map(probePort));
   const hits = results.filter(Boolean).sort((a, b) => a.port - b.port);
-
-  let server;
-  if (hits.length > 0) {
-    const { port, health } = hits[0];
-    server = { target: 'local', baseUrl: `http://${LOCAL_HOST}:${port}`, port, health };
-  } else {
-    server = { target: 'remote', baseUrl: REMOTE_URL, port: null, health: null };
+  if (hits.length === 0) {
+    await chrome.storage.session.remove(CACHE_KEY);
+    throw new Error(
+      '로컬 엔진을 찾을 수 없습니다. Campfire 앱이 실행 중인지 확인하세요. '
+      + '(검사 없이 전송하지 않습니다)',
+    );
   }
+  const { port, health } = hits[0];
+  const server = { target: 'local', baseUrl: `http://${LOCAL_HOST}:${port}`, port, health };
   await chrome.storage.session.set({ [CACHE_KEY]: server });
   return server;
 }
@@ -76,7 +87,8 @@ async function discoverServer() {
 async function getServer(forceRescan = false) {
   if (!forceRescan) {
     const cached = (await chrome.storage.session.get(CACHE_KEY))[CACHE_KEY];
-    if (cached && cached.baseUrl) return cached;
+    // 로컬만 받는다 — 원격 폴백을 쓰던 시절의 캐시가 세션에 남아 있을 수 있다.
+    if (cached && cached.target === 'local' && cached.baseUrl) return cached;
   }
   return discoverServer();
 }
@@ -86,7 +98,14 @@ async function getServer(forceRescan = false) {
  * (PLAN §3: "요청 실패 시에만 재스캔", 주기 폴링 없음)
  */
 async function fetchServer(path, options = {}, _retried = false) {
-  const server = await getServer();
+  let server;
+  try {
+    server = await getServer();
+  } catch (err) {
+    // 로컬 엔진 없음 — 원격으로 우회하지 않고 여기서 끝낸다(discoverServer 주석).
+    setActionBadge('!', BADGE_ERROR);
+    throw err;
+  }
   const headers = new Headers(options.headers || {});
   // 원격 인증: v1 계획엔 사양 없음. 토큰을 소스에 하드코딩하지 않는다(config.js 주석 참고).
   // 향후 필요 시 여기서 런타임 설정/빌드 주입 값으로 Authorization 헤더를 채운다.

@@ -213,16 +213,6 @@ function register(ctx) {
     return true;
   });
 
-  ipcMain.handle('window:showDashboard', () => {
-    if (typeof onShowDashboard === 'function') onShowDashboard();
-    return true;
-  });
-
-  ipcMain.handle('app:quit', () => {
-    if (typeof onQuit === 'function') onQuit();
-    return true;
-  });
-
   ipcMain.handle('external:open', (_e, url) => {
     // http/https 만 허용 (안전)
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {

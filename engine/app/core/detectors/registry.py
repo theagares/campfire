@@ -18,44 +18,30 @@ from .base import Detector
 from .injection import llm_mcp as injection_llm_mcp
 from .pii import encoder as pii_encoder
 
-# 이름 → builder.
-_PII_BUILDERS = {
-    "encoder": pii_encoder.build,
-}
-_INJECTION_BUILDERS = {
-    "llm_mcp": injection_llm_mcp.build,
-}
-
+# 이름→빌더 조회표는 없앴다. 룰베이스 폴백이 사라진 뒤로 종류별 구현이 하나씩뿐이라,
+# dict 도 _build() 의 이름 검증도 존재하지 않는 대안을 위한 장치였다. 종류가 늘면
+# 그때 되살리면 된다.
 _pii_detector: Detector | None = None
 _injection_detector: Detector | None = None
 
 
-def _build(kind: str, name: str) -> Detector:
-    builders = _PII_BUILDERS if kind == "pii" else _INJECTION_BUILDERS
-    if name not in builders:
-        available = ", ".join(sorted(builders))
-        raise ValueError(f"알 수 없는 {kind} detector: '{name}' (사용 가능: {available})")
-    return builders[name]()
-
-
 def load_detectors() -> None:
     """lifespan 기동 시 1회 호출."""
-    global _pii_detector, _injection_detector
-    _pii_detector = _build("pii", config.PII_DETECTOR)
-    _injection_detector = _build("injection", config.INJECTION_DETECTOR)
+    get_pii_detector()
+    get_injection_detector()
 
 
 def get_pii_detector() -> Detector:
     global _pii_detector
     if _pii_detector is None:
-        _pii_detector = _build("pii", config.PII_DETECTOR)
+        _pii_detector = pii_encoder.build()
     return _pii_detector
 
 
 def get_injection_detector() -> Detector:
     global _injection_detector
     if _injection_detector is None:
-        _injection_detector = _build("injection", config.INJECTION_DETECTOR)
+        _injection_detector = injection_llm_mcp.build()
     return _injection_detector
 
 

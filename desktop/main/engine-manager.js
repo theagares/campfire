@@ -122,6 +122,11 @@ class EngineManager extends EventEmitter {
       // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
       // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).
       SECUREDOC_UPSTAGE_API_KEY: this.config.get('upstageApiKey') || '',
+      // MCP 파일 도구(secure_read_file 등)의 작업 루트. 비워 두면 엔진이 홈 디렉터리를
+      // 기본값으로 쓴다 — cwd 를 쓰면 안 된다. 아래 cwd 주석대로 우리는 cwd 를 사용자
+      // 데이터 폴더로 옮겼고, 엔진이 그걸 경계로 삼으면 사용자 파일을 하나도 못 읽는다
+      // (실측: 설치본에서 파일 도구 5개가 전부 불능이었다).
+      SECUREDOC_PROJECT_ROOT: this.config.get('mcpProjectRoot') || '',
       PYTHONUNBUFFERED: '1',
       PYTHONUTF8: '1',
       // ── 앱 번들에 아무것도 쓰지 않게 한다 (macOS 에서 앱을 못 쓰게 만들던 원인) ──

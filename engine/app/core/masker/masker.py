@@ -1,7 +1,6 @@
 """
 app/core/masker/masker.py
 탐지 위치 정보를 받아 텍스트를 마스킹한다.
-파이프라인/extension/utils/masker.js 를 파이썬으로 이식:
   - validate_and_fix : 위치 검증·보정(off-by-one, ±5자 탐색, 전체 검색 복구)
   - merge_overlapping: 겹침 병합 (겹치면 더 높은 confidence 유형을 대표로)
   - apply_masking    : 뒤에서부터 치환(앞쪽 인덱스 보존)

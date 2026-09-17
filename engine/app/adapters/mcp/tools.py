@@ -44,7 +44,22 @@ _TEXT_EXTS = {
 }
 _DOCUMENT_EXTS = set(config.SUPPORTED_EXTENSIONS) | set(config.UNSUPPORTED_EXTENSIONS)
 
-_PROJECT_ROOT = Path(os.environ.get("SECUREDOC_PROJECT_ROOT", os.getcwd())).resolve()
+# 파일 도구가 접근할 수 있는 작업 루트.
+#
+# 예전 기본값은 os.getcwd() 였는데, 그러면 **엔진을 어디서 띄웠는지가 곧 보안 경계**가
+# 된다. 데스크탑은 번들 교체 중 CWD 가 사라져 죽는 문제 때문에 cwd 를 사용자 데이터
+# 폴더로 옮겼고(engine-manager.js: "엔진은 경로를 전부 __file__ 기준 절대경로로 잡으므로
+# cwd 에 의존하지 않는다"), 여기만 그 전제를 깨고 있었다. 결과적으로 설치본에서는 루트가
+# %LOCALAPPDATA%\Campfire 로 잡혀 **사용자 파일을 하나도 못 읽었다** — 통과하는 건 앱
+# 자기 store 뿐이었고, secure_read_file 을 포함한 파일 도구 5개가 전부 불능이었다.
+#
+# 그래서 cwd 의존을 끊고 홈 디렉터리를 기본 경계로 둔다. 사용자 문서가 있는 곳이면서
+# C:\Windows·Program Files·다른 계정은 여전히 밖이다. 좁히거나 넓히려면
+# SECUREDOC_PROJECT_ROOT 로 지정한다(데스크탑 설정 → MCP 작업 폴더).
+#
+# get(key, default) 가 아니라 `or` 인 이유: 데스크탑이 미설정 값을 빈 문자열로 넘기므로
+# get 은 기본값 대신 '' 를 돌려주고, 그러면 루트가 다시 CWD 로 되돌아간다.
+_PROJECT_ROOT = Path(os.environ.get("SECUREDOC_PROJECT_ROOT") or Path.home()).resolve()
 
 
 # ── 공통 헬퍼 ────────────────────────────────────────────────────────────────

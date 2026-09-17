@@ -125,11 +125,23 @@
     sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
   });
 
+  // 엔진이 파싱할 수 있는 포맷과 **같아야 한다** (engine config.py SUPPORTED_EXTENSIONS).
+  // 여기 없으면 가로채지 않고, 가로채지 않으면 검사 자체가 일어나지 않는다 — 예전엔
+  // pdf/docx 만 있어서 xlsx·pptx·hwp·hwpx 가 엔진 지원 포맷인데도 그대로 올라갔다.
+  // content.js 와 interceptor.js 에 같은 목록이 있다(MAIN/isolated world 라 공유 불가).
   const SUPPORTED_TYPES = new Set([
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.oasis.opendocument.presentation',
+    'message/rfc822',
+    'text/html',
   ]);
-  const SUPPORTED_EXTS = /\.(pdf|docx)$/i;
+  const SUPPORTED_EXTS =
+    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
   const contentOwnedFiles = new WeakSet();
   const contentProcessingFiles = new WeakSet();
   let promptInProcess = false;
@@ -2097,7 +2109,13 @@
     try {
       if (staged) {
         // combined 응답 형태: {action:'send', maskedText, file:{action:'upload'|'passthrough'|'cancel', ...}}
-        const finalText = decision.maskedText || text;
+        //
+        // `decision.maskedText || text` 로 쓰면 안 된다. 패널은 항상 maskedText 를 채워
+        // 보내지만(sidepanel.js btnSend: buildFinalTextFrom(promptSegments)), 프롬프트가
+        // 비면 그 값이 '' 가 되고 `||` 는 거기서 **원문으로 되돌아간다**. 마스킹본이
+        // 비었다는 이유로 원문을 전송하는 건 게이트웨이가 하면 안 되는 방향의 폴백이다.
+        // 같은 파일의 단독 프롬프트 경로는 이미 action 을 명시적으로 확인한다.
+        const finalText = typeof decision.maskedText === 'string' ? decision.maskedText : text;
         // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
         // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
         // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
