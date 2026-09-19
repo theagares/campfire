@@ -310,18 +310,63 @@ function ensureHydrated() {
   return hydrating;
 }
 
+// 상태 쓰기는 한 줄로 세운다.
+//
+// storage.session.set 은 비동기다. 검사 중에는 파일마다 결과가 들어오면서 저장이
+// 연달아 나가는데, 스냅샷을 만드는 시점과 실제로 쓰이는 시점이 어긋나면 **늦게
+// 시작한 쓰기가 먼저 끝나** 옛 상태가 최신 draft 를 덮어쓸 수 있다. 사용자가 방금
+// 해제한 항목이 소리 없이 되돌아가는 모양이다.
+//
+// 그래서 스냅샷 생성부터 set 완료까지를 하나의 체인 안에서 차례로 돌린다.
+let _stateWriteChain = Promise.resolve();
+
+function _snapshot() {
+  return {
+    [SESSION_STATE_KEY]: {
+      sessions: Object.fromEntries(sessions),
+      activeSessionId,
+      sessionSeq,
+    },
+  };
+}
+
 /** 메모리 상태를 storage 에 덮어쓴다. 실패해도 흐름을 막지 않는다 —
- *  저장이 안 되면 예전처럼 메모리로만 동작할 뿐이다. */
+ *  저장이 안 되면 예전처럼 메모리로만 동작할 뿐이다.
+ *  쿼터 초과처럼 "저장이 됐는지" 가 중요한 자리에서는 persistSessionsOrThrow() 를 쓴다. */
 function persistSessions() {
-  try {
-    chrome.storage.session.set({
-      [SESSION_STATE_KEY]: {
-        sessions: Object.fromEntries(sessions),
-        activeSessionId,
-        sessionSeq,
-      },
-    })?.catch?.(() => {});
-  } catch (_) { /* ignore */ }
+  persistSessionsOrThrow().catch(() => {});
+}
+
+function persistSessionsOrThrow() {
+  _stateWriteChain = _stateWriteChain
+    .catch(() => {})
+    .then(() => chrome.storage.session.set(_snapshot()));
+  return _stateWriteChain;
+}
+
+// ── 세션 저장 용량 ──────────────────────────────────────────────────────────
+//
+// chrome.storage.session 의 약 10MB 는 **확장 전체** 한도다. 파일 5개 × 20만 자라는
+// 계산은 배치 하나에만 해당하고, 서로 다른 탭의 검토 세션은 합산된다. 그래서 배치를
+// 시작할 때 최악 크기를 미리 잡아 두고, 잡힌 총량이 soft limit 을 넘으면 검사 전에
+// 거절한다 — 검사를 다 돌린 뒤 저장에서 터지면 그 시간이 통째로 버려진다.
+const SESSION_QUOTA_SOFT_BYTES = 8 * 1024 * 1024;
+// 파일당 최악 추출 텍스트(엔진 MAX_TEXT_CHARS 20만 자) × UTF-16 보관 추정.
+const PER_FILE_WORST_BYTES = 200000 * 2;
+const _reservedBytes = new Map();   // sessionId -> bytes
+
+const reservedTotal = () => [..._reservedBytes.values()].reduce((a, b) => a + b, 0);
+
+/** 배치가 쓸 최악 용량을 예약한다. 넘으면 false — 호출자는 검사를 시작하지 않는다. */
+function reserveQuota(sessionId, fileCount) {
+  const want = Math.max(1, fileCount) * PER_FILE_WORST_BYTES;
+  if (reservedTotal() + want > SESSION_QUOTA_SOFT_BYTES) return false;
+  _reservedBytes.set(sessionId, want);
+  return true;
+}
+
+function releaseQuota(sessionId) {
+  _reservedBytes.delete(sessionId);
 }
 
 function pushToPanel(message) {
@@ -432,6 +477,14 @@ function releaseLease(sessionId) {
   grantNextLease();
 }
 
+/** 세션이 끝났다 — 큐·예약·산출물을 한꺼번에 놓는다. 하나라도 빠뜨리면
+ *  다음 배치가 막히거나(예약) 메모리에 산출물이 남는다. */
+function endSession(sessionId) {
+  dropArtifactsOf(sessionId);
+  releaseLease(sessionId);
+  releaseQuota(sessionId);
+}
+
 /** lease 를 쥔 세션이 보낸 메시지인가. 중복·역전·다른 탭·취소된 lease 를 전부 막는다. */
 function leaseOk(message, sender) {
   const h = scanLeaseHolder;
@@ -456,6 +509,22 @@ function bytesToBase64(bytes) {
 
 async function startMultiScan(sessionId, payload, tabId) {
   await ensureHydrated();
+
+  // 예약은 세션을 만들기 전에 잡는다. 만들고 나서 거절하면 패널에 빈 세션이 남는다.
+  if (!reserveQuota(sessionId, (payload.items || []).length)) {
+    pushToPanel({
+      type: 'PANEL_ERROR', sessionId, tabId, seq: ++sessionSeq,
+      error: '검토 중인 다른 탭이 많아 지금은 새 검사를 시작할 수 없습니다. '
+        + '열려 있는 검토를 끝낸 뒤 다시 시도해 주세요.',
+    });
+    if (tabId != null) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CONTENT_BATCH_DECISION', sessionId, decision: { action: 'cancel', reason: 'quota' },
+      }).catch(() => {});
+    }
+    return;
+  }
+
   const session = {
     tabId, kind: 'multi', status: 'queued', progress: [], error: null,
     // 패널이 탭을 즉시 그릴 수 있게 메타를 먼저 채운다. 검사가 끝난 순서로 탭이
@@ -824,6 +893,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 이게 없으면 검토 도중 패널을 닫았다 다시 열었을 때 검사 결과와 탭은 돌아오는데
   // **사용자가 이미 해제한 항목과 파일별 선택만 초기화된다.** 긴 문서에서 수십 개를
   // 하나씩 풀어 둔 사람에게는 그게 곧 처음부터 다시 하라는 뜻이다.
+  // 패널 → content 재시도 중계.
+  //
+  // 엔진을 여기서 바로 부를 수 없다. 파일 바이트는 content 가 들고 있고(base64 는
+  // 검사 직전에만 만든다) SW 에는 텍스트 결과만 남기 때문이다. 그래서 요청만 넘긴다.
+  // 재검사를 위해 lease 를 다시 받는다. 검사 구간은 전역 큐를 거쳐야 하는데
+  // finish 에서 이미 풀었으므로 줄을 다시 서야 한다.
+  if (type === 'RESUME_MULTI_LEASE') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const tabId = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && tabId != null && session.tabId !== tabId)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      scanQueue.push({ sessionId: message.sessionId, tabId: session.tabId });
+      grantNextLease();
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (type === 'RETRY_MULTI_ITEM') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const requester = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && requester != null && session.tabId !== requester)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      const doc = session.docs?.find(d => d.id === message.docId);
+      if (!doc) { sendResponse({ ok: false, reason: 'no-doc' }); return; }
+      doc.status = 'pending';
+      doc.error = null;
+      persistSessions();
+      if (session.tabId != null) {
+        chrome.tabs.sendMessage(session.tabId, {
+          type: 'CONTENT_RETRY_ITEM', sessionId: message.sessionId, docId: message.docId,
+        }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
   if (type === 'PANEL_DRAFT_UPDATE') {
     ensureHydrated().then(() => {
       const session = sessions.get(message.sessionId);
@@ -871,8 +984,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       if (decision?.action === 'cancel') {
-        dropArtifactsOf(sessionId);
-        releaseLease(sessionId);
+        endSession(sessionId);
         if (session.tabId != null) {
           chrome.tabs.sendMessage(session.tabId, {
             type: 'CONTENT_BATCH_DECISION', sessionId, decision: { action: 'cancel' },
@@ -893,6 +1005,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const artifactId = buildArtifact(session, sessionId, file);
         if (!artifactId) {
           // 산출물을 못 만들면 그 파일만 조용히 빼지 않는다 — 배치 전체를 멈춘다.
+          // 예약은 아직 놓지 않는다 — 세션이 살아 있어 사용자가 다시 시도할 수 있다.
           dropArtifactsOf(sessionId);
           sendResponse({ ok: false, reason: 'artifact-failed', id: file.id });
           return;
@@ -948,8 +1061,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (type === 'FINALIZE_MULTI_SESSION') {
     ensureHydrated().then(() => {
-      dropArtifactsOf(message.sessionId);
-      releaseLease(message.sessionId);
+      endSession(message.sessionId);
       const session = sessions.get(message.sessionId);
       if (session) disablePanelForTab(session.tabId);
       sessions.delete(message.sessionId);

@@ -269,6 +269,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   // s2 를 끝내 lease 를 푼다. 안 풀면 다음 배치는 큐에서 계속 기다린다 —
   // 그게 전역 큐가 할 일이지만, 여기서는 다음 블록을 돌려야 하므로 정상 종료시킨다.
   await send({ type: 'FINISH_MULTI_SCAN', sessionId: 's2', leaseId: lease2 });
+  await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 's2' });
   await settle();
 
   // ── 9) 읽지 못한 파일은 대기가 아니라 오류다 ─────────────────────────────
@@ -293,6 +294,12 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   const rdoc = panelOf('PANEL_SCAN_ITEM').slice(-1)[0].doc;
   assert.strictEqual(rdoc.status, 'error', '읽기 실패가 대기 상태로 남았다 — 전송이 영영 안 열린다');
   assert.ok(rdoc.error, '오류 사유가 없어 사용자가 왜 막혔는지 모른다');
+
+  // 세션은 반드시 끝낸다. 전역 큐는 한 번에 한 배치만 돌리므로, 안 끝내면 이후
+  // 모든 배치가 lease 를 못 받는다 — 실제 동작이 그렇고, 테스트도 그 규칙을 따른다.
+  await send({ type: 'FINISH_MULTI_SCAN', sessionId: 's3', leaseId: lease3 });
+  await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 's3' });
+  await settle();
 
   // ── 10) 결정 전 선택은 SW 가 들고 있다가 돌려준다 ────────────────────────
   //     이게 없으면 검토 도중 패널을 닫았다 열었을 때 검사 결과와 탭은 돌아오는데
@@ -331,5 +338,116 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   );
   assert.strictEqual(foreignDraft.ok, false, '다른 탭이 남의 draft 를 덮어썼다');
 
-  console.log('multi-attach.test.js: 10개 블록 통과');
+  await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 's4' });
+  await settle();
+
+  // ── 11) 저장 용량은 탭을 가로질러 합산된다 ──────────────────────────────
+  //     storage.session 의 10MB 는 확장 전체 한도다. 배치 하나만 보고 "5개 × 20만 자면
+  //     충분하다" 고 계산하면, 여러 탭이 동시에 검토 중일 때 저장에서 터진다. 그것도
+  //     검사를 다 돌린 뒤에 터지므로 그 시간이 통째로 버려진다 — 시작 전에 막는다.
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    const five = () => Array.from({ length: 5 }, (_, i) => ({
+      id: `f${i}`, fileName: `q${i}.pdf`, fileSize: 10, mimeType: 'application/pdf', supported: true,
+    }));
+
+    // 8MB soft limit / (20만 자 × 2바이트) = 배치당 5개면 4배치까지만 들어간다.
+    const accepted = [];
+    for (let i = 0; i < 6; i++) {
+      const sid = `q${i}`;
+      await send({ type: 'START_MULTI_SCAN', sessionId: sid, payload: { items: five() } });
+      await settle();
+      if (panelMessages.some(m => m.type === 'PANEL_SCAN_INIT' && m.sessionId === sid)) accepted.push(sid);
+    }
+
+    assert.ok(accepted.length >= 1, '아무 배치도 시작하지 못했다');
+    assert.ok(accepted.length < 6, '용량을 무한정 받아들였다 — 합산 한도가 없다');
+
+    // 거절은 조용하지 않아야 한다. content 가 결정을 기다리다 10분 매달리면 안 된다.
+    const refused = tabMessages.find(
+      m => m.type === 'CONTENT_BATCH_DECISION' && m.decision?.reason === 'quota',
+    );
+    assert.ok(refused, '거절을 content 에 알리지 않았다 — 전송이 타임아웃까지 매달린다');
+
+    // 끝낸 배치는 자리를 돌려준다.
+    const before = accepted.length;
+    for (let i = 0; i < 6; i++) await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: `q${i}` });
+    await settle();
+    panelMessages.length = 0;
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'q-after', payload: { items: five() } });
+    await settle();
+    assert.ok(
+      panelMessages.some(m => m.type === 'PANEL_SCAN_INIT' && m.sessionId === 'q-after'),
+      `끝낸 배치 ${before}개의 예약이 반환되지 않아 새 배치가 막혔다`,
+    );
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'q-after' });
+    await settle();
+  }
+
+  // ── 12) 실패한 파일만 다시 검사한다 ─────────────────────────────────────
+  //     배치 전체를 다시 돌리면 이미 끝난 파일에 해 둔 마스킹 선택이 날아간다.
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    await send({
+      type: 'START_MULTI_SCAN', sessionId: 'r1',
+      payload: {
+        items: [
+          { id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true },
+          { id: 'f1', fileName: 'boom.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true },
+        ],
+      },
+    });
+    await settle();
+    const lr = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'r1', leaseId: lr, text: '요약해줘' });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr,
+      payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+    });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr,
+      payload: { docId: 'f1', readError: '엔진 연결 끊김' },
+    });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'r1', leaseId: lr });
+    await settle();
+
+    // 재시도 요청 → 그 파일만 pending 으로 돌아가고 content 에 중계된다.
+    tabMessages.length = 0;
+    const retried = await send({ type: 'RETRY_MULTI_ITEM', sessionId: 'r1', docId: 'f1' });
+    assert.strictEqual(retried.ok, true, `재시도가 거부됐다: ${JSON.stringify(retried)}`);
+    await settle();
+
+    const relayRetry = tabMessages.find(m => m.type === 'CONTENT_RETRY_ITEM');
+    assert.ok(relayRetry, 'content 로 재시도가 중계되지 않았다 — 파일 바이트는 content 에만 있다');
+    assert.strictEqual(relayRetry.docId, 'f1');
+
+    // 성공한 파일의 결과는 그대로 남아 있어야 한다.
+    const kept = await send({ type: 'GET_PANEL_ITEM_RESULT', sessionId: 'r1', itemId: 'f0' });
+    assert.strictEqual(kept.ok, true, '재시도가 멀쩡한 파일의 결과까지 날렸다');
+    assert.strictEqual(kept.originalText, '김철수 보고서');
+
+    // lease 를 다시 받아 그 파일만 올린다.
+    const resumed = await send({ type: 'RESUME_MULTI_LEASE', sessionId: 'r1' });
+    assert.strictEqual(resumed.ok, true, 'lease 를 다시 받지 못했다 — 재검사가 시작될 수 없다');
+    await settle();
+    const lr2 = tabMessages.filter(m => m.type === 'SCAN_LEASE_GRANTED').slice(-1)[0]?.leaseId;
+    assert.ok(lr2, '재시도용 lease 가 안 왔다');
+
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr2,
+      payload: { docId: 'f1', fileName: 'b.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+    });
+    await settle();
+    const fixed = panelOf('PANEL_SCAN_ITEM').slice(-1)[0].doc;
+    assert.strictEqual(fixed.id, 'f1');
+    assert.strictEqual(fixed.status, 'done', '재검사가 성공했는데 상태가 안 바뀌었다');
+
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'r1', leaseId: lr2 });
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'r1' });
+    await settle();
+  }
+
+  console.log('multi-attach.test.js: 12개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

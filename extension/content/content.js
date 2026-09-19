@@ -950,6 +950,9 @@
   // 어느 시점에도 base64 가 하나뿐이다.
   const pendingLeases = new Map();   // sessionId -> resolve
   const pendingBatchDecisions = new Map();
+  // 재검사에도 같은 프롬프트 문맥을 실어야 한다 — 인젝션 판정이 사용자의 실제 지시를
+  // 근거로 하기 때문이다. 배치가 살아 있는 동안만 유효하다.
+  let lastBatchPrompt = '';
 
   function sendToSW(message) {
     return new Promise((resolve) => {
@@ -970,6 +973,7 @@
   async function runMultiScan(text, batch) {
     const sessionId = newSessionId();
     const items = supportedItems(batch);
+    lastBatchPrompt = text;
 
     const decisionPromise = new Promise((resolve) => {
       const timeout = setTimeout(() => {
@@ -1032,6 +1036,38 @@
     return decisionPromise;
   }
 
+  /** 실패한 파일 하나만 다시 검사한다.
+   *
+   *  배치 전체를 다시 돌리지 않는다 — 이미 끝난 파일을 또 검사하면 사용자가 그 파일에
+   *  해 둔 마스킹 선택이 날아간다. lease 는 이미 풀린 뒤라 다시 받아야 한다. */
+  async function retryBatchItem(sessionId, docId) {
+    const batch = pendingBatch;
+    const item = batch && batch.items.find(i => i.id === docId);
+    if (!item) return;
+
+    const leasePromise = waitForLease(sessionId);
+    const started = await sendToSW({ type: 'RESUME_MULTI_LEASE', sessionId });
+    if (!started?.ok) return;
+    const leaseId = await leasePromise;
+    if (!leaseId) return;
+
+    let base64Data = null;
+    try {
+      base64Data = await fileToBase64(item.file);
+    } catch (_) { base64Data = null; }
+
+    await sendToSW({
+      type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
+      payload: base64Data
+        ? {
+            docId: item.id, base64Data,
+            mimeType: item.mimeType, fileName: item.fileName, userPrompt: lastBatchPrompt,
+          }
+        : { docId: item.id, readError: '파일을 읽지 못했습니다' },
+    });
+    await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
+  }
+
   /** 결정된 파일들을 하나씩 받아 사이트에 넣는다. 성공한 파일은 절대 다시 쏘지 않는다. */
   async function injectBatchDecision(decision, batch) {
     const ctx = batch.injectionContext || {};
@@ -1086,6 +1122,10 @@
     if (message?.type === 'SCAN_LEASE_GRANTED') {
       const grant = pendingLeases.get(message.sessionId);
       if (grant) { pendingLeases.delete(message.sessionId); grant(message.leaseId); }
+      return;
+    }
+    if (message?.type === 'CONTENT_RETRY_ITEM') {
+      retryBatchItem(message.sessionId, message.docId);
       return;
     }
     if (message?.type === 'CONTENT_BATCH_DECISION') {

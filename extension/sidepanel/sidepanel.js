@@ -201,8 +201,12 @@ const ACTION_SETS = {
   error: {
     why: (d) => `검사하지 못했습니다 — ${d.error || '알 수 없는 오류'}`,
     // 검사에 실패한 파일을 원본으로 보내는 선택지는 두지 않는다. 그건 게이트웨이가
-    // 하는 일의 반대다.
-    options: [{ action: 'exclude', label: '이 파일 제거' }],
+    // 하는 일의 반대다. 재시도는 일시적 실패(엔진 연결 끊김, 타임아웃)가 대부분이라
+    // 둔다 — 같은 상한으로 다시 도는 truncated 와 달리 결과가 달라질 수 있다.
+    options: [
+      { action: 'retry', label: '다시 검사' },
+      { action: 'exclude', label: '이 파일 제거' },
+    ],
   },
   unsupported: {
     why: () => '지원하지 않는 형식이라 검사하지 못했습니다',
@@ -242,6 +246,23 @@ function renderDocActions(doc) {
     + (chosen ? `<span class="chosen">선택됨</span>` : '');
 }
 
+/** 실패한 파일 하나만 다시 검사한다. content 가 그 파일의 base64 를 다시 만들어
+ *  보내야 하므로, 패널이 직접 엔진을 부르지 않고 content 에 요청을 중계한다. */
+function retryDoc(docId) {
+  const doc = state.docs.find(d => d.id === docId);
+  if (!doc) return;
+  doc.status = 'pending';
+  doc.error = null;
+  state.loaded.delete(docId);
+  renderTabs();
+  renderDocActions(doc);
+  refreshSummary();
+  chrome.runtime.sendMessage(
+    { type: 'RETRY_MULTI_ITEM', sessionId: state.sessionId, tabId: state.myTabId, docId },
+    () => { void chrome.runtime.lastError; },
+  );
+}
+
 el.docActions.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-doc]');
   if (!btn) return;
@@ -256,6 +277,16 @@ el.docActions.addEventListener('click', (e) => {
     return;
   }
   armedRisky = null;
+
+  // 재시도는 "결정" 이 아니라 동작이다. decisions 에 넣어 두면 그 값이 그대로 전송
+  // 결정으로 나가 엔진이 모르는 action 을 받는다. 여기서 소비하고 상태만 되돌린다.
+  if (action === 'retry') {
+    state.decisions.delete(docId);
+    saveDecisionsDraft();
+    retryDoc(docId);
+    return;
+  }
+
   state.decisions.set(docId, action);
   saveDecisionsDraft();
   renderTabs();
