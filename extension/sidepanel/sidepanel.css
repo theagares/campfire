@@ -216,6 +216,23 @@ body {
   border: 1px solid #eab30855; border-radius: 8px; padding: 8px 12px; margin-top: 4px;
 }
 
+/* ── 파일별 결정 바 ──────────────────────────────────────────────────────── */
+.doc-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  margin: 0 0 10px; padding: 10px 12px; font-size: 12.5px;
+  border: 1px solid var(--border); border-left: 3px solid #8a6a1c;
+  border-radius: 8px; background: var(--card);
+}
+.doc-actions .why { flex: 1 1 100%; color: var(--muted); margin-bottom: 2px; }
+.doc-actions button {
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  background: var(--bg); color: var(--text); cursor: pointer; font: inherit;
+}
+.doc-actions button:hover { border-color: var(--purple); }
+.doc-actions button.risky { color: var(--pii); }
+.doc-actions button[aria-pressed="true"] { border-color: var(--pii); font-weight: 600; }
+.doc-actions .chosen { color: var(--green); font-weight: 600; }
+
 /* ── 다중 첨부 탭 ─────────────────────────────────────────────────────────
    탭 라벨에 탐지 건수를 띄운다 — 어느 파일이 문제인지 열어보지 않고 알 수 있어야 한다. */
 .tabs {

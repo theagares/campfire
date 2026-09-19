@@ -28,7 +28,7 @@ const el = {
   errTitle: $('err-title'), errMsg: $('err-msg'),
   footer: $('footer'), maskSummary: $('mask-summary'),
   btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
-  tabs: $('tabs'),
+  tabs: $('tabs'), docActions: $('doc-actions'),
 };
 
 // 진행 단계 순서(2번째 인젝션 탐지가 3이 아닌 4인 것은 SW 쪽 단계 정의를 따름)
@@ -156,11 +156,81 @@ function pullItem(itemId) {
   });
 }
 
+// ── 파일별 결정 ─────────────────────────────────────────────────────────────
+// 검사하지 못했거나 일부만 검사된 파일은 사용자가 직접 골라야 전송 게이트가 열린다.
+// 고를 수단이 없으면 blockingReason() 이 영영 막아 취소밖에 길이 없다(실측).
+const ACTION_SETS = {
+  error: {
+    why: (d) => `검사하지 못했습니다 — ${d.error || '알 수 없는 오류'}`,
+    // 검사에 실패한 파일을 원본으로 보내는 선택지는 두지 않는다. 그건 게이트웨이가
+    // 하는 일의 반대다.
+    options: [{ action: 'exclude', label: '이 파일 제거' }],
+  },
+  unsupported: {
+    why: () => '지원하지 않는 형식이라 검사하지 못했습니다',
+    options: [
+      { action: 'exclude', label: '이 파일 제거' },
+      { action: 'original', label: '검사 없이 원본 포함', risky: true },
+    ],
+  },
+  truncated: {
+    why: (d) => `길어서 앞 ${(d.scannedChars || 0).toLocaleString()}자만 검사했습니다`
+      + ` (전체 ${(d.originalChars || 0).toLocaleString()}자)`,
+    options: [
+      { action: 'masked', label: '검사된 앞부분만 보내기' },
+      { action: 'exclude', label: '이 파일 제거' },
+      { action: 'original', label: '검사 안 한 원본 전체 보내기', risky: true },
+    ],
+  },
+};
+
+let armedRisky = null;   // 위험한 선택은 두 번 눌러야 확정된다
+
+function renderDocActions(doc) {
+  const set = doc && ACTION_SETS[doc.status];
+  if (!set) { el.docActions.hidden = true; el.docActions.innerHTML = ''; return; }
+  el.docActions.hidden = false;
+
+  const chosen = state.decisions.get(doc.id);
+  const label = (o) => (
+    o.risky && armedRisky === `${doc.id}:${o.action}` ? `${o.label} — 한 번 더` : o.label
+  );
+  el.docActions.innerHTML = `<div class="why">${esc(set.why(doc))}</div>`
+    + set.options.map(o => (
+      `<button data-doc="${esc(doc.id)}" data-action="${esc(o.action)}"`
+      + `${o.risky ? ' class="risky"' : ''}`
+      + ` aria-pressed="${armedRisky === `${doc.id}:${o.action}`}">${esc(label(o))}</button>`
+    )).join('')
+    + (chosen ? `<span class="chosen">선택됨</span>` : '');
+}
+
+el.docActions.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-doc]');
+  if (!btn) return;
+  const { doc: docId, action } = btn.dataset;
+  const key = `${docId}:${action}`;
+
+  // 검사하지 않은 원본을 통째로 내보내는 선택은 두 번 눌러야 한다 — 되돌릴 수 없는
+  // 방향이고, 실수로 한 번 누른 것과 구분되어야 한다.
+  if (btn.classList.contains('risky') && armedRisky !== key) {
+    armedRisky = key;
+    renderDocActions(state.docs.find(d => d.id === docId));
+    return;
+  }
+  armedRisky = null;
+  state.decisions.set(docId, action);
+  renderTabs();
+  renderDocActions(state.docs.find(d => d.id === docId));
+  refreshSummary();
+});
+
 async function showTab(itemId) {
   state.activeTab = itemId;
   renderTabs();
 
   const doc = state.docs.find(d => d.id === itemId);
+  armedRisky = null;
+  renderDocActions(doc);
   if (doc && doc.status !== 'done' && doc.status !== 'truncated') {
     // 아직 결과가 없는 탭 — 상태만 알리고 본문은 비워 둔다. 조용히 빈 화면을
     // 보여주면 "검사했는데 탐지가 없다" 로 읽힌다.
