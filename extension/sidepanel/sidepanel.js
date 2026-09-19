@@ -9,18 +9,14 @@
  *      (SW 가 원본 탭 content.js 로 중계 → interceptor 가 마스킹본 치환·재전송)
  *
  * 평소엔 닫혀 있고 결과가 돌아올 때만 열린다 — 유휴/기본 화면 없음.
+ *
+ * 세그먼트 분할과 최종 문자열 생성은 utils/mask-segments.js 로 옮겼다. 여기서 만든
+ * 미리보기와 실제로 업로드되는 파일이 **다른 코드**로 만들어지면 언제든 갈라지기
+ * 때문이다(다중 첨부에서는 최종본을 SW 가 만든다). 그래서 이 파일은 module 로 돈다
+ * — sidepanel.html 의 script 태그에 type="module" 이 필요하다.
  */
 
-const TYPE_LABELS = {
-  PERSON_NAME: '이름', EMAIL: '이메일', PHONE: '전화번호', ADDRESS: '주소',
-  ID_NUMBER: '신분증번호', CREDIT_CARD: '카드번호', DATE_OF_BIRTH: '생년월일',
-  ORGANIZATION: '조직기밀', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
-  INSTRUCTION_OVERRIDE: '명령 재정의', ROLE_MANIPULATION: '역할 조작',
-  SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',
-  HIDDEN_COMMAND: '숨겨진 명령', DATA_EXFILTRATION: '데이터 유출 시도',
-  OTHER_INJECTION: '프롬프트 인젝션',
-};
-const labelOf = (t) => TYPE_LABELS[t] ?? t;
+import { buildSegments, buildFinalText, labelOf } from '../utils/mask-segments.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -32,6 +28,7 @@ const el = {
   errTitle: $('err-title'), errMsg: $('err-msg'),
   footer: $('footer'), maskSummary: $('mask-summary'),
   btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
+  tabs: $('tabs'),
 };
 
 // 진행 단계 순서(2번째 인젝션 탐지가 3이 아닌 4인 것은 SW 쪽 단계 정의를 따름)
@@ -52,6 +49,16 @@ let state = {
   expanded: new Set(),   // 펼쳐진 그룹의 dtype
   decided: false,
   stale: false,   // 결정이 만료돼 적용되지 못한 상태 — 아래 renderStaleDecision 참고
+
+  // ── 다중 첨부 ──
+  // docs 는 SW 가 보내온 **메타**만 담는다. 본문(originalText/탐지 항목)은 활성 탭을
+  // 그릴 때만 따로 끌어온다 — 브로드캐스트는 열려 있는 모든 확장 페이지에 전역으로
+  // 도달하므로 거기에 원문을 실으면 안 된다.
+  docs: [],
+  promptMeta: null,
+  activeTab: null,      // docId 또는 'prompt'
+  loaded: new Map(),    // itemId -> { originalText, piiItems, injectionItems }
+  decisions: new Map(), // docId -> 'masked'|'original'|'exclude'
 };
 
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
@@ -74,29 +81,6 @@ if (state.myTabId == null) {
   });
 }
 
-// ── 세그먼트 빌드 ────────────────────────────────────────────────────────────
-// idxOffset: combined 모드에서 문서/프롬프트 두 세그먼트 배열의 idx 가 서로 겹치지
-// 않게(체크박스 data-idx 유일성, state.unmasked Set 공유) 시작 번호를 밀어준다.
-function buildSegments(text, piiItems, injectionItems, idxOffset = 0) {
-  const all = [
-    ...(piiItems || []).map(i => ({ ...i, cat: 'pii' })),
-    ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
-  ].sort((a, b) => a.start - b.start);
-
-  const segs = [];
-  let cursor = 0, idx = idxOffset;
-  for (const it of all) {
-    if (it.end <= cursor) continue;
-    const start = Math.max(it.start, cursor);
-    if (start > cursor) segs.push({ type: 'text', text: text.slice(cursor, start) });
-    const original = text.slice(start, it.end);
-    if (original) segs.push({ type: 'item', idx: idx++, cat: it.cat, dtype: it.type, label: labelOf(it.type), original });
-    cursor = it.end;
-  }
-  if (cursor < text.length) segs.push({ type: 'text', text: text.slice(cursor) });
-  return segs;
-}
-
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -108,12 +92,108 @@ const tipFor = (label, masked) => `${label} — ${masked ? '눌러서 마스킹 
 function segmentsToHtml(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
-    const masked = !state.unmasked.has(seg.idx);
+    const masked = !state.unmasked.has(seg.key);
     const cls = seg.cat === 'inj' ? 'inj' : 'pii';
-    return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-idx="${seg.idx}" data-label="${esc(seg.label)}"`
+    return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
       + ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}">${esc(seg.original)}</span>`;
   }).join('');
 }
+
+// ── 다중 첨부: 탭 ───────────────────────────────────────────────────────────
+const STATUS_LABEL = {
+  pending: '대기 중…', scanning: '검사 중…', error: '실패',
+  truncated: '부분 검사', unsupported: '미지원', excluded: '제외됨',
+};
+
+function tabLabel(doc) {
+  if (doc.status === 'done') {
+    const n = (doc.counts?.pii || 0) + (doc.counts?.injection || 0);
+    return `${doc.fileName} · ${n}건`;
+  }
+  return `${doc.fileName} · ${STATUS_LABEL[doc.status] || doc.status}`;
+}
+
+function renderTabs() {
+  if (state.kind !== 'multi') { el.tabs.hidden = true; return; }
+  el.tabs.hidden = false;
+
+  const items = [
+    ...state.docs.map(d => ({ id: d.id, label: tabLabel(d), status: d.status })),
+    { id: 'prompt', label: `프롬프트 · ${promptCountLabel()}`, status: state.promptMeta?.status || 'pending' },
+  ];
+
+  el.tabs.innerHTML = items.map(it => {
+    const on = it.id === state.activeTab;
+    return `<button role="tab" data-item="${esc(it.id)}" class="st-${esc(it.status)}"`
+      + ` aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(it.label)}</button>`;
+  }).join('');
+}
+
+function promptCountLabel() {
+  const p = state.promptMeta;
+  if (!p || p.status === 'pending') return '대기 중…';
+  if (p.status === 'error') return '실패';
+  return `${(p.counts?.pii || 0) + (p.counts?.injection || 0)}건`;
+}
+
+/** 활성 탭의 본문을 SW 에서 끌어온다. 이미 받은 항목은 다시 요청하지 않는다. */
+function pullItem(itemId) {
+  if (state.loaded.has(itemId)) return Promise.resolve(state.loaded.get(itemId));
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      type: 'GET_PANEL_ITEM_RESULT', sessionId: state.sessionId, tabId: state.myTabId, itemId,
+    }, (res) => {
+      void chrome.runtime.lastError;
+      if (!res?.ok) { resolve(null); return; }
+      const item = {
+        originalText: res.originalText || '',
+        piiItems: res.piiItems || [],
+        injectionItems: res.injectionItems || [],
+      };
+      state.loaded.set(itemId, item);
+      resolve(item);
+    });
+  });
+}
+
+async function showTab(itemId) {
+  state.activeTab = itemId;
+  renderTabs();
+
+  const doc = state.docs.find(d => d.id === itemId);
+  if (doc && doc.status !== 'done' && doc.status !== 'truncated') {
+    // 아직 결과가 없는 탭 — 상태만 알리고 본문은 비워 둔다. 조용히 빈 화면을
+    // 보여주면 "검사했는데 탐지가 없다" 로 읽힌다.
+    el.diff.innerHTML = `<div class="empty">${esc(doc.error || STATUS_LABEL[doc.status] || '')}</div>`;
+    el.items.innerHTML = '';
+    refreshSummary();
+    return;
+  }
+
+  const item = await pullItem(itemId);
+  if (state.activeTab !== itemId) return;   // 그 사이 사용자가 다른 탭으로 갔다
+  if (!item) { el.diff.innerHTML = '<div class="empty">결과를 불러오지 못했습니다</div>'; return; }
+
+  state.segments = buildSegments(item.originalText, item.piiItems, item.injectionItems, itemId);
+  renderDiff();
+  renderItems();
+  refreshSummary();
+}
+
+el.tabs.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-item]');
+  if (btn) showTab(btn.dataset.item);
+});
+el.tabs.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const btns = [...el.tabs.querySelectorAll('button[data-item]')];
+  const at = btns.findIndex(b => b.dataset.item === state.activeTab);
+  if (at < 0) return;
+  e.preventDefault();
+  const next = btns[(at + (e.key === 'ArrowRight' ? 1 : btns.length - 1)) % btns.length];
+  next.focus();
+  showTab(next.dataset.item);
+});
 
 function renderDiff() {
   if (state.kind === 'combined') {
@@ -157,7 +237,7 @@ function groupItems() {
 /** 묶지 않고 하나씩 보여줄 항목(= 인젝션). 문서에 나온 순서 그대로. */
 const soloItems = () => allItemSegments().filter(s => s.cat !== 'pii');
 
-const maskedCountOf = (g) => g.segs.filter(s => !state.unmasked.has(s.idx)).length;
+const maskedCountOf = (g) => g.segs.filter(s => !state.unmasked.has(s.key)).length;
 const trunc = (s, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
 
 function renderItems() {
@@ -187,10 +267,10 @@ function renderItems() {
         </div>
         <div class="group-body"${open ? '' : ' hidden'}>
           ${g.segs.map(s => `
-            <div class="item" data-idx="${s.idx}">
+            <div class="item" data-key="${esc(s.key)}">
               <div class="snip">${esc(trunc(s.original))}</div>
               <label class="switch">
-                <input type="checkbox" class="i-toggle" data-idx="${s.idx}" ${state.unmasked.has(s.idx) ? '' : 'checked'}>
+                <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'}>
                 <span class="track"><span class="thumb"></span></span>
               </label>
             </div>`).join('')}
@@ -200,14 +280,14 @@ function renderItems() {
 
   // 인젝션은 접지 않고 한 줄씩 — 유형명과 함께 실제 문구를 바로 보여준다.
   const solosHtml = solos.map(s => `
-    <div class="solo" data-idx="${s.idx}">
+    <div class="solo" data-key="${esc(s.key)}">
       <span class="cat ${s.cat}"></span>
       <div class="s-text">
         <div class="s-label">${esc(s.label)}</div>
         <div class="s-snip">${esc(trunc(s.original, 90))}</div>
       </div>
       <label class="switch">
-        <input type="checkbox" class="i-toggle" data-idx="${s.idx}" ${state.unmasked.has(s.idx) ? '' : 'checked'}>
+        <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'}>
         <span class="track"><span class="thumb"></span></span>
       </label>
     </div>`).join('');
@@ -225,9 +305,9 @@ function groupElOf(dtype) {
   return [...el.items.querySelectorAll('.group')].find(g => g.dataset.type === dtype) || null;
 }
 
-function syncMark(idx) {
-  const masked = !state.unmasked.has(idx);
-  el.diff.querySelectorAll(`.mark[data-idx="${idx}"]`).forEach(m => {
+function syncMark(key) {
+  const masked = !state.unmasked.has(key);
+  el.diff.querySelectorAll(`.mark[data-key="${CSS.escape(key)}"]`).forEach(m => {
     m.classList.toggle('kept', !masked);
     m.setAttribute('aria-pressed', String(masked));
     m.title = tipFor(m.dataset.label || '', masked);
@@ -245,21 +325,21 @@ function syncGroupHead(dtype) {
   box.querySelector('.g-state').textContent = `${masked}/${g.segs.length} 마스킹`;
 }
 
-function syncItemRow(idx) {
-  const cb = el.items.querySelector(`.i-toggle[data-idx="${idx}"]`);
-  if (cb) cb.checked = !state.unmasked.has(idx);
+function syncItemRow(key) {
+  const cb = el.items.querySelector(`.i-toggle[data-key="${CSS.escape(key)}"]`);
+  if (cb) cb.checked = !state.unmasked.has(key);
 }
 
-function groupOfIdx(idx) {
-  return state.groups.find(g => g.segs.some(s => s.idx === idx)) || null;
+function groupOfKey(key) {
+  return state.groups.find(g => g.segs.some(s => s.key === key)) || null;
 }
 
 /** 항목 하나의 마스킹 여부를 바꾸고, 문서·목록·요약을 모두 맞춘다. */
-function setMasked(idx, masked) {
-  if (masked) state.unmasked.delete(idx); else state.unmasked.add(idx);
-  syncMark(idx);
-  syncItemRow(idx);
-  const g = groupOfIdx(idx);
+function setMasked(key, masked) {
+  if (masked) state.unmasked.delete(key); else state.unmasked.add(key);
+  syncMark(key);
+  syncItemRow(key);
+  const g = groupOfKey(key);
   if (g) syncGroupHead(g.dtype);
   refreshSummary();
 }
@@ -269,9 +349,9 @@ function setGroupMasked(dtype, masked) {
   const g = state.groups.find(x => x.dtype === dtype);
   if (!g) return;
   for (const s of g.segs) {
-    if (masked) state.unmasked.delete(s.idx); else state.unmasked.add(s.idx);
-    syncMark(s.idx);
-    syncItemRow(s.idx);
+    if (masked) state.unmasked.delete(s.key); else state.unmasked.add(s.key);
+    syncMark(s.key);
+    syncItemRow(s.key);
   }
   syncGroupHead(dtype);
   refreshSummary();
@@ -297,16 +377,16 @@ function toggleGroupOpen(dtype) {
 el.diff.addEventListener('click', (e) => {
   const mark = e.target.closest('.mark');
   if (!mark) return;
-  const idx = Number(mark.dataset.idx);
-  if (Number.isFinite(idx)) setMasked(idx, state.unmasked.has(idx));
+  const key = mark.dataset.key;
+  if (key) setMasked(key, state.unmasked.has(key));
 });
 el.diff.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' && e.key !== ' ') return;
   const mark = e.target.closest('.mark');
   if (!mark) return;
   e.preventDefault(); // 스페이스로 스크롤되는 것 방지
-  const idx = Number(mark.dataset.idx);
-  if (Number.isFinite(idx)) setMasked(idx, state.unmasked.has(idx));
+  const key = mark.dataset.key;
+  if (key) setMasked(key, state.unmasked.has(key));
 });
 
 // 우측 목록: 그룹 토글 / 개별 토글
@@ -316,8 +396,8 @@ el.items.addEventListener('change', (e) => {
     const box = t.closest('.group');
     if (box) setGroupMasked(box.dataset.type, t.checked);
   } else if (t.classList.contains('i-toggle')) {
-    const idx = Number(t.dataset.idx);
-    if (Number.isFinite(idx)) setMasked(idx, t.checked);
+    const key = t.dataset.key;
+    if (key) setMasked(key, t.checked);
   }
 });
 
@@ -427,22 +507,26 @@ function renderResult(kind, result, meta) {
   if (kind === 'combined') {
     el.docName.textContent = meta?.fileName || 'Campfire';
     el.docType.textContent = '문서 + 프롬프트 검토';
-    state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 0);
+    // 두 배열이 같은 state.unmasked Set 을 공유하므로 키가 겹치면 안 된다.
+    // 예전엔 문서 세그먼트 길이를 숫자 offset 으로 밀어 겹침을 피했는데, 그러면
+    // 문서 쪽 항목 수가 바뀔 때마다 프롬프트 항목 번호가 통째로 밀린다.
+    // 접두사로 나누면 서로의 변화에 영향을 받지 않는다.
+    state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
     state.promptSegments = buildSegments(
-      result.userPromptOriginal || '', result.userPromptPiiItems, [], state.docSegments.length,
+      result.userPromptOriginal || '', result.userPromptPiiItems, [], 'prompt',
     );
   } else if (meta?.fileName) {
     el.docName.textContent = meta.fileName;
     el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
   } else if (result.originalLength || result.stats?.originalLength) {
     el.docName.textContent = 'Campfire';
     el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
   } else {
     el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검토';
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems);
+    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
   }
 
   renderDiff();
@@ -504,19 +588,61 @@ function sendDecision(decision) {
   );
 }
 
-function buildFinalTextFrom(segments) {
-  return segments.map(seg => {
-    if (seg.type === 'text') return seg.text;
-    return state.unmasked.has(seg.idx) ? seg.original : `[${seg.label} 마스킹]`;
-  }).join('');
+function sendMultiDecision(decision) {
+  if (state.stale) { closeSelf(); return; }
+  if (state.decided) return;
+  state.decided = true;
+  chrome.runtime.sendMessage(
+    { type: 'PANEL_MULTI_DECISION', sessionId: state.sessionId, tabId: state.myTabId, decision },
+    (res) => {
+      void chrome.runtime.lastError;
+      if (res && res.ok === false) { renderStaleDecision(); return; }
+      closeSelf();
+    },
+  );
 }
 
-function buildFinalText() {
-  return buildFinalTextFrom(state.segments);
+/** 해제 키를 소유자별로 나눈다. 키가 `itemId:n` 이라 접두사로 가른다. */
+function unmaskedKeysFor(itemId) {
+  return [...state.unmasked].filter(k => k.slice(0, k.lastIndexOf(':')) === itemId);
 }
 
-el.btnCancel.addEventListener('click', () => sendDecision({ action: 'cancel' }));
-el.btnClose.addEventListener('click', () => sendDecision({ action: 'cancel' }));
+/** 다중 결정 — 바이너리도 artifactId 도 패널이 만들지 않는다. SW 가 만든다. */
+function buildMultiDecision() {
+  const files = state.docs.map((doc) => {
+    const chosen = state.decisions.get(doc.id);
+    if (chosen) return { id: doc.id, action: chosen, unmaskedKeys: unmaskedKeysFor(doc.id) };
+    // 검사에 실패했거나 미지원인데 사용자가 아무것도 고르지 않았으면 제외한다 —
+    // 조용히 원본으로 통과시키지 않는다.
+    if (doc.status !== 'done' && doc.status !== 'truncated') return { id: doc.id, action: 'exclude' };
+    return { id: doc.id, action: 'masked', unmaskedKeys: unmaskedKeysFor(doc.id) };
+  });
+  return {
+    action: 'send',
+    prompt: { action: 'masked', unmaskedKeys: unmaskedKeysFor('prompt') },
+    files,
+  };
+}
+
+/** 아직 결정이 필요한 항목이 남아 있으면 그 이유를 돌려준다(없으면 null). */
+function blockingReason() {
+  for (const doc of state.docs) {
+    if (doc.status === 'pending' || doc.status === 'scanning') return '검사가 끝나지 않았습니다';
+    if (state.decisions.has(doc.id)) continue;
+    if (doc.status === 'error') return `${doc.fileName}: 검사 실패 — 제거하거나 다시 시도해 주세요`;
+    if (doc.status === 'unsupported') return `${doc.fileName}: 미지원 형식 — 포함할지 골라 주세요`;
+    if (doc.status === 'truncated') return `${doc.fileName}: 일부만 검사됨 — 어떻게 보낼지 골라 주세요`;
+  }
+  if (state.promptMeta?.status === 'error') return '프롬프트 검사에 실패했습니다';
+  return null;
+}
+
+el.btnCancel.addEventListener('click', () => (
+  state.kind === 'multi' ? sendMultiDecision({ action: 'cancel' }) : sendDecision({ action: 'cancel' })
+));
+el.btnClose.addEventListener('click', () => (
+  state.kind === 'multi' ? sendMultiDecision({ action: 'cancel' }) : sendDecision({ action: 'cancel' })
+));
 
 function wrapMaskedFileAsync(text, mimeType, fileName) {
   return new Promise((resolve) => {
@@ -528,10 +654,18 @@ function wrapMaskedFileAsync(text, mimeType, fileName) {
 }
 
 el.btnSend.addEventListener('click', async () => {
+  // 다중 경로: 전부 끝나고 모든 오류 항목에 결정이 있어야만 나간다.
+  if (state.kind === 'multi') {
+    const blocked = blockingReason();
+    if (blocked) { el.maskSummary.textContent = blocked; return; }
+    sendMultiDecision(buildMultiDecision());
+    return;
+  }
+
   if (state.kind === 'combined') {
     const docItems = state.docSegments.filter(s => s.type === 'item');
-    const docUnmaskedCount = docItems.filter(s => state.unmasked.has(s.idx)).length;
-    const finalPromptText = buildFinalTextFrom(state.promptSegments);
+    const docUnmaskedCount = docItems.filter(s => state.unmasked.has(s.key)).length;
+    const finalPromptText = buildFinalText(state.promptSegments, state.unmasked);
 
     let file;
     if (docItems.length === 0) {
@@ -546,7 +680,7 @@ el.btnSend.addEventListener('click', async () => {
     } else {
       el.btnSend.disabled = true;
       el.btnSend.textContent = '준비 중…';
-      const finalDocText = buildFinalTextFrom(state.docSegments);
+      const finalDocText = buildFinalText(state.docSegments, state.unmasked);
       const wrapped = await wrapMaskedFileAsync(finalDocText, state.meta?.mimeType, state.meta?.fileName);
       file = wrapped
         ? { action: 'upload', maskedBase64: wrapped.base64, mimeType: wrapped.mime, fileName: wrapped.name }
@@ -562,7 +696,7 @@ el.btnSend.addEventListener('click', async () => {
 
   if (state.kind === 'prompt') {
     if (maskCount <= 0) { sendDecision({ action: 'passthrough' }); return; }
-    sendDecision({ action: 'masked', maskedText: buildFinalText() });
+    sendDecision({ action: 'masked', maskedText: buildFinalText(state.segments, state.unmasked) });
     return;
   }
 
@@ -579,7 +713,7 @@ el.btnSend.addEventListener('click', async () => {
   // 토글 반영 → SW 에 파일 재생성 요청
   el.btnSend.disabled = true;
   el.btnSend.textContent = '준비 중…';
-  const finalText = buildFinalText();
+  const finalText = buildFinalText(state.segments, state.unmasked);
   const wrapped = await wrapMaskedFileAsync(finalText, state.meta?.mimeType, state.meta?.fileName);
   if (wrapped) {
     sendDecision({ action: 'upload', maskedBase64: wrapped.base64, mimeType: wrapped.mime, fileName: wrapped.name });
@@ -612,6 +746,49 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.sessionId && state.sessionId && msg.sessionId !== state.sessionId) {
     return;                                              // seq 가 없는 옛 SW 와의 호환 경로
   }
+  // ── 다중 첨부 ──
+  // 여기로 오는 건 전부 메타다. 본문은 활성 탭이 GET_PANEL_ITEM_RESULT 로 끌어온다.
+  if (msg.type === 'PANEL_SCAN_INIT') {
+    state.sessionId = msg.sessionId;
+    state.seq = msg.seq ?? state.seq;
+    state.kind = 'multi';
+    state.docs = msg.docs || [];
+    state.promptMeta = { status: 'pending', counts: null };
+    state.unmasked = new Set();
+    state.loaded = new Map();
+    state.decisions = new Map();
+    state.decided = false;
+    // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
+    // 방금 붙인 파일이 어디 있는지 못 찾는다.
+    state.activeTab = state.docs[0]?.id ?? 'prompt';
+    showView('result');
+    renderTabs();
+    showTab(state.activeTab);
+    refreshSummary();
+    return;
+  }
+  if (msg.type === 'PANEL_SCAN_PROMPT') {
+    state.promptMeta = msg.prompt || state.promptMeta;
+    renderTabs();
+    if (state.activeTab === 'prompt') showTab('prompt');
+    return;
+  }
+  if (msg.type === 'PANEL_SCAN_ITEM') {
+    const at = state.docs.findIndex(d => d.id === msg.doc?.id);
+    if (at >= 0) state.docs[at] = msg.doc;
+    renderTabs();
+    if (state.activeTab === msg.doc?.id) showTab(msg.doc.id);
+    refreshSummary();
+    return;
+  }
+  if (msg.type === 'PANEL_SCAN_DONE') {
+    state.docs = msg.docs || state.docs;
+    state.promptMeta = msg.prompt || state.promptMeta;
+    renderTabs();
+    refreshSummary();
+    return;
+  }
+
   if (msg.type === 'PANEL_PROGRESS') {
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;

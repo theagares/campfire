@@ -73,6 +73,9 @@
     <!-- 결과 (HITL 검토) — Figma #45:951 그대로: 문서가 화면 전체 높이를 차지하는
          본문(좌) + 탐지 항목 사이드바(우) 2컬럼 -->
     <section class="view view-result" id="view-result" hidden>
+      <!-- 다중 첨부일 때만 보인다. 탭은 스테이징 순서대로 즉시 만들고 상태만 갱신한다 —
+           검사가 끝난 순서로 재정렬되면 사용자가 자기 파일을 못 찾는다. -->
+      <div class="tabs" id="tabs" role="tablist" hidden></div>
       <div class="result-layout">
         <div class="result-main">
           <div class="section-label">
@@ -106,6 +109,6 @@
       <button class="btn btn-send" id="btn-send">전송</button>
     </footer>
   </div>
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

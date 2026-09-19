@@ -250,7 +250,9 @@ MutationObserverStub.instances = [];
 const actionLog = [];
 const dispatchedWindowEvents = [];
 let decisionListener = null;
-let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 즉시 회신한다
+let nextDecision = null; // 설정해두면 다음 검사 완료에 이 결정을 즉시 회신한다
+let lastMultiSession = null;
+let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 // SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
 let failNextOpenPanel = false;
 
@@ -394,7 +396,44 @@ const chromeStub = {
         return;
       }
       if (message.type === 'CLOSE_PANEL') { cb?.({ ok: true }); return; }
-      // 테스트 4에서만 결정을 회신한다(그 전까지는 세션 대기 = decision 미도착).
+
+      // ── 다중 첨부 프로토콜(SW 흉내) ──────────────────────────────────────
+      // content 는 lease 를 받기 전에는 인코딩조차 하지 않는다. 그래서 하네스가
+      // lease 를 내려주지 않으면 SCAN_MULTI_ITEM 이 하나도 안 나온다.
+      if (message.type === 'START_MULTI_SCAN') {
+        lastMultiSession = message.sessionId;
+        cb?.({ ok: true, queued: true });
+        queueMicrotask(() => decisionListener?.({
+          type: 'SCAN_LEASE_GRANTED', sessionId: message.sessionId, leaseId: 'lease-1',
+        }));
+        return;
+      }
+      if (message.type === 'SCAN_MULTI_PROMPT') {
+        cb?.({ ok: true, prompt: { status: 'done', counts: { pii: 0, injection: 0 } } });
+        return;
+      }
+      if (message.type === 'SCAN_MULTI_ITEM') { cb?.({ ok: true }); return; }
+      if (message.type === 'FINISH_MULTI_SCAN') {
+        cb?.({ ok: true });
+        if (nextDecision) {
+          const decision = nextDecision;
+          nextDecision = null;
+          queueMicrotask(() => decisionListener?.({
+            type: 'CONTENT_BATCH_DECISION', sessionId: message.sessionId, decision,
+          }));
+        }
+        return;
+      }
+      if (message.type === 'GET_SCAN_ARTIFACT') {
+        cb?.(nextArtifact || { ok: false });
+        return;
+      }
+      if (message.type === 'ACK_SCAN_ARTIFACT' || message.type === 'FINALIZE_MULTI_SESSION') {
+        cb?.({ ok: true });
+        return;
+      }
+
+      // 단독 프롬프트 경로는 그대로 START_SCAN 을 쓴다.
       if (message.type === 'START_SCAN' && nextDecision) {
         const decision = nextDecision;
         nextDecision = null;
@@ -448,6 +487,13 @@ function dispatchDocumentEvent(type, event) {
   // 무한 대기하므로, 여기서는 START_SCAN 이 동기+마이크로태스크로 발생하는지만 본다.
   for (const l of documentListeners.get(type) || []) l(event);
 }
+/** 그 세션이 배치였는지 단독 프롬프트였는지에 맞춰 취소를 회신한다. */
+const cancelScan = (scanMsg) => decisionListener?.({
+  type: scanMsg.type === 'START_MULTI_SCAN' ? 'CONTENT_BATCH_DECISION' : 'PANEL_DECISION',
+  sessionId: scanMsg.sessionId,
+  decision: { action: 'cancel' },
+});
+const isScanStart = (m) => m.type === 'START_SCAN' || m.type === 'START_MULTI_SCAN';
 const flush = () => new Promise(r => setTimeout(r, 60));
 
 (async () => {
@@ -460,7 +506,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     payload: { inputId: 'x', base64Data: btoa('malicious'), mimeType: 'application/pdf', fileName: 'attack.pdf', fileSize: 9 },
   });
   await flush();
-  if (runtimeMessages.some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.some(isScanStart)) {
     throw new Error('forged main-to-isolated file message triggered a scan');
   }
 
@@ -478,12 +524,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   await flush();
 
   if (!stopped) throw new Error('content-owned file change did not stop page propagation');
-  if (runtimeMessages.slice(beforeStageCount).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(beforeStageCount).some(isScanStart)) {
     throw new Error('file attach triggered an immediate scan — should be staged until prompt submit');
   }
 
-  // (3) 보류된 문서가 있는 상태에서 프롬프트를 제출(Enter)하면, 문서+프롬프트를
-  // 함께 넘기는 kind:'combined' START_SCAN 이 발생해야 한다.
+  // (3) 보류된 문서가 있는 상태에서 프롬프트를 제출(Enter)하면 배치 검사가 시작되고,
+  // 프롬프트가 **맨 먼저** 검사된 뒤 파일이 하나씩 따라가야 한다.
   promptEditorStub.value = '이 문서를 요약해줘';
   documentStub.activeElement = promptEditorStub;
   const beforeSubmitCount = runtimeMessages.length;
@@ -494,14 +540,32 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  const combinedScan = runtimeMessages.slice(beforeSubmitCount).find(m => m.type === 'START_SCAN');
-  if (!combinedScan) throw new Error('prompt submit with a pending attachment did not start a scan');
-  if (combinedScan.kind !== 'combined') {
-    throw new Error(`expected kind:'combined', got kind:'${combinedScan.kind}'`);
+  const sent = runtimeMessages.slice(beforeSubmitCount);
+  const startMulti = sent.find(m => m.type === 'START_MULTI_SCAN');
+  if (!startMulti) throw new Error('prompt submit with a pending attachment did not start a scan');
+  if (!startMulti.payload?.items?.length) {
+    throw new Error('START_MULTI_SCAN 에 파일 목록이 없다');
   }
-  if (!combinedScan.payload?.base64Data || combinedScan.payload.text !== '이 문서를 요약해줘') {
-    throw new Error('combined scan payload missing staged file data or prompt text');
+  // 시작 메시지에는 메타만 — 본문/base64 를 실으면 N개가 한 메시지에 쌓인다.
+  if (startMulti.payload.items.some(i => i.base64Data)) {
+    throw new Error('START_MULTI_SCAN 이 base64 를 실어 보냈다 — 메타만 보내야 한다');
   }
+
+  const promptIdx = sent.findIndex(m => m.type === 'SCAN_MULTI_PROMPT');
+  const itemIdx = sent.findIndex(m => m.type === 'SCAN_MULTI_ITEM');
+  if (promptIdx < 0) throw new Error('프롬프트 검사가 없었다');
+  if (itemIdx < 0) throw new Error('파일 검사가 없었다');
+  // 프롬프트가 파일보다 먼저여야 한다. 순서가 반대면 엔진이 마스킹된 프롬프트를
+  // 못 만든 채 파일 검사를 돌고, 인젝션 2차 판정이 외부 모델에 원문을 보낸다.
+  if (promptIdx > itemIdx) throw new Error('프롬프트가 파일보다 나중에 검사됐다');
+  if (sent[promptIdx].text !== '이 문서를 요약해줘') {
+    throw new Error('프롬프트 검사에 실제 프롬프트가 안 실렸다');
+  }
+  if (!sent[itemIdx].payload?.base64Data) {
+    throw new Error('파일 검사에 base64 가 없다');
+  }
+  if (!sent[itemIdx].leaseId) throw new Error('파일 검사에 leaseId 가 없다');
+  const combinedScan = startMulti;
 
   // (4) 결합 검토가 승인되면, 마스킹본을 페이지에 주입하기 "전에" MAIN world 로
   // UPS_CONTENT_APPROVED_FILE 을 먼저 알려야 한다.
@@ -515,7 +579,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 테스트 (3)은 결정을 회신하지 않고 끝났으므로 그 세션이 아직 대기 중이다
   // (promptInProcess=true). 취소로 정리하고, 새 문서를 다시 보류시켜 놓는다.
   decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: combinedScan.sessionId, decision: { action: 'cancel' },
+    type: 'CONTENT_BATCH_DECISION', sessionId: combinedScan.sessionId, decision: { action: 'cancel' },
   });
   await flush();
 
@@ -537,13 +601,15 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   sendButtonStub.disabled = false;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'report.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  // 산출물은 결정 메시지가 아니라 별도 요청으로 한 개씩 건네진다.
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'report.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -689,7 +755,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (injectedOverlays().length !== 0) {
     throw new Error('iframe 오버레이 폴백이 되살아났다 — 검토 UI 는 네이티브 사이드패널 하나로 통일했다');
   }
-  if (runtimeMessages.slice(beforeOpenFail).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(beforeOpenFail).some(isScanStart)) {
     throw new Error('패널을 못 열었는데 검사를 시작했다 — 결정해 줄 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 막힌다');
   }
 
@@ -705,11 +771,9 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
   await new Promise(r => setTimeout(r, 7000));
-  const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  const stuckScan = runtimeMessages.filter(isScanStart).slice(-1)[0];
   if (stuckScan) {
-    decisionListener?.({
-      type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
-    });
+cancelScan(stuckScan);
     await flush();
   }
 
@@ -722,7 +786,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     preventDefault() {}, stopImmediatePropagation() {},
   });
   await flush();
-  if (!runtimeMessages.slice(beforeScan).some(m => m.type === 'START_SCAN')) {
+  if (!runtimeMessages.slice(beforeScan).some(isScanStart)) {
     throw new Error('첫 전송에서 검사가 시작되지 않았다 — 이 테스트의 전제가 깨졌다');
   }
   const afterFirstScan = runtimeMessages.length;
@@ -740,7 +804,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (leaked || propagated) {
     throw new Error('검사 중 눌린 전송이 사이트로 새어나갔다 — 마스킹 전 원본이 전송된다');
   }
-  if (runtimeMessages.slice(afterFirstScan).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(afterFirstScan).some(isScanStart)) {
     throw new Error('검사가 이미 진행 중인데 또 다른 검사를 시작했다');
   }
 
@@ -756,10 +820,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 선택(📎) 경로만 예전 방식으로 남아 있었다.
   // 앞 테스트는 일부러 결정을 회신하지 않아 검사를 진행 중으로 남겨뒀다
   // (promptInProcess=true). 취소해서 이 테스트가 깨끗한 상태에서 시작하게 한다.
-  const pendingScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan = runtimeMessages.filter(
+    m => m.type === 'START_MULTI_SCAN' || m.type === 'START_SCAN',
+  ).slice(-1)[0];
+  cancelScan(pendingScan);
   await flush();
 
   const file9 = new FileStub(['pdf bytes'], 'stale.pdf', { type: 'application/pdf' });
@@ -782,13 +846,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'stale.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-stale' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'stale.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -820,10 +885,8 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   - Enter 로 검사가 시작되고(포커스된 편집 요소로 폴백)
   //   - 재전송이 일반 전송 버튼 후보로 폴백해 실제로 클릭되는지
   // 를 확인한다.
-  const pendingScan9 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan9.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan9 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan9);
   await flush();
   await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
 
@@ -846,7 +909,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  const scan9 = runtimeMessages.slice(before9).find(m => m.type === 'START_SCAN');
+  const scan9 = runtimeMessages.slice(before9).find(isScanStart);
   if (!scan9) {
     throw new Error('선택자가 깨지자 검사가 아예 시작되지 않았다 — 사이드바가 안 뜨는 증상 그대로다');
   }
@@ -867,10 +930,8 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 통째로 없앤다. 그래서
   // 승인 시점엔 넣을 곳이 없는데 📎 경로에는 폴백이 없어 파일이 조용히 버려지고
   // 프롬프트만 전송됐다. drop/paste 경로에만 있던 합성 drop 폴백을 여기에도 태운다.
-  const pendingScan12 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan12.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan12 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan12);
   await flush();
   await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
 
@@ -900,13 +961,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'gemini.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'gemini.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -945,10 +1007,8 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 핸들러가 "this.drop is not a function" 으로 터진다(실사용자 Gemini 콘솔).
   // 리스너 안에서 난 예외라 우리 try/catch 로도 못 잡고, 사이트의 드롭 처리만
   // 조용히 중단된다. 그래서 노드를 원래 자리에 되돌려 놓는 쪽을 먼저 시도해야 한다.
-  const pendingScan13 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan13.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan13 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan13);
   await flush();
   await new Promise(r => setTimeout(r, 7000));
 
@@ -994,11 +1054,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'revive.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'revive.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1082,11 +1145,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'gemini-upload.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-2' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'gemini-upload.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1155,11 +1221,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'spinner.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-3' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'spinner.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1252,11 +1321,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'evidence.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-4' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'evidence.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1322,11 +1394,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'blocked.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-5' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'blocked.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1634,11 +1709,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'revive22.pdf',
-    },
+    promptText: '이 문서 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-6' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'revive22.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1718,11 +1796,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'secret-report.pdf',
-    },
+    promptText: '이 문서 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-7' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'secret-report.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1782,11 +1863,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'unbound-doc.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-8' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'unbound-doc.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1886,11 +1970,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'slow-upload.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-9' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'slow-upload.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1947,7 +2034,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   domBySelector.delete('input[type="file"]');
   domBySelectorAll.set('textarea, [contenteditable="true"]', [editor26]);
   documentStub.activeElement = send26;        // 포커스는 버튼에 있다(마우스 클릭)
-  const scansBefore26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+  const scansBefore26 = runtimeMessages.filter(isScanStart).length;
 
   nextDecision = { action: 'masked', maskedText: '내 번호 [전화번호 마스킹] 이야' };
   dispatchDocumentEvent('click', {
@@ -1956,7 +2043,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await new Promise(r => setTimeout(r, 2000));
 
-  const scans26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore26;
+  const scans26 = runtimeMessages.filter(isScanStart).length - scansBefore26;
   if (scans26 !== 1) {
     throw new Error(
       `입력창을 못 찾아 검사를 아예 시작하지 않았다 (START_SCAN ${scans26}건) — 원문이 그대로 나간다`,
@@ -2022,11 +2109,11 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   swallowed27.length = 0;
   documentStub.activeElement = promptEditorStub;
   promptEditorStub.value = '이 문서를 그대로 보내줘';
-  const scansBefore27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+  const scansBefore27 = runtimeMessages.filter(isScanStart).length;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 그대로 보내줘',
-    file: { action: 'passthrough' },       // ★ 원본을 그대로 다시 쏜다
+    promptText: '이 문서를 그대로 보내줘',
+    files: [{ id: 'f0', action: 'original' }],
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -2050,7 +2137,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   // 삼켰다면 stageFileAttachment 가 다시 돌아 다음 전송 때 또 검사한다. 검사가 새로
   // 시작되지 않았는지도 함께 본다.
-  const scans27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore27;
+  const scans27 = runtimeMessages.filter(isScanStart).length - scansBefore27;
   if (scans27 !== 1) {
     throw new Error(`검사가 ${scans27}건 발생했다 — 주입한 파일이 다시 검사 흐름을 탔다`);
   }
@@ -2138,11 +2225,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'deep.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-11' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'deep.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,

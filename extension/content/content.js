@@ -477,7 +477,7 @@
     // 있다. 마스킹본은 base64ToFile() 이 이미 여기 넣어두므로 걸러지지만,
     // **passthrough(원본 그대로 전송)** 는 사용자가 처음 첨부한 그 File 객체를 그대로
     // 다시 쏘는 거라 등록된 적이 없다. 그러면 우리 리스너가 "처음 보는 원본" 으로 보고
-    // preventDefault + stopImmediatePropagation 으로 삼킨 뒤 pendingAttachment 로
+    // preventDefault + stopImmediatePropagation 으로 삼킨 뒤 보류 배치로
     // 되돌려 놓는다 — 사이트는 아무것도 못 받고, 다음 전송에 같은 파일을 또 검사한다.
     // 전략 1·2(input 경로)는 _upsContentDone 플래그로 이미 막고 있었는데 3·4 만
     // 뚫려 있었다.
@@ -719,7 +719,29 @@
   // MVP 범위: 보류 중인 첨부는 최대 1개만 추적한다(두 번째를 첨부하면 첫 번째를
   // 교체) — 여러 파일을 동시에 보류·결합하는 건 다음 단계.
   // ══════════════════════════════════════════════════════════════════════════
-  let pendingAttachment = null; // { file, base64Data, mimeType, fileName, fileSize, inject(finalFile) }
+  // 원래 첨부 "이벤트 하나" 를 통째로 보존한다.
+  //
+  // 예전엔 pendingAttachment 하나였다. 파일을 여러 개 고르면 마지막 것만 남고 나머지는
+  // 조용히 사라졌다 — 사용자는 다 붙였다고 믿는데 사이트에는 하나만 간다.
+  // 배열로 바꾸는 것만으로는 부족했던 이유는, 지원 파일 하나를 발견한 뒤 원래
+  // input/drop 이벤트 전체를 preventDefault 로 막기 때문이다. 같은 배치에 섞인
+  // **미지원 파일까지 사이트에 전달되지 않는다.** 그래서 처음 받은 전체 목록을
+  // (지원/미지원 모두) 끝까지 들고 간다.
+  //
+  // 단수인 것은 그대로다 — 검토가 끝나기 전에는 절대 덮어쓰지 않는다.
+  // 덮어쓰면 배치 A 의 injectionContext 가 사라져 원래 버그가 배치 단위로 되살아난다.
+  let pendingBatch = null;
+  // {
+  //   id, source: 'input'|'drop'|'paste',
+  //   items: [{ id, file, fileName, fileSize, mimeType, supported }],
+  //   injectionContext: { preferred, parentHint, dropTarget }  // 주입 시점에 다시 해석
+  // }
+
+  // 한 배치 상한. 파일당 20MB 는 우리가 정한 값이 아니라 엔진이 이미 거부하는
+  // MAX_UPLOAD_BYTES(engine/app/config.py) 와 같은 값이다 — 여기 검사는 왕복을
+  // 아끼는 선검사이지 상한의 출처가 아니다.
+  const MAX_BATCH_FILES = 5;
+  const MAX_BATCH_BYTES = 20 * 1024 * 1024;
   let badgeRoot = null;
 
   function showPendingBadge(fileName) {
@@ -744,7 +766,7 @@
       closeBtn.textContent = '✕';
       closeBtn.title = '첨부 취소';
       closeBtn.style.cssText = 'all: unset !important; cursor: pointer !important; opacity: .75 !important; padding: 0 2px !important; flex-shrink: 0 !important;';
-      closeBtn.addEventListener('click', () => { clearPendingAttachment(); });
+      closeBtn.addEventListener('click', () => { clearPendingBatch(); });
 
       badgeRoot.appendChild(label);
       badgeRoot.appendChild(closeBtn);
@@ -801,27 +823,71 @@
     } catch (_) { /* context invalidated */ }
   }
 
-  function clearPendingAttachment() {
-    pendingAttachment = null;
+  function clearPendingBatch() {
+    pendingBatch = null;
     hidePendingBadge();
   }
 
-  /** 파일을 즉시 스캔하지 않고 보류 상태로 저장한다. inject(finalFile)은 나중에
-   *  마스킹된(또는 원본) 파일을 원래 있어야 할 자리(입력창/드롭 타깃)에 넣는 방법을
-   *  호출부가 정의해 넘긴다(input.files 세터 vs 합성 drop/paste 이벤트 등, 첨부
-   *  경로마다 다르므로). */
-  async function stageFileAttachment(file, inject) {
-    if (!isSupportedFile(file) || contentProcessingFiles.has(file) || contentOwnedFiles.has(file)) return;
-    const base64Data = await fileToBase64(file);
-    pendingAttachment = {
-      file,
-      base64Data,
-      mimeType: file.type || 'application/octet-stream',
-      fileName: file.name,
-      fileSize: file.size,
-      inject,
+  const supportedItems = (batch) => (batch?.items || []).filter(i => i.supported);
+
+  /** 첨부 이벤트 하나를 통째로 보류한다. 스캔도 base64 도 여기서 하지 않는다.
+   *
+   *  base64 를 나중으로 미루는 게 핵심이다. 예전엔 붙이는 즉시 인코딩했는데, 파일이
+   *  N개면 전송을 누르기도 전에 N개의 거대한 문자열을 동시에 들고 있게 된다.
+   *  지금은 File 객체만 붙들고 있다가 검사 차례가 온 파일만 하나씩 인코딩한다.
+   *
+   *  injectionContext 는 "어디에 돌려놓을지" 를 기억해 둔 것이다. 노드를 그대로
+   *  들고 있지 않는 이유는 승인까지 시간이 흐르는 동안 SPA 가 컴포저를 다시 그리면
+   *  그 노드가 고아가 되기 때문이다(liveFileInput 주석 참고).
+   *
+   *  반환값은 "이 이벤트를 우리가 가로챘는가". false 면 호출부가 preventDefault 를
+   *  하지 않고 사이트에 그대로 넘겨야 한다. */
+  function stageBatch(source, files, injectionContext) {
+    // "우리 것" 을 먼저 걷어낸다. 순서가 중요하다 — 아래 검토중 가드보다 뒤에 두면
+    // **우리가 쏜 합성 paste/drop 을 우리 리스너가 삼킨다**(주입은 결정 직후,
+    // 배치를 비우기 전에 일어난다). 그러면 사이트는 문서를 못 받고 같은 파일이
+    // 다시 보류 상태로 돌아간다 — 마스킹할 게 없는 깨끗한 문서가 오히려 차단되던
+    // 그 실패와 같은 모양이다.
+    const fresh = files.filter(f => !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
+    if (!fresh.some(isSupportedFile)) return false;   // 검사할 게 없으면 개입하지 않는다
+
+    // 검토 중에는 새 배치를 받지 않는다(§2 정책). 큐에 쌓지 않는 이유는, 큐는 배치별
+    // 주입 컨텍스트를 언제까지 유효하게 들고 있을지를 정해야 하는데 그 답이 사이트마다
+    // 다르기 때문이다. 거절이 유일하게 확실한 동작이다.
+    if (pendingBatch) {
+      showBlockedBadge('⚠️ 먼저 첨부한 파일을 검토 중입니다. 검토를 끝낸 뒤 다시 첨부해 주세요.');
+      return true;
+    }
+
+    if (fresh.length > MAX_BATCH_FILES) {
+      showBlockedBadge(`⚠️ 한 번에 최대 ${MAX_BATCH_FILES}개까지 첨부할 수 있습니다 `
+        + `(${fresh.length}개를 고르셨습니다). 나눠서 보내주세요.`);
+      return true;
+    }
+    const total = fresh.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (total > MAX_BATCH_BYTES) {
+      showBlockedBadge(`⚠️ 첨부 용량이 큽니다 (${Math.round(total / 1048576)}MB). `
+        + `합계 ${MAX_BATCH_BYTES / 1048576}MB 이하로 나눠서 보내주세요.`);
+      return true;
+    }
+
+    pendingBatch = {
+      id: newSessionId(),
+      source,
+      items: fresh.map((file, i) => ({
+        id: `f${i}`,
+        file,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        supported: isSupportedFile(file),
+      })),
+      injectionContext,
     };
-    showPendingBadge(file.name);
+
+    const names = supportedItems(pendingBatch).map(i => i.fileName);
+    showPendingBadge(names.length === 1 ? names[0] : `${names.length}개 파일`);
+    return true;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -858,8 +924,147 @@
     });
   }
 
+  // ── 다중 첨부: 배치 하나를 순차로 검사한다 ─────────────────────────────────
+  //
+  // lease 를 받기 전에는 **인코딩하지 않는다.** 두 탭이 각각 base64 를 다 만든 뒤
+  // 줄을 서면 기다리는 동안 거대한 문자열이 동시에 살아 있다. 차례 신호를 받고
+  // 나서 한 파일씩 인코딩하고, 응답을 받은 뒤에 다음 파일로 넘어간다 — 그래서
+  // 어느 시점에도 base64 가 하나뿐이다.
+  const pendingLeases = new Map();   // sessionId -> resolve
+  const pendingBatchDecisions = new Map();
+
+  function sendToSW(message) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, (res) => { void chrome.runtime.lastError; resolve(res || null); });
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  function waitForLease(sessionId, ms = 60000) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { pendingLeases.delete(sessionId); resolve(null); }, ms);
+      pendingLeases.set(sessionId, (leaseId) => { clearTimeout(timer); resolve(leaseId); });
+    });
+  }
+
+  /** 배치 검사를 끝까지 몰고 사용자의 결정을 돌려준다. */
+  async function runMultiScan(text, batch) {
+    const sessionId = newSessionId();
+    const items = supportedItems(batch);
+
+    const decisionPromise = new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (!pendingBatchDecisions.has(sessionId)) return;
+        pendingBatchDecisions.delete(sessionId);
+        closeSidePanel();
+        resolve({ action: 'cancel', reason: 'timeout' });
+      }, 10 * 60 * 1000);
+      pendingBatchDecisions.set(sessionId, { resolve, timeout });
+    });
+
+    // lease 대기를 **보내기 전에** 등록한다. grant 는 SW 가 임의 시점에 밀어 넣는
+    // 별도 메시지라, 등록이 한 틱이라도 늦으면 그 사이 도착한 grant 가 버려지고
+    // 배치가 통째로 타임아웃까지 매달린다.
+    const leasePromise = waitForLease(sessionId);
+
+    const started = await sendToSW({
+      type: 'START_MULTI_SCAN',
+      sessionId,
+      payload: {
+        items: batch.items.map(({ id, fileName, fileSize, mimeType, supported }) =>
+          ({ id, fileName, fileSize, mimeType, supported })),
+      },
+    });
+    if (!started?.ok) return { action: 'cancel', reason: 'start-failed' };
+
+    const leaseId = await leasePromise;
+    if (!leaseId) return { action: 'cancel', reason: 'lease-timeout' };
+
+    // 프롬프트가 맨 먼저다. 프롬프트를 검사해야 엔진이 마스킹된 프롬프트를 만들고,
+    // 그래야 파일별 인젝션 2차 판정이 외부 모델에 원문을 보내지 않는다.
+    const promptRes = await sendToSW({ type: 'SCAN_MULTI_PROMPT', sessionId, leaseId, text });
+    if (!promptRes?.ok || promptRes.prompt?.status === 'error') {
+      await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
+      return { action: 'cancel', reason: 'prompt-scan-failed' };
+    }
+
+    for (const item of items) {
+      let base64Data = null;
+      try {
+        base64Data = await fileToBase64(item.file);
+      } catch (_) { base64Data = null; }
+      if (!base64Data) continue;   // 읽지 못한 파일은 SW 쪽에서 pending 으로 남아 전송을 막는다
+
+      await sendToSW({
+        type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
+        payload: {
+          docId: item.id, base64Data,
+          mimeType: item.mimeType, fileName: item.fileName, userPrompt: text,
+        },
+      });
+      base64Data = null;   // 다음 파일을 읽기 전에 참조를 버린다
+    }
+
+    await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
+    return decisionPromise;
+  }
+
+  /** 결정된 파일들을 하나씩 받아 사이트에 넣는다. 성공한 파일은 절대 다시 쏘지 않는다. */
+  async function injectBatchDecision(decision, batch) {
+    const ctx = batch.injectionContext || {};
+    const injected = [];
+    let allOk = true;
+
+    for (const file of decision.files || []) {
+      if (file.action === 'exclude') continue;
+      const item = batch.items.find(i => i.id === file.id);
+      if (!item) { allOk = false; continue; }
+
+      let toInject = null;
+      if (file.action === 'original') {
+        toInject = item.file;
+      } else if (file.artifactId) {
+        const got = await sendToSW({
+          type: 'GET_SCAN_ARTIFACT', sessionId: decision.sessionId, docId: file.id,
+          artifactId: file.artifactId,
+        });
+        if (!got?.ok) { allOk = false; continue; }
+        toInject = base64ToFile(got.base64, got.mimeType, got.fileName);
+        // File 로 바꾼 뒤에만 소비 처리한다 — 응답이 유실되면 다시 요청할 수 있어야 한다.
+        if (toInject) await sendToSW({ type: 'ACK_SCAN_ARTIFACT', artifactId: file.artifactId });
+      }
+      if (!toInject) { allOk = false; continue; }
+
+      await announceContentApprovedFile(toInject);
+      // ponytail: 파일을 하나씩 순차 주입한다. DataTransfer 하나에 N개를 싣는 쪽이
+      // 원래 사용자 동작에 가깝지만, injectFileWithEvidence 는 실사용 실패를 겪으며
+      // 여러 번 뒤집힌 코드라 첫 착지에서 건드리지 않았다. 사이트별 실측(계획 §7)
+      // 뒤에 일괄 주입으로 올린다.
+      const ok = (await injectFileWithEvidence(toInject, {
+        preferred: ctx.preferred, parentHint: ctx.parentHint, dropTarget: ctx.dropTarget,
+      })) !== false;
+      if (ok) injected.push(toInject.name); else allOk = false;
+    }
+
+    return { allOk, injected };
+  }
+
   // SW → content : 사이드패널의 HITL 결정 수신
   chrome.runtime?.onMessage?.addListener((message) => {
+    if (message?.type === 'SCAN_LEASE_GRANTED') {
+      const grant = pendingLeases.get(message.sessionId);
+      if (grant) { pendingLeases.delete(message.sessionId); grant(message.leaseId); }
+      return;
+    }
+    if (message?.type === 'CONTENT_BATCH_DECISION') {
+      const entry = pendingBatchDecisions.get(message.sessionId);
+      if (!entry) return;
+      clearTimeout(entry.timeout);
+      pendingBatchDecisions.delete(message.sessionId);
+      entry.resolve({ ...(message.decision || { action: 'cancel' }), sessionId: message.sessionId });
+      return;
+    }
     if (message?.type !== 'PANEL_DECISION') return;
     const entry = pendingSessions.get(message.sessionId);
     if (!entry) return;
@@ -875,12 +1080,9 @@
       ?? (event.target instanceof HTMLInputElement && event.target.type === 'file' ? event.target : null);
     if (!input) return;
     if (input._upsContentDone) { delete input._upsContentDone; return; }
-    const file = input.files?.[0];
-    if (!isSupportedFile(file) || contentOwnedFiles.has(file) || contentProcessingFiles.has(file)) return;
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    input.value = ''; // 사이트가 원본 파일을 보지 못하게 즉시 비운다(스캔 전 유출 방지)
+    // files[0] 이 아니라 전부 본다 — 다중 선택이 여기서 잘려 나갔다.
+    const files = Array.from(input.files ?? []);
+    if (!files.length) return;
 
     // 여기서 붙든 input 을 그대로 쓰지 않는다 — 승인까지 시간이 흐르는 동안 SPA 가
     // 컴포저를 다시 그리면 이 노드는 고아가 되고, 거기에 넣은 파일은 사이트에 전달되지
@@ -888,10 +1090,11 @@
     // 있었는데 이 📎 경로만 예전 방식으로 남아 있었다.
     // 지금 부모를 기억해 둔다 — 사이트가 나중에 이 input 을 DOM 에서 떼어내면
     // 여기로 되돌려 붙여야 사이트의 위임 리스너까지 살아난다(reviveFileInput).
-    const originalParent = input.parentElement;
-    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
-      preferred: input, parentHint: originalParent,
-    }));
+    if (!stageBatch('input', files, { preferred: input, parentHint: input.parentElement })) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    input.value = ''; // 사이트가 원본 파일을 보지 못하게 즉시 비운다(스캔 전 유출 방지)
   }, true);
 
   // ── 드래그앤드롭 — 즉시 스캔하지 않고 보류 ───────────────────────────────────
@@ -905,41 +1108,41 @@
 
   document.addEventListener('drop', async (event) => {
     const files = Array.from(event.dataTransfer?.files ?? []);
-    const file = files.find(f => isSupportedFile(f) && !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
-    if (!file) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
+    if (!files.length) return;
     const target = event.target;
     const clientX = event.clientX, clientY = event.clientY;
-
-    // 원본 drop 을 삼켜버린 대가로 사이트의 드롭 오버레이가 남는다 — 파일 없는
-    // 합성 이벤트로 드래그 상태만 즉시 정리해준다(clearSiteDragState 주석 참고).
-    clearSiteDragState(target, clientX, clientY);
 
     // (2026-08-06 재정정) 파일 선택 input 경로를 먼저 쓰고 합성 drop 을 폴백으로 두는
     // 구조는 그대로지만, 이제 각 단계를 "사이트가 받았다는 증거"로 판정한다
     // (injectFileWithEvidence 주석 참고). 예전에는 input 에 넣기만 하면 성공으로 쳐서,
     // 사이트가 그 이벤트를 못 들었을 때 폴백까지 내려가지 못했다.
-    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+    if (!stageBatch('drop', files, {
       preferred: findFileInput(target),
       dropTarget: target?.isConnected ? target : null,
-    }));
+    })) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    // 원본 drop 을 삼켜버린 대가로 사이트의 드롭 오버레이가 남는다 — 파일 없는
+    // 합성 이벤트로 드래그 상태만 즉시 정리해준다(clearSiteDragState 주석 참고).
+    clearSiteDragState(target, clientX, clientY);
   }, true);
 
   // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
   document.addEventListener('paste', async (event) => {
     const files = Array.from(event.clipboardData?.files ?? []);
-    const file = files.find(f => isSupportedFile(f) && !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
-    if (!file) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
+    if (!files.length) return;
     const target = event.target;
 
     // drop 경로와 같은 증거 기반 체인을 쓴다(위 주석 참고).
-    await stageFileAttachment(file, (finalFile) => injectFileWithEvidence(finalFile, {
+    if (!stageBatch('paste', files, {
       preferred: findFileInput(target),
       dropTarget: target?.isConnected ? target : null,
-    }));
+    })) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }, true);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2063,7 +2266,7 @@
     event.stopImmediatePropagation();
     promptInProcess = true;
 
-    const staged = pendingAttachment; // 보류 중인 첨부가 있으면 결합 검사(combined)
+    const staged = pendingBatch; // 보류 중인 배치가 있으면 다중 검사(multi)
     hidePendingBadge();
     const panelOpening = openSidePanel(); // 제스처 시점에 먼저 연다
 
@@ -2072,18 +2275,12 @@
       // 패널을 못 열었으면 검사를 시작조차 하지 않는다. 시작해 버리면 결정해 줄
       // 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다.
       if (!(await panelOpening)) {
-        if (staged) clearPendingAttachment();
+        if (staged) clearPendingBatch();
         showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
         return;
       }
       decision = staged
-        ? await startPanelSession('combined', {
-            text,
-            base64Data: staged.base64Data,
-            mimeType: staged.mimeType,
-            fileName: staged.fileName,
-            fileSize: staged.fileSize,
-          })
+        ? await runMultiScan(text, staged)
         : await startPanelSession('prompt', { text });
     } catch (_) {
       decision = { action: 'cancel' };
@@ -2093,14 +2290,14 @@
 
     if (!decision || decision.action === 'cancel') {
       // 취소하면 보류 중이던 첨부도 함께 정리한다(재시도하려면 다시 첨부해야 함).
-      if (staged) clearPendingAttachment();
+      if (staged) clearPendingBatch();
       return;
     }
 
     const latestCfg = getPromptConfig();
     if (!latestCfg) {
       console.error('[SecureDoc] 재전송 실패: 승인은 됐지만 이 사이트 설정을 못 찾음 — 아무것도 전송되지 않았습니다');
-      if (staged) clearPendingAttachment();
+      if (staged) clearPendingBatch();
       return;
     }
     promptApproved = true;
@@ -2115,7 +2312,11 @@
         // 비면 그 값이 '' 가 되고 `||` 는 거기서 **원문으로 되돌아간다**. 마스킹본이
         // 비었다는 이유로 원문을 전송하는 건 게이트웨이가 하면 안 되는 방향의 폴백이다.
         // 같은 파일의 단독 프롬프트 경로는 이미 action 을 명시적으로 확인한다.
-        const finalText = typeof decision.maskedText === 'string' ? decision.maskedText : text;
+        // 다중 경로에서 프롬프트 최종본은 SW 가 만든다(패널 미리보기와 같은 순수
+        // 함수를 쓴다). `|| text` 로 쓰면 안 된다 — 프롬프트가 비면 '' 가 되고
+        // `||` 는 거기서 **원문으로 되돌아간다**. 마스킹본이 비었다는 이유로 원문을
+        // 전송하는 건 게이트웨이가 하면 안 되는 방향의 폴백이다.
+        const finalText = typeof decision.promptText === 'string' ? decision.promptText : text;
         // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
         // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
         // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
@@ -2134,35 +2335,30 @@
         const composerBaseline = composerHaystack(latestCfg);
         if (!(await setEditorText(latestCfg, finalText))) {
           promptApproved = false;
-          clearPendingAttachment();
+          clearPendingBatch();
           showBlockedBadge('⚠️ 입력창에 마스킹된 내용을 넣지 못해 전송을 멈췄습니다. 원문이 그대로 나가지 않도록 막았습니다.');
           console.error('[SecureDoc] 마스킹본을 입력창에 넣지 못해 전송을 중단했습니다 — 원문 유출을 막기 위함입니다.');
           return;
         }
 
-        let injected = true;
-        // 실제로 사이트에 넣은 파일의 이름. 전송 직전 "이 첨부가 컴포저에 붙었는가" 를
-        // 확인하는 데만 쓴다(로그에는 남기지 않는다 — 사용자 문서 정보다).
-        let sentFileName = null;
-        if (decision.file?.action === 'upload' && decision.file.maskedBase64) {
-          const maskedFile = base64ToFile(decision.file.maskedBase64, decision.file.mimeType, decision.file.fileName);
-          sentFileName = maskedFile?.name || decision.file.fileName || null;
-          await announceContentApprovedFile(maskedFile);
-          // inject 는 이제 "사이트가 받았다는 증거"를 확인하느라 비동기다.
-          injected = (await staged.inject(maskedFile)) !== false;
-        } else if (decision.file?.action === 'passthrough') {
-          sentFileName = staged.file?.name || staged.fileName || null;
-          // 원본 그대로 재주입. "우리 것" 등록은 injectFileWithEvidence 진입부에서
-          // 한꺼번에 한다(모든 주입이 그리로 모인다). 그게 없으면 우리 캡처 리스너가
-          // 자기 첨부를 삼키고, 삼켜진 이벤트가 stageFileAttachment 를 다시 타면서
-          // 방금 지운 pendingAttachment 가 유령 첨부로 되살아난다 — 마스킹할 게 없는
-          // 깨끗한 문서가 오히려 차단되던 원인이다.
-          await announceContentApprovedFile(staged.file);
-          injected = (await staged.inject(staged.file)) !== false;
-        }
-        // decision.file?.action === 'cancel'(파일 재생성 실패)이면 파일 없이 프롬프트만 전송.
-        const stagedName = staged.fileName;
-        clearPendingAttachment();
+        // 산출물은 한 개씩 받아 넣는다 — 배치 전체 base64 를 동시에 들고 있지 않는다.
+        // "우리 것" 등록은 injectFileWithEvidence 진입부에서 한꺼번에 한다(모든 주입이
+        // 그리로 모인다). 그게 없으면 우리 캡처 리스너가 자기 첨부를 삼키고, 삼켜진
+        // 이벤트가 stageBatch 를 다시 타면서 방금 지운 배치가 유령 첨부로 되살아난다.
+        const batchResult = await injectBatchDecision(decision, staged);
+        const injected = batchResult.allOk;
+        // 전송 직전 "이 첨부가 컴포저에 붙었는가" 를 확인하는 데만 쓴다
+        // (로그에는 남기지 않는다 — 사용자 문서 정보다).
+        const sentFileName = batchResult.injected[0] || null;
+        const stagedName = supportedItems(staged).map(i => i.fileName).join(', ');
+
+        // 결정은 종료가 아니다 — 주입까지 끝났다고 SW 에 알려야 세션과 남은 산출물이
+        // 정리된다. 실패해도 보낸다(finally 성격): 안 보내면 세션이 매달린 채 남는다.
+        await sendToSW({
+          type: 'FINALIZE_MULTI_SESSION', sessionId: decision.sessionId,
+          status: injected ? 'ok' : 'partial', consumedIds: batchResult.injected,
+        });
+        clearPendingBatch();
 
         if (!injected) {
           // ── 전송 중단 (fail-closed) ────────────────────────────────────────

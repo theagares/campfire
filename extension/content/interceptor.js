@@ -942,12 +942,13 @@
           if (blobAsFile) _setCachedDrop(blobAsFile, result.file);
           _origXHRSend.call(self, result.file);
           debugLog('[SecureDoc] ✅ [2-L3] 마스킹본 XHR 전송');
-        } else if (result?.action === 'cancel' || result?.action === 'download') {
-          debugLog('[SecureDoc] 🚫 [2-L3] XHR 차단');
-        } else {
+        } else if (result?.action === 'passthrough') {
+          // 사용자가 원본 통과를 **명시한** 경우에만 원본이 나간다.
           _origXHRSend.call(self, body);
+        } else {
+          debugLog(`[SecureDoc] 🚫 [2-L3] XHR 차단: ${result?.action || 'unknown'}`);
         }
-      }).catch(() => _origXHRSend.call(self, body));
+      }).catch((e) => debugLog(`[SecureDoc] 🚫 [2-L3] XHR 차단(fail-closed): ${e.message}`));
       return;
     }
 
@@ -988,21 +989,31 @@
     }
 
     // ── FormData ──────────────────────────────────────────────────────────────
+    //
+    // 첫 파일만 보지 않는다. 한 FormData 에 지원 파일이 여럿이면 예전 코드는 첫 번째만
+    // 검사하고 나머지는 **원본 그대로** 같이 올려보냈다 — 다중 첨부에서는 그게 기본 상황이다.
     if (body instanceof FormData) {
-      const file = findFileInFD(body);
-      if (file && !_inProcess.has(file) && !_approvedFiles.has(file) && !_isContentApprovedBlob(file)) {
+      const pending = unapprovedEntries(body);
+      if (pending.length) {
         const self = this;
-        debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${file.name}`);
-        requestProcessing(file).then((result) => {
-          if (result?.action === 'upload' && result.file) {
-            _approvedFiles.add(result.file);
-            _origXHRSend.call(self, replaceFD(body, file.name, result.file));
-          } else if (result?.action === 'cancel' || result?.action === 'download') {
-            // 차단
-          } else {
-            _origXHRSend.call(self, body);
+        debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${pending.length}개 파일`);
+        (async () => {
+          const swaps = [];
+          for (const entry of pending) {
+            const result = await requestProcessing(entry.file);
+            if (result?.action === 'upload' && result.file) {
+              _approvedFiles.add(result.file);
+              swaps.push({ at: entry.at, file: result.file });
+            } else if (result?.action !== 'passthrough') {
+              // cancel·download·알 수 없는 결과는 전부 차단이다. 예전엔 여기서
+              // 원본을 그대로 올렸다 — 처리 오류 하나가 배치 전체의 원본 유출이 된다.
+              throw new Error(`blocked:${result?.action || 'unknown'}`);
+            }
           }
-        }).catch(() => _origXHRSend.call(self, body));
+          _origXHRSend.call(self, swaps.length ? replaceEntriesAt(body, swaps) : body);
+        })().catch((e) => {
+          debugLog(`[SecureDoc] 🚫 [2] XHR FormData 차단(fail-closed): ${e.message}`);
+        });
         return;
       }
     }
@@ -1011,21 +1022,49 @@
   };
 
   // ── FormData 헬퍼 ─────────────────────────────────────────────────────────
+  //
+  // 이름이 아니라 **자리**로 다룬다. 예전 replaceFD 는 val.name === origName 인 엔트리를
+  // 전부 같은 새 파일로 바꿨다. 다중 첨부는 같은 파일명을 허용하므로(사용자가 서로
+  // 다른 폴더의 동명 파일을 함께 고를 수 있다), 그러면 한 개의 마스킹본이 두 자리를
+  // 모두 덮어써 다른 문서가 통째로 사라진다. 이름은 로그·표시용이지 식별자가 아니다.
+  function fileEntriesOf(fd) {
+    const out = [];
+    let i = 0;
+    for (const [key, val] of fd.entries()) {
+      if (val instanceof File) out.push({ at: i, key, file: val });
+      i++;
+    }
+    return out;
+  }
+
   function findFileInFD(fd) {
     for (const [, val] of fd.entries()) {
       if (val instanceof File && isSupportedFile(val)) return val;
     }
     return null;
   }
-  function replaceFD(fd, origName, newFile) {
+
+  /** 검사가 필요한(=아직 승인되지 않은) 파일 엔트리들. */
+  function unapprovedEntries(fd) {
+    return fileEntriesOf(fd).filter(e => (
+      isSupportedFile(e.file) && !_inProcess.has(e.file)
+      && !_approvedFiles.has(e.file) && !_isContentApprovedBlob(e.file)
+    ));
+  }
+
+  /** at(자리) 기준으로 갈아끼운다. 같은 이름이 여러 개여도 서로를 덮지 않는다. */
+  function replaceEntriesAt(fd, replacements) {
+    const byAt = new Map(replacements.map(r => [r.at, r.file]));
     const out = new FormData();
+    let i = 0;
     for (const [key, val] of fd.entries()) {
-      if (val instanceof File && val.name === origName) out.append(key, newFile, newFile.name);
+      const swap = byAt.get(i);
+      if (swap) out.append(key, swap, swap.name);
       else out.append(key, val);
+      i++;
     }
     return out;
   }
-
   // ════════════════════════════════════════════════════════════════════════════
   // 레이어 3: fetch
   //   3a: ChatGPT 파일 등록 API (/backend-api/files POST)
@@ -1123,6 +1162,10 @@
     }
     if (body instanceof FormData) {
       const file = findFileInFD(body);
+      // 이름이 아니라 자리로 갈아끼우기 위해 이 파일이 몇 번째 엔트리인지 기억해 둔다
+      // (같은 파일명이 두 개면 이름 기준 교체는 한 개로 두 자리를 덮어쓴다).
+      const fileAt = file ? (fileEntriesOf(body).find(e => e.file === file)?.at ?? -1) : -1;
+      const swapAt = (fd, f) => (fileAt >= 0 ? replaceEntriesAt(fd, [{ at: fileAt, file: f }]) : fd);
       if (file && isSupportedFile(file)) _autoDetectUploadLayer('fetch-formdata');
       if (file && _isContentApprovedBlob(file)) {
         debugLog(`[SecureDoc] ✅ content 검토 완료 파일 업로드 통과 (fetch FormData): ${file.name}`);
@@ -1147,7 +1190,7 @@
             const result = await prom;
             if (result?.action === 'upload' && result.file) {
               _setCachedDrop(file, result.file);
-              return _origFetch(input, { ...init, body: replaceFD(body, file.name, result.file) });
+              return _origFetch(input, { ...init, body: swapAt(body, result.file) });
             }
             _lastDropResult = null;
             if (result?.action === 'cancel' || result?.action === 'download') {
@@ -1158,7 +1201,7 @@
           // 캐시된 결과 재사용 (같은 파일로 두 번 이상 요청하는 사이트)
           if (cachedMasked) {
             debugLog(`[SecureDoc] 📁 [3] fetch FormData 캐시 재사용: ${file.name}`);
-            return _origFetch(input, { ...init, body: replaceFD(body, file.name, cachedMasked) });
+            return _origFetch(input, { ...init, body: swapAt(body, cachedMasked) });
           }
           // 일반 경로: 파일 인풋 업로드
           if (!inProc) {
@@ -1166,7 +1209,7 @@
             const result = await requestProcessing(file);
             if (result?.action === 'upload' && result.file) {
               _approvedFiles.add(result.file);
-              return _origFetch(input, { ...init, body: replaceFD(body, file.name, result.file) });
+              return _origFetch(input, { ...init, body: swapAt(body, result.file) });
             }
             if (result?.action === 'cancel' || result?.action === 'download') {
               return new Response('{}', { status: 200 });
