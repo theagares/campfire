@@ -50,7 +50,7 @@ class HTMLInputElementStub extends EventTargetStub {
     this.id = id;
   }
   // setFileOnInput 이 마스킹본을 넣고 input/change 를 쏘는 시점을 순서 로그에 남긴다.
-  dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id }); return true; }
+  dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id, n: this.files?.length ?? 0 }); return true; }
   // 되돌려 붙인 노드를 다시 떼어내는 경로((22))가 실제로 떼어냈는지 보려면 필요하다.
   // host.appended 는 "붙인 적이 있다"는 **기록**이므로 여기서 건드리지 않는다 — (16)이
   // 그걸로 "되돌리기 전략을 시도했는지" 를 판정한다. 떼어냈는지는 isConnected 로 본다.
@@ -2279,6 +2279,17 @@ cancelScan(stuckScan);
     input29.files = [fileA, fileB];
     domBySelector.set('input[type="file"]', input29);
 
+    // ★ 이 대기가 회귀 하나를 잡았다.
+    //
+    // promptApproved 를 되돌리는 타이머가 try/finally **바깥**에 있었다. 앞 시나리오의
+    // 흐름이 예외로 빠져나가면 그 줄에 도달하지 못해 플래그가 영원히 true 로 남고,
+    // 그동안 keydown/click/submit 리스너가 전부 그냥 return 한다 — 사용자의 Enter 가
+    // 검사 없이 사이트로 직행한다. 아무 로그도 안 남아서 "승인 0개" 로만 보였다.
+    // 지금은 finally 안에서 반드시 재무장하므로 이 대기면 충분하다.
+    await new Promise(r => setTimeout(r, 4000));
+    // 28)이 전송 버튼 선택자를 전부 지웠다 — 첨부 대기가 그걸 신호로 쓰므로 되돌린다.
+    domBySelector.set('[data-testid="send-button"]', sendButtonStub);
+
     dispatchDocumentEvent('change', {
       target: input29,
       composedPath: () => [input29, documentStub],
@@ -2333,12 +2344,20 @@ cancelScan(stuckScan);
       throw new Error(`승인된 파일이 ${approvals.length}개다 — 두 개가 모두 승인돼야 한다`);
     }
 
-    // ★ 핵심: 주입 이벤트가 한 번이어야 한다. 두 번이면 순차로 쏜 것이다.
+    // ★ 핵심: 주입이 **한 번에 2개**를 실어야 한다.
+    //   한 번의 setFilesOnInput 이 input/change 두 이벤트를 쏘므로 이벤트 수가 아니라
+    //   그 이벤트가 싣고 있던 파일 수를 본다. 순차로 쐈다면 1개짜리가 섞여 나온다.
     const injects29 = actionLog.filter(e => e.kind === 'inject');
-    if (injects29.length !== 1) {
+    if (!injects29.length) throw new Error('주입이 전혀 일어나지 않았다');
+    const singles29 = injects29.filter(e => e.n === 1);
+    if (singles29.length) {
       throw new Error(
-        `파일 2개를 ${injects29.length}번에 나눠 넣었다 — DataTransfer 하나에 N개로 보내야 한다`,
+        `파일 2개를 하나씩 나눠 넣었다(1개짜리 주입 ${singles29.length}건) — `
+        + 'DataTransfer 하나에 N개로 보내야 한다',
       );
+    }
+    if (!injects29.some(e => e.n === 2)) {
+      throw new Error(`한 번에 2개를 실은 주입이 없다 (실린 개수: ${injects29.map(e => e.n).join(',')})`);
     }
     // 그 한 번에 두 파일이 다 실렸는가.
     if (input29.files?.length !== 2) {

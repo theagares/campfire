@@ -2545,8 +2545,16 @@
       await resubmitPrompt(latestCfg);
     } finally {
       restoreEditor();
+      // 이 타이머는 원래 try 바깥에 있었다. 그러면 resubmitPrompt 나 첨부 대기에서
+      // 예외가 나는 순간 이 줄에 **도달하지 못해** promptApproved 가 영원히 true 로
+      // 남는다. 그 플래그가 켜져 있는 동안 keydown/click/submit 리스너는 전부 그냥
+      // return 하므로, 사용자의 다음 Enter 는 검사 없이 사이트로 직행한다 — 페이지를
+      // 새로고침할 때까지. 게이트웨이가 조용히 꺼지는, 이 코드베이스가 가장 경계하는
+      // 실패 모드라 어떻게 빠져나가든 반드시 되돌리도록 finally 안으로 옮겼다.
+      //
+      // 3초를 두는 이유는 그대로다: 우리가 직접 보내는 재전송이 이 플래그로 통과한다.
+      setTimeout(() => { promptApproved = false; }, 3000);
     }
-    setTimeout(() => { promptApproved = false; }, 3000);
   }
 
   /** 검사가 진행 중일 때 들어온 전송 시도를 삼킨다.
