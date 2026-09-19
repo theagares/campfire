@@ -156,19 +156,38 @@ function pullItem(itemId) {
   });
 }
 
+/** 아직 결정 전 상태를 SW 에 맡긴다 — 패널을 닫았다 열어도 선택이 살아남게.
+ *
+ *  통째로가 아니라 바뀐 것만 보낸다. 매 토글마다 나가지만 보내는 건 키 목록과
+ *  짧은 문자열뿐이라 가볍고, 마지막 하나를 놓치면 그게 곧 사용자가 잃는 선택이라
+ *  디바운스하지 않는다. */
+function saveDraft(patch) {
+  if (state.kind !== 'multi' || !state.sessionId) return;
+  try {
+    chrome.runtime.sendMessage(
+      { type: 'PANEL_DRAFT_UPDATE', sessionId: state.sessionId, tabId: state.myTabId, ...patch },
+      () => { void chrome.runtime.lastError; },
+    );
+  } catch (_) { /* context invalidated */ }
+}
+
+const saveUnmaskedDraft = () => saveDraft({ unmaskedKeys: [...state.unmasked] });
+const saveDecisionsDraft = () => saveDraft({ decisions: Object.fromEntries(state.decisions) });
+
 /** 다중 세션 화면을 세운다. 브로드캐스트(PANEL_SCAN_INIT)와 스냅샷 복구가 공유한다. */
 function renderMulti(session) {
   state.kind = 'multi';
   state.docs = session.docs || [];
   state.promptMeta = session.prompt || { status: 'pending', counts: null };
-  state.unmasked = new Set();
+  const draft = session.draft || {};
+  state.unmasked = new Set(draft.unmaskedKeys || []);
   state.loaded = new Map();
-  state.decisions = new Map();
+  state.decisions = new Map(Object.entries(draft.decisions || {}));
   state.decided = false;
   state.stale = false;
   // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
   // 방금 붙인 파일이 어디 있는지 못 찾는다.
-  state.activeTab = state.docs[0]?.id ?? 'prompt';
+  state.activeTab = draft.activeTab ?? (state.docs[0]?.id ?? 'prompt');
   showView('result');
   renderTabs();
   showTab(state.activeTab);
@@ -238,6 +257,7 @@ el.docActions.addEventListener('click', (e) => {
   }
   armedRisky = null;
   state.decisions.set(docId, action);
+  saveDecisionsDraft();
   renderTabs();
   renderDocActions(state.docs.find(d => d.id === docId));
   refreshSummary();
@@ -245,6 +265,7 @@ el.docActions.addEventListener('click', (e) => {
 
 async function showTab(itemId) {
   state.activeTab = itemId;
+  saveDraft({ activeTab: itemId });
   renderTabs();
 
   const doc = state.docs.find(d => d.id === itemId);
@@ -431,6 +452,7 @@ function setMasked(key, masked) {
   const g = groupOfKey(key);
   if (g) syncGroupHead(g.dtype);
   refreshSummary();
+  saveUnmaskedDraft();
 }
 
 /** 그룹 전체를 한 번에 마스킹/해제 — 종류별 일괄 처리가 이 화면의 기본 조작이다. */
@@ -444,6 +466,7 @@ function setGroupMasked(dtype, masked) {
   }
   syncGroupHead(dtype);
   refreshSummary();
+  saveUnmaskedDraft();
 }
 
 function toggleGroupOpen(dtype) {

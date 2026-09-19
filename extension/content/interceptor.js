@@ -64,13 +64,33 @@
       _bridgeToken = String(event.data.token || '');
       return;
     }
-    if (event.data.type === 'UPS_CONTENT_APPROVED_FILE') {
-      // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅(_isContentApproved*)이
-      // 그냥 통과시킨다. 게다가 등록 단계 대조는 파일명만 본다. 즉 사용자가 방금 고른 파일명을
-      // 아는 페이지(자기 input 이니 당연히 안다)가 그 이름만 등록하면, 마스킹되지 않은 원본이
-      // 그대로 올라간다. 증거 없는 등록은 받지 않는다.
+    // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
+    //
+    // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅
+    // (_isContentApproved*)이 그냥 통과시킨다. 게다가 등록 단계 대조는 파일명만 본다.
+    // 즉 사용자가 방금 고른 파일명을 아는 페이지(자기 input 이니 당연히 안다)가 그
+    // 이름만 등록하면 마스킹되지 않은 원본이 그대로 올라간다. 증거 없는 등록은 받지 않는다.
+    //
+    // 예전엔 파일 하나짜리 UPS_CONTENT_APPROVED_FILE 도 있었는데, 주입 경로가 배치
+    // 하나로 모이면서 보내는 쪽이 사라져 함께 지웠다. batchId 가 붙는 덕에 수명을
+    // 묶어 회수할 수 있다는 게 본질적인 차이다.
+    if (event.data.type === 'UPS_CONTENT_APPROVE_BATCH') {
       if (!fromIsolated(event.data)) return;
-      _rememberContentApproved(event.data.meta);
+      for (const meta of event.data.files || []) _rememberContentApproved(meta, event.data.batchId);
+      return;
+    }
+    // 주입 전에 취소·실패했다 — 쓰이지 않은 승인을 즉시 지운다.
+    if (event.data.type === 'UPS_CONTENT_ABORT_BATCH') {
+      if (!fromIsolated(event.data)) return;
+      _dropBatch(event.data.batchId);
+      return;
+    }
+    // 주입까지 끝났다 — "새 승인 추가 금지" 만 걸고, 이미 등록된 것은 마지막 사용
+    // 이후 조용한 기간이 지나야 지운다. 사이트는 같은 파일을 등록 요청 → 실제 PUT →
+    // 재시도로 여러 번 쓰므로, 첫 일치에서 지우면 그 다음 요청이 검사 패널을 다시 띄운다.
+    if (event.data.type === 'UPS_CONTENT_CLOSE_BATCH') {
+      if (!fromIsolated(event.data)) return;
+      _closeBatch(event.data.batchId);
       return;
     }
     if (event.data.type !== 'UPS_PROTECTION_STATE') return;
@@ -114,24 +134,72 @@
   // 문자열 키 하나로 합치지 않고 필드를 그대로 들고 비교한다.
   const _contentApproved = [];
 
+  // 닫힌 배치의 승인은 "마지막 쓰임" 뒤 이만큼 조용하면 회수한다. 등록 요청 →
+  // 실제 업로드 → 정상 재시도까지가 이 안에 들어갈 만큼은 넉넉해야 하고, 다음 첨부가
+  // 그 승인을 주워 쓰지 못할 만큼은 짧아야 한다.
+  const _CLOSED_BATCH_QUIET_MS = 20 * 1000;
+  // batchId -> 닫은 시각. Set 이 아니라 Map 인 이유: "레코드가 남아 있는 동안만"
+  // 기억하면, 레코드가 없는 배치를 닫았을 때 표시가 그 자리에서 사라져 **닫은 뒤
+  // 도착한 승인이 그대로 등록된다.** 닫힘은 레코드 수명이 아니라 시간으로 잊는다.
+  const _closedBatches = new Map();
+
   function _pruneContentApproved() {
     const now = Date.now();
     for (let i = _contentApproved.length - 1; i >= 0; i--) {
-      if (_contentApproved[i].expiresAt <= now) _contentApproved.splice(i, 1);
+      const e = _contentApproved[i];
+      // hard TTL 은 마지막 안전망일 뿐 정상 회수 수단이 아니다. 정상 경로는 아래
+      // "닫힌 배치 + 조용한 기간" 이고, 그게 훨씬 먼저 걷어간다.
+      const expired = e.expiresAt <= now;
+      const settled = e.batchId != null && _closedBatches.has(e.batchId)
+        && now - e.lastUsedAt > _CLOSED_BATCH_QUIET_MS;
+      if (expired || settled) _contentApproved.splice(i, 1);
+    }
+    // 닫힘 표시는 hard TTL 이 지나야 잊는다(무한 증가 방지). 그 전까지는 레코드가
+    // 하나도 없어도 기억하고 있어야 늦게 도착한 승인을 거절할 수 있다.
+    for (const [id, closedAt] of _closedBatches) {
+      if (now - closedAt > _CONTENT_APPROVED_TTL_MS) _closedBatches.delete(id);
     }
   }
 
-  function _rememberContentApproved(meta) {
+  function _dropBatch(batchId) {
+    if (batchId == null) return;
+    let n = 0;
+    for (let i = _contentApproved.length - 1; i >= 0; i--) {
+      if (_contentApproved[i].batchId === batchId) { _contentApproved.splice(i, 1); n++; }
+    }
+    _closedBatches.delete(batchId);
+    debugLog(`[SecureDoc] 배치 승인 즉시 회수: ${n}건`);
+  }
+
+  function _closeBatch(batchId) {
+    if (batchId == null) return;
+    _closedBatches.set(batchId, Date.now());
+    _pruneContentApproved();
+    debugLog('[SecureDoc] 배치 승인 닫힘 — 조용한 기간 뒤 회수');
+  }
+
+  function _rememberContentApproved(meta, batchId = null) {
     if (!meta?.name) return;
     _pruneContentApproved();
+    // 닫힌 배치에는 새 승인을 더 붙일 수 없다. 이게 없으면 회수 직전에 끼어든
+    // 등록 하나가 수명을 처음부터 다시 시작시킨다.
+    if (batchId != null && _closedBatches.has(batchId)) return;
     while (_contentApproved.length >= _CONTENT_APPROVED_MAX) _contentApproved.shift();
+    const now = Date.now();
     _contentApproved.push({
       name: String(meta.name),
       size: Number(meta.size),
       type: meta.type || 'application/octet-stream',
-      expiresAt: Date.now() + _CONTENT_APPROVED_TTL_MS,
+      batchId,
+      lastUsedAt: now,
+      expiresAt: now + _CONTENT_APPROVED_TTL_MS,
     });
     debugLog('[SecureDoc] content 검토 완료 파일 등록:', meta.name);
+  }
+
+  /** 승인이 실제로 쓰였다 — 조용한 기간을 다시 센다(다단계 업로드 허용). */
+  function _touchApproved(entry) {
+    entry.lastUsedAt = Date.now();
   }
 
   /** 이름만으로 대조 — 사이트가 등록 요청 JSON 에 size/mime 를 자기 방식대로 채워
@@ -139,7 +207,10 @@
   function _isContentApprovedName(name) {
     if (!name) return false;
     _pruneContentApproved();
-    return _contentApproved.some(e => e.name === name);
+    const hit = _contentApproved.find(e => e.name === name);
+    if (!hit) return false;
+    _touchApproved(hit);
+    return true;
   }
 
   /** Blob/File 대조 — 사이트가 File 을 이름 없는 Blob 으로 다시 감싸 업로드하는
@@ -148,10 +219,12 @@
     if (!blob) return false;
     _pruneContentApproved();
     const type = blob.type || 'application/octet-stream';
-    if (blob.name) {
-      return _contentApproved.some(e => e.name === blob.name && e.size === blob.size && e.type === type);
-    }
-    return _contentApproved.some(e => e.size === blob.size && e.type === type);
+    const hit = blob.name
+      ? _contentApproved.find(e => e.name === blob.name && e.size === blob.size && e.type === type)
+      : _contentApproved.find(e => e.size === blob.size && e.type === type);
+    if (!hit) return false;
+    _touchApproved(hit);
+    return true;
   }
 
   debugLog('[SecureDoc] ✅ Interceptor 로드됨 (MAIN world)');

@@ -819,6 +819,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 패널이 활성 탭을 그릴 때 본문을 끌어간다. 브로드캐스트에는 메타만 실리므로
   // (runtime 채널은 열려 있는 모든 확장 페이지에 전역으로 도달한다) 원문은
   // 이렇게 요청한 탭에만, 요청한 항목 하나만 내보낸다.
+  // 패널이 바꾼 "아직 결정 전" 상태를 세션에 붙여 둔다.
+  //
+  // 이게 없으면 검토 도중 패널을 닫았다 다시 열었을 때 검사 결과와 탭은 돌아오는데
+  // **사용자가 이미 해제한 항목과 파일별 선택만 초기화된다.** 긴 문서에서 수십 개를
+  // 하나씩 풀어 둔 사람에게는 그게 곧 처음부터 다시 하라는 뜻이다.
+  if (type === 'PANEL_DRAFT_UPDATE') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const requester = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && requester != null && session.tabId !== requester)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      // 통째로 덮어쓰지 않고 온 것만 갱신한다 — 탭 전환만 알린 메시지가
+      // 해제 목록을 지워버리면 안 된다.
+      const draft = session.draft || {};
+      if (Array.isArray(message.unmaskedKeys)) draft.unmaskedKeys = message.unmaskedKeys;
+      if (message.decisions) draft.decisions = message.decisions;
+      if (message.activeTab != null) draft.activeTab = message.activeTab;
+      session.draft = draft;
+      persistSessions();
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
   if (type === 'GET_PANEL_ITEM_RESULT') {
     ensureHydrated().then(() => {
       const session = sessions.get(message.sessionId);

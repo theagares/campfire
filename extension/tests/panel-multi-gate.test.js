@@ -168,4 +168,34 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.strictEqual(sandbox.blockingReason(), null, '복구 후 전송이 막혀 있다');
 }
 
-console.log('panel-multi-gate.test.js: 6개 블록 통과');
+// ── 7) 복구 때 사용자의 선택까지 되살아난다 ─────────────────────────────────
+//     검사 결과만 돌아오고 선택이 초기화되면, 긴 문서에서 수십 개를 하나씩 풀어 둔
+//     사람에게는 처음부터 다시 하라는 뜻이다.
+{
+  sandbox.renderMulti({
+    kind: 'multi',
+    status: 'ready',
+    docs: [
+      { id: 'f0', fileName: 'a.pdf', status: 'done', counts: { pii: 3, injection: 0 } },
+      { id: 'f1', fileName: 'b.hwp', status: 'unsupported', counts: null },
+    ],
+    prompt: { status: 'done', counts: { pii: 0, injection: 0 } },
+    draft: {
+      unmaskedKeys: ['f0:0', 'f0:2'],
+      decisions: { f1: 'exclude' },
+      activeTab: 'prompt',
+    },
+  });
+
+  // 막혀 있던 미지원 파일의 선택이 되살아나 전송이 열려 있어야 한다.
+  assert.strictEqual(sandbox.blockingReason(), null, '복구된 선택이 반영되지 않아 전송이 막혔다');
+
+  const d = sandbox.buildMultiDecision();
+  assert.strictEqual(d.files.find(f => f.id === 'f1').action, 'exclude', '파일별 선택이 안 돌아왔다');
+  assert.strictEqual(
+    (d.files.find(f => f.id === 'f0').unmaskedKeys || []).join(','), 'f0:0,f0:2',
+    '해제한 항목이 안 돌아왔다',
+  );
+}
+
+console.log('panel-multi-gate.test.js: 7개 블록 통과');

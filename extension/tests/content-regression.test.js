@@ -276,8 +276,12 @@ const windowStub = {
     return true;
   },
   postMessage(data) {
-    if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
-      actionLog.push({ kind: 'approve-msg', meta: data.meta });
+    // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
+    if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
+      for (const meta of data.files || []) actionLog.push({ kind: 'approve-msg', meta });
+    }
+    if (data?.type === 'UPS_CONTENT_CLOSE_BATCH' || data?.type === 'UPS_CONTENT_ABORT_BATCH') {
+      actionLog.push({ kind: data.type === 'UPS_CONTENT_ABORT_BATCH' ? 'abort-batch' : 'close-batch' });
     }
     // MAIN world(interceptor.js)의 파일창 억제 응답을 흉내낸다. content.js 는 이 ACK 를
     // 받기 전에는 첨부 버튼을 절대 누르지 않는다 — 사용자가 누른 적 없는 OS 파일창이
@@ -568,7 +572,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   const combinedScan = startMulti;
 
   // (4) 결합 검토가 승인되면, 마스킹본을 페이지에 주입하기 "전에" MAIN world 로
-  // UPS_CONTENT_APPROVED_FILE 을 먼저 알려야 한다.
+  // UPS_CONTENT_APPROVE_BATCH 를 먼저 알려야 한다.
   //
   // 안 그러면 interceptor.js(MAIN world)의 Layer 2/3 업로드 훅이 그 마스킹본을
   // "처음 보는 원본"으로 오인해 검토 패널을 한 번 더 띄운다 — content.js 가 만든
@@ -621,15 +625,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   const approveIdx = actionLog.findIndex(e => e.kind === 'approve-msg');
   const injectIdx = actionLog.findIndex(e => e.kind === 'inject');
   if (approveIdx < 0) {
-    throw new Error('마스킹본 주입 전 UPS_CONTENT_APPROVED_FILE 알림이 없었다');
+    throw new Error('마스킹본 주입 전 UPS_CONTENT_APPROVE_BATCH 알림이 없었다');
   }
   if (injectIdx < 0) throw new Error('승인된 마스킹본이 페이지에 주입되지 않았다');
   if (approveIdx > injectIdx) {
-    throw new Error('UPS_CONTENT_APPROVED_FILE 알림이 주입보다 늦게 나갔다 (순서 역전)');
+    throw new Error('UPS_CONTENT_APPROVE_BATCH 알림이 주입보다 늦게 나갔다 (순서 역전)');
   }
   if (actionLog[approveIdx].meta?.name !== 'report.pdf') {
     throw new Error(`알림 메타의 파일명이 다르다: ${actionLog[approveIdx].meta?.name}`);
   }
+  // 승인은 반드시 회수된다. 안 그러면 쓰이지 않은 면제가 10분간 살아남아,
+  // 다음 첨부가 우연히 같은 메타를 가질 때 검사 없이 통과한다.
+  const closeIdx = actionLog.findIndex(e => e.kind === 'close-batch' || e.kind === 'abort-batch');
+  if (closeIdx < 0) throw new Error('배치 승인을 회수하지 않았다 (close/abort 없음)');
+  if (closeIdx < injectIdx) throw new Error('주입보다 먼저 승인을 닫았다 — 업로드가 막힌다');
 
   // (5) 드롭한 문서를 가로챌 때, 사이트의 드래그 상태를 즉시 정리해줘야 한다.
   //

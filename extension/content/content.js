@@ -69,20 +69,38 @@
    *  주입(dispatchEvent)은 동기 실행인데 postMessage 는 태스크 큐를 거치므로, 알림이
    *  MAIN world 에 먼저 도달하도록 한 매크로태스크 양보한 뒤 주입해야 한다(그래서
    *  async 이며, 호출부는 반드시 await 한 뒤 주입해야 한다). */
-  async function announceContentApprovedFile(file) {
-    if (!file) return;
+  /** 배치 단위 승인. 개별 승인과 달리 batchId 로 수명을 묶어 끝나면 회수한다. */
+  async function announceApprovedBatch(batchId, files) {
+    const list = (files || []).filter(Boolean);
+    if (!list.length) return;
     window.postMessage({
       __campfire_config: true,
       direction: 'isolated-to-main',
-      type: 'UPS_CONTENT_APPROVED_FILE',
+      type: 'UPS_CONTENT_APPROVE_BATCH',
       bridgeToken,
-      meta: {
-        name: file.name,
-        size: file.size,
-        type: file.type || 'application/octet-stream',
-      },
+      batchId,
+      files: list.map(f => ({
+        name: f.name, size: f.size, type: f.type || 'application/octet-stream',
+      })),
     }, '*');
     await new Promise((r) => setTimeout(r, 0));
+  }
+
+  /** 배치가 끝났다고 알린다.
+   *
+   *  close: 주입까지 성공 — 새 승인만 막고, 이미 등록된 것은 사이트의 다단계 업로드
+   *         (등록 요청 → 실제 PUT → 정상 재시도)가 끝날 때까지 남겨 둔다.
+   *  abort: 주입 전에 취소·실패 — 쓰이지 않은 승인을 즉시 지운다. 남겨 두면 다음
+   *         첨부가 우연히 같은 메타를 가질 때 검사 없이 통과할 수 있다. */
+  function finishApprovedBatch(batchId, kind) {
+    if (!batchId) return;
+    window.postMessage({
+      __campfire_config: true,
+      direction: 'isolated-to-main',
+      type: kind === 'abort' ? 'UPS_CONTENT_ABORT_BATCH' : 'UPS_CONTENT_CLOSE_BATCH',
+      bridgeToken,
+      batchId,
+    }, '*');
   }
 
   sendBridgeTokenToMain();
@@ -1020,6 +1038,10 @@
     const injected = [];
     let allOk = true;
 
+    // 승인은 주입 직전에 파일 단위로 붙이고(아래), 이 함수를 어떻게 빠져나가든
+    // finally 에서 반드시 닫는다. 예전엔 승인만 남기고 회수가 없어, 주입에 실패한
+    // 파일의 승인이 10분 동안 살아 있었다.
+    try {
     for (const file of decision.files || []) {
       if (file.action === 'exclude') continue;
       const item = batch.items.find(i => i.id === file.id);
@@ -1040,7 +1062,7 @@
       }
       if (!toInject) { allOk = false; continue; }
 
-      await announceContentApprovedFile(toInject);
+      await announceApprovedBatch(batch.id, [toInject]);
       // ponytail: 파일을 하나씩 순차 주입한다. DataTransfer 하나에 N개를 싣는 쪽이
       // 원래 사용자 동작에 가깝지만, injectFileWithEvidence 는 실사용 실패를 겪으며
       // 여러 번 뒤집힌 코드라 첫 착지에서 건드리지 않았다. 사이트별 실측(계획 §7)
@@ -1049,6 +1071,11 @@
         preferred: ctx.preferred, parentHint: ctx.parentHint, dropTarget: ctx.dropTarget,
       })) !== false;
       if (ok) injected.push(toInject.name); else allOk = false;
+    }
+    } finally {
+      // 하나도 못 넣었으면 승인이 쓰일 일이 없다 — 즉시 지운다.
+      // 하나라도 넣었으면 사이트가 그 파일로 여러 번 요청할 수 있으므로 닫기만 한다.
+      finishApprovedBatch(batch.id, injected.length ? 'close' : 'abort');
     }
 
     return { allOk, injected };
@@ -2323,7 +2350,7 @@
         const finalText = typeof decision.promptText === 'string' ? decision.promptText : text;
         // 주입 전에 MAIN world 에 먼저 알려야 한다 — 안 그러면 사이트가 이 파일을
         // 업로드할 때 interceptor 의 Layer 2/3 가 "처음 보는 원본"으로 오인해 검토
-        // 패널을 한 번 더 띄운다(announceContentApprovedFile 주석 참고).
+        // 패널을 한 번 더 띄운다(announceApprovedBatch 주석 참고).
         // 주입 성공 여부를 반드시 본다 — 예전엔 반환값을 버려서, 파일이 하나도 안
         // 들어갔는데도 그대로 프롬프트만 전송했다("문서가 안 간다"의 마지막 조각).
         // 텍스트를 "먼저" 넣는다. 그래야 전송 버튼이 텍스트 기준으로 일단 열리고,

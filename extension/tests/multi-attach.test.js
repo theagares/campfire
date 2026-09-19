@@ -294,5 +294,42 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   assert.strictEqual(rdoc.status, 'error', '읽기 실패가 대기 상태로 남았다 — 전송이 영영 안 열린다');
   assert.ok(rdoc.error, '오류 사유가 없어 사용자가 왜 막혔는지 모른다');
 
-  console.log('multi-attach.test.js: 9개 블록 통과');
+  // ── 10) 결정 전 선택은 SW 가 들고 있다가 돌려준다 ────────────────────────
+  //     이게 없으면 검토 도중 패널을 닫았다 열었을 때 검사 결과와 탭은 돌아오는데
+  //     **해제한 항목과 파일별 선택만 초기화된다.** 긴 문서에서 수십 개를 하나씩
+  //     풀어 둔 사람에게는 처음부터 다시 하라는 뜻이다.
+  panelMessages.length = 0;
+  tabMessages.length = 0;
+  await send({
+    type: 'START_MULTI_SCAN', sessionId: 's4',
+    payload: { items: [{ id: 'f0', fileName: 'draft.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }] },
+  });
+  await settle();
+
+  await send({ type: 'PANEL_DRAFT_UPDATE', sessionId: 's4', unmaskedKeys: ['f0:0', 'f0:2'] });
+  await send({ type: 'PANEL_DRAFT_UPDATE', sessionId: 's4', activeTab: 'prompt' });
+  await send({ type: 'PANEL_DRAFT_UPDATE', sessionId: 's4', decisions: { f0: 'original' } });
+
+  const snap = await send({ type: 'PANEL_READY', tabId: 7 }, { tab: { id: 7 } });
+  const draft = snap?.session?.draft;
+  assert.ok(draft, 'draft 가 세션에 안 붙었다');
+  assert.strictEqual((draft.unmaskedKeys || []).join(','), 'f0:0,f0:2', '해제 목록이 안 돌아왔다');
+  assert.strictEqual(draft.activeTab, 'prompt', '활성 탭이 안 돌아왔다');
+  assert.strictEqual(draft.decisions?.f0, 'original', '파일별 선택이 안 돌아왔다');
+
+  // 부분 갱신이어야 한다 — 탭만 알린 메시지가 해제 목록을 지우면 안 된다.
+  await send({ type: 'PANEL_DRAFT_UPDATE', sessionId: 's4', activeTab: 'f0' });
+  const snap2 = await send({ type: 'PANEL_READY', tabId: 7 }, { tab: { id: 7 } });
+  assert.strictEqual(
+    (snap2.session.draft.unmaskedKeys || []).join(','), 'f0:0,f0:2',
+    '탭 전환이 해제 목록을 날렸다',
+  );
+
+  // 다른 탭은 남의 draft 를 못 쓴다.
+  const foreignDraft = await send(
+    { type: 'PANEL_DRAFT_UPDATE', sessionId: 's4', unmaskedKeys: [] }, { tab: { id: 99 } },
+  );
+  assert.strictEqual(foreignDraft.ok, false, '다른 탭이 남의 draft 를 덮어썼다');
+
+  console.log('multi-attach.test.js: 10개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });
