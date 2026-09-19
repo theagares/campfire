@@ -112,12 +112,12 @@ class EngineManager extends EventEmitter {
       ...process.env,
       // PLAN §4/§8: 인젝션 정책을 spawn 시점에 반영. 엔진 config.py 가 이 env 를 읽는다.
       SECUREDOC_INJECTION_POLICY: this.config.get('injectionPolicy') || 'mask',
-      // config-store 의 piiDetector/injectionDetector 를 실제로 엔진에 반영. 룰베이스
-      // 폴백을 완전히 제거한 뒤에는 encoder/llm_mcp 가 유일한 값이다 — 모델 가중치는
-      // 설치 파일에 없고 설치 후 자동 다운로드되지만(MODELS.md), 가중치가 아직 없어도
-      // 엔진 자체는 정상 기동하고 검사 시점에 model_status 게이트가 통과 처리한다.
-      SECUREDOC_PII_DETECTOR: this.config.get('piiDetector') || 'encoder',
-      SECUREDOC_INJECTION_DETECTOR: this.config.get('injectionDetector') || 'llm_mcp',
+      // SECUREDOC_PII_DETECTOR / _INJECTION_DETECTOR 는 더 보내지 않는다 — 엔진
+      // registry 가 그 값을 읽지 않는다(구현이 종류별로 하나씩뿐이라 조회표를 없앴다).
+      // 보내기만 하고 아무 효과가 없던 env 라, 값이 바뀔 때 엔진을 재시작하던 것도
+      // 함께 뺐다(ipc.js). 가중치는 설치 파일에 없고 설치 후 자동으로 내려받지만
+      // (MODELS.md), 없어도 엔진 자체는 정상 기동하고 검사 시점에 model_status
+      // 게이트가 통과 처리한다.
       // Upstage Solar API 키. 설정 화면(#upstage-api-key)에서 저장한 값을 그대로
       // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
       // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).

@@ -33,8 +33,6 @@ from pathlib import Path
 def _prepare_env(args: argparse.Namespace) -> None:
     """detector 가 읽는 설정을 환경변수로 고정한다. app 임포트 전에 끝내야 한다."""
     os.environ["SECUREDOC_MODELS_DIR"] = args.models_dir
-    os.environ["SECUREDOC_PII_DETECTOR"] = "encoder"
-    os.environ["SECUREDOC_INJECTION_DETECTOR"] = "llm_mcp"
     os.environ["SECUREDOC_PII_DEVICE"] = args.device
     os.environ["SECUREDOC_INJECTION_DEVICE"] = args.device
     # Solar 2단계 위치 특정을 끈다 — 이 벤치의 측정 대상이 아니다.
