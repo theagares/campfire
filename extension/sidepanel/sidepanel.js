@@ -425,7 +425,31 @@ function refreshCounts() {
   el.counts.textContent = `PII ${pii}건 | INJECTION ${inj}건 탐지`;
 }
 
+/** 배치 전체 기준 요약. 활성 탭만 세면 안 된다 — 아래 주석 참고. */
+function multiSummary() {
+  const counted = (c) => (c ? (c.pii || 0) + (c.injection || 0) : 0);
+  const total = state.docs.reduce((n, d) => n + counted(d.counts), 0)
+    + counted(state.promptMeta?.counts);
+  const excluded = state.docs.filter(d => (
+    state.decisions.get(d.id) === 'exclude'
+    || (!state.decisions.has(d.id) && d.status !== 'done' && d.status !== 'truncated')
+  )).length;
+  return { total, maskCount: total - state.unmasked.size, sending: state.docs.length - excluded, excluded };
+}
+
 function refreshSummary() {
+  if (state.kind === 'multi') {
+    // 활성 탭 항목 수에서 **전체 탭**의 해제 수를 빼면 안 된다. 다른 탭에서 해제를
+    // 많이 하면 음수가 되고, 그러면 아래 분기가 "마스킹 없이 원본 전송" 이라는
+    // 정반대 문구를 띄운다 — 실제로는 마스킹해서 보내는데 원본이 나간다고 말하는,
+    // 이 화면이 절대 하면 안 되는 거짓말이다. 그래서 배치 전체로 센다.
+    const { total, maskCount, sending, excluded } = multiSummary();
+    const files = excluded ? `${sending}개 전송 · ${excluded}개 제외` : `${sending}개 전송`;
+    el.maskSummary.textContent = maskCount > 0 ? `${files} · ${maskCount}건 마스킹` : files;
+    el.maskSummary.classList.toggle('clear', maskCount <= 0 && total === 0);
+    return;
+  }
+
   const total = allItemSegments().length;
   const maskCount = total - state.unmasked.size;
   if (maskCount > 0) {

@@ -125,4 +125,21 @@ assert.strictEqual(buildFinalText([], new Set()), '');
 assert.strictEqual(buildFinalText(null, null), '');
 assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은 원본 유지');
 
-console.log('mask-segments.test.js: 8개 블록 통과');
+// ── 9) 다중 요약은 배치 전체로 센다 ─────────────────────────────────────────
+//     활성 탭 항목 수에서 전체 탭의 해제 수를 빼면 음수가 되고, 그러면 푸터가
+//     "마스킹 없이 원본 전송" 이라는 정반대 문구를 띄운다. 실제로는 마스킹해서
+//     보내는데 원본이 나간다고 말하는, 이 화면이 절대 하면 안 되는 거짓말이다.
+{
+  const counted = (c) => (c ? (c.pii || 0) + (c.injection || 0) : 0);
+  const docs = [{ counts: { pii: 2, injection: 0 } }, { counts: { pii: 1, injection: 0 } }];
+  const unmasked = new Set(['f1:0', 'f1:1', 'f1:2']);   // 다른 탭에서 3개 해제
+
+  const activeTabOnly = 2 - unmasked.size;               // 옛 계산: -1
+  const wholeBatch = docs.reduce((n, d) => n + counted(d.counts), 0) - unmasked.size;
+
+  assert.ok(activeTabOnly < 0, '재현 전제: 옛 계산은 음수가 된다');
+  assert.strictEqual(wholeBatch, 0, '배치 전체로 세면 음수가 나오지 않는다');
+  assert.ok(wholeBatch >= 0, '요약 건수는 음수가 될 수 없다');
+}
+
+console.log('mask-segments.test.js: 9개 블록 통과');
