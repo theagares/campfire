@@ -12,6 +12,7 @@ from .core import add_runtime_audit, assess, compare_baseline, make_baseline
 from .llm import review_with_solar
 from .probe import probe_loopback, validate_loopback_url
 from .proxy import run_stdio_proxy
+from .reporting import render_text
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -21,9 +22,10 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("snapshot", type=Path)
     scan.add_argument("--server-id", required=True)
     scan.add_argument("--source", type=Path)
-    scan.add_argument("--baseline", type=Path, help="compare against approved baseline")
+    scan.add_argument("--baseline", type=Path, help="compare against a saved reference snapshot")
     scan.add_argument("--runtime-audit", type=Path, help="include redacted proxy JSONL observations")
-    scan.add_argument("--approve-baseline", type=Path, help="explicitly save current approved fingerprints")
+    scan.add_argument("--save-baseline", type=Path, help="save current fingerprints as a reference snapshot")
+    scan.add_argument("--json", action="store_true", help="print machine-readable JSON instead of a text report")
     scan.add_argument("--llm", action="store_true", help="send redacted tool definitions to Upstage Solar")
     scan.add_argument("--consent-cloud", action="store_true", help="confirm cloud transfer for --llm")
 
@@ -32,13 +34,16 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--source", type=Path)
     probe.add_argument("--baseline", type=Path)
     probe.add_argument("--runtime-audit", type=Path)
-    probe.add_argument("--approve-baseline", type=Path)
+    probe.add_argument("--save-baseline", type=Path)
+    probe.add_argument("--json", action="store_true")
+    probe.add_argument("--llm", action="store_true", help="send redacted tool definitions to Upstage Solar")
+    probe.add_argument("--consent-cloud", action="store_true", help="confirm cloud transfer for --llm")
     probe.add_argument("--confirm-connect", action="store_true", help="confirm target contact")
 
-    gateway = commands.add_parser("proxy", help="start a guarded stdio proxy to an approved loopback MCP")
+    gateway = commands.add_parser("proxy", help="start a non-blocking stdio observer for a loopback MCP")
     gateway.add_argument("url")
-    gateway.add_argument("--baseline", required=True, type=Path)
-    gateway.add_argument("--audit-file", type=Path, help="append redacted call decisions as JSONL")
+    gateway.add_argument("--baseline", type=Path, help="optional saved fingerprint reference")
+    gateway.add_argument("--audit-file", type=Path, help="append redacted observations as JSONL")
     gateway.add_argument("--confirm-connect", action="store_true", help="confirm target contact")
     return parser
 
@@ -65,24 +70,31 @@ async def _run(args: argparse.Namespace) -> int:
             raise ValueError("runtime audit exceeds 1 MB")
         events = [json.loads(line) for line in args.runtime_audit.read_text(encoding="utf-8").splitlines() if line.strip()]
         add_runtime_audit(report, events)
-    if args.command == "scan" and args.llm:
+    if args.llm:
         report.llm_suggestions = await review_with_solar(tools, consent=args.consent_cloud)
-    output = report.to_dict()
+    changes: list[dict[str, str]] = []
     if args.baseline:
         baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
         changes = compare_baseline(report, baseline)
+        for change in changes:
+            report.add("definition_changed", "runtime_behavior", 5, "warning",
+                       f"tools.{change['tool']}", f"Tool definition {change['change']} since reference snapshot")
+    if args.save_baseline:
+        args.save_baseline.write_text(json.dumps(make_baseline(report), indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        output = report.to_dict()
         output["baselineChanges"] = changes
-        if changes:
-            output["verdict"] = "definition_changed"
-    if args.approve_baseline:
-        if output["verdict"] in {"critical", "definition_changed"}:
-            raise ValueError("cannot approve a critical or changed catalog")
-        args.approve_baseline.write_text(json.dumps(make_baseline(report), indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(output, ensure_ascii=False, indent=2))
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        print(render_text(report, changes))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows pipes may report cp949 even when their consumer decodes UTF-8.
+    # Keep a real terminal's chosen encoding, but make redirected reports portable.
+    if not sys.stdout.isatty() and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     args = _parser().parse_args(argv)
     try:
         return asyncio.run(_run(args))

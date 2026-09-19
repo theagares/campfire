@@ -1,4 +1,4 @@
-"""Opt-in loopback MCP metadata probe and guarded tool forwarding.
+"""Opt-in loopback MCP metadata probe and observation-only forwarding.
 
 Only numeric loopback addresses are supported in this prototype. Arbitrary remote
 URLs would require DNS rebinding/redirect-resistant egress controls.
@@ -75,55 +75,47 @@ async def probe_loopback(url: str) -> list[dict[str, Any]]:
     return await asyncio.wait_for(run(), timeout=20)
 
 
-async def list_checked(url: str, baseline: dict[str, Any]) -> list[types.Tool]:
+async def list_observed(url: str, baseline: dict[str, Any] | None = None
+                        ) -> tuple[list[types.Tool], list[str]]:
     validate_loopback_url(url)
     snapshot = await probe_loopback(url)
-    report = assess(url, snapshot)
-    if compare_baseline(report, baseline):
-        raise UnsafeTargetError("tool definitions changed since explicit approval")
-    if report.verdict == "critical":
-        raise UnsafeTargetError("critical tool definition finding")
-    return [types.Tool.model_validate(tool) for tool in snapshot]
+    changes = compare_baseline(assess(url, snapshot), baseline) if baseline is not None else []
+    signals = ["catalog_changed"] if changes else []
+    return [types.Tool.model_validate(tool) for tool in snapshot], signals
 
 
-async def call_checked(url: str, baseline: dict[str, Any], tool_name: str,
-                       arguments: dict[str, Any]) -> types.CallToolResult:
-    """Inspect metadata and visible MCP messages before returning a tool result."""
+async def call_observed(url: str, tool_name: str, arguments: dict[str, Any],
+                        baseline: dict[str, Any] | None = None
+                        ) -> tuple[types.CallToolResult, list[str]]:
+    """Forward an explicitly requested call and report observed risk signals.
+
+    No security finding blocks or changes the call/result. This is a scanner,
+    not a protective gateway; tool execution may have real side effects.
+    """
     validate_loopback_url(url)
-    if any(f.severity == "critical" for f in inspect_runtime_payload(tool_name, arguments)):
-        raise UnsafeTargetError("sensitive or dangerous tool arguments blocked")
+    signals: set[str] = set()
+    if inspect_runtime_payload(tool_name, arguments):
+        signals.add("sensitive_argument")
 
     async def run():
-        blocked_reason: str | None = None
-        result: types.CallToolResult | None = None
         async with streamablehttp_client(url, timeout=5, sse_read_timeout=5,
                                          httpx_client_factory=_client_factory) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 snapshot, _ = await _catalog(session)
-                report = assess(url, snapshot)
-                if compare_baseline(report, baseline):
-                    blocked_reason = "tool definitions changed since explicit approval"
-                elif report.verdict == "critical":
-                    blocked_reason = "critical tool definition finding"
-                elif tool_name not in report.fingerprints:
-                    blocked_reason = "unapproved tool"
-                else:
-                    result = await session.call_tool(tool_name, arguments)
-                    if any(not isinstance(block, types.TextContent) for block in result.content):
-                        blocked_reason = "uninspectable non-text tool result blocked"
-                    else:
-                        text = "\n".join(block.text for block in result.content)
-                        if result.structuredContent is not None:
-                            text += "\n" + json.dumps(result.structuredContent, ensure_ascii=False)
-                        if len(text.encode("utf-8")) > 64_000:
-                            blocked_reason = "tool result exceeds inspection limit"
-                        elif any(f.severity == "critical" for f in inspect_runtime_payload(tool_name, response_text=text)):
-                            blocked_reason = "poisoned or sensitive tool result blocked"
-        if blocked_reason:
-            raise UnsafeTargetError(blocked_reason)
-        if result is None:
-            raise UnsafeTargetError("no tool result")
-        return result
+                if baseline is not None and compare_baseline(assess(url, snapshot), baseline):
+                    signals.add("catalog_changed")
+                result = await session.call_tool(tool_name, arguments)
+                if any(not isinstance(block, types.TextContent) for block in result.content):
+                    signals.add("uninspectable_result")
+                text = "\n".join(block.text for block in result.content if isinstance(block, types.TextContent))
+                if result.structuredContent is not None:
+                    text += "\n" + json.dumps(result.structuredContent, ensure_ascii=False)
+                if len(text.encode("utf-8")) > 64_000:
+                    signals.add("uninspectable_result")
+                if inspect_runtime_payload(tool_name, response_text=text[:64_000]):
+                    signals.add("poisoned_result")
+                return result
 
-    return await asyncio.wait_for(run(), timeout=30)
+    result = await asyncio.wait_for(run(), timeout=30)
+    return result, sorted(signals)

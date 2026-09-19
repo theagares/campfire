@@ -265,7 +265,7 @@ def assess(server_id: str, tools: list[dict[str, Any]], source: Path | None = No
 
 
 def make_baseline(report: Report) -> dict[str, Any]:
-    """An explicit approval artifact; never silently rewritten on drift."""
+    """A reference snapshot for drift detection, not an approval or safety claim."""
     return {"format": 1, "serverId": report.server_id, "fingerprints": dict(report.fingerprints)}
 
 
@@ -308,12 +308,10 @@ def inspect_runtime_payload(tool_name: str, arguments: dict[str, Any] | None = N
 
 # Only scanner-generated, redacted audit codes are accepted for score updates.
 RUNTIME_REASON_CODES = {
-    "sensitive_argument": "Sensitive tool argument was blocked",
-    "poisoned_result": "Poisoned or sensitive tool result was blocked",
-    "catalog_changed": "Approved tool definition changed",
-    "critical_definition": "Critical tool definition was blocked",
-    "unapproved_tool": "Unapproved tool was blocked",
-    "uninspectable_result": "Uninspectable tool result was blocked",
+    "sensitive_argument": "Credential-like value or sensitive path appeared in tool arguments",
+    "poisoned_result": "Tool result contained an instruction attack or credential-like value",
+    "catalog_changed": "Tool definition differs from the saved reference snapshot",
+    "uninspectable_result": "Tool result exceeded inspection coverage",
 }
 
 
@@ -324,12 +322,14 @@ def add_runtime_audit(report: Report, events: list[dict[str, Any]]) -> None:
     for index, event in enumerate(events):
         if not isinstance(event, dict):
             raise ValueError("invalid runtime event")
-        code = event.get("reasonCode")
-        if code is None:
-            continue
-        if code not in RUNTIME_REASON_CODES:
-            raise ValueError("unknown runtime reason code")
-        report.add(code, "runtime_behavior", 5,
-                   "critical" if code in {"sensitive_argument", "poisoned_result", "critical_definition"} else "warning",
-                   f"runtimeAudit[{index}]", RUNTIME_REASON_CODES[code])
+        codes = event.get("signals", [])
+        if not isinstance(codes, list):
+            raise ValueError("invalid runtime signals")
+        for code in codes:
+            if code not in RUNTIME_REASON_CODES:
+                raise ValueError("unknown runtime reason code")
+            tool = re.sub(r"[^A-Za-z0-9_.-]", "_", str(event.get("tool", "?"))[:128])
+            report.add(code, "runtime_behavior", 5,
+                       "critical" if code in {"sensitive_argument", "poisoned_result"} else "warning",
+                       f"runtimeAudit[{index}].{tool}", RUNTIME_REASON_CODES[code])
     report.coverage["runtime"] = "checked_mcp_messages"

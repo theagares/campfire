@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 from experiments.mcp_risk_scanner.core import assess, make_baseline
 from experiments.mcp_risk_scanner.probe import (
-    UnsafeTargetError, call_checked, list_checked, probe_loopback,
+    call_observed, list_observed, probe_loopback,
 )
 
 
@@ -65,26 +65,33 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_tools_list_and_allowed_call(self):
         self.assertEqual({tool["name"] for tool in self.tools}, {"echo", "bad_result"})
-        listed = await list_checked(self.url, self.baseline)
+        listed, signals = await list_observed(self.url, self.baseline)
         self.assertEqual({tool.name for tool in listed}, {"echo", "bad_result"})
-        result = await call_checked(self.url, self.baseline, "echo", {"message": "hello"})
+        self.assertEqual(signals, [])
+        result, signals = await call_observed(self.url, "echo", {"message": "hello"}, self.baseline)
         self.assertFalse(result.isError)
+        self.assertEqual(signals, [])
         self.assertIn("hello", str(result.content))
 
-    async def test_bad_result_and_secret_argument_blocked(self):
-        with self.assertRaises(UnsafeTargetError):
-            await call_checked(self.url, self.baseline, "bad_result", {})
-        with self.assertRaises(UnsafeTargetError):
-            await call_checked(self.url, self.baseline, "echo",
-                               {"message": "-----BEGIN PRIVATE KEY-----"})
+    async def test_bad_result_and_secret_argument_reported_without_blocking(self):
+        result, signals = await call_observed(self.url, "bad_result", {}, self.baseline)
+        self.assertFalse(result.isError)
+        self.assertIn("id_rsa", str(result.content))
+        self.assertIn("poisoned_result", signals)
+        result, signals = await call_observed(self.url, "echo",
+                                              {"message": "-----BEGIN PRIVATE KEY-----"}, self.baseline)
+        self.assertFalse(result.isError)
+        self.assertIn("sensitive_argument", signals)
 
-    async def test_changed_baseline_blocks_forwarding(self):
+    async def test_changed_baseline_reports_but_still_forwards(self):
         stale = json.loads(json.dumps(self.baseline))
         stale["fingerprints"]["echo"] = "0" * 64
-        with self.assertRaises(UnsafeTargetError):
-            await list_checked(self.url, stale)
-        with self.assertRaises(UnsafeTargetError):
-            await call_checked(self.url, stale, "echo", {"message": "hello"})
+        listed, signals = await list_observed(self.url, stale)
+        self.assertEqual({tool.name for tool in listed}, {"echo", "bad_result"})
+        self.assertIn("catalog_changed", signals)
+        result, signals = await call_observed(self.url, "echo", {"message": "hello"}, stale)
+        self.assertFalse(result.isError)
+        self.assertIn("catalog_changed", signals)
 
     async def test_real_stdio_proxy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -104,13 +111,19 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual({tool.name for tool in catalog.tools}, {"echo", "bad_result"})
                     good = await client.call_tool("echo", {"message": "via proxy"})
                     self.assertFalse(good.isError)
-                    blocked = await client.call_tool("bad_result", {})
-                    self.assertTrue(blocked.isError)
-                    self.assertNotIn("id_rsa", str(blocked.content))
+                    observed = await client.call_tool("bad_result", {})
+                    self.assertFalse(observed.isError)
+                    self.assertIn("id_rsa", str(observed.content))
+                    sensitive = await client.call_tool("echo", {"message": "-----BEGIN PRIVATE KEY-----"})
+                    self.assertFalse(sensitive.isError)
+                    self.assertIn("PRIVATE KEY", str(sensitive.content))
             events = [json.loads(line) for line in (Path(temp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([event["decision"] for event in events], ["allowed", "blocked"])
-            self.assertEqual(events[1]["reasonCode"], "poisoned_result")
+            forwarded = [event for event in events if event["decision"] == "forwarded"]
+            self.assertEqual(len(forwarded), 3)
+            self.assertIn("poisoned_result", forwarded[1]["signals"])
+            self.assertIn("sensitive_argument", forwarded[2]["signals"])
             self.assertNotIn("id_rsa", json.dumps(events))
+            self.assertNotIn("PRIVATE KEY", json.dumps(events))
 
 
 if __name__ == "__main__":
