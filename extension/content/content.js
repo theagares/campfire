@@ -994,14 +994,18 @@
       try {
         base64Data = await fileToBase64(item.file);
       } catch (_) { base64Data = null; }
-      if (!base64Data) continue;   // 읽지 못한 파일은 SW 쪽에서 pending 으로 남아 전송을 막는다
 
+      // 못 읽은 파일도 반드시 알린다. 그냥 건너뛰면 그 탭이 영원히 '대기 중' 으로
+      // 남아 전송 버튼이 열리지 않고, 사용자에게는 "기다리면 되는" 것처럼 보인다.
+      // 오류로 세워야 "이 파일 제거" 를 골라 나머지를 보낼 수 있다.
       await sendToSW({
         type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
-        payload: {
-          docId: item.id, base64Data,
-          mimeType: item.mimeType, fileName: item.fileName, userPrompt: text,
-        },
+        payload: base64Data
+          ? {
+              docId: item.id, base64Data,
+              mimeType: item.mimeType, fileName: item.fileName, userPrompt: text,
+            }
+          : { docId: item.id, readError: '파일을 읽지 못했습니다' },
       });
       base64Data = null;   // 다음 파일을 읽기 전에 참조를 버린다
     }

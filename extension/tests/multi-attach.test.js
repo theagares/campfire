@@ -266,5 +266,33 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   assert.strictEqual(tdoc.scannedChars, 4);
   assert.strictEqual(tdoc.originalChars, 900);
 
-  console.log('multi-attach.test.js: 8개 블록 통과');
+  // s2 를 끝내 lease 를 푼다. 안 풀면 다음 배치는 큐에서 계속 기다린다 —
+  // 그게 전역 큐가 할 일이지만, 여기서는 다음 블록을 돌려야 하므로 정상 종료시킨다.
+  await send({ type: 'FINISH_MULTI_SCAN', sessionId: 's2', leaseId: lease2 });
+  await settle();
+
+  // ── 9) 읽지 못한 파일은 대기가 아니라 오류다 ─────────────────────────────
+  //     그냥 건너뛰면 그 탭이 영원히 '대기 중' 으로 남아 전송 버튼이 열리지 않고,
+  //     사용자에게는 "기다리면 되는" 것처럼 보인다. 오류로 세워야 "이 파일 제거" 를
+  //     골라 나머지를 보낼 수 있다.
+  panelMessages.length = 0;
+  tabMessages.length = 0;
+  await send({
+    type: 'START_MULTI_SCAN', sessionId: 's3',
+    payload: { items: [{ id: 'f0', fileName: 'unreadable.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }] },
+  });
+  await settle();
+  const lease3 = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+  await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 's3', leaseId: lease3, text: '요약해줘' });
+  await send({
+    type: 'SCAN_MULTI_ITEM', sessionId: 's3', leaseId: lease3,
+    payload: { docId: 'f0', readError: '파일을 읽지 못했습니다' },
+  });
+  await settle();
+
+  const rdoc = panelOf('PANEL_SCAN_ITEM').slice(-1)[0].doc;
+  assert.strictEqual(rdoc.status, 'error', '읽기 실패가 대기 상태로 남았다 — 전송이 영영 안 열린다');
+  assert.ok(rdoc.error, '오류 사유가 없어 사용자가 왜 막혔는지 모른다');
+
+  console.log('multi-attach.test.js: 9개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

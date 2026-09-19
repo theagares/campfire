@@ -509,6 +509,17 @@ async function scanMultiItem(sessionId, session, payload) {
   const tabId = session.tabId;
   const doc = session.docs.find(d => d.id === payload.docId);
   if (!doc) return;
+
+  // content 가 파일을 아예 읽지 못한 경우. 엔진을 부르지 않고 바로 오류로 세운다 —
+  // 대기 상태로 두면 그 탭이 영영 안 끝나 배치 전체가 전송 불가가 된다.
+  if (payload.readError) {
+    doc.status = 'error';
+    doc.error = payload.readError;
+    persistSessions();
+    pushToPanel({ type: 'PANEL_SCAN_ITEM', sessionId, tabId, seq: session.seq, doc });
+    return;
+  }
+
   doc.status = 'scanning';
   persistSessions();
 
