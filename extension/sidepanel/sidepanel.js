@@ -156,6 +156,25 @@ function pullItem(itemId) {
   });
 }
 
+/** 다중 세션 화면을 세운다. 브로드캐스트(PANEL_SCAN_INIT)와 스냅샷 복구가 공유한다. */
+function renderMulti(session) {
+  state.kind = 'multi';
+  state.docs = session.docs || [];
+  state.promptMeta = session.prompt || { status: 'pending', counts: null };
+  state.unmasked = new Set();
+  state.loaded = new Map();
+  state.decisions = new Map();
+  state.decided = false;
+  state.stale = false;
+  // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
+  // 방금 붙인 파일이 어디 있는지 못 찾는다.
+  state.activeTab = state.docs[0]?.id ?? 'prompt';
+  showView('result');
+  renderTabs();
+  showTab(state.activeTab);
+  refreshSummary();
+}
+
 // ── 파일별 결정 ─────────────────────────────────────────────────────────────
 // 검사하지 못했거나 일부만 검사된 파일은 사용자가 직접 골라야 전송 게이트가 열린다.
 // 고를 수단이 없으면 blockingReason() 이 영영 막아 취소밖에 길이 없다(실측).
@@ -845,20 +864,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'PANEL_SCAN_INIT') {
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
-    state.kind = 'multi';
-    state.docs = msg.docs || [];
-    state.promptMeta = { status: 'pending', counts: null };
-    state.unmasked = new Set();
-    state.loaded = new Map();
-    state.decisions = new Map();
-    state.decided = false;
-    // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
-    // 방금 붙인 파일이 어디 있는지 못 찾는다.
-    state.activeTab = state.docs[0]?.id ?? 'prompt';
-    showView('result');
-    renderTabs();
-    showTab(state.activeTab);
-    refreshSummary();
+    renderMulti({ docs: msg.docs, prompt: { status: 'pending', counts: null } });
     return;
   }
   if (msg.type === 'PANEL_SCAN_PROMPT') {
@@ -910,7 +916,11 @@ function pullSnapshot() {
     state.sessionId = res.sessionId;
     const s = res.session;
     state.seq = s.seq ?? null;
-    if (s.status === 'ready' && s.result) renderResult(s.kind, s.result, s.meta);
+    // 다중 세션에는 s.result 가 없다(docs/prompt 메타로 들고 있다). 이 분기를 안 두면
+    // 패널을 새로 열거나 재로드했을 때 **탭 대신 진행 스피너가 영영 남아** 검토 화면이
+    // 통째로 사라진다 — SW 에는 세션이 멀쩡히 살아 있는데 화면만 못 그리는 상태다.
+    if (s.kind === 'multi') renderMulti(s);
+    else if (s.status === 'ready' && s.result) renderResult(s.kind, s.result, s.meta);
     else if (s.status === 'error') renderError(s.error, s.meta);
     else renderProgress(s);
   });

@@ -146,4 +146,26 @@ panelListener({
 clickOn('f0', 'exclude', false);
 assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이 열렸다');
 
-console.log('panel-multi-gate.test.js: 5개 블록 통과');
+// ── 6) 패널을 다시 열면 검토 화면이 돌아온다 ────────────────────────────────
+//     다중 세션에는 session.result 가 없다(docs/prompt 메타로 들고 있다). 그 분기가
+//     없으면 스냅샷 복구가 renderProgress 로 떨어져 **탭 대신 진행 스피너가 영영
+//     남는다** — SW 에는 세션이 멀쩡히 살아 있는데 화면만 못 그리는 상태다.
+{
+  els.get('view-result').hidden = true;
+  els.get('view-progress').hidden = false;
+
+  sandbox.renderMulti({
+    kind: 'multi',
+    status: 'ready',
+    docs: [{ id: 'f0', fileName: 'back.pdf', status: 'done', counts: { pii: 2, injection: 0 } }],
+    prompt: { status: 'done', counts: { pii: 0, injection: 0 } },
+  });
+
+  assert.strictEqual(els.get('view-result').hidden, false, '복구 후 결과 화면이 안 떴다');
+  assert.strictEqual(els.get('view-progress').hidden, true, '복구 후에도 진행 스피너가 남았다');
+  assert.strictEqual(els.get('tabs').hidden, false, '복구 후 탭이 안 보인다');
+  assert.ok(els.get('tabs').innerHTML.includes('back.pdf'), '복구된 탭에 파일이 없다');
+  assert.strictEqual(sandbox.blockingReason(), null, '복구 후 전송이 막혀 있다');
+}
+
+console.log('panel-multi-gate.test.js: 6개 블록 통과');
