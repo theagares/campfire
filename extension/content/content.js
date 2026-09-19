@@ -186,9 +186,9 @@
     return file;
   }
 
-  function setFileOnInput(input, file) {
+  function setFilesOnInput(input, files) {
     const dt = new DataTransfer();
-    dt.items.add(file);
+    for (const f of files) dt.items.add(f);
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
     if (setter) setter.call(input, dt.files);
     else input.files = dt.files;
@@ -196,6 +196,8 @@
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
+
+  const setFileOnInput = (input, file) => setFilesOnInput(input, [file]);
 
   /** 주입 "시점"에 살아 있는 파일 input 을 고른다.
    *
@@ -1036,6 +1038,65 @@
     return decisionPromise;
   }
 
+  // 배치 주입의 증거 대기 상한. 파일마다 따로 기다리는 게 아니라 동시에 본다.
+  const INJECT_BATCH_EVIDENCE_MS = 3000;
+
+  /** 결정 항목 하나를 실제로 넣을 File 로 바꾼다. 배치 경로와 순차 경로가 공유한다. */
+  async function materializeDecisionFile(decision, file, item) {
+    if (file.action === 'original') return item.file;
+    if (!file.artifactId) return null;
+    const got = await sendToSW({
+      type: 'GET_SCAN_ARTIFACT', sessionId: decision.sessionId, docId: file.id,
+      artifactId: file.artifactId,
+    });
+    if (!got?.ok) return null;
+    const f = base64ToFile(got.base64, got.mimeType, got.fileName);
+    // File 로 바꾼 뒤에만 소비 처리한다 — 응답이 유실되면 다시 요청할 수 있어야 한다.
+    if (f) await sendToSW({ type: 'ACK_SCAN_ARTIFACT', artifactId: file.artifactId });
+    return f;
+  }
+
+  /** 파일 N개를 한 이벤트로 넣어 본다.
+   *
+   *  왜 한 번에 넣나: 사용자가 실제로 파일 여러 개를 고를 때 사이트가 받는 것이 바로
+   *  그 모양(DataTransfer 하나에 N개)이다. 하나씩 N번 쏘면 사이트에 따라 마지막 것만
+   *  남기거나, 중간에 컴포저를 다시 그려 앞의 것을 잃는다.
+   *
+   *  왜 폴백이 조건부인가: 배치가 "일부만" 들어갔는데 다시 쏘면 같은 파일이 두 번
+   *  붙는다. 그래서 되돌아갈 수 있는 건 **아무것도 안 들어간 것이 확인된 경우뿐**이다.
+   *  일부만 들어갔거나 판단이 안 서면 순차 폴백으로 내려가지 않고 그대로 멈춘다
+   *  (계획 §5: 부분 성공이 불명확하면 전체 재시도하지 않는다).
+   *
+   *  반환: { mode, landed }  — mode 'all' | 'none' | 'partial'
+   */
+  async function injectFilesAtOnce(files, opts = {}) {
+    const cfg = getPromptConfig();
+    const input = liveFileInput(opts.preferred);
+    // 살아 있는 input 이 없으면 배치 경로 자체가 없다. 합성 paste/drop 으로 N개를
+    // 한 번에 보내는 건 사이트 핸들러가 첫 파일만 읽는 경우가 많아 더 위험하다.
+    if (!input || !files.length) return { mode: 'none', landed: [] };
+
+    for (const f of files) contentOwnedFiles.add(f);
+
+    const watchers = files.map(f => watchAttachmentEvidence(cfg, f.name));
+    try {
+      setFilesOnInput(input, files);
+
+      // 기계적 성공은 증거가 아니다. 프레임워크가 첫 파일만 처리했을 수 있다.
+      const mechanical = input.files?.length === files.length;
+      const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
+      const landed = files.filter((_, i) => results[i].ok).map(f => f.name);
+
+      if (landed.length === files.length) return { mode: 'all', landed };
+      // 아무 증거도 없고 기계적으로도 안 들어갔으면 "아무것도 안 붙었다" 로 본다 —
+      // 이때만 순차 폴백이 안전하다.
+      if (!landed.length && !mechanical) return { mode: 'none', landed: [] };
+      return { mode: 'partial', landed };
+    } finally {
+      for (const w of watchers) w.stop();
+    }
+  }
+
   /** 실패한 파일 하나만 다시 검사한다.
    *
    *  배치 전체를 다시 돌리지 않는다 — 이미 끝난 파일을 또 검사하면 사용자가 그 파일에
@@ -1068,7 +1129,11 @@
     await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
   }
 
-  /** 결정된 파일들을 하나씩 받아 사이트에 넣는다. 성공한 파일은 절대 다시 쏘지 않는다. */
+  /** 결정된 파일들을 사이트에 넣는다. 성공한 파일은 절대 다시 쏘지 않는다.
+   *
+   *  산출물은 SW 에서 한 개씩 받아 온다(배치 전체 base64 를 한 메시지에 싣지 않는다).
+   *  다만 한 이벤트로 넣으려면 File 들이 동시에 있어야 하므로, 받아 둔 File 은 주입이
+   *  끝날 때까지 함께 살아 있다 — 마스킹본은 추출 텍스트 기반이라 원본보다 훨씬 작다. */
   async function injectBatchDecision(decision, batch) {
     const ctx = batch.injectionContext || {};
     const injected = [];
@@ -1078,31 +1143,37 @@
     // finally 에서 반드시 닫는다. 예전엔 승인만 남기고 회수가 없어, 주입에 실패한
     // 파일의 승인이 10분 동안 살아 있었다.
     try {
+    // 먼저 넣을 파일을 전부 모은다 — 한 이벤트로 보내 보기 위해서다.
+    const ready = [];
     for (const file of decision.files || []) {
       if (file.action === 'exclude') continue;
       const item = batch.items.find(i => i.id === file.id);
       if (!item) { allOk = false; continue; }
+      const f = await materializeDecisionFile(decision, file, item);
+      if (f) ready.push(f); else allOk = false;
+    }
 
-      let toInject = null;
-      if (file.action === 'original') {
-        toInject = item.file;
-      } else if (file.artifactId) {
-        const got = await sendToSW({
-          type: 'GET_SCAN_ARTIFACT', sessionId: decision.sessionId, docId: file.id,
-          artifactId: file.artifactId,
-        });
-        if (!got?.ok) { allOk = false; continue; }
-        toInject = base64ToFile(got.base64, got.mimeType, got.fileName);
-        // File 로 바꾼 뒤에만 소비 처리한다 — 응답이 유실되면 다시 요청할 수 있어야 한다.
-        if (toInject) await sendToSW({ type: 'ACK_SCAN_ARTIFACT', artifactId: file.artifactId });
+    if (ready.length > 1) {
+      await announceApprovedBatch(batch.id, ready);
+      const batchRes = await injectFilesAtOnce(ready, ctx);
+      if (batchRes.mode === 'all') {
+        injected.push(...batchRes.landed);
+        return { allOk, injected };
       }
-      if (!toInject) { allOk = false; continue; }
+      if (batchRes.mode === 'partial') {
+        // 일부만 들어갔다. 다시 쏘면 그 일부가 두 번 붙는다 — 여기서 멈춘다.
+        injected.push(...batchRes.landed);
+        return { allOk: false, injected };
+      }
+      // mode === 'none' — 아무것도 안 붙었다. 아래 순차 경로로 되돌아간다.
+    }
 
+    for (const toInject of ready) {
       await announceApprovedBatch(batch.id, [toInject]);
-      // ponytail: 파일을 하나씩 순차 주입한다. DataTransfer 하나에 N개를 싣는 쪽이
-      // 원래 사용자 동작에 가깝지만, injectFileWithEvidence 는 실사용 실패를 겪으며
-      // 여러 번 뒤집힌 코드라 첫 착지에서 건드리지 않았다. 사이트별 실측(계획 §7)
-      // 뒤에 일괄 주입으로 올린다.
+      // 순차 경로. 여기에 오는 건 (a) 파일이 하나뿐이거나 (b) 배치 주입이 아무것도
+      // 못 붙인 것이 확인된 경우뿐이다. 일부만 붙은 경우는 위에서 멈추므로, 여기서
+      // 같은 파일이 두 번 붙을 일은 없다. 이 4단계 체인은 실사용 실패를 겪으며
+      // 여러 번 뒤집힌 코드라 그대로 둔다.
       const ok = (await injectFileWithEvidence(toInject, {
         preferred: ctx.preferred, parentHint: ctx.parentHint, dropTarget: ctx.dropTarget,
       })) !== false;

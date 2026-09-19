@@ -2266,6 +2266,97 @@ cancelScan(stuckScan);
   delete sandbox.MutationObserver;
   documentStub.dispatchEvent = docDispatch28;
 
+  // (29) 파일 두 개는 **한 이벤트로** 들어간다.
+  //
+  //      사용자가 실제로 여러 개를 고를 때 사이트가 받는 모양이 그것(DataTransfer
+  //      하나에 N개)이다. 하나씩 N번 쏘면 사이트에 따라 마지막 것만 남거나, 중간에
+  //      컴포저를 다시 그려 앞의 것을 잃는다 — 이 프로젝트의 원래 버그가 바로 그
+  //      모양이었다. 그래서 "N개가 한 번에" 를 단언으로 박아 둔다.
+  {
+    const fileA = new FileStub(['pdf a'], 'multi-a.pdf', { type: 'application/pdf' });
+    const fileB = new FileStub(['pdf b'], 'multi-b.pdf', { type: 'application/pdf' });
+    const input29 = new HTMLInputElementStub(null, 'multi');
+    input29.files = [fileA, fileB];
+    domBySelector.set('input[type="file"]', input29);
+
+    dispatchDocumentEvent('change', {
+      target: input29,
+      composedPath: () => [input29, documentStub],
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+    await flush();
+
+    actionLog.length = 0;
+    runtimeMessages.length = 0;
+    promptEditorStub.value = '두 개 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    sendButtonStub.disabled = false;
+    nextDecision = {
+      action: 'send',
+      promptText: '두 개 요약해줘',
+      files: [
+        { id: 'f0', action: 'masked', artifactId: 'art-a' },
+        { id: 'f1', action: 'masked', artifactId: 'art-b' },
+      ],
+    };
+    // 산출물은 한 개씩 건네진다 — 같은 응답을 두 번 주면 두 파일이 같은 내용이 되므로
+    // 요청 순서대로 다른 것을 돌려준다.
+    let artTurn = 0;
+    const arts = [
+      { ok: true, base64: btoa('masked a'), mimeType: 'text/plain', fileName: 'multi-a_masked.md' },
+      { ok: true, base64: btoa('masked b'), mimeType: 'text/plain', fileName: 'multi-b_masked.md' },
+    ];
+    Object.defineProperty(globalThis, '__artQueue', { value: true, configurable: true });
+    nextArtifact = null;
+    const origSend = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = function (message, cb) {
+      if (message.type === 'GET_SCAN_ARTIFACT') {
+        runtimeMessages.push(message);
+        cb?.(arts[artTurn++] || { ok: false });
+        return;
+      }
+      return origSend.call(this, message, cb);
+    };
+
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+    chromeStub.runtime.sendMessage = origSend;
+
+    // 승인은 두 파일을 한 메시지에 담아 나간다 — 그래야 batchId 로 수명을 묶어
+    // 끝나고 회수할 수 있다.
+    const approvals = actionLog.filter(e => e.kind === 'approve-msg');
+    if (approvals.length !== 2) {
+      throw new Error(`승인된 파일이 ${approvals.length}개다 — 두 개가 모두 승인돼야 한다`);
+    }
+
+    // ★ 핵심: 주입 이벤트가 한 번이어야 한다. 두 번이면 순차로 쏜 것이다.
+    const injects29 = actionLog.filter(e => e.kind === 'inject');
+    if (injects29.length !== 1) {
+      throw new Error(
+        `파일 2개를 ${injects29.length}번에 나눠 넣었다 — DataTransfer 하나에 N개로 보내야 한다`,
+      );
+    }
+    // 그 한 번에 두 파일이 다 실렸는가.
+    if (input29.files?.length !== 2) {
+      throw new Error(`한 이벤트에 실린 파일이 ${input29.files?.length}개다`);
+    }
+    const names29 = Array.from(input29.files).map(f => f.name).sort().join(',');
+    if (names29 !== 'multi-a_masked.md,multi-b_masked.md') {
+      throw new Error(`주입된 파일이 다르다: ${names29}`);
+    }
+
+    // 승인은 주입 뒤에 닫힌다(다단계 업로드가 끝날 때까지 남아야 한다).
+    const closeIdx29 = actionLog.findIndex(e => e.kind === 'close-batch' || e.kind === 'abort-batch');
+    if (closeIdx29 < 0) throw new Error('배치 승인을 회수하지 않았다');
+    if (closeIdx29 < actionLog.findIndex(e => e.kind === 'inject')) {
+      throw new Error('주입보다 먼저 승인을 닫았다 — 업로드가 막힌다');
+    }
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
