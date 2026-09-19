@@ -510,7 +510,13 @@
         console.error('[SecureDoc] 처리 요청 오류:', e);
         _pending.delete(id);
         _inProcess.delete(file);
-        resolve(null);
+        // 예전엔 null 이었다. 호출부에서 null 은 "보호 꺼짐 / 다른 레이어가 처리 중" 과
+        // 같은 값이라 **원본을 그대로 올려보낸다**(Layer 3 은 _origFetch 로 떨어지고,
+        // showOpenFilePicker 는 원본 handle 을 돌려준다 — "처리 오류 시 원본 통과").
+        // 같은 함수의 타임아웃 경로는 이미 cancel 로 막는데 예외만 열려 있어 방향이
+        // 어긋나 있었다. 마스킹본을 못 만든 상황이면 보내지 않는 쪽이 맞다 —
+        // 호출부 7곳 모두 cancel 을 이미 처리한다.
+        resolve({ action: 'cancel' });
       }
     }).finally(() => _inProcess.delete(file));
   }
