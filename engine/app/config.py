@@ -269,3 +269,16 @@ SUPPORTED_EXTENSIONS: set[str] = {
     ".csv", ".tsv", ".md", ".json", ".xml", ".log",
 }
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
+
+# ── 프록시 게이트웨이 (adapters/proxy) ────────────────────────────────────────
+# 확장 프로그램 대신 로컬 TLS 프록시로 업로드를 가로채는 경로. 기본은 꺼짐 —
+# 켜려면 mitmproxy 가 필요하고(`pip install -e ".[proxy]"`) 루트 CA 도 깔아야 한다.
+PROXY_ENABLED: bool = os.environ.get("SECUREDOC_PROXY_ENABLED", "0") == "1"
+PROXY_PORT: int = int(os.environ.get("SECUREDOC_PROXY_PORT", "48210"))
+
+# 사람이 검토하는 동안 요청을 붙들고 있는 최대 시간.
+#
+# 길게 잡고 싶어지는 값이지만 상한은 우리가 정하는 게 아니다 — 사이트 JS 의 abort
+# 타임아웃이 먼저 끊으면 사용자는 이유를 알 수 없는 업로드 실패를 본다. 그 값은
+# 아직 못 쟀으므로(§실측 문서) 보수적으로 잡고, 재고 나서 올린다.
+PROXY_DECISION_TIMEOUT_S: float = float(os.environ.get("SECUREDOC_PROXY_DECISION_TIMEOUT_S", "120"))

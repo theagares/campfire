@@ -13,7 +13,7 @@ REST 어댑터 (PLAN §2). 기존 EC2 API 계약 호환:
 
 from fastapi import APIRouter
 
-from . import activity, events, health, jobs, models
+from . import activity, decisions, events, health, jobs, models
 
 router = APIRouter()
 router.include_router(health.router)
@@ -21,3 +21,4 @@ router.include_router(jobs.router)
 router.include_router(events.router)
 router.include_router(models.router)
 router.include_router(activity.router)
+router.include_router(decisions.router)
