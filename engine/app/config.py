@@ -282,3 +282,10 @@ PROXY_PORT: int = int(os.environ.get("SECUREDOC_PROXY_PORT", "48210"))
 # 타임아웃이 먼저 끊으면 사용자는 이유를 알 수 없는 업로드 실패를 본다. 그 값은
 # 아직 못 쟀으므로(§실측 문서) 보수적으로 잡고, 재고 나서 올린다.
 PROXY_DECISION_TIMEOUT_S: float = float(os.environ.get("SECUREDOC_PROXY_DECISION_TIMEOUT_S", "120"))
+
+# 기본 목록 밖의 호스트도 multipart 검사 대상에 넣는다(쉼표 구분).
+# 사이트가 도메인을 바꿨을 때 릴리스 없이 막기 위한 것이고, 검증용 로컬 서버를
+# 붙일 때도 쓴다.
+PROXY_EXTRA_HOSTS: set[str] = {
+    h.strip() for h in os.environ.get("SECUREDOC_PROXY_EXTRA_HOSTS", "").split(",") if h.strip()
+}

@@ -46,15 +46,16 @@ async def start() -> bool:
         return False
 
     try:
-        opts = Options(
-            listen_host="127.0.0.1",
-            listen_port=config.PROXY_PORT,
-            # 본문을 통째로 봐야 검사할 수 있다. 스트리밍이 켜져 있으면 request 훅이
-            # 본문 도착 전에 불려서 빈 바이트를 검사하게 된다.
-            stream_large_bodies=None,
-        )
+        opts = Options(listen_host="127.0.0.1", listen_port=config.PROXY_PORT)
         _master = Master(opts, event_loop=asyncio.get_running_loop())
         _master.addons.add(*default_addons())
+        # stream_large_bodies 는 기본 애드온이 등록하는 옵션이라 Options() 생성 시점엔
+        # 아직 없다(mitmproxy 11 에서 KeyError). 애드온을 올린 뒤에 명시한다.
+        #
+        # None = 스트리밍 안 함. 본문을 통째로 받아야 검사할 수 있다 — 스트리밍이 켜지면
+        # request 훅이 본문 도착 전에 불려서 빈 바이트를 검사하게 된다. 기본값도 None
+        # 이지만, 조용히 바뀌면 게이트웨이가 빈 검사를 통과시키므로 못 박아 둔다.
+        opts.update(stream_large_bodies=None)
         _master.addons.add(CampfireAddon())
         _task = asyncio.create_task(_master.run())
         logger.info("[proxy] 기동 — 127.0.0.1:%s", config.PROXY_PORT)

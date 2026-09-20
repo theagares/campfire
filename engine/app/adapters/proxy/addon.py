@@ -55,6 +55,11 @@ CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
 CHATGPT_REGISTER_PATH = "/backend-api/files"
 
 
+def _multipart_hosts() -> set[str]:
+    """매번 읽는다 — 환경변수로 더한 호스트가 재시작 없이 먹어야 한다."""
+    return MULTIPART_HOSTS | config.PROXY_EXTRA_HOSTS
+
+
 @dataclass
 class ChatGptUpload:
     """등록 단계에서 잡아 둔 값. PUT 이 올 때 쓴다."""
@@ -115,7 +120,7 @@ class CampfireAddon:
         if key in self._chatgpt and flow.request.method == "PUT":
             await self._chatgpt_put(flow, key)
             return
-        if host in MULTIPART_HOSTS and flow.request.method == "POST":
+        if host in _multipart_hosts() and flow.request.method == "POST":
             await self._multipart(flow, host)
 
     def _on_response(self, flow: http.HTTPFlow) -> None:
