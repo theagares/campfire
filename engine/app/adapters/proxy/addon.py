@@ -9,7 +9,8 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 사이트별 코드가 사라지는 건 아니다 — DOM 대신 와이어 포맷을 알아야 한다.
 지금 상태:
   - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
-  - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다.
+  - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다. 흐름이 둘이고 크기 선언 여부가
+    다르다 — upload_reservations 쪽은 선언이 없어 패딩도 필요 없다.
   - Gemini 는 push.clients6.google.com 으로 resumable 업로드를 한다. 크기를 먼저
     선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
   - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
@@ -133,7 +134,13 @@ def _multipart_hosts() -> set[str]:
 class ChatGptUpload:
     """등록 단계에서 잡아 둔 값. PUT 이 올 때 쓴다."""
 
-    declared: int          # 등록에 써 넣은 N' — PUT 본문을 여기에 정확히 맞춰야 한다
+    # 등록에 써 넣은 N'. None 이면 **크기를 선언하지 않는 흐름**이라 패딩이 필요 없다.
+    #
+    # ChatGPT 에는 업로드 흐름이 둘 있다(2026-09-21 실측):
+    #   (a) /backend-api/files            — 요청에 file_size 가 있다 → 맞춰야 한다
+    #   (b) /backend-api/files/upload_reservations — 크기 선언이 없다 → 그냥 보내면 된다
+    # (b) 는 UI 가 실제로 쓰는 쪽이고, 패딩이 없으니 낭비도 없다.
+    declared: int | None
     masked_name: str
     original_name: str
     # 판단이 끝난 뒤의 최종 본문. 같은 PUT 이 다시 오면 이걸 그대로 쓴다.
@@ -361,20 +368,24 @@ class CampfireAddon:
         except json.JSONDecodeError:
             return
         declared = int(body.get("file_size") or 0)
-        if declared <= 0:
-            return
         original_name = str(body.get("file_name") or "upload.bin")
-        nprime = size_ceiling(declared)
         masked_name = masked_name_for(original_name)
+        nprime: int | None = None
 
-        body["file_size"] = nprime
-        # 이름과 타입도 같이 바꾼다. `.docx` 로 등록해 놓고 MD 바이트를 올리면
-        # 받는 쪽이 DOCX 로 열려다 처리 단계에서 실패한다.
-        body["file_name"] = masked_name
-        body["mime_type"] = MASKED_MIME
-        if "client_resolved_mime_type" in body:
-            body["client_resolved_mime_type"] = MASKED_MIME
-        flow.request.set_text(json.dumps(body))
+        if declared > 0:
+            # (a) 크기를 선언하는 흐름. 선언값과 실제 크기가 다르면 거부당하므로
+            # 넉넉히 올려 두고 나중에 그 크기에 맞춘다.
+            nprime = size_ceiling(declared)
+            body["file_size"] = nprime
+            # 이름과 타입도 같이 바꾼다. `.docx` 로 등록해 놓고 MD 바이트를 올리면
+            # 받는 쪽이 DOCX 로 열려다 처리 단계에서 실패한다.
+            body["file_name"] = masked_name
+            body["mime_type"] = MASKED_MIME
+            if "client_resolved_mime_type" in body:
+                body["client_resolved_mime_type"] = MASKED_MIME
+            flow.request.set_text(json.dumps(body))
+        # (b) 크기 선언이 없는 흐름이면 등록 요청은 건드릴 게 없다. 그래도
+        # **무장은 해야 한다** — 무장하지 않으면 뒤따르는 PUT 이 차단된다.
         # 응답에서 upload_url 을 받을 때 이어 붙이려고 잠시 들고 있는다.
         flow.metadata["campfire_upload"] = ChatGptUpload(
             declared=nprime, masked_name=masked_name, original_name=original_name
@@ -424,17 +435,23 @@ class CampfireAddon:
             # 원본을 보내기로 했는데 등록은 이미 N' 으로 고쳐 버렸다. 원본 크기와
             # 다르므로 그대로 두면 사이트가 거부한다 — 원본도 같은 규칙으로 채운다.
             masked = flow.request.content or b""
-        if len(masked) > promise.declared:
-            # N' 이 모자랐다. 잘라서 보내면 사용자가 모르는 채로 내용이 사라지므로
-            # 차단한다 — 조용한 손실보다 실패가 낫다.
-            logger.warning(
-                "[proxy] 마스킹 결과가 선언값을 넘었다 %d > %d", len(masked), promise.declared
-            )
-            promise.blocked = True
-            self._block(flow, "마스킹 결과가 예상보다 커서 전송을 막았습니다")
-            return
-        # 선언값에 정확히 맞춘다. 공백 패딩은 텍스트에서 안전하다(실측으로 통과 확인).
-        promise.settled = masked.ljust(promise.declared, b" ")
+        if promise.declared is None:
+            # 크기를 약속한 적이 없다. 패딩할 이유가 없고, 안 하는 편이 낫다 —
+            # 패딩은 업로드를 최대 4배로 부풀린다.
+            promise.settled = masked
+        else:
+            if len(masked) > promise.declared:
+                # N' 이 모자랐다. 잘라서 보내면 사용자가 모르는 채로 내용이
+                # 사라지므로 차단한다 — 조용한 손실보다 실패가 낫다.
+                logger.warning(
+                    "[proxy] 마스킹 결과가 선언값을 넘었다 %d > %d",
+                    len(masked), promise.declared,
+                )
+                promise.blocked = True
+                self._block(flow, "마스킹 결과가 예상보다 커서 전송을 막았습니다")
+                return
+            # 선언값에 정확히 맞춘다. 공백 패딩은 텍스트에서 안전하다(실측 확인).
+            promise.settled = masked.ljust(promise.declared, b" ")
         flow.request.content = promise.settled
 
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────

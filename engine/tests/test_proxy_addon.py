@@ -228,6 +228,27 @@ def test_PUT_재시도는_같은_결과를_쓰고_다시_묻지_않는다():
     assert asked == ["a.docx"], "재시도인데 사람에게 또 물었다"
 
 
+def test_크기선언이_없는_흐름은_패딩하지_않는다():
+    """upload_reservations 는 크기를 약속하지 않는다(실측).
+
+    약속이 없으면 맞출 것도 없다. 예전 코드는 무조건 패딩해서 70바이트 파일을
+    65KB 로 부풀렸다 — 약속이 없는데 부풀릴 이유가 없다.
+    """
+    a = CampfireAddon()
+    promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.txt")
+    a._chatgpt["/files/nopad/raw"] = promise
+
+    async def fake(*, data, file_name, mime, host):
+        return b"# masked"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+
+    f = _put_flow("/files/nopad/raw", b"ORIGINAL-SECRET")
+    _run(a.request(f))
+    assert f.response is None
+    assert f.request.content == b"# masked", "패딩 없이 그대로 나가야 한다"
+
+
 def test_한번_막은_업로드는_재시도도_막는다():
     a = CampfireAddon()
     _armed(a, "/files/xyz/raw")
