@@ -10,8 +10,9 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 지금 상태:
   - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
   - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다.
+  - Gemini 는 push.clients6.google.com 으로 resumable 업로드를 한다. 크기를 먼저
+    선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
   - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
-  - Gemini 는 push.clients6.google.com 으로 raw 본문을 올린다 → 아직 못 다뤄 **차단**.
 
 fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보낸다" 로 끝난다.
 예외가 나면 원본이 흘러가는 게 아니라 403 으로 끊는다(_guard 참고).
@@ -52,9 +53,9 @@ MULTIPART_HOSTS = {
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
-    # Gemini 는 여기 없다. 실측해 보니 업로드가 같은 오리진이 아니라
-    # push.clients6.google.com 으로 가고 multipart 도 아니다 — 아래
-    # UNSUPPORTED_UPLOADS 참고. 여기 넣어 봐야 아무 효과가 없다.
+    # Gemini 는 여기 없다. 업로드가 같은 오리진이 아니라
+    # push.clients6.google.com 으로 가고 multipart 도 아니다(실측) — 전용 처리를
+    # 따로 둔다. 여기 넣어 봐야 아무 효과가 없다.
 }
 
 CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
@@ -67,20 +68,41 @@ CHATGPT_REGISTER_PATH = "/backend-api/files"
 # Grok 은 multipart 가 아니라 JSON 본문에 base64 를 넣어 보낸다(확장 쪽 실측).
 UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
     "grok.com": ("/rest/app-chat/upload-file",),
-    # Gemini. 2026-09-21 프록시로 직접 재서 확정했다:
-    #   POST push.clients6.google.com/upload/  ct=x-www-form-urlencoded  len=46
-    #   POST push.clients6.google.com/upload/  ct=x-www-form-urlencoded  len=554273
-    # 두 번째가 파일 바이트다. content-type 은 urlencoded 라고 적혀 있지만 실제로는
-    # Google resumable upload 라 **본문 전체가 파일**이다. multipart 가 아니므로
-    # MULTIPART_HOSTS 에 넣어도 아무 효과가 없다 — 그래서 막는다.
-    #
-    # 제대로 고치려면 ChatGPT 와 같은 모양이 된다: 첫 요청(세션 시작)의 헤더에
-    # 선언된 길이를 N' 으로 고치고, 두 번째 본문을 N' 까지 패딩한다. 그 헤더 이름을
-    # 아직 안 봤다(SECUREDOC_PROXY_LOG_REQUESTS 로 한 번 더 재면 된다).
-    "push.clients6.google.com": ("/upload/",),
 }
 
-# 추적 중인 ChatGPT 업로드 수 상한. 재시도를 위해 약속값을 남겨 두기 때문에
+# ─── Gemini (Google resumable upload) ────────────────────────────────────────
+#
+# 2026-09-21 로그인된 브라우저를 프록시에 붙여 직접 쟀다:
+#   POST push.clients6.google.com/upload/  len=46      x-goog-upload-command: start
+#         x-goog-upload-protocol: resumable
+#         x-goog-upload-header-content-length: 554273   ← 여기서 크기를 미리 선언한다
+#   POST push.clients6.google.com/upload/  len=554273  (본문 전체가 파일 바이트)
+#
+# 구조가 ChatGPT 와 같다 — 크기를 먼저 선언하고 나중에 바이트를 보낸다. 그래서
+# 대응도 같다: 선언값을 N' 으로 바꿔 두고 본문을 N' 까지 채운다.
+# multipart 가 아니라 raw 본문이라 오히려 다루기 쉽다(파트를 찾을 필요가 없다).
+GEMINI_UPLOAD_HOST = "push.clients6.google.com"
+GEMINI_UPLOAD_PATH = "/upload/"
+_GOOG_CMD = "x-goog-upload-command"
+_GOOG_LEN = "x-goog-upload-header-content-length"
+_GOOG_URL = "x-goog-upload-url"
+
+
+def gemini_session_key(url: str) -> str:
+    """업로드 세션 식별자.
+
+    URL 문자열을 통째로 키로 쓰면 안 된다 — 응답이 준 URL 과 브라우저가 실제로
+    보내는 URL 이 포트 표기나 파라미터 순서에서 어긋나면 매칭이 깨지고, 그러면
+    (fail-closed 라) Gemini 업로드가 통째로 막힌다. 세션을 가리키는 값만 쓴다.
+    """
+    query = url.split("?", 1)[1] if "?" in url else ""
+    for part in query.split("&"):
+        if part.startswith("upload_id="):
+            return part[len("upload_id="):]
+    return url.split("?", 1)[0]
+
+
+# 추적 중인 업로드 수 상한(ChatGPT·Gemini 공통). 재시도를 위해 약속값을 남겨 두기 때문에
 # 그냥 두면 무한히 쌓인다. 동시에 올릴 수 있는 수보다 넉넉하면 충분하다.
 _MAX_TRACKED_UPLOADS = 64
 
@@ -124,6 +146,9 @@ class CampfireAddon:
         # 등록 응답에서 받은 upload_url 의 경로 → 그 업로드의 약속값.
         # PUT 은 완전히 다른 호스트(oaiusercontent.com)로 가기 때문에 경로로 잇는다.
         self._chatgpt: dict[str, ChatGptUpload] = {}
+        # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
+        # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
+        self._gemini: dict[str, ChatGptUpload] = {}
 
     # ── mitmproxy 훅 ─────────────────────────────────────────────────────────
 
@@ -170,6 +195,9 @@ class CampfireAddon:
         if key in self._chatgpt and flow.request.method == "PUT":
             await self._chatgpt_put(flow, key)
             return
+        if host == GEMINI_UPLOAD_HOST and key == GEMINI_UPLOAD_PATH:
+            await self._gemini_upload(flow)
+            return
         if flow.request.method == "POST" and key in UNSUPPORTED_UPLOADS.get(host, ()):
             logger.warning("[proxy] 다루지 못하는 업로드 형식 — 차단 %s%s", host, key)
             self._block(flow, "아직 지원하지 않는 업로드 형식이라 전송을 막았습니다")
@@ -181,6 +209,79 @@ class CampfireAddon:
         host = flow.request.pretty_host
         if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] == CHATGPT_REGISTER_PATH:
             self._chatgpt_register_response(flow)
+        elif host == GEMINI_UPLOAD_HOST:
+            self._gemini_start_response(flow)
+
+    # ── Gemini 경로 (세션 시작 → 본문) ──────────────────────────────────────
+
+    async def _gemini_upload(self, flow: http.HTTPFlow) -> None:
+        cmd = flow.request.headers.get(_GOOG_CMD, "").lower()
+
+        if "start" in cmd:
+            # 크기를 미리 선언하는 자리. ChatGPT 의 file_size 와 같은 역할이라
+            # 여기서 N' 으로 올려 두고 나중에 본문을 그 크기에 맞춘다.
+            declared = int(flow.request.headers.get(_GOOG_LEN) or 0)
+            if declared <= 0:
+                # 우리가 아는 모양이 아니다. 통과시키면 검사 없이 나간다.
+                logger.warning("[proxy] Gemini 시작 요청에 길이 선언이 없다 — 차단")
+                self._block(flow, "업로드 형식을 해석하지 못해 전송을 막았습니다")
+                return
+            nprime = size_ceiling(declared)
+            flow.request.headers[_GOOG_LEN] = str(nprime)
+            flow.metadata["campfire_gemini"] = ChatGptUpload(
+                declared=nprime, masked_name="", original_name="upload.bin"
+            )
+            return
+
+        if "upload" not in cmd:
+            return  # 취소·조회 같은 부수 명령. 바이트가 없으므로 건드리지 않는다.
+
+        promise = self._gemini.get(gemini_session_key(flow.request.url))
+        if promise is None:
+            # 시작 요청을 못 봤다 = 어떤 크기를 약속했는지 모른다. 보내면 안 된다.
+            logger.warning("[proxy] Gemini 업로드의 약속값을 찾지 못했다 — 차단")
+            self._block(flow, "업로드 세션을 확인하지 못해 전송을 막았습니다")
+            return
+        if promise.blocked:
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        if promise.settled is not None:
+            flow.request.content = promise.settled
+            return
+
+        masked = await self._scan_and_decide(
+            data=flow.request.content or b"",
+            file_name=promise.original_name,
+            mime=flow.request.headers.get("content-type", ""),
+            host="gemini.google.com",
+        )
+        if masked is None:
+            promise.blocked = True
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        if masked is _ORIGINAL:
+            masked = flow.request.content or b""
+        if len(masked) > promise.declared:
+            promise.blocked = True
+            self._block(flow, "마스킹 결과가 예상보다 커서 전송을 막았습니다")
+            return
+        promise.settled = masked.ljust(promise.declared, b" ")
+        flow.request.content = promise.settled
+
+    def _gemini_start_response(self, flow: http.HTTPFlow) -> None:
+        """시작 요청의 응답이 알려 주는 업로드 URL 을 약속값에 묶는다.
+
+        두 요청이 같은 경로로 오기 때문에 이 URL 이 유일한 구분자다.
+        """
+        pending = flow.metadata.get("campfire_gemini")
+        if pending is None or flow.response is None:
+            return
+        url = flow.response.headers.get(_GOOG_URL)
+        if not url:
+            return
+        self._gemini[gemini_session_key(url)] = pending
+        while len(self._gemini) > _MAX_TRACKED_UPLOADS:
+            self._gemini.pop(next(iter(self._gemini)))
 
     # ── multipart 경로 (Claude / Copilot / Perplexity, Gemini 는 미확인) ────
 

@@ -59,20 +59,97 @@ def test_grok_의_다른_요청은_건드리지_않는다():
     assert f.response is None
 
 
-def test_gemini_업로드는_차단된다():
-    """Gemini 는 push.clients6.google.com 으로 raw 본문을 올린다(2026-09-21 실측).
+# ── Gemini: 크기 선언 재작성 + 패딩 (2026-09-21 실측 헤더) ─────────────────
+#
+# 실측한 모양:
+#   POST /upload/  x-goog-upload-command: start
+#                  x-goog-upload-header-content-length: 554273
+#   POST /upload/  x-goog-upload-command: upload, finalize   (본문 전체가 파일)
+# 두 요청이 **같은 경로**로 오기 때문에 시작 응답의 x-goog-upload-url 로 가른다.
 
-    content-type 이 x-www-form-urlencoded 라고 적혀 있지만 본문 전체가 파일이라
-    multipart 처리가 안 먹는다. 호스트를 MULTIPART_HOSTS 에 넣어 봐야 그냥
-    통과했다 — 그게 원래 구멍이었다.
-    """
-    a = CampfireAddon()
-    f = _req("push.clients6.google.com", "/upload/", content=b"\x89PNG" + b"x" * 5000)
-    f.request.headers["content-type"] = "application/x-www-form-urlencoded;charset=utf-8"
+GEM_URL = "https://push.clients6.google.com/upload/?upload_id=SESSION1"
+
+
+def _gem_start(a: CampfireAddon, declared: int = 554273):
+    f = _req("push.clients6.google.com", "/upload/", content=b"x" * 46)
+    f.request.headers["x-goog-upload-protocol"] = "resumable"
+    f.request.headers["x-goog-upload-command"] = "start"
+    f.request.headers["x-goog-upload-header-content-length"] = str(declared)
     _run(a.request(f))
+    f.response = tutils.tresp()
+    f.response.headers["x-goog-upload-url"] = GEM_URL
+    a.response(f)
+    return f
 
-    assert f.response is not None, "차단되지 않았다 — 원문이 그대로 나간다"
-    assert f.response.status_code == 403
+
+def _gem_bytes(content: bytes):
+    f = tflow.tflow(req=tutils.treq(method="POST", host="push.clients6.google.com",
+                                    path="/upload/?upload_id=SESSION1", content=content))
+    f.request.headers["x-goog-upload-command"] = "upload, finalize"
+    return f
+
+
+def test_gemini_시작요청의_선언길이를_키운다():
+    """ChatGPT 의 file_size 와 같은 자리. 안 키우면 패딩할 여유가 없다."""
+    a = CampfireAddon()
+    f = _gem_start(a, declared=1000)
+    assert f.response is None or f.response.status_code != 403
+    assert int(f.request.headers["x-goog-upload-header-content-length"]) > 1000
+
+
+def test_gemini_본문이_마스킹되고_선언값에_맞춰진다():
+    a = CampfireAddon()
+    start = _gem_start(a, declared=1000)
+    nprime = int(start.request.headers["x-goog-upload-header-content-length"])
+
+    async def fake(*, data, file_name, mime, host):
+        assert b"SECRET" in data
+        return b"# masked"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+
+    f = _gem_bytes(b"SECRET" * 100)
+    _run(a.request(f))
+    assert f.response is None
+    assert f.request.content.startswith(b"# masked")
+    assert b"SECRET" not in f.request.content
+    assert len(f.request.content) == nprime, "선언 크기와 본문 크기가 다르면 거부당한다"
+
+
+def test_gemini_시작요청을_못_봤으면_차단한다():
+    """약속한 크기를 모르면 맞출 수가 없다. 통과는 곧 원문 유출이다."""
+    a = CampfireAddon()
+    f = _gem_bytes(b"SECRET")
+    _run(a.request(f))
+    assert f.response is not None and f.response.status_code == 403
+
+
+def test_gemini_길이선언이_없으면_차단한다():
+    a = CampfireAddon()
+    f = _req("push.clients6.google.com", "/upload/", content=b"x" * 46)
+    f.request.headers["x-goog-upload-command"] = "start"
+    _run(a.request(f))
+    assert f.response is not None and f.response.status_code == 403
+
+
+def test_gemini_재시도도_같은_결과를_쓴다():
+    a = CampfireAddon()
+    _gem_start(a, declared=1000)
+    calls = []
+
+    async def fake(*, data, file_name, mime, host):
+        calls.append(1)
+        return b"# masked"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+
+    f1 = _gem_bytes(b"SECRET")
+    _run(a.request(f1))
+    f2 = _gem_bytes(b"SECRET")
+    _run(a.request(f2))
+    assert f2.request.content == f1.request.content
+    assert b"SECRET" not in f2.request.content
+    assert len(calls) == 1, "재시도인데 사람에게 또 물었다"
 
 
 def test_모르는_호스트는_통과한다():
