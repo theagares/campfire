@@ -59,7 +59,24 @@ MULTIPART_HOSTS = {
 }
 
 CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
-CHATGPT_REGISTER_PATH = "/backend-api/files"
+
+# 등록(크기를 선언하고 업로드 URL 을 받는) 엔드포인트. 하나가 아니다.
+#
+# 2026-09-20 에 브라우저 콘솔로 쟀을 때는 /backend-api/files 였는데, 다음 날 실제
+# UI 가 쓰는 것을 프록시로 보니 /backend-api/files/upload_reservations 였다 —
+# 내가 고른 API 를 쟀지 제품이 쓰는 API 를 잰 게 아니었다. 정확히 일치하는 경로
+# 하나만 보고 있었으므로 **파일이 검사 없이 그대로 나갔다.**
+CHATGPT_REGISTER_PATHS = (
+    "/backend-api/files",
+    "/backend-api/files/upload_reservations",
+)
+
+# 바이트가 실제로 올라가는 곳.
+#
+# 진짜 방어선은 여기다. 등록 경로가 또 바뀌든 응답 모양이 달라지든, 이 호스트로
+# 가는 PUT 중 우리가 준비하지 않은 것은 막는다 — 경로 목록을 따라다니는 것보다
+# 이쪽이 오래 간다.
+CHATGPT_BLOB_HOST_SUFFIX = ".oaiusercontent.com"
 
 # 업로드인 것은 아는데 그 형식을 아직 다룰 수 없는 자리.
 #
@@ -188,11 +205,17 @@ class CampfireAddon:
                   if k.lower().startswith(("x-goog-upload", "x-guploader", "upload-"))}
             if up:
                 logger.info("[proxy]   업로드 헤더 %s", up)
-        if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] == CHATGPT_REGISTER_PATH:
+        key = flow.request.path.split("?")[0]
+        if host in CHATGPT_HOSTS and key in CHATGPT_REGISTER_PATHS:
             self._chatgpt_register(flow)
             return
-        key = flow.request.path.split("?")[0]
-        if key in self._chatgpt and flow.request.method == "PUT":
+        if flow.request.method == "PUT" and host.endswith(CHATGPT_BLOB_HOST_SUFFIX):
+            if key not in self._chatgpt:
+                # 등록을 못 봤다 = 어떤 크기를 약속했는지 모른다. 예전엔 이 경우
+                # 조용히 통과했고, 등록 경로가 바뀐 날 파일이 그대로 나갔다.
+                logger.warning("[proxy] 준비되지 않은 ChatGPT 업로드 — 차단 %s%s", host, key)
+                self._block(flow, "업로드 세션을 확인하지 못해 전송을 막았습니다")
+                return
             await self._chatgpt_put(flow, key)
             return
         if host == GEMINI_UPLOAD_HOST and key == GEMINI_UPLOAD_PATH:
@@ -207,7 +230,12 @@ class CampfireAddon:
 
     def _on_response(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
-        if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] == CHATGPT_REGISTER_PATH:
+        if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] in CHATGPT_REGISTER_PATHS:
+            if config.PROXY_LOG_REQUESTS and flow.response is not None:
+                # 등록의 요청·응답 모양을 남긴다. 필드 이름이 사이트 개편마다
+                # 바뀌는 자리라, 바뀐 걸 로그로 알 수 있어야 한다.
+                logger.info("[proxy]   등록 req %s", (flow.request.get_text() or "")[:400])
+                logger.info("[proxy]   등록 res %s", (flow.response.get_text() or "")[:400])
             self._chatgpt_register_response(flow)
         elif host == GEMINI_UPLOAD_HOST:
             self._gemini_start_response(flow)

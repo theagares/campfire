@@ -175,6 +175,31 @@ def _armed(a: CampfireAddon, key: str, declared: int = 1024) -> ChatGptUpload:
     return promise
 
 
+def test_준비되지_않은_blob_PUT_은_차단된다():
+    """2026-09-21 실사이트에서 실제로 밟은 구멍.
+
+    등록 경로가 /backend-api/files 에서 /backend-api/files/upload_reservations 로
+    바뀌어 있었고, 우리는 정확히 일치하는 경로 하나만 보고 있었다. 그래서 등록을
+    못 봤고, 준비되지 않은 PUT 이 **그대로 통과해 파일이 ChatGPT 에 올라갔다.**
+
+    경로 목록을 따라다니는 것으로는 부족하다 — 바이트가 나가는 호스트에서 막는다.
+    """
+    a = CampfireAddon()
+    f = _put_flow("/files/unknown/raw", b"ORIGINAL-SECRET")
+    _run(a.request(f))
+    assert f.response is not None, "차단되지 않았다 — 원문이 그대로 나간다"
+    assert f.response.status_code == 403
+    assert f.request.content == b"ORIGINAL-SECRET"  # 안 보낼 것이므로 손대지 않는다
+
+
+def test_두_등록경로_모두_인식한다():
+    """UI 가 쓰는 경로와 예전 경로 둘 다 본다."""
+    from app.adapters.proxy.addon import CHATGPT_REGISTER_PATHS
+
+    assert "/backend-api/files" in CHATGPT_REGISTER_PATHS
+    assert "/backend-api/files/upload_reservations" in CHATGPT_REGISTER_PATHS
+
+
 def test_PUT_재시도는_같은_결과를_쓰고_다시_묻지_않는다():
     """예전엔 첫 PUT 에서 약속값을 pop 해서, 재시도가 분기를 못 타고 **원본으로
     나갔다.** 업로드 재시도는 흔한 일이라 그냥 두면 실제로 밟힌다."""
