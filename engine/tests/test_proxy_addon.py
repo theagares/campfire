@@ -249,6 +249,29 @@ def test_크기선언이_없는_흐름은_패딩하지_않는다():
     assert f.request.content == b"# masked", "패딩 없이 그대로 나가야 한다"
 
 
+def test_본문을_바꾸면_타입도_바꾼다():
+    """PDF 를 올릴 때 PUT 은 Content-Type: application/pdf 로 온다(실측).
+
+    마스킹 결과는 MD 텍스트라, 헤더를 그대로 두면 받는 쪽이 마크다운을 PDF 로
+    열려고 한다. 업로드는 통과해도 처리 단계에서 깨진다.
+    """
+    a = CampfireAddon()
+    promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.pdf")
+    a._chatgpt["/files/pdf/raw"] = promise
+
+    async def fake(*, data, file_name, mime, host):
+        return b"# masked"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+
+    f = _put_flow("/files/pdf/raw", b"%PDF-1.7 ...")
+    f.request.headers["content-type"] = "application/pdf"
+    _run(a.request(f))
+    assert f.response is None
+    assert f.request.content == b"# masked"
+    assert f.request.headers["content-type"] == "text/markdown"
+
+
 def test_한번_막은_업로드는_재시도도_막는다():
     a = CampfireAddon()
     _armed(a, "/files/xyz/raw")

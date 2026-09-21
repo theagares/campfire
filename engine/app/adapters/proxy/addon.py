@@ -241,6 +241,9 @@ class CampfireAddon:
 
     def _on_response(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
+        if (config.PROXY_LOG_REQUESTS and host in CHATGPT_HOSTS
+                and flow.request.path.endswith("/claim_and_finish")):
+            logger.info("[proxy]   확정 req %s", (flow.request.get_text() or "")[:400])
         if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] in CHATGPT_REGISTER_PATHS:
             if config.PROXY_LOG_REQUESTS and flow.response is not None:
                 # 등록의 요청·응답 모양을 남긴다. 필드 이름이 사이트 개편마다
@@ -457,6 +460,13 @@ class CampfireAddon:
             # 선언값에 정확히 맞춘다. 공백 패딩은 텍스트에서 안전하다(실측 확인).
             promise.settled = masked.ljust(promise.declared, b" ")
         flow.request.content = promise.settled
+        # 본문을 바꿨으면 타입도 바꿔야 한다.
+        #
+        # 마스킹 결과는 원본 포맷이 아니라 MD 텍스트다. PDF 를 올릴 때 PUT 은
+        # Content-Type: application/pdf 로 오는데(실측), 그대로 두면 받는 쪽은
+        # 마크다운 바이트를 PDF 로 열려고 한다. 업로드 자체는 통과하더라도
+        # 처리 단계에서 깨진다.
+        flow.request.headers["content-type"] = MASKED_MIME
 
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
