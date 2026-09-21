@@ -7,7 +7,11 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 아직 사이트에 닿지 않은 요청의 본문을 고치는 것이라 그 기계가 통째로 없다.
 
 사이트별 코드가 사라지는 건 아니다 — DOM 대신 와이어 포맷을 알아야 한다.
-대부분은 multipart 하나로 덮이고, ChatGPT 만 3단계라 따로 있다.
+지금 상태:
+  - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
+  - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다.
+  - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
+  - Gemini 는 업로드 호스트를 특정하지 못했다 → 같은 오리진만 덮인다. 미확인.
 
 fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보낸다" 로 끝난다.
 예외가 나면 원본이 흘러가는 게 아니라 403 으로 끊는다(_guard 참고).
@@ -42,17 +46,34 @@ def masked_name_for(original: str) -> str:
 
 # ─── 사이트 표 ────────────────────────────────────────────────────────────────
 #
-# 새 사이트는 보통 여기 한 줄이면 된다. multipart 로 올리는 곳은 전부 같은 처리를
-# 타고, 그렇지 않은 곳(ChatGPT)만 전용 처리가 붙는다.
+# multipart 로 올리는 곳은 전부 같은 처리를 타고, 그렇지 않은 곳만 전용 처리가 붙는다.
 MULTIPART_HOSTS = {
     "claude.ai",
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
+    # Gemini: 같은 오리진으로 올리는 경우만 덮는다. **커버된다고 보면 안 된다** —
+    # 실제 업로드가 별도 Google 업로드 호스트로 가는지 아직 확인하지 못했다
+    # (확장은 페이지 안에서 XHR 을 가로채서 호스트를 알 필요가 없었다).
+    # 그 호스트를 특정하면 여기 추가하거나 SECUREDOC_PROXY_EXTRA_HOSTS 로 넣는다.
+    "gemini.google.com",
 }
 
 CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
 CHATGPT_REGISTER_PATH = "/backend-api/files"
+
+# 업로드인 것은 아는데 그 형식을 아직 다룰 수 없는 자리.
+#
+# 통과시키면 원문이 그대로 나간다. "지원하지 않는다" 와 "그냥 보낸다" 는 다르고,
+# 이 제품에서 후자는 곧 사고다. 그래서 막고 이유를 알린다.
+# Grok 은 multipart 가 아니라 JSON 본문에 base64 를 넣어 보낸다(확장 쪽 실측).
+UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
+    "grok.com": ("/rest/app-chat/upload-file",),
+}
+
+# 추적 중인 ChatGPT 업로드 수 상한. 재시도를 위해 약속값을 남겨 두기 때문에
+# 그냥 두면 무한히 쌓인다. 동시에 올릴 수 있는 수보다 넉넉하면 충분하다.
+_MAX_TRACKED_UPLOADS = 64
 
 
 def _multipart_hosts() -> set[str]:
@@ -67,6 +88,13 @@ class ChatGptUpload:
     declared: int          # 등록에 써 넣은 N' — PUT 본문을 여기에 정확히 맞춰야 한다
     masked_name: str
     original_name: str
+    # 판단이 끝난 뒤의 최종 본문. 같은 PUT 이 다시 오면 이걸 그대로 쓴다.
+    #
+    # 예전엔 PUT 을 처리하면서 약속값을 pop 했는데, 그러면 **재시도가 통과한다** —
+    # 두 번째 PUT 은 키를 못 찾아 분기를 안 타고 원본이 그대로 나간다. 업로드
+    # 재시도는 흔한 일이라 그냥 두면 실제로 밟힌다.
+    settled: bytes | None = None
+    blocked: bool = False  # 한 번 막았으면 재시도도 막는다
 
 
 def size_ceiling(declared: int) -> int:
@@ -120,6 +148,10 @@ class CampfireAddon:
         if key in self._chatgpt and flow.request.method == "PUT":
             await self._chatgpt_put(flow, key)
             return
+        if flow.request.method == "POST" and key in UNSUPPORTED_UPLOADS.get(host, ()):
+            logger.warning("[proxy] 다루지 못하는 업로드 형식 — 차단 %s%s", host, key)
+            self._block(flow, "아직 지원하지 않는 업로드 형식이라 전송을 막았습니다")
+            return
         if host in _multipart_hosts() and flow.request.method == "POST":
             await self._multipart(flow, host)
 
@@ -128,7 +160,7 @@ class CampfireAddon:
         if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] == CHATGPT_REGISTER_PATH:
             self._chatgpt_register_response(flow)
 
-    # ── multipart 경로 (Claude / Copilot / Perplexity / Gemini 파일) ─────────
+    # ── multipart 경로 (Claude / Copilot / Perplexity, Gemini 는 미확인) ────
 
     async def _multipart(self, flow: http.HTTPFlow, host: str) -> None:
         ctype = flow.request.headers.get("content-type", "")
@@ -212,9 +244,21 @@ class CampfireAddon:
         path = url.split("?", 1)[0]
         idx = path.find("/", path.find("://") + 3)
         self._chatgpt[path[idx:] if idx > 0 else path] = pending
+        # 재시도를 위해 남겨 두는 항목이라 스스로는 안 줄어든다. 오래된 것부터 버린다.
+        while len(self._chatgpt) > _MAX_TRACKED_UPLOADS:
+            self._chatgpt.pop(next(iter(self._chatgpt)))
 
     async def _chatgpt_put(self, flow: http.HTTPFlow, key: str) -> None:
-        promise = self._chatgpt.pop(key)
+        # pop 하지 않는다 — 재시도된 PUT 이 분기를 못 타고 원본으로 나가는 것을 막는다.
+        promise = self._chatgpt[key]
+        if promise.blocked:
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        if promise.settled is not None:
+            # 이미 판단이 끝난 업로드의 재시도. 사람에게 다시 묻지 않는다.
+            flow.request.content = promise.settled
+            return
+
         masked = await self._scan_and_decide(
             data=flow.request.content or b"",
             file_name=promise.original_name,
@@ -222,6 +266,7 @@ class CampfireAddon:
             host="chatgpt.com",
         )
         if masked is None:
+            promise.blocked = True
             self._block(flow, "검토 결과 전송하지 않기로 했습니다")
             return
         if masked is _ORIGINAL:
@@ -234,10 +279,12 @@ class CampfireAddon:
             logger.warning(
                 "[proxy] 마스킹 결과가 선언값을 넘었다 %d > %d", len(masked), promise.declared
             )
+            promise.blocked = True
             self._block(flow, "마스킹 결과가 예상보다 커서 전송을 막았습니다")
             return
         # 선언값에 정확히 맞춘다. 공백 패딩은 텍스트에서 안전하다(실측으로 통과 확인).
-        flow.request.content = masked.ljust(promise.declared, b" ")
+        promise.settled = masked.ljust(promise.declared, b" ")
+        flow.request.content = promise.settled
 
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
