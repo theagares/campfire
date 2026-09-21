@@ -15,6 +15,9 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
     선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
   - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
 
+등록에 파일 이름이 없는 흐름이 둘이라(ChatGPT upload_reservations, Gemini)
+검사 직전에 바이트를 보고 종류를 채운다 — sniff.py 참고.
+
 fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보낸다" 로 끝난다.
 예외가 나면 원본이 흘러가는 게 아니라 403 으로 끊는다(_guard 참고).
 """
@@ -30,6 +33,7 @@ from mitmproxy import http
 from app import config
 from app.adapters.proxy.decision import DecisionTimeout, broker
 from app.adapters.proxy.multipart import MultipartError, decode, encode
+from app.adapters.proxy.sniff import refine
 
 logger = logging.getLogger("securedoc.proxy")
 
@@ -464,6 +468,13 @@ class CampfireAddon:
         반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / None(보내지 않음).
         """
         from app.core.pipeline.orchestrator import run_pipeline
+
+        # 이름이나 타입을 못 받았으면 바이트를 보고 채운다.
+        #
+        # ChatGPT(upload_reservations)도 Gemini 도 등록에 파일 이름을 안 싣는다.
+        # Gemini 는 한술 더 떠 Content-Type 을 x-www-form-urlencoded 라고 준다 —
+        # 그대로 넘기면 PDF·DOCX 가 "미지원" 으로 떨어져 **검사되지 않는다.**
+        file_name, mime = refine(data, file_name, mime)
 
         result = await run_pipeline(
             file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False
