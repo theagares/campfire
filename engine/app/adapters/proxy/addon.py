@@ -11,7 +11,7 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
   - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
   - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다.
   - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
-  - Gemini 는 업로드 호스트를 특정하지 못했다 → 같은 오리진만 덮인다. 미확인.
+  - Gemini 는 push.clients6.google.com 으로 raw 본문을 올린다 → 아직 못 다뤄 **차단**.
 
 fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보낸다" 로 끝난다.
 예외가 나면 원본이 흘러가는 게 아니라 403 으로 끊는다(_guard 참고).
@@ -52,11 +52,9 @@ MULTIPART_HOSTS = {
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
-    # Gemini: 같은 오리진으로 올리는 경우만 덮는다. **커버된다고 보면 안 된다** —
-    # 실제 업로드가 별도 Google 업로드 호스트로 가는지 아직 확인하지 못했다
-    # (확장은 페이지 안에서 XHR 을 가로채서 호스트를 알 필요가 없었다).
-    # 그 호스트를 특정하면 여기 추가하거나 SECUREDOC_PROXY_EXTRA_HOSTS 로 넣는다.
-    "gemini.google.com",
+    # Gemini 는 여기 없다. 실측해 보니 업로드가 같은 오리진이 아니라
+    # push.clients6.google.com 으로 가고 multipart 도 아니다 — 아래
+    # UNSUPPORTED_UPLOADS 참고. 여기 넣어 봐야 아무 효과가 없다.
 }
 
 CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
@@ -69,6 +67,17 @@ CHATGPT_REGISTER_PATH = "/backend-api/files"
 # Grok 은 multipart 가 아니라 JSON 본문에 base64 를 넣어 보낸다(확장 쪽 실측).
 UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
     "grok.com": ("/rest/app-chat/upload-file",),
+    # Gemini. 2026-09-21 프록시로 직접 재서 확정했다:
+    #   POST push.clients6.google.com/upload/  ct=x-www-form-urlencoded  len=46
+    #   POST push.clients6.google.com/upload/  ct=x-www-form-urlencoded  len=554273
+    # 두 번째가 파일 바이트다. content-type 은 urlencoded 라고 적혀 있지만 실제로는
+    # Google resumable upload 라 **본문 전체가 파일**이다. multipart 가 아니므로
+    # MULTIPART_HOSTS 에 넣어도 아무 효과가 없다 — 그래서 막는다.
+    #
+    # 제대로 고치려면 ChatGPT 와 같은 모양이 된다: 첫 요청(세션 시작)의 헤더에
+    # 선언된 길이를 N' 으로 고치고, 두 번째 본문을 N' 까지 패딩한다. 그 헤더 이름을
+    # 아직 안 봤다(SECUREDOC_PROXY_LOG_REQUESTS 로 한 번 더 재면 된다).
+    "push.clients6.google.com": ("/upload/",),
 }
 
 # 추적 중인 ChatGPT 업로드 수 상한. 재시도를 위해 약속값을 남겨 두기 때문에
@@ -141,6 +150,19 @@ class CampfireAddon:
 
     async def _on_request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
+        if config.PROXY_LOG_REQUESTS and flow.request.method in ("POST", "PUT"):
+            logger.info(
+                "[proxy] %s %s%s ct=%s len=%s",
+                flow.request.method, host, flow.request.path.split("?")[0],
+                flow.request.headers.get("content-type", "-"),
+                len(flow.request.content or b""),
+            )
+            # 길이를 미리 선언하는 헤더를 찾으려고 남긴다(ChatGPT 의 file_size 에
+            # 해당하는 자리). 값 자체는 크기·명령어라 민감정보가 아니다.
+            up = {k: v for k, v in flow.request.headers.items()
+                  if k.lower().startswith(("x-goog-upload", "x-guploader", "upload-"))}
+            if up:
+                logger.info("[proxy]   업로드 헤더 %s", up)
         if host in CHATGPT_HOSTS and flow.request.path.split("?")[0] == CHATGPT_REGISTER_PATH:
             self._chatgpt_register(flow)
             return

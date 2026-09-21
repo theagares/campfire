@@ -59,6 +59,22 @@ def test_grok_의_다른_요청은_건드리지_않는다():
     assert f.response is None
 
 
+def test_gemini_업로드는_차단된다():
+    """Gemini 는 push.clients6.google.com 으로 raw 본문을 올린다(2026-09-21 실측).
+
+    content-type 이 x-www-form-urlencoded 라고 적혀 있지만 본문 전체가 파일이라
+    multipart 처리가 안 먹는다. 호스트를 MULTIPART_HOSTS 에 넣어 봐야 그냥
+    통과했다 — 그게 원래 구멍이었다.
+    """
+    a = CampfireAddon()
+    f = _req("push.clients6.google.com", "/upload/", content=b"\x89PNG" + b"x" * 5000)
+    f.request.headers["content-type"] = "application/x-www-form-urlencoded;charset=utf-8"
+    _run(a.request(f))
+
+    assert f.response is not None, "차단되지 않았다 — 원문이 그대로 나간다"
+    assert f.response.status_code == 403
+
+
 def test_모르는_호스트는_통과한다():
     """게이트웨이는 허용 목록만 본다 — 인터넷 전체를 검사하지 않는다."""
     a = CampfireAddon()

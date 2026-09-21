@@ -289,3 +289,7 @@ PROXY_DECISION_TIMEOUT_S: float = float(os.environ.get("SECUREDOC_PROXY_DECISION
 PROXY_EXTRA_HOSTS: set[str] = {
     h.strip() for h in os.environ.get("SECUREDOC_PROXY_EXTRA_HOSTS", "").split(",") if h.strip()
 }
+
+# 프록시가 본 요청을 한 줄씩 남긴다. 어떤 호스트로 업로드가 가는지 특정할 때 쓴다.
+# 기본은 꺼짐 — 켜면 방문 URL 이 로그에 남는다.
+PROXY_LOG_REQUESTS: bool = os.environ.get("SECUREDOC_PROXY_LOG_REQUESTS", "0") == "1"
