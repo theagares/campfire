@@ -15,6 +15,8 @@ __pycache__/
 
 # Chrome extension local QA artifacts (test profiles, large & machine-specific)
 extension/.qa/
+qa/browser/test-results/
+qa/windows-sandbox/test-results/
 
 # OS
 .DS_Store
@@ -57,3 +59,7 @@ engine/*.egg-info/
 # 커밋하려는 사람이 ! 줄을 넣고도 왜 안 되는지 못 찾게 된다. 공유가 필요해지면 이
 # 줄 아래에 그 파일만 되살리는 예외를 추가하면 된다(예: settings.json).
 /.claude/*
+
+# 수집한 기업/접촉후보 데이터 — 실명·사업자번호·담당자 연락처가 들어 있어 공개 저장소에 올리지 않는다
+고객발굴/
+demo_문제풀이.docx
