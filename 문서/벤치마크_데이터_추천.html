@@ -1,0 +1,313 @@
+<meta charset="utf-8">
+<title>온톨로지 벤치마크 데이터 추천</title>
+<style>
+  :root{
+    --bg:#faf9f7; --fg:#1c1a17; --dim:#6b655c; --line:#e2ddd4;
+    --card:#fff; --accent:#b4552d; --accent-soft:#fdf1eb;
+    --ok:#2f6b45; --warn:#8a6d1f; --danger:#a03030;
+    --mono:ui-monospace,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }}
+  :root[data-theme=dark]{
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);margin:0;
+    font:16px/1.75 "Pretendard","Malgun Gothic",-apple-system,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:880px;margin:0 auto;padding:56px 24px 120px}
+  header{border-bottom:2px solid var(--fg);padding-bottom:20px;margin-bottom:44px}
+  h1{font-size:31px;line-height:1.3;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0}
+  h2{font-size:22px;margin:56px 0 8px;letter-spacing:-.015em;
+     padding-top:20px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:16px;margin-right:10px}
+  h3{font-size:16px;margin:30px 0 6px;letter-spacing:-.01em}
+  p{margin:12px 0}
+  .lede{color:var(--dim);font-size:15px;margin:0 0 24px}
+  ul,ol{padding-left:22px;margin:12px 0}
+  li{margin:6px 0}
+  code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);
+    color:var(--accent);padding:1px 5px;border-radius:4px;word-break:break-all}
+  pre{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:6px;padding:16px 18px;overflow-x:auto;margin:16px 0}
+  pre code{background:none;color:var(--fg);padding:0;font-size:13px;line-height:1.65;
+    word-break:normal}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:6px}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+  th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--card);font-weight:600;font-size:13px;color:var(--dim);
+     letter-spacing:.02em;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:18px 22px;margin:20px 0}
+  .box.key{border-left:3px solid var(--accent);background:var(--accent-soft)}
+  .box.warn{border-left:3px solid var(--warn)}
+  .box.stop{border-left:3px solid var(--danger)}
+  .box h4{margin:0 0 8px;font-size:14px;letter-spacing:.02em;color:var(--dim);
+    text-transform:uppercase;font-weight:600}
+  .box p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 8px;
+    border-radius:99px;border:1px solid currentColor;white-space:nowrap;letter-spacing:.02em}
+  .t-hi{color:var(--danger)} .t-mid{color:var(--warn)}
+  .t-lo{color:var(--dim)} .t-no{color:var(--ok)}
+  .flow{font-family:var(--mono);font-size:13px;line-height:2;color:var(--dim);
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:16px 18px;margin:16px 0;overflow-x:auto;white-space:pre}
+  .flow b{color:var(--accent);font-weight:600}
+  .flow s{color:var(--ok);text-decoration:none}
+  em{color:var(--fg);font-style:normal;font-weight:600;
+    box-shadow:inset 0 -8px 0 var(--accent-soft)}
+  a{color:var(--accent)}
+  .pick{display:flex;gap:14px;flex-wrap:wrap;margin:22px 0}
+  .pick > div{flex:1 1 240px;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;padding:16px 18px;background:var(--card)}
+  .pick h4{margin:0 0 6px;font-size:15px}
+  .pick p{margin:4px 0;font-size:14px;color:var(--dim)}
+  footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:13px}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>벤치마크 데이터 — 무엇을 받고 무엇을 만들 것인가</h1>
+  <p class="sub">회사 기밀 온톨로지 · 2026-09-07 · <a href="온톨로지_설계_계획.html">설계 계획서</a>의 후속</p>
+</header>
+
+<div class="box warn">
+<h4>v2 계획서가 §0·§2 의 결론을 뒤집었다</h4>
+<p>“기밀 탐지에 공개 데이터가 없다”는 <b>온톨로지를 회사마다 채운다</b>는 v1 전제에서만 참이다.
+온톨로지를 고정하면 회사 데이터 + 정답 KG 소스(OpenDART·REFinD·CUAD)가 있다 —
+<a href="온톨로지_설계_계획_v2.html"><b>v2 §4</b></a>.
+이 문서에서 살아남는 것: KDPII(PII 재현율), KLUE-NER(경계 채점), 주입 벤치마크(R6 전용), 라이선스 표.</p>
+</div>
+
+<p class="lede">
+찾아보니 <em>벤치마크는 하나가 아니라 네 개의 서로 다른 질문</em>이었다.
+그중 정작 제일 중요한 “회사 기밀을 잡는가”는 <b>공개 데이터가 원리적으로 존재할 수 없다</b>.
+받을 것과 만들 것을 나눈다.
+</p>
+
+<div class="pick">
+  <div>
+    <h4>지금 받는다 — 2개</h4>
+    <p><b>KDPII</b> · 한국어 PII, CC BY 4.0</p>
+    <p><b>KLUE-NER</b> · 한국어 경계, HF 한 줄</p>
+  </div>
+  <div>
+    <h4>직접 만든다 — 1개</h4>
+    <p><b>DART 공시 + 합성 온톨로지 주입</b></p>
+    <p>기밀 탐지는 이 방법밖에 없다</p>
+  </div>
+  <div>
+    <h4>나중에</h4>
+    <p>KLUE-RE · TAB · ACTER · 모두의 말뭉치</p>
+    <p>필요해지는 시점이 각각 다르다</p>
+  </div>
+</div>
+
+<h2><span class="n">0</span>벤치마크가 네 개인 이유</h2>
+
+<p>“기밀 탐지 벤치마크”를 하나 구하려 했는데, 우리 파이프라인이 답해야 할 질문이 서로 다른 층에 있다.</p>
+
+<div class="tw"><table>
+<tr><th>#</th><th>질문</th><th>공개 데이터</th></tr>
+<tr><td>1</td><td><b>등록된 기밀 용어를 잡는가</b> — 온톨로지 매처의 재현율·정밀도</td><td><span class="tag t-hi">없다</span> 만들어야 함</td></tr>
+<tr><td>2</td><td><b>한국어 경계에서 안 깨지는가</b> — 조사·중첩·표기 흔들림</td><td><span class="tag t-no">KLUE-NER</span></td></tr>
+<tr><td>3</td><td><b>기존 PII 탐지가 실제로 몇 %인가</b> — #143 이 드러낸 구멍</td><td><span class="tag t-no">KDPII</span></td></tr>
+<tr><td>4</td><td><b>후보 추출·관계 제안이 쓸 만한가</b> — 3~4단계</td><td><span class="tag t-mid">대체재만</span></td></tr>
+</table></div>
+
+<div class="box key">
+<h4>1번에 공개 데이터가 없는 건 데이터가 부족해서가 아니다</h4>
+<p>“오로라가 기밀인가”의 정답은 <em>그 회사 안에만</em> 있다(설계서 §1).
+어떤 공개 코퍼스도 우리 온톨로지의 정답을 담을 수 없다 —
+<b>담는 순간 그건 이미 기밀이 아니다.</b></p>
+<p>DLP 문헌도 같은 지점에서 막힌다. 기존 DLP 평가셋은 문서를 “민감/비민감”(또는 몇 단계)으로
+<b>문서 단위</b>로 태깅해서, <em>어느 구간을 가려야 하는가</em>를 재는 데는 쓸 수 없다고
+TAB 논문이 직접 지적한다. 우리가 필요한 건 정확히 그 구간 단위 정답이다.</p>
+</div>
+
+<h2><span class="n">1</span>지금 받을 것 — 두 개면 충분하다</h2>
+
+<h3>① KDPII — 한국어 PII 구간 정답 <span class="tag t-no">CC BY 4.0</span></h3>
+
+<div class="tw"><table>
+<tr><th>항목</th><th>값</th></tr>
+<tr><td>정식명</td><td>Korean Dialogic Dataset for PII De-identification</td></tr>
+<tr><td>배포</td><td>Zenodo <code>10.5281/zenodo.10968609</code> — 로그인·신청 없음</td></tr>
+<tr><td>크기·형식</td><td>62.2MB JSON (train 49.8 / test 6.1 / valid 6.3)</td></tr>
+<tr><td>라이선스</td><td><b>CC BY 4.0</b> — 출처 표기하면 상업적 이용 가능</td></tr>
+<tr><td>한계</td><td><b>대화체</b>다. 우리 입력은 문서라 장르가 다르다</td></tr>
+</table></div>
+
+<p><b>이걸 첫 번째로 고른 이유</b>는 지금 <em>이미 알려진 구멍</em>이 있기 때문이다.
+#143 에서 주소가 마스킹 없이 나갔고, 그때 남긴 미해결 항목이
+<b>“지원 PII 10종 중 주소 하나가 새는 걸 우연히 발견했는데 나머지 9종은 아무도 모른다”</b> 였다.
+KDPII 는 그 “아무도 모른다”를 숫자로 바꿔주는 <b>유일한 무료 한국어 구간 단위 데이터</b>다.</p>
+
+<p>참고로 논문이 보고한 자체 베이스라인은 <b>대화 데이터 F1 0.66</b>,
+행정·양식형 평가셋 <b>F1 0.79</b> 다. 우리 인코더 모델이 이 근처면 정상, 한참 아래면 문제다 —
+<em>절대 기준이 없던 자리에 기준선이 생긴다.</em></p>
+
+<div class="box warn">
+<h4>확인하고 받을 것</h4>
+<p>인스턴스 수가 출처마다 다르게 보였다 — 논문 쪽은 대화 4,891건 / 행정형 540건,
+다른 설명에는 53,778건이 나온다. 같은 걸 다르게 센 것인지 별개 수치인지는
+<b>받아서 직접 세는 게 빠르다.</b> 라벨 종류(주소 포함 여부)도 같이 확인해야 한다 —
+그게 이 데이터를 고른 이유 자체이므로.</p>
+</div>
+
+<h3>② KLUE-NER — 한국어 경계 문제 <span class="tag t-no">CC BY-SA 4.0</span></h3>
+
+<pre><code>from datasets import load_dataset
+ner = load_dataset("klue/klue", "ner")   # train 10k / validation 2k</code></pre>
+
+<p>설계서 §5 에서 “한국어에서 실제로 어려운 지점”으로 조사 경계를 꼽았는데,
+KLUE-NER 이 정확히 그 문제를 정면으로 다루는 데이터다.
+<b>문자 단위 태깅</b>을 채택한 이유를 “한국어 형태소 특성을 반영하기 위해”라고 밝히고,
+형태소·문맥 단서를 <b>둘 다</b> 써야 풀리게 개체 유형을 달아놨다.</p>
+
+<p>우리가 여기서 재는 건 개체명 인식 성능이 아니라 <em>우리 매처의 우측 경계 휴리스틱</em>이다.
+“오로라<b>의</b>”는 잡고 “오로라<b>기</b>”는 버리는 규칙이 실제 한국어에서 몇 % 맞는지.
+정답 경계가 문자 단위로 달려 있으니 그대로 채점된다.
+뉴스와 웹 텍스트를 모두 포함해서 문체 편향도 덜하다.</p>
+
+<div class="box key">
+<h4>왜 둘 뿐인가</h4>
+<p>지금 답이 필요한 질문은 <b>“기존 탐지가 몇 %인가”</b>와 <b>“매처가 한국어에서 깨지나”</b> 둘이다.
+나머지 데이터는 <em>아직 존재하지 않는 단계</em>를 위한 것이다.
+3단계 후보추출을 만들기 전에 ACTER 를 받아두면 그냥 디스크만 먹는다.</p>
+</div>
+
+<h2><span class="n">2</span>직접 만들 것 — 기밀 탐지 벤치마크</h2>
+
+<p>1번 질문에는 살 수 있는 데이터가 없으니 <b>구성으로 정답을 만든다</b>.
+가상 회사의 온톨로지를 정하고, 실제 한국어 기업 문서에 <em>주입</em>한다.
+주입한 위치가 곧 정답이라 <b>라벨링 비용이 0</b>이다.</p>
+
+<h3>배경 문서는 DART 공시</h3>
+
+<div class="tw"><table>
+<tr><th>기준</th><th>DART <code>dart.fss.or.kr</code></th></tr>
+<tr><td>기밀 문제</td><td><b>없다</b> — 법정 공시라 애초에 공개 문서다</td></tr>
+<tr><td>문체</td><td>실제 한국 기업 문서. 사업보고서·감사보고서의 그 말투</td></tr>
+<tr><td>포맷</td><td>우리가 실제로 파싱할 형식(PDF 등)으로 바로 온다</td></tr>
+<tr><td>비용·양</td><td>무료, 사실상 무제한</td></tr>
+</table></div>
+
+<p>대안으로 정부 보도자료(공공누리)도 되지만, <b>기업 문서 문체가 아니다</b>.
+우리 탐지 대상은 사내 문서이고 DART 가 공개 자료 중 거기에 가장 가깝다.</p>
+
+<h3>주입 설계 — 세 종류의 문서가 필요하다</h3>
+
+<div class="flow"><b>A. 양성</b>   가상 온톨로지 용어를 심은 문서      → <b>재현율</b>을 잰다
+<b>B. 함정</b>   같은 단어를 <s>일반 의미</s>로 쓰는 문서    → <b>정밀도</b>를 잰다
+<b>C. 음성</b>   손대지 않은 원본 공시                → <b>오탐률</b>을 잰다</div>
+
+<p><b>B 가 이 벤치마크의 핵심이다.</b> A 와 C 만 있으면 “모든 걸 다 잡는다”는 탐지기가
+만점을 받는다. 설계서에서 <code>solo</code> 축을 1급 필드로 둔 이유가 오탐 폭발을 막는 것이었는데,
+그 장치가 작동하는지는 <em>함정 문서에서만 드러난다</em>.</p>
+
+<div class="tw"><table>
+<tr><th>클래스</th><th>양성(A)</th><th>함정(B)</th></tr>
+<tr><td>PROJECT_CODENAME</td><td>“오로라 프로젝트 2차 단가표”</td><td>“오로라 관측 투어 상품”</td></tr>
+<tr><td>FINANCIAL_METRIC</td><td>“오로라 납품단가 12,400원”</td><td>“업계 평균 단가가 상승했다”</td></tr>
+<tr><td>CLIENT</td><td>코드명과 같은 문단에 등장</td><td>단독 언급(공개 거래처 소개)</td></tr>
+</table></div>
+
+<p>그리고 <b>중첩</b>(설계서 §5)을 반드시 넣는다 —
+<code>오로라</code> / <code>오로라 프로젝트</code> / <code>오로라 프로젝트 2차 단가표</code> 를
+같은 문서에 두고, 매처가 <em>가장 긴 것</em>을 잡는지 본다.
+가장 위험한 형태를 놓치는 실패가 여기서만 보인다.</p>
+
+<div class="box key">
+<h4>규모는 작아도 된다</h4>
+<p>문서 <b>30~50건</b>이면 첫 신호로 충분하다. 정답이 구성으로 나오니 늘리는 건 스크립트 문제이고,
+<em>지금 필요한 건 큰 숫자가 아니라 “함정에서 안 터지는가”라는 예/아니오</em>다.</p>
+</div>
+
+<h2><span class="n">3</span>나중에 — 필요해지는 시점이 다 다르다</h2>
+
+<div class="tw"><table>
+<tr><th>데이터</th><th>언제</th><th>라이선스·비고</th></tr>
+<tr><td><b>TAB</b> (Text Anonymization Benchmark)</td>
+    <td>평가 <b>지표</b>를 확정할 때</td>
+    <td>CC BY 4.0 · 영어 ECHR 판례 1,268건</td></tr>
+<tr><td><b>KLUE-RE</b></td>
+    <td>4단계 관계 제안 품질을 볼 때</td>
+    <td>CC BY-SA 4.0 · 40.2k · <code>load_dataset("klue/klue","re")</code></td></tr>
+<tr><td><b>ACTER / TermEval</b></td>
+    <td>3단계 C-value 랭킹 튜닝할 때</td>
+    <td>영어·프랑스어·네덜란드어 4개 도메인. <b>한국어 없음</b></td></tr>
+<tr><td><b>모두의 말뭉치</b> 신문</td>
+    <td>배경 코퍼스가 필요해질 때</td>
+    <td>신청·인증 필요. 설계서 <code>background_corpus</code> 자리</td></tr>
+<tr><td><b>ko-pii</b></td>
+    <td>베이스라인 비교</td>
+    <td>규칙·사전·체크섬만, ML 의존성 0. 공문서에 강함</td></tr>
+</table></div>
+
+<h3>TAB 은 데이터가 아니라 방법을 가져온다</h3>
+<p>영어 판례라 우리 입력과 안 맞지만, <b>주는 것이 두 가지</b> 있다.</p>
+<ul>
+<li><b>직접 식별자 vs 준식별자(quasi-identifier) 구분</b> — 설계서 §2-① 의 <code>solo</code> 축이
+바로 이 구분이다. 남이 만든 어노테이션 스키마를 베낄 수 있다</li>
+<li><b>프라이버시 보호와 유용성 보존을 함께 재는 지표</b> — 우리 문제로 옮기면
+“기밀을 가렸는가”와 “가리고도 질문이 통하는가”다. 마스킹 게이트웨이는 둘 다 필요하다</li>
+</ul>
+<p>덧붙여 KDPII 자체가 TAB 을 참고해 라벨 체계를 만들었다고 밝히고 있어, 둘을 같이 보면 정합이 맞는다.</p>
+
+<h2><span class="n">4</span>라이선스 — 하나만 조심하면 된다</h2>
+
+<div class="box stop">
+<h4>AI Hub 는 쓰지 않는다</h4>
+<p>한국어 데이터를 찾으면 AI Hub 가 제일 먼저 나오지만, 이용정책이
+<b>비상업 연구개발 목적 한정</b>이고 <b>제공자 승인 없이 제3자 제공 금지</b>다.
+해커톤 시연은 되겠지만 <em>제품에 들어가는 순간 위반</em>이고, 데이터를 뺀 채로
+“이걸로 검증했다”고 말하기도 애매해진다. <b>처음부터 안 쓰는 쪽이 싸다.</b></p>
+</div>
+
+<div class="tw"><table>
+<tr><th>데이터</th><th>라이선스</th><th>제품 사용</th></tr>
+<tr><td>KDPII</td><td>CC BY 4.0</td><td><span class="tag t-no">가능</span> 출처 표기</td></tr>
+<tr><td>TAB</td><td>CC BY 4.0</td><td><span class="tag t-no">가능</span> 출처 표기</td></tr>
+<tr><td>KLUE</td><td>CC BY-<b>SA</b> 4.0</td><td><span class="tag t-mid">평가엔 무해</span> 재배포·파생물에 SA 전이</td></tr>
+<tr><td>모두의 말뭉치</td><td>신청·계약</td><td><span class="tag t-mid">조건부</span> 유형 확인 필요</td></tr>
+<tr><td>AI Hub</td><td>비상업 한정</td><td><span class="tag t-hi">불가</span></td></tr>
+<tr><td>DART 공시</td><td>공개 공시</td><td><span class="tag t-no">가능</span></td></tr>
+</table></div>
+
+<p>KLUE 의 ShareAlike 는 <b>평가에만 쓰면 문제가 없다</b> — 데이터를 재배포하거나
+그것으로 만든 파생 데이터셋을 배포할 때 전이된다. 점수만 뽑는 용도라 걸리지 않는다.</p>
+
+<h2><span class="n">5</span>첫 액션</h2>
+
+<ol>
+<li><b>KDPII 받아서 라벨 종류부터 센다</b> — 주소가 라벨에 있는지, 인스턴스 수가 실제로 몇인지.
+<em>이 데이터를 고른 이유가 그것이므로 여기서 확인이 안 되면 다른 걸 찾아야 한다</em></li>
+<li><b>KLUE-NER 로 경계 휴리스틱을 채점한다</b> — 매처를 만들기 <b>전에</b> 할 수 있다.
+정답 경계만 있으면 “매치 뒤 한 글자가 조사인가” 규칙의 정확도는 바로 나온다</li>
+<li><b>DART 문서 30~50건으로 A/B/C 세트를 만든다</b> — 가상 온톨로지는 설계서의
+오로라·삼성전자·납품단가 예시를 그대로 쓰면 된다</li>
+</ol>
+
+<div class="box warn">
+<h4>순서에 이유가 있다</h4>
+<p>1·2번은 <b>온톨로지 코드를 한 줄도 쓰기 전에</b> 끝난다.
+그리고 1번 결과가 나쁘면 계획이 바뀐다 — PII 재현율이 생각보다 낮으면
+기밀 온톨로지보다 <em>그게 먼저</em>다. 기밀을 잡아도 이름·주소가 새면 게이트웨이가 아니다.</p>
+</div>
+
+<footer>
+확인한 것: Zenodo 레코드(크기·라이선스·형식), HuggingFace <code>klue/klue</code> 서브셋·라이선스·분할,
+TAB 초록(출처·규모·라이선스), AI Hub 이용정책, DART 공개 여부.<br>
+확인하지 않은 것: <b>실제 다운로드는 하지 않았다</b> — 라벨 종류와 인스턴스 수는 받아서 세야 한다.
+</footer>
+</div>
