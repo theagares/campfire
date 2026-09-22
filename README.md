@@ -116,6 +116,13 @@ npm start
 2. 우측 상단 "개발자 모드" 켜기
 3. "압축해제된 확장 프로그램을 로드합니다" 클릭 → 이 저장소의 `extension/` 폴더 선택
 
+저장소를 클론하지 않는 경우, 릴리스에 함께 올라가는
+[`campfire-extension-<version>.zip`](https://github.com/theagares/campfire/releases/latest)
+을 받아 압축을 풀고 그 폴더를 3번에서 선택하면 됩니다.
+
+웹스토어 등록 절차와 제출 문안은 [`docs/chrome-web-store-listing.md`](./docs/chrome-web-store-listing.md),
+데이터 처리 범위는 [`docs/PRIVACY.md`](./docs/PRIVACY.md)에 있습니다.
+
 지원 사이트: chatgpt.com, claude.ai, gemini.google.com, copilot.microsoft.com, grok.com, perplexity.ai
 
 ## 구조

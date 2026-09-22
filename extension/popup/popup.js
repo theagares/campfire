@@ -44,6 +44,9 @@ function render(info) {
     detail.textContent = '';
   }
 
+  // 엔진이 없으면 앱을 받아야 한다 — 확장 단독 설치(웹스토어)에선 이게 유일한 다음 행동이다.
+  $('install-link').hidden = ok;
+
   // 로컬 앱이 연결됐을 때만 대시보드 열기 가능
   dashBtn.disabled = !(isLocal && ok);
 }
