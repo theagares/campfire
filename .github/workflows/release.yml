@@ -78,13 +78,19 @@ jobs:
       #     심사자가 실제 자격증명으로 오해할 소지가 있고, 런타임에 쓰이지도 않는다.
       # 확인은 zip 을 실제로 열어서 한다(패턴만 맞다고 믿지 않는다).
       - name: Package extension for Chrome Web Store
+        # 이 단계가 실패해도 설치 파일 빌드는 계속 간다 — 확장 패키징은 데스크톱
+        # 릴리스에 부수적인데, 여기서 잡을 죽이면 build 가 아예 돌지 않아 아무도
+        # 설치 파일을 못 받는다. 검증은 업로드 "전"에 하므로 깨진 zip 이 올라가진 않는다.
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version=$(node -p "require('./extension/manifest.json').version")
           out="$PWD/campfire-extension-${version}.zip"
-          (cd extension && zip -qr "$out" . -x 'tests/*' './tests/*')
+          # -D: 디렉터리 엔트리를 만들지 않는다. -x 는 tests/ 안의 "파일"만 빼기 때문에
+          # 빈 tests/ 엔트리가 남을 수 있고, 그러면 아래 검증이 헛되게 실패한다.
+          (cd extension && zip -qrD "$out" . -x 'tests/*' './tests/*')
           unzip -l "$out" | grep -q ' manifest.json$' || {
             echo "manifest.json 이 zip 루트에 없습니다"; unzip -l "$out"; exit 1;
           }
