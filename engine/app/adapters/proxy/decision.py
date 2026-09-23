@@ -121,6 +121,20 @@ class DecisionBroker:
         finally:
             self._pending.pop(decision_id, None)
 
+    def cancel_all(self, reason: str = "프록시가 중지됐습니다") -> int:
+        """붙들고 있는 판단을 전부 끝낸다. 끝낸 개수를 돌려준다.
+
+        프록시를 끌 때 부른다. 안 부르면 브라우저 요청이 사라진 루프 위에서
+        타임아웃까지 매달린다. 예외로 끝내므로 애드온은 차단(403)으로 떨어진다 —
+        끄는 중에 원본이 나가는 경로는 없다.
+        """
+        n = 0
+        for pending in list(self._pending.values()):
+            if not pending.future.done():
+                pending.future.set_exception(DecisionTimeout(reason))
+                n += 1
+        return n
+
     def resolve(self, decision_id: str, action: Action) -> bool:
         """사람이 눌렀다. 성공하면 True.
 

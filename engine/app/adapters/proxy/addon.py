@@ -129,6 +129,41 @@ def gemini_session_key(url: str) -> str:
 _MAX_TRACKED_UPLOADS = 64
 
 
+def intercept_hosts() -> tuple[list[str], list[str]]:
+    """검사 대상 호스트 — (정확히 일치하는 것, 이 접미사로 끝나는 것).
+
+    이 한 목록에서 두 가지가 나온다:
+      - mitmproxy allow_hosts: 이 호스트만 TLS 를 풀고 나머지는 터널로 넘긴다
+      - 앱의 PAC 파일: 이 호스트만 프록시로 보내고 나머지는 직접 나간다
+    어긋나면 그 호스트는 조용히 검사 밖으로 빠진다. 그래서 **위 표들에서 만들고**
+    손으로 따로 적지 않는다.
+    """
+    exact = (
+        MULTIPART_HOSTS
+        | CHATGPT_HOSTS
+        | {GEMINI_UPLOAD_HOST}
+        | set(UNSUPPORTED_UPLOADS)
+        | config.PROXY_EXTRA_HOSTS
+    )
+    # 서브도메인이 매번 바뀌는 blob 호스트(sdmntprcentralus.oaiusercontent.com …)
+    suffixes = [CHATGPT_BLOB_HOST_SUFFIX.lstrip(".")]
+    return sorted(exact), suffixes
+
+
+def intercept_host_patterns() -> list[str]:
+    """intercept_hosts() 를 mitmproxy allow_hosts 정규식으로.
+
+    여기 없는 호스트는 복호화하지 않는다. 전부 풀면 Windows 인증서 저장소를 쓰지
+    않는 프로그램(git·Python·Node 등)이 우리 CA 를 몰라 인증서 오류로 죽는다.
+    """
+    import re
+
+    exact, suffixes = intercept_hosts()
+    pats = [rf"^{re.escape(h)}(:\d+)?$" for h in exact]
+    pats += [rf"^(.+\.)?{re.escape(s)}(:\d+)?$" for s in suffixes]
+    return pats
+
+
 def _multipart_hosts() -> set[str]:
     """매번 읽는다 — 환경변수로 더한 호스트가 재시작 없이 먹어야 한다."""
     return MULTIPART_HOSTS | config.PROXY_EXTRA_HOSTS
