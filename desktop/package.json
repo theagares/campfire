@@ -47,6 +47,9 @@
       "!assets/source/**",
       "!**/*.map"
     ],
+    "asarUnpack": [
+      "main/system-proxy.ps1"
+    ],
     "extraResources": [
       {
         "from": "../engine",

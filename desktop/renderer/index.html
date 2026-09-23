@@ -114,6 +114,26 @@
                 <div class="hint">설치 파일에 이미 포함되어 있습니다 — 폴더를 열어 chrome://extensions 에서 "압축해제된 확장 프로그램 로드"로 선택하세요.</div>
                 <button class="conn-link" id="conn-ext-install">확장 프로그램 폴더 열기 →</button>
               </div>
+
+              <div class="card conn-card" id="conn-proxy-card">
+                <div class="conn-head">
+                  <div class="conn-ico conn-ico-glyph" aria-hidden="true">⇄</div>
+                  <div class="ch-text">
+                    <h3>프록시 게이트웨이</h3>
+                    <p>브라우저 종류와 상관없이 AI 사이트로 가는 업로드를 검사합니다</p>
+                  </div>
+                  <label class="proxy-switch" title="프록시 켜기/끄기">
+                    <input type="checkbox" id="proxy-toggle" disabled />
+                    <span class="ps-track"><span class="ps-thumb"></span></span>
+                  </label>
+                </div>
+                <div class="proxy-lights">
+                  <div class="model-pill off" id="proxy-light-engine"><span class="mp-dot"></span><span class="mp-text">엔진 프록시</span></div>
+                  <div class="model-pill off" id="proxy-light-ca"><span class="mp-dot"></span><span class="mp-text">CA 인증서</span></div>
+                  <div class="model-pill off" id="proxy-light-system"><span class="mp-dot"></span><span class="mp-text">시스템 설정</span></div>
+                </div>
+                <div class="proxy-hint" id="proxy-hint"><div class="hint">확인 중…</div></div>
+              </div>
             </div>
             <div class="conn-divider" style="margin-top:16px"></div>
             <p class="conn-footnote">더 많은 연동 방식이 곧 추가됩니다</p>
