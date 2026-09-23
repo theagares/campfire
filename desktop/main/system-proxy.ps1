@@ -8,8 +8,15 @@
 # 두 표현을 함께 고치고 변경 알림까지 보낸다.
 #
 #   query                      → 현재 설정 JSON
-#   set-pac <url>              → 자동 구성 스크립트(PAC)만 켠다
-#   restore <json>             → query 로 받아 둔 값을 그대로 되돌린다
+#   set-pac <b64 url>          → 자동 구성 스크립트(PAC)만 켠다
+#   restore <b64 json>         → query 로 받아 둔 값을 그대로 되돌린다
+#   echo <b64>                 → 받은 값을 그대로 돌려준다(인자 전달 검사용, 아무것도 안 바꾼다)
+#
+# 인자는 **전부 base64(UTF-8)** 다. powershell.exe 는 -File 인자의 큰따옴표를 지운다 —
+# Node execFile 로 넘겨도 PowerShell 5.1 에서 & 로 넘겨도 똑같이 지워졌다(실측:
+# {"flags":9,...} 가 {flags:9,...} 로 도착). 그래서 restore 가 JSON 해석에서 매번
+# 죽었고, 토글을 꺼도 PAC 가 풀리지 않을 뻔했다. base64 문자는 어떤 인용 규칙도
+# 건드리지 않는다.
 #
 # 관리자 권한은 필요 없다(사용자 설정만 만진다).
 
@@ -19,6 +26,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# 출력도 UTF-8 로. 기본은 콘솔 코드페이지(한국어 Windows 는 CP949)라 Node 가 UTF-8 로
+# 읽으면 한글이 깨진다 — 오류 메시지가 앱 화면에 깨진 채로 뜬다(실측).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Decode-Arg([string]$b64) {
+    if (-not $b64) { throw "인자가 필요하다" }
+    [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+}
 
 Add-Type -TypeDefinition @"
 using System;
@@ -123,18 +138,22 @@ switch ($Command) {
         Get-State | ConvertTo-Json -Compress
     }
     "set-pac" {
-        if (-not $Arg) { throw "PAC URL 이 필요하다" }
+        $url = Decode-Arg $Arg
         # PROXY_TYPE_DIRECT(1) | PROXY_TYPE_AUTO_PROXY_URL(4). 수동 프록시·자동 검색은 끈다 —
         # 켜 두면 우리 PAC 와 섞여 어느 쪽이 적용될지 알 수 없다. 이전 값은 호출자가
         # query 로 받아 두었다가 restore 로 되돌린다.
         $s = Get-State
-        [CampfireProxy]::Set(5, $s.server, $s.bypass, $Arg)
+        [CampfireProxy]::Set(5, $s.server, $s.bypass, $url)
         Get-State | ConvertTo-Json -Compress
     }
     "restore" {
-        $p = $Arg | ConvertFrom-Json
+        # 해석을 **쓰기 전에** 끝낸다. 해석이 실패하면 아무것도 쓰지 않고 죽는다.
+        $p = (Decode-Arg $Arg) | ConvertFrom-Json
         [CampfireProxy]::Set([int]$p.flags, $p.server, $p.bypass, $p.pacUrl)
         Get-State | ConvertTo-Json -Compress
+    }
+    "echo" {
+        [ordered]@{ echo = (Decode-Arg $Arg) } | ConvertTo-Json -Compress
     }
     default { throw "모르는 명령: $Command" }
 }

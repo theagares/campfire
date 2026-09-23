@@ -26,7 +26,10 @@ const PROXY_TYPE_AUTO_PROXY_URL = 4;
 function runScript(command, arg) {
   return new Promise((resolve, reject) => {
     const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, command];
-    if (arg !== undefined) args.push(arg);
+    // 인자는 base64 로 넘긴다. powershell.exe 는 -File 인자의 큰따옴표를 지운다 —
+    // execFile 이 제대로 이스케이프해도 {"flags":9} 가 {flags:9} 로 도착했다(실측).
+    // 그러면 restore 가 매번 JSON 해석에서 죽어, 토글을 꺼도 PAC 가 안 풀린다.
+    if (arg !== undefined) args.push(Buffer.from(String(arg), 'utf8').toString('base64'));
     execFile('powershell.exe', args, { windowsHide: true, timeout: 30000 }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(`system-proxy ${command} 실패: ${(stderr || err.message).trim()}`));
@@ -81,4 +84,4 @@ function create(runner = runScript) {
   };
 }
 
-module.exports = { create, PROXY_TYPE_PROXY, PROXY_TYPE_AUTO_PROXY_URL };
+module.exports = { create, runScript, PROXY_TYPE_PROXY, PROXY_TYPE_AUTO_PROXY_URL };
