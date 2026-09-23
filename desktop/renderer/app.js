@@ -179,6 +179,11 @@ function proxyHintHtml(st, running, applied) {
   }
   if (err) return `<div class="hint warn">${escapeHtml(err.message)}</div>`;
   if (st.desired && applied && !running) {
+    // 엔진이 반복 종료로 포기한 상태(error)면 저절로 안 풀린다 — 그걸 "다시 뜨면
+    // 풀립니다" 라고 하면 사용자는 기다리기만 한다.
+    if (state.engine && state.engine.state === 'error') {
+      return '<div class="hint warn">엔진이 반복해서 종료돼 AI 사이트가 막혀 있습니다. 프록시를 끄거나 엔진을 재시작하세요.</div>';
+    }
     return '<div class="hint warn">엔진 프록시가 내려가 있어 AI 사이트가 막혀 있습니다. 검사 없이 나가지 않도록 일부러 막은 상태이며, 엔진이 다시 뜨면 풀립니다.</div>';
   }
   if (st.desired && applied) return '<div class="hint">켜짐 — AI 사이트로 가는 업로드가 검토 대기로 붙들립니다. 다른 사이트는 평소처럼 직접 나갑니다.</div>';

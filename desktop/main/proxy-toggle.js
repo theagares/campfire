@@ -35,8 +35,12 @@ function create({ config, engineManager, systemProxy, pacServer, fetchImpl = fet
   }
 
   function serial(fn) {
-    const run = (busy || Promise.resolve()).catch(() => {}).then(fn);
-    busy = run.finally(() => { if (busy === run) busy = null; });
+    const run = (busy || Promise.resolve()).then(fn);
+    // 꼬리는 실패를 삼킨다 — 앞 작업이 실패해도 다음 작업은 돌아야 하고, 아무도
+    // 기다리지 않는 실패가 unhandled rejection 으로 남지 않게.
+    const tail = run.catch(() => {});
+    busy = tail;
+    tail.then(() => { if (busy === tail) busy = null; });
     return run;
   }
 
