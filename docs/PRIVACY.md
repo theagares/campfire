@@ -66,7 +66,7 @@ perplexity.ai)에서만 동작하며, 그 사이트에서 다음을 읽습니다
 
 ## 6. 문의
 
-문의·문제 신고는 GitHub Issues 로 받습니다: https://github.com/theagares/campfire/issues
+<연락처 이메일> · 이슈: https://github.com/theagares/campfire/issues
 
 ---
 
@@ -86,4 +86,4 @@ builds do not contain** — to ask an external LLM to pinpoint an already-flagge
 span. Local scan history is stored in SQLite as metadata only (job id, file name, source,
 timestamp, counts, offsets); **no raw text or text snippets are stored.**
 
-Contact: please open an issue at https://github.com/theagares/campfire/issues
+Contact: <contact email> · https://github.com/theagares/campfire/issues
