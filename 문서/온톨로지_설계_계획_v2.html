@@ -1,0 +1,358 @@
+<meta charset="utf-8">
+<title>온톨로지 설계 계획 v2</title>
+<style>
+  :root{
+    --bg:#faf9f7; --fg:#1c1a17; --dim:#6b655c; --line:#e2ddd4;
+    --card:#fff; --accent:#b4552d; --accent-soft:#fdf1eb;
+    --ok:#2f6b45; --warn:#8a6d1f; --danger:#a03030;
+    --mono:ui-monospace,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }}
+  :root[data-theme=dark]{
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);margin:0;
+    font:16px/1.75 "Pretendard","Malgun Gothic",-apple-system,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:880px;margin:0 auto;padding:56px 24px 120px}
+  header{border-bottom:2px solid var(--fg);padding-bottom:20px;margin-bottom:44px}
+  h1{font-size:31px;line-height:1.3;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0}
+  h2{font-size:22px;margin:56px 0 8px;letter-spacing:-.015em;
+     padding-top:20px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:16px;margin-right:10px}
+  h3{font-size:16px;margin:30px 0 6px;letter-spacing:-.01em}
+  p{margin:12px 0}
+  .lede{color:var(--dim);font-size:15px;margin:0 0 24px}
+  ul,ol{padding-left:22px;margin:12px 0}
+  li{margin:6px 0}
+  code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);
+    color:var(--accent);padding:1px 5px;border-radius:4px;word-break:break-all}
+  pre{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:6px;padding:16px 18px;overflow-x:auto;margin:16px 0}
+  pre code{background:none;color:var(--fg);padding:0;font-size:13px;line-height:1.65;
+    word-break:normal}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:6px}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+  th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--card);font-weight:600;font-size:13px;color:var(--dim);
+     letter-spacing:.02em;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:18px 22px;margin:20px 0}
+  .box.key{border-left:3px solid var(--accent);background:var(--accent-soft)}
+  .box.warn{border-left:3px solid var(--warn)}
+  .box.stop{border-left:3px solid var(--danger)}
+  .box h4{margin:0 0 8px;font-size:14px;letter-spacing:.02em;color:var(--dim);
+    text-transform:uppercase;font-weight:600}
+  .box p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 8px;
+    border-radius:99px;border:1px solid currentColor;white-space:nowrap;letter-spacing:.02em}
+  .t-hi{color:var(--danger)} .t-mid{color:var(--warn)}
+  .t-lo{color:var(--dim)} .t-no{color:var(--ok)}
+  .flow{font-family:var(--mono);font-size:13px;line-height:2;color:var(--dim);
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:16px 18px;margin:16px 0;overflow-x:auto;white-space:pre}
+  .flow b{color:var(--accent);font-weight:600}
+  .flow s{color:var(--ok);text-decoration:none}
+  .flow i{color:var(--danger);font-style:normal}
+  em{color:var(--fg);font-style:normal;font-weight:600;
+    box-shadow:inset 0 -8px 0 var(--accent-soft)}
+  a{color:var(--accent)}
+  .vs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 0}
+  @media (max-width:640px){.vs{grid-template-columns:1fr}}
+  .vs > div{border:1px solid var(--line);border-radius:8px;padding:16px 18px;background:var(--card)}
+  .vs h4{margin:0 0 8px;font-size:13px;letter-spacing:.03em;text-transform:uppercase;color:var(--dim)}
+  .vs.old > div:first-child{opacity:.75}
+  .vs > div:last-child{border-left:3px solid var(--accent)}
+  footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:13px}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>온톨로지 설계 계획 v2 — 고정 온톨로지, 회사별 KG</h1>
+  <p class="sub">Campfire 게이트웨이 · 2026-09-07 ·
+    <a href="온톨로지_설계_계획.html">v1</a> 과 <a href="벤치마크_데이터_추천.html">벤치마크 추천</a>을 대체한다.
+    v1 의 선행연구(§2)·한국어 경계(§5)는 그대로 유효.</p>
+</header>
+
+<div class="box warn">
+<h4>v3 로 갱신됨</h4>
+<p>이 문서의 TBox(§2)와 벤치마크 3층(§4)은 유지된다.
+<a href="온톨로지_설계_계획_v3.html"><b>v3</b></a>가 바꾼 것: 기밀 판정을 노드 규칙에서 <b>엣지 단위 4층 판정기</b>로,
+LLM 을 서버(A100)·앱(&lt;10B) <b>2계층</b>으로, 입력을 문서·회의 전사·메신저로, 모델을 5개사 로컬로.
+§3 규칙·§5 파이프라인·§6 단계는 v3 가 대체한다.</p>
+</div>
+
+<p class="lede">
+전제가 바뀌었다. <em>온톨로지는 고정</em>이고, 어떤 회사 데이터가 와도 그 스키마에 맞는 KG 를 만들어야 한다.
+그러면 v1 의 결론 하나가 뒤집힌다 — <b>“기밀 탐지 벤치마크는 공개 데이터가 없다”</b>가
+<b>“회사 데이터와 정답 KG 가 함께 있는 소스가 실제로 있다”</b>로.
+</p>
+
+<h2><span class="n">0</span>무엇이 바뀌었나</h2>
+
+<div class="vs">
+<div>
+<h4>v1 — 회사가 온톨로지를 채운다</h4>
+<p>클래스 8종은 <b>기밀 범주</b>(코드명·고객사·재무지표…).<br>
+회사마다 인스턴스를 등록 → 사전 매칭.<br>
+“잘 만들었는가”를 잴 방법이 없다 — 정답이 회사마다 다르니까.</p>
+</div>
+<div>
+<h4>v2 — 온톨로지는 고정, 회사 데이터로 KG 를 채운다</h4>
+<p>클래스는 <b>회사가 가진 것</b>(조직·사람·직무·프로젝트·제품·계약·재무사실·자산).<br>
+기밀은 클래스가 아니라 <b>KG 위의 규칙</b>.<br>
+“이 스키마에 맞는 KG 를 정확히 뽑았는가”는 <em>잴 수 있는 질문</em>이다.</p>
+</div>
+</div>
+
+<div class="box key">
+<h4>가장 큰 구조 변화 — 기밀 클래스가 사라진다</h4>
+<p>v1 의 <code>CLIENT</code> 를 보자. 삼성전자는 어떤 회사에겐 고객사고 다른 회사에겐 경쟁사다.
+<b>고정 온톨로지에서 이건 클래스가 될 수 없다</b> — 회사에 따라 답이 달라지는 것은 클래스가 아니라
+<em>관계</em>다. <code>Organization</code> 하나에 <code>customerOf</code> / <code>competitorOf</code> 관계가 붙는다.
+<code>PROJECT_CODENAME</code> 도 마찬가지로 <code>Project</code> 노드 + 공개 여부 속성이 된다.
+v1 클래스 8종은 전부 이렇게 <b>노드 + 관계 + 규칙</b>으로 풀린다(§2 끝의 표).</p>
+</div>
+
+<h2><span class="n">1</span>왜 이게 더 낫나 — 확립된 문제가 된다</h2>
+
+<p>“고정 온톨로지에 맞춰 텍스트에서 KG 를 뽑는다”는 <b>ontology-guided KG construction</b> 이라는
+이름이 있는 문제고, 전용 벤치마크가 있다.</p>
+
+<div class="tw"><table>
+<tr><th>Text2KGBench (ISWC 2023)</th><th>내용</th></tr>
+<tr><td>과제</td><td>주어진 온톨로지(클래스·정규 관계명·domain/range)에 <b>엄격히 맞는</b> 트리플 추출</td></tr>
+<tr><td>지표 7개</td><td>① 사실 추출 P/R/F1 &nbsp;② <b>온톨로지 적합률</b>(생성 트리플 중 정규 관계 비율)
+&nbsp;③ 환각 3종 — 주어·관계·목적어</td></tr>
+<tr><td>데이터</td><td>Wikidata-TekGen 10개 온톨로지 13,474문장 / DBpedia-WebNLG 19개 온톨로지 4,860문장</td></tr>
+</table></div>
+
+<p>데이터는 위키라 우리 입력과 다르지만, <em>지표 7개와 “온톨로지 적합”이라는 평가 축</em>이
+그대로 우리 것이다. 특히 <b>관계 환각</b> 지표는 v1 §2-⑤ 에서 확인한
+“LLM 은 관계를 지어낸다”를 정량화하는 바로 그 숫자다.</p>
+
+<p>그리고 결정적으로, <b>회사 데이터에 정답 KG 가 붙어 있는 소스가 있다.</b> §4.</p>
+
+<h2><span class="n">2</span>TBox — 고정 온톨로지</h2>
+
+<p>원칙 하나: <b>표준 어휘를 재사용한다.</b> 조직·사람·직무는 W3C 가 이미 권고안으로 정해놨고,
+계약 조항은 CUAD 가 41종으로 분류해놨다. 새로 짓는 건 회사 문서에 특유한 것뿐이다.</p>
+
+<div class="tw"><table>
+<tr><th>클래스</th><th>어휘 출처</th><th>예</th></tr>
+<tr><td><b>Organization</b></td><td>W3C ORG <code>org:Organization</code>, <code>org:OrganizationalUnit</code></td><td>자사·자회사·거래처 — <em>역할은 관계로</em></td></tr>
+<tr><td><b>Person</b></td><td><code>foaf:Person</code></td><td>임직원</td></tr>
+<tr><td><b>Role</b> / Membership</td><td>W3C ORG <code>org:Role</code>, <code>org:Membership</code></td><td>대표이사, 개발팀장 — Person×Org×Role 3항</td></tr>
+<tr><td><b>Project</b></td><td>자체</td><td>오로라 — <code>publicness</code> 속성</td></tr>
+<tr><td><b>Product</b></td><td><code>schema:Product</code></td><td>모델명 — <code>releaseStatus</code> 속성</td></tr>
+<tr><td><b>Contract</b></td><td>자체</td><td>공급계약, NDA</td></tr>
+<tr><td><b>Clause</b></td><td><b>CUAD 41종</b> 그대로</td><td>Price Restrictions, Exclusivity, Non-Compete, Revenue/Profit Sharing…</td></tr>
+<tr><td><b>FinancialFact</b></td><td>FIBO 개념 축소: 지표×값×기간×범위</td><td>매출 120억 · 2026Q3 · 오로라</td></tr>
+<tr><td><b>Asset</b></td><td>자체</td><td>내부 시스템, 알고리즘, 리포지토리</td></tr>
+</table></div>
+
+<h3>관계 — domain/range 를 반드시 붙인다</h3>
+
+<pre><code>subOrganizationOf   Organization → Organization
+memberOf            Person → Organization   (via Membership, with Role)
+customerOf          Organization → Organization
+suppliesTo          Organization → Organization
+competitorOf        Organization → Organization
+investsIn           Organization → Organization      # 타법인출자
+shareholderOf       Person|Organization → Organization
+auditedBy           Organization → Organization
+partyTo             Organization → Contract
+hasClause           Contract → Clause
+develops            Organization|Unit → Project
+delivers            Project → Product
+hasFact             Organization|Project|Product → FinancialFact
+owns                Organization → Asset</code></pre>
+
+<p>domain/range 가 있어야 Text2KGBench 의 <b>적합률·환각 지표가 계산된다</b>.
+그리고 LLM 이 만든 트리플을 <em>제약으로 거른다</em> — <code>hasClause(Person, …)</code> 같은 건
+프롬프트를 고치는 게 아니라 <b>스키마가 거부</b>한다. v1 §2-⑤ 의 “LLM 에게 관계를 맡기지 않는다”가
+v2 에선 “맡기되 스키마로 검증한다”로 바뀐다. 더 강한 장치다.</p>
+
+<h3>v1 클래스는 어디로 갔나</h3>
+
+<div class="tw"><table>
+<tr><th>v1 기밀 클래스</th><th>v2</th></tr>
+<tr><td>PROJECT_CODENAME</td><td><code>Project</code> 노드 + <code>publicness</code></td></tr>
+<tr><td>CLIENT</td><td><code>Organization</code> + <code>customerOf</code> 관계</td></tr>
+<tr><td>UNRELEASED_PRODUCT</td><td><code>Product.releaseStatus = unreleased</code></td></tr>
+<tr><td>FINANCIAL_METRIC</td><td><code>FinancialFact</code> 노드</td></tr>
+<tr><td>CONTRACT_TERM</td><td><code>Contract —hasClause→ Clause</code></td></tr>
+<tr><td>ORG_PERSONNEL</td><td><code>Person —memberOf→ Org</code> (with Role)</td></tr>
+<tr><td>INTERNAL_SYSTEM / TECH_ASSET</td><td><code>Asset</code></td></tr>
+</table></div>
+
+<h2><span class="n">3</span>기밀은 클래스가 아니라 규칙이다</h2>
+
+<p>온톨로지가 고정이면 기밀도 <b>회사 무관하게 성립하는 구조적 규칙</b>이어야 한다.
+“이 회사의 기밀 목록”을 받는 게 아니라, <em>KG 의 모양</em>에서 위험을 읽는다.</p>
+
+<div class="tw"><table>
+<tr><th>규칙</th><th>조건</th><th>위험</th><th>근거</th></tr>
+<tr><td><b>R1</b> 계약조항</td><td><code>Contract hasClause Clause</code>, Clause ∈ {Price Restrictions, Revenue/Profit Sharing, Exclusivity, Non-Compete, Minimum Commitment, MFN, IP Ownership…}</td><td><span class="tag t-hi">high</span></td><td>CUAD 41종 중 민감 조항 부분집합</td></tr>
+<tr><td><b>R2</b> 미공개 제품</td><td><code>Product.releaseStatus = unreleased</code></td><td><span class="tag t-hi">high</span></td><td>—</td></tr>
+<tr><td><b>R3</b> 재무사실</td><td><code>FinancialFact</code> 의 범위가 Project 단위이거나 기간이 공시 이전</td><td><span class="tag t-hi">high</span></td><td>공시된 것은 <b>public</b></td></tr>
+<tr><td><b>R4</b> 조직</td><td><code>Person memberOf Org</code> with Role</td><td><span class="tag t-mid">mid</span></td><td>조직도</td></tr>
+<tr><td><b>R5</b> 내부자산</td><td><code>Asset</code> 언급</td><td><span class="tag t-mid">mid</span></td><td>—</td></tr>
+<tr><td><b>R6</b> 관계 결합</td><td>공개 노드 2개가 <b>비공개 관계</b>로 연결 — <code>Project suppliesTo Org</code></td><td><span class="tag t-hi">high</span></td><td>v1 의 solo / quasi-identifier 계승</td></tr>
+</table></div>
+
+<div class="box key">
+<h4>공개성(publicness) — 기밀을 “목록으로 받지” 않고 “공개에서 뺀다”</h4>
+<p>공시(DART·EDGAR)에 있는 사실은 정의상 공개다. 그러면
+<em>회사 문서에서 뽑은 KG 중 공시 KG 에 없는 부분이 기밀 후보</em>다.
+회사마다 다른 기밀을 고정 규칙으로 다루는 방법이 이것이다 — 기밀 목록은 회사마다 다르지만
+<b>“공개된 것을 뺀 나머지”라는 연산은 회사와 무관</b>하다.</p>
+<p>이게 v1 의 “빈 온톨로지 문제”(§7)를 없앤다. 채울 목록이 없다. 공시가 음성 공간을 그려준다.</p>
+</div>
+
+<div class="box warn">
+<h4>정직한 한계</h4>
+<p>비상장사는 공시가 없다. 그 경우 publicness 는 <b>회사 홈페이지·보도자료</b>로 대체하거나
+사용자가 “공개” 표시를 해야 한다. 이건 규칙이 틀린 게 아니라 <em>음성 공간의 출처가 달라지는 것</em>이다.
+1차 목표는 상장사 — 정답이 있는 곳부터.</p>
+</div>
+
+<h2><span class="n">4</span>벤치마크 — 3층</h2>
+
+<h3>Tier 1 · KG 구축 정확도 — 회사 데이터, 정답 있음</h3>
+
+<div class="tw"><table>
+<tr><th>소스</th><th>언어</th><th>입력</th><th>정답</th><th>덮는 TBox</th><th>라이선스</th></tr>
+<tr><td><b>OpenDART</b></td><td>KO</td><td>사업보고서</td><td>정기보고서 API <b>30종</b> — 임원·직원·최대주주·타법인출자·감사인·보수·배당·증자</td><td>Org·Person·Role·shareholderOf·investsIn·auditedBy·FinancialFact</td><td>인증키, 공개</td></tr>
+<tr><td><b>REFinD</b></td><td>EN</td><td>10-K 문장</td><td>22 관계 / 8 엔티티쌍 / 28,676건</td><td>Person-Org-Role-Money-Date</td><td><span class="tag t-mid">비상업</span></td></tr>
+<tr><td><b>CUAD</b></td><td>EN</td><td>상업계약 510건</td><td>41 조항 13k 라벨</td><td>Contract·Clause·partyTo</td><td><span class="tag t-no">CC BY 4.0</span></td></tr>
+<tr><td><b>FinRED</b></td><td>EN</td><td>뉴스·실적발표</td><td>Wikidata 정렬, 테스트셋 수동</td><td>acquired_by, appointed_ceo…</td><td>확인 필요</td></tr>
+<tr><td><b>KLUE-RE</b></td><td>KO</td><td>위키·정책</td><td>30 관계 / 40.2k</td><td>Person-Org 일반</td><td>CC BY-SA</td></tr>
+</table></div>
+
+<div class="box key">
+<h4>OpenDART 가 이 계획의 축이다</h4>
+<p>같은 회사의 공시가 <b>구조화 API 와 서술형 사업보고서로 동시에 존재</b>한다.
+API 응답이 정답 KG, 사업보고서가 입력. <em>라벨링 0</em>으로 한국어 회사 KG 벤치마크가 생기고,
+회사를 바꿔가며 돌리면 “어떤 회사가 와도”가 <b>N개 회사에 대한 실측</b>이 된다.</p>
+<div class="flow">임원 현황(2019010)      → Person —memberOf→ Org  (with Role, 취임일)
+타법인 출자현황(2019015) → Org —investsIn→ Org   (목적, 금액)
+최대주주 현황(2019007)   → Person|Org —shareholderOf→ Org (지분율)
+감사용역 체결(2020010)   → Org —auditedBy→ Org
+직원 현황(2019011)      → Org —hasFact→ FinancialFact(headcount)
+배당·증자(2019005/4)    → Org —hasFact→ FinancialFact</div>
+</div>
+
+<h3>Tier 2 · 온톨로지 적합 · 환각</h3>
+<p>Text2KGBench 지표 7개를 Tier 1 출력에 그대로 적용한다.
+<b>“고정 온톨로지” 주장의 검증이 여기서 이뤄진다</b> — 적합률이 낮으면 TBox 가 회사 문서에
+안 맞는 것이고, 관계 환각이 높으면 LLM 을 스키마가 못 잡고 있는 것이다.
+둘은 다른 실패라 다른 지표가 필요하고, 그래서 7개다.</p>
+
+<h3>Tier 3 · 기밀 규칙</h3>
+<div class="tw"><table>
+<tr><th>규칙</th><th>정답 출처</th></tr>
+<tr><td>R1 계약조항</td><td><b>CUAD</b> — 41 조항 중 민감 부분집합에 라벨이 이미 있다</td></tr>
+<tr><td>R3 재무·R6 결합의 <b>음성</b></td><td><b>DART 공시</b> — 공시된 사실은 발화하면 안 된다</td></tr>
+<tr><td>R6 결합의 <b>양성</b></td><td>v1 추천서의 <b>주입 벤치마크</b>(양성·함정·음성) — 이것만 살린다</td></tr>
+</table></div>
+
+<div class="box stop">
+<h4>헤드라인 지표는 평균이 아니라 최소값과 분산이다</h4>
+<p>“어떤 회사가 와도”는 <em>업종이 다른 N개 회사에서 KG F1 의 분산이 낮다</em>는 뜻이고,
+그건 잴 수 있다. 평균 F1 80 에 최소 40 이면 <b>어떤 회사에선 안 되는 것</b>이다.
+제조·IT·금융 최소 3업종, 회사 10개로 시작한다.</p>
+</div>
+
+<h2><span class="n">5</span>파이프라인</h2>
+
+<div class="flow">문서 ──파싱(있음)──▶ 텍스트
+      ──<b>KG 추출</b>──▶ (엔티티, 타입) + 트리플     로컬 LLM + 온톨로지 프롬프트
+      ──<b>스키마 검증</b>──▶ domain/range 위반 폐기     환각 차단
+      ──저장──▶ SQLite 노드·엣지                      <s>기존 store, 그래프DB 안 씀</s>
+      ──<b>공개성</b>──▶ 공시 KG 와 대조 → public 표시
+
+사용자 프롬프트/첨부 ──<b>연결</b>──▶ 스팬 → KG 노드      <s>v1 AC 매처 그대로</s>
+                    ──<b>규칙 R1~R6</b>──▶ 위험도
+                    ──마스킹(있음)──▶ 외부로</div>
+
+<ul>
+<li><b>KG 추출은 오프라인 배치</b> — v1 §8 의 논리 그대로. 실시간 경로는 연결+규칙뿐이라 빠르다</li>
+<li><b>탐지가 v1 보다 단순해진다</b> — 사전 매칭 + 조합 규칙이 “KG 노드 연결 + 이웃 조회”가 된다</li>
+<li><b>로컬 전용 제약 유지</b> — 회사 문서 전체가 KG 추출기를 지나는데, 이게 외부로 나가면 게이트웨이가 유출 경로가 된다</li>
+</ul>
+
+<h2><span class="n">6</span>단계</h2>
+
+<div class="tw"><table>
+<tr><th>단계</th><th>내용</th><th>크기</th></tr>
+<tr><td><b>0</b> TBox 확정</td><td>클래스 9 + 관계 14 + domain/range + 규칙 R1~R6. 표준 어휘 매핑</td><td>이 문서</td></tr>
+<tr><td><b>1</b> 정답 KG 구축기</td><td>OpenDART API 6종 → 회사 10개 트리플. <b>코드 전에 트리플 수부터 센다</b></td><td>~150줄</td></tr>
+<tr><td><b>2</b> KG 추출기</td><td>사업보고서 → 트리플. 온톨로지 프롬프트 + 스키마 검증 + Text2KGBench 7지표</td><td>~300줄</td></tr>
+<tr><td><b>3</b> 연결 + 규칙</td><td>v1 매처 재사용 + R1~R6 → 기존 마스킹 파이프라인 접속</td><td>~200줄</td></tr>
+<tr><td><b>4</b> 기밀 검증</td><td>CUAD 로 R1, 주입셋으로 R6, DART 로 음성</td><td>—</td></tr>
+<tr><td><b>5</b> 그래프 뷰</td><td>v1 그대로. KG 가 있으니 <b>그릴 게 진짜로 생겼다</b></td><td>~150줄</td></tr>
+</table></div>
+
+<h2><span class="n">7</span>v1 에서 살아남는 것 · 죽는 것</h2>
+
+<div class="vs old">
+<div>
+<h4>죽는다</h4>
+<ul>
+<li>기밀 클래스 8종 → 노드·관계·규칙</li>
+<li><code>company.yaml</code> 인스턴스 목록 → KG</li>
+<li>“빈 온톨로지 문제” → 채울 목록이 없다</li>
+<li>추천서 §0 “기밀 탐지에 공개 데이터 없다” → 프레임이 바뀌어 있다</li>
+<li>후보 추출 4신호(C-value 등) → KG 추출로 흡수. C-value 는 Project 이름 후보에만 남는다</li>
+</ul>
+</div>
+<div>
+<h4>살아남는다</h4>
+<ul>
+<li>선행연구 §2 전부 — 특히 quasi-identifier(R6), LLM 관계 환각(스키마 검증), 추출≠탐지</li>
+<li>한국어 경계 §5 — 연결기가 그대로 쓴다</li>
+<li>AC 매처, 로컬 전용, 승인 UI, 그래프 뷰</li>
+<li>KDPII·KLUE-NER — 각각 PII 재현율, 경계 채점. 목적 그대로</li>
+<li>주입 벤치마크 — R6 전용으로 축소</li>
+</ul>
+</div>
+</div>
+
+<h2><span class="n">8</span>정직하게 남는 것</h2>
+
+<ul>
+<li><b>OpenDART 정답은 공시된 사실뿐이다.</b> Tier 1 은 “KG 를 잘 만드나”이지 “기밀을 잘 잡나”가 아니다.
+기밀 자체의 정답은 여전히 CUAD(영어)와 합성 주입뿐 — <em>한국어 기밀 정답은 아직도 합성</em>이다.</li>
+<li><b>고정 온톨로지의 고유한 위험</b> — 너무 일반적이면 쓸모없고, 너무 구체적이면 어떤 업종엔 안 맞는다.
+§4 의 분산 지표가 이걸 잡아야 하고, 못 잡으면 TBox 를 고쳐야 한다. 0단계는 “확정”이 아니라 “초안”이다.</li>
+<li><b>REFinD 는 비상업</b> — 평가에만 쓴다. FinRED 라이선스는 미확인.</li>
+<li><b>Text2KGBench 데이터 자체는 안 쓴다</b> — 위키 문장이라 회사 문서와 다르다. 지표만 가져온다.</li>
+</ul>
+
+<h2><span class="n">9</span>첫 액션</h2>
+
+<ol>
+<li><b>OpenDART 인증키 발급</b> — 회원가입이 필요해서 <em>사람이 해야</em> 한다</li>
+<li><b>회사 10개 선정</b>(제조·IT·금융 3업종+) → API 6종 호출 → <b>트리플 수 세기</b>.
+코드 한 줄 전에 “정답 KG 가 회사당 몇 개 트리플인가”를 안다. 너무 적으면 API 를 더 붙인다</li>
+<li><b>같은 회사 사업보고서 PDF</b> 를 우리 파서에 통과 → 텍스트가 제대로 나오는지. 여기서 막히면 2단계가 무의미하다</li>
+<li>그다음 TBox 를 <b>실제 트리플에 대보고</b> 고친다 — 0단계는 2번 결과를 보고 끝난다</li>
+</ol>
+
+<footer>
+확인한 것: Text2KGBench 과제·지표·데이터 규모 / OpenDART DS002 API 30종 목록 / REFinD 규모·관계수·라이선스 /
+CUAD 규모·라이선스 / FinRED 출처·구성.<br>
+확인하지 않은 것: OpenDART 각 API 의 정확한 응답 필드명, FinRED 라이선스, W3C ORG·FIBO·schema.org 는 기억에 의존(모두 공개 표준).
+</footer>
+</div>

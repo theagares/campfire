@@ -1,0 +1,770 @@
+<meta charset="utf-8">
+<title>다중 첨부 검토 설계</title>
+<style>
+  :root{
+    --bg:#fbfaf8; --fg:#1a1917; --dim:#6d6862; --line:#e4dfd7; --card:#fff;
+    --k:#2f6f8f; --k-soft:#eaf3f7; --c:#a8562b; --c-soft:#fbeee6;
+    --ok:#2f6b45; --no:#a33; --warn:#8a6a1c;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --bg:#16161a; --fg:#eceae5; --dim:#a19c94; --line:#31302d; --card:#1e1e22;
+    --k:#6fb6d6; --k-soft:#17262d; --c:#dd8a5c; --c-soft:#2a1d16;
+    --ok:#7cc79a; --no:#e28a8a; --warn:#d6b25e;
+  }}
+  :root[data-theme=dark]{
+    --bg:#16161a; --fg:#eceae5; --dim:#a19c94; --line:#31302d; --card:#1e1e22;
+    --k:#6fb6d6; --k-soft:#17262d; --c:#dd8a5c; --c-soft:#2a1d16;
+    --ok:#7cc79a; --no:#e28a8a; --warn:#d6b25e;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);margin:0;
+    font:16px/1.7 "Pretendard","Malgun Gothic",-apple-system,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px;margin:0 auto;padding:52px 24px 100px}
+  h1{font-size:28px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 28px}
+  h2{font-size:21px;margin:48px 0 6px;letter-spacing:-.015em;padding-top:18px;border-top:2px solid var(--fg)}
+  h2 .n{font-family:var(--mono);font-size:13px;color:var(--dim);margin-right:9px}
+  h3{font-size:15px;margin:26px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line)}
+  p{margin:10px 0} ul{padding-left:20px;margin:10px 0} li{margin:5px 0}
+  code{font-family:var(--mono);font-size:.87em;background:var(--k-soft);color:var(--k);
+    padding:1px 5px;border-radius:4px;word-break:break-all}
+  .tw{overflow-x:auto;margin:12px 0}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;color:var(--dim);font-weight:600;letter-spacing:.03em;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td.n{font-family:var(--mono);color:var(--dim);white-space:nowrap;width:1%}
+  .box{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--warn);
+    border-radius:8px;padding:14px 18px;margin:16px 0;font-size:14px}
+  .box.hit{border-left-color:var(--ok)} .box.risk{border-left-color:var(--no)}
+  .box.key{border-left-color:var(--c);background:var(--c-soft)}
+  .box h4{margin:0 0 5px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--warn)}
+  .box.hit h4{color:var(--ok)} .box.risk h4{color:var(--no)} .box.key h4{color:var(--c)}
+  .box p:last-child{margin-bottom:0}
+  pre{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--k);
+    border-radius:6px;padding:14px 16px;overflow-x:auto;margin:14px 0}
+  pre code{background:none;color:var(--fg);padding:0;font-size:13px;line-height:1.6;word-break:normal}
+  .flow{font-family:var(--mono);font-size:13px;line-height:1.95;color:var(--dim);
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:16px 18px;margin:14px 0;overflow-x:auto;white-space:pre}
+  .flow b{color:var(--c);font-weight:600} .flow s{color:var(--ok);text-decoration:none}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;font-size:13px}
+  .tabs span{border:1px solid var(--line);border-radius:6px 6px 0 0;padding:7px 12px;background:var(--card)}
+  .tabs .on{border-bottom-color:var(--card);background:var(--k-soft);color:var(--k);font-weight:600}
+  .tabs .wait{color:var(--dim)} .tabs .err{color:var(--no)} .tabs .part{color:var(--warn)}
+  footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+  @media print{body{background:#fff}.wrap{padding:0;max-width:none}.box,pre,.flow{break-inside:avoid}}
+</style>
+
+<div class="wrap">
+<h1>다중 첨부 — 배치 접수, 순차 검사, 탭 검토</h1>
+<p class="sub">2026-09-18 · 파일을 한 배치로 보존하고, 실제 프롬프트 문맥으로 하나씩 검사한 뒤 정확히 한 번 주입한다</p>
+
+<div class="box key">
+<h4>문제는 한 변수가 아니라 단일 파일 계약 전체다</h4>
+<p><code>content.js:722</code> 의 <code>pendingAttachment</code> 가 단수인 것이 최초 손실 지점이지만,
+수집·검사·패널 결정·주입·MAIN world 승인도 모두 파일 하나를 전제로 한다.
+따라서 배열로 바꾸는 패치가 아니라 <b>첨부 이벤트 하나를 보존하는 배치 계약</b>으로 바꿔야 한다.</p>
+</div>
+
+<h2><span class="n">1</span>지금 구조에서 파일이 사라지는 지점</h2>
+
+<div class="tw"><table>
+<tr><th>위치</th><th>지금</th><th>결과</th></tr>
+<tr><td class="n">content.js:722</td><td><code>pendingAttachment = null</code> 단수</td><td><b>덮어쓰기 — 마지막 것만 남음</b></td></tr>
+<tr><td class="n">content.js:908</td><td>drop 에서 <code>files.find(...)</code></td><td>첫 지원 파일 1개만 채택, <code>preventDefault</code> 로 나머지는 <b>사이트에도 안 감</b></td></tr>
+<tr><td class="n">content.js:878</td><td>input change 에서 <code>files?.[0]</code></td><td>다중 선택 시 1개만</td></tr>
+<tr><td class="n">interceptor.js:191·227·675</td><td><code>[0]</code> 패턴이지만 현재 <code>CONTENT_OWNS_LAYER1_UPLOADS=true</code></td><td>Layer 1은 비활성 — 우선 수정 대상 아님</td></tr>
+<tr><td class="n">interceptor.js:990~1020</td><td>FormData에서 첫 지원 파일만 탐색·교체</td><td><b>활성 Layer 2에서 두 번째 미승인 파일을 놓칠 수 있음</b></td></tr>
+<tr><td class="n">content.js:534·567</td><td><code>input.files?.length === 1</code></td><td>주입 성공 판정이 <b>1개를 하드코딩</b></td></tr>
+<tr><td class="n">sidepanel.js:48</td><td><code>docSegments</code> 단수</td><td>패널이 문서 1개 + 프롬프트 1개만 그림</td></tr>
+<tr><td class="n">sidepanel.js:556</td><td>결정에 <code>file:{...}</code> 단수</td><td>회신도 파일 1개</td></tr>
+</table></div>
+
+<p>즉 <b>수집·검사·검토·주입·네트워크 승인 다섯 층 전부</b>가 1개 전제다.
+또한 지원 파일 하나를 발견한 뒤 원래 input/drop 이벤트 전체를 막으면, 같은 배치에 섞인 미지원 파일도
+사이트에 전달되지 않는다. 처음 받은 전체 목록을 끝까지 보존해야 한다.</p>
+
+<h2><span class="n">2</span>먼저 고정할 정책과 자료구조</h2>
+
+<div class="box key">
+<h4>MVP 정책 — 구현 전에 확정</h4>
+<ul>
+<li>한 배치 최대 <b>5개</b>, 배치 원본 총량 최대 <b>20MB</b>. 초과하면 일부만 받지 않고 배치 전체를 거절한다.
+파일당 20MB는 우리가 새로 정하는 값이 아니라 엔진이 이미 강제하는 <code>MAX_UPLOAD_BYTES</code>(<code>config.py:64</code>,
+초과 시 <code>jobs.py:94</code>에서 거부)와 같은 값이다. 클라이언트 검사는 왕복을 아끼는 <b>선검사</b>이지 상한의 출처가 아니다.</li>
+<li>크기와 개수는 <code>fileToBase64()</code> 전에 검사한다. 한 번에 모든 파일을 base64로 보관하지 않는다.</li>
+<li>지원 파일이 하나도 없는 배치는 가로채지 않고 원래 사이트 동작에 맡긴다. 지원+미지원 혼합 배치만 전체
+이벤트를 보류한다. 그래야 보호 대상이 없는 첨부까지 불필요하게 패널과 재주입 경로를 타지 않는다.</li>
+<li>파싱 실패·검사 오류·타임아웃은 기본 <b>fail-closed</b>. 사용자가 해당 파일을 명시적으로 제거하거나 재시도해야 전송할 수 있다.</li>
+<li><b>텍스트 잘림(<code>truncated</code>)도 fail-closed 에 포함한다.</b> 엔진은 추출 텍스트가
+<code>MAX_TEXT_CHARS</code>(20만 자, <code>config.py:75</code>)를 넘으면 앞부분만 검사하고
+<code>result["truncated"]</code>로 알린다(<code>orchestrator.py:355</code>). 그런데 <b>확장에서 이 값을 읽는 코드가 지금 한 줄도 없다</b> —
+뒷부분을 아예 안 본 파일이 패널에 “검사 완료”로 뜬다. 배치를 5개 × 20MB 로 키우는 변경이라 만날 확률이 올라가므로,
+<code>truncated</code>인 파일은 탭에 <b>“부분만 검사됨”</b>으로 고지하고 자동 전송하지 않는다. 엔진 결과에
+기존 <code>stats.originalLength</code>의 뜻을 바꾸지 말고 <code>stats.scannedLength</code>와 자르기 전
+<code>stats.sourceLength</code>를 함께 넣어 실제 범위를 보여준다. 선택지는
+“검사된 앞부분만 새 파일로 전송”, “검사하지 않은 원본 전체 전송(위험 확인 2회)”, “파일 제외” 세 개다.
+첫 선택은 뒷부분이 제거되는 결과임을 파일명(<code>_partial_masked.md</code>)과 경고에 명시한다. 같은 상한으로 하는
+재시도는 결과가 달라지지 않으므로 제공하지 않는다.</li>
+<li>지원/미지원 혼합 배치에서는 미지원 파일을 탭에 남기고 기본 제외한다. 사용자가 “검사 없이 원본 포함”을 직접 선택한 경우에만 통과시킨다.</li>
+<li>전송 버튼은 모든 항목이 검사 완료 또는 사용자 결정 상태가 된 뒤에만 활성화한다.</li>
+<li><b>검토 중 들어온 새 배치는 거절한다.</b> 패널이 열려 있어도 페이지는 계속 살아 있어 사용자가 파일을 또 붙일 수 있다.
+그때 <code>pendingBatch</code>를 덮어쓰면 배치 A의 <code>injectionContext</code>가 사라져 “마지막 것만 된다”는
+원래 버그가 배치 단위로 그대로 재현된다. 새 배치는 원래 이벤트째로 막고 “검토 중입니다”만 알린다.
+큐에 쌓지 않는 이유는, 큐는 배치별 주입 컨텍스트를 언제까지 유효하게 들고 있을지를 정해야 하고
+그 답이 사이트마다 다르기 때문이다. MVP에서는 거절이 유일하게 확실한 동작이다.</li>
+</ul>
+</div>
+
+<pre><code>// content.js — 파일별 콜백 배열이 아니라, 원래 첨부 이벤트 하나를 배치로 보존
+// 단수다. 검토가 끝나기 전에는 절대 덮어쓰지 않는다(§2 정책) — 덮어쓰면 원래 버그가 배치 단위로 돌아온다.
+let pendingBatch = null;
+// {
+//   id, clientBatchNonce, source: 'input'|'drop'|'paste',
+//   items: [{ id, file, fileName, fileSize, mimeType, supported, status }],
+//   injectionContext: { preferred, parentHint, dropTarget }
+// }
+
+// 패널 state — 문서 N개 + 프롬프트 1개
+state.docs = [
+  { id, fileName, supported, status, counts, decision }
+  // status: pending|scanning|done|truncated|unsupported|error|excluded
+  //   truncated = 부분 검사. 실패가 아니므로 err 와 다른 상태로 둔다(§4 탭 표시).
+  //   artifactId 는 여기 없다 — 결정 이후 SW→content 경로에만 존재한다(아래 2번).
+];
+state.prompt = { id: 'prompt', status: 'pending', counts: null, decision: null };
+state.activeItem = null;       // pull한 한 항목의 originalText/items/segments만 보유
+state.activeTab = 0;
+state.unmasked = new Set();    // 'docId:localIdx' 또는 'prompt:localIdx' 형태의 안정적인 키
+
+// 1) 패널 → SW: 바이너리도 artifactId도 보내지 않는다.
+panelDecision = {
+  prompt: { action: 'masked'|'original', unmaskedKeys },
+  files: [{ id, action: 'masked'|'scanned-prefix'|'original'|'exclude', unmaskedKeys, riskAck? }]
+};
+
+// 2) SW → content: 같은 공용 함수로 프롬프트/파일 결정을 적용한다.
+// artifactId는 masked/scanned-prefix일 때만 존재하고, original/exclude에는 없다.
+contentDecision = {
+  promptText,
+  files: [{ id, action, artifactId? }]
+};</code></pre>
+
+<div class="box risk">
+<h4>action은 상태별 허용표로 검증한다</h4>
+<p><code>partial</code>은 “일부 마스킹 해제”와 “잘린 앞부분 전송”을 동시에 뜻할 수 있어
+<code>scanned-prefix</code>로 이름을 고정한다. 정상 검사 파일은 <code>masked</code>(일부
+<code>unmaskedKeys</code> 허용)·<code>original</code>·<code>exclude</code>, <code>truncated</code> 파일은
+<code>scanned-prefix</code>·위험 확인을 마친 <code>original</code>·<code>exclude</code>, 미지원 파일은
+명시적으로 고른 <code>original</code>·<code>exclude</code>, 오류 파일은 재시도 전까지 <code>exclude</code>만 허용한다.
+인젝션 정책이 <code>block</code>인 항목은 <code>exclude</code> 외 결정을 받지 않는다. SW는 ID 존재 여부, 상태별
+action, 키 prefix·범위·중복을 모두 검사하고 하나라도 어긋나면 배치 전체 결정을 거절한다. truncated 원본 전체를
+보낼 때의 두 번째 확인은 패널이 정확한 <code>riskAck:'send-unscanned-original'</code>을 붙이고 SW가 그 action에서만
+요구한다. 다른 action에 riskAck가 붙어도 거절한다.
+<code>original</code>/<code>exclude</code>에는 <code>unmaskedKeys</code>와 <code>artifactId</code>가 없어야 하고,
+탐지 항목을 전부 해제한 <code>masked</code> 결정은 <code>original</code>로 정규화한다. SW→content의
+<code>promptText</code>는 빈 문자열도 유효한 명시값이므로 타입으로 검사하고, 누락·잘못된 타입이면 캡처한 원문으로
+폴백하지 않고 전체를 중단한다.</p>
+</div>
+
+<div class="box risk">
+<h4>수집은 첫 await 전에 끝낸다</h4>
+<p>input/drop/paste 캡처 리스너는 이벤트 진입 즉시 전체 <code>FileList</code>를 배열로 복사하고 지원 여부·개수·원본
+총량을 계산한다. 지원 파일이 하나라도 있으면 같은 동기 구간에서 <code>preventDefault</code>·
+<code>stopImmediatePropagation</code>, input 비우기, <code>pendingBatch</code> 할당까지 끝낸 뒤에만 패널 열기나 메시지
+같은 비동기 작업을 시작한다. 한 파일씩 base64로 바꾸는 일은 lease 뒤다. 한도를 넘었거나 이미 배치가 있으면 원래
+이벤트를 막고 input을 비운 채 오류만 보여주며, 기존 pendingBatch는 건드리지 않는다. 지원 파일이 0개면 어떤 이벤트도
+막지 않는다. 이렇게 해야 첫 await 사이에 사이트 리스너나 두 번째 첨부가 원본 목록을 보거나 상태를 덮지 않는다.</p>
+</div>
+
+<div class="box hit">
+<h4>숫자 offset 대신 안정적인 항목 키를 쓴다</h4>
+<p>검사가 진행되는 동안 탭이 추가되고 실패 항목이 생기므로 누적 offset을 다시 계산하면 사용자가 이미 바꾼
+마스킹 선택이 다른 항목을 가리킬 수 있다. <code>buildSegments()</code>에 <code>keyPrefix</code>를 주고
+<code>계약서-id:0</code>, <code>prompt:0</code>처럼 만든다. <code>data-idx</code>도 숫자 변환하지 않고 문자열로 처리한다.
+이 키는 세션 복구와 파일별 결정에도 그대로 사용한다.</p>
+</div>
+
+<h2><span class="n">3</span>검사 — 순차, 그리고 끝나는 대로 밀어넣기</h2>
+
+<div class="flow">content.js                 SW                         엔진 / 패널
+  │ pendingBatch(File 객체만)   │
+  ├─ <b>START_MULTI_SCAN</b> ──────▶ │ 전역 큐 등록·메타 저장 ────▶ <b>PANEL_SCAN_INIT</b>(대기)
+  │ ◀─ <b>SCAN_LEASE_GRANTED</b> ────┤ 검사 lease 획득
+  │                              │
+  ├─ <b>SCAN_MULTI_PROMPT</b> #0 ───▶ │ POST /jobs/prompt          <b>프롬프트가 맨 먼저</b>, 딱 한 번
+  │                              │ ◀─ 표시용 검사 결과
+  │                              ├─ 상태 저장 ───────────────▶ <b>PANEL_SCAN_PROMPT</b>
+  ├─ fileToBase64(doc 0)         │
+  ├─ <b>SCAN_MULTI_ITEM</b> #1 ────▶ │ POST /jobs                 파일 1개 + 저장된 prompt + wrapFile=false
+  │      (응답까지 다음 파일 대기) │ ◀─ 결과
+  │                              ├─ 텍스트·항목 session 저장 ──▶ <b>PANEL_SCAN_ITEM</b>(doc 0 메타)
+  ├─ fileToBase64(doc 1)         │
+  ├─ <b>SCAN_MULTI_ITEM</b> #2 ────▶ │ 같은 흐름 반복              <s>순차 — base64 즉시 해제</s>
+  └─ <b>FINISH_MULTI_SCAN</b> #(N+1)▶ │ lease 해제·상태 ready ─────▶ <b>PANEL_SCAN_DONE</b></div>
+
+<p><b>순차 처리는 지연 최소화가 아니라 메모리 상한을 택한 결정이다.</b> 엔진의 GPU 구간은 detector별
+<code>_request_lock</code>으로 직렬화되지만, <code>orchestrator.py:144~156</code> 주석대로 Solar 네트워크 대기는
+락 밖에서 청크끼리 겹치므로 파일까지 병렬화하면 전체 시간이 줄 가능성은 있다. 다만 파일 N개 × 청크의
+<code>DETECT_CONCURRENCY</code> 팬아웃과 여러 base64 복사본이 함께 살아 메모리 상한이 깨진다. MVP는 예측 가능한
+메모리, 정확한 진행률, 파일별 오류 격리를 우선해 한 파일의 응답 뒤 다음 파일을 인코딩한다. 성능 수치가 필요하면
+구현 뒤 동일 배치로 순차/제한 병렬을 따로 벤치마크하며, 현재 문서에서 “병렬화해도 시간 이득이 없다”고 단정하지 않는다.</p>
+
+<div class="box risk">
+<h4>파싱 타임아웃 뒤의 스레드는 실제로 끝난 것이 아니다</h4>
+<p><code>orchestrator.py:36~53</code>의 <code>asyncio.to_thread(parse_document)</code>는 <code>wait_for</code>가
+타임아웃돼도 작업 스레드를 죽이지 못한다. 따라서 timeout 파일 뒤에 다음 파일을 바로 시작하면 확장 쪽은 순차여도
+엔진 파서는 겹친다. 엔진에 단일 <code>active_parse_task</code> 슬롯을 두고 타임아웃된 task를 완료 시점까지 추적한다.
+그동안 새 파싱 요청은 새 스레드를 만들지 않고 <code>parser_busy</code>로 즉시 fail-closed한다. 배치에서
+<code>timeout</code>/<code>parser_busy</code>가 나오면 남은 파일을 시작하지 않고 “엔진 파서 정리 후 재시도” 상태로 끝낸다.
+근본적인 강제 종료는 별도 프로세스 파서가 필요하지만, 이 가드만으로 타임아웃마다 고아 파싱 스레드가 누적되는 것은
+막을 수 있다.</p>
+</div>
+
+<div class="box risk">
+<h4>전역 큐는 인코딩보다 먼저 lease를 준다</h4>
+<p>SW 안에서 HTTP 요청만 직렬화하면 늦다. 두 탭의 content가 각각 <code>fileToBase64()</code>를 끝낸 뒤
+메시지를 보내면 큐에서 기다리는 동안 큰 문자열 두 개가 동시에 살아 있다. <code>START_MULTI_SCAN</code>은 즉시
+<code>queued</code> 상태만 응답하고, 실제 차례가 왔을 때 <code>SCAN_LEASE_GRANTED {sessionId, leaseId}</code>를
+보낸다. grant 상태를 먼저 storage에 확정하며 이 메시지는 힌트일 뿐이다. content는 유실에 대비해
+<code>GET_MULTI_SCAN_STATUS {sessionId,clientBatchNonce}</code>를 backoff polling하고, persisted
+<code>status:'granted'</code>와 같은 leaseId를 받은 뒤에만 인코딩한다. content는 grant를 확인하기 전에는 File 객체만
+보존하고 인코딩하지 않는다. lease는 prompt부터
+마지막 item까지 한 배치의 <b>검사 구간</b>만 감싼다. 정상은 finish, 치명 오류·사용자 취소·소유 문서 종료는
+<code>ABORT_MULTI_SCAN</code> 상태 전이로 끝낸다. 단, 엔진 HTTP가 이미 진행 중이면 UI와 세션은 즉시 취소하되 lease는
+<code>draining</code>으로 두고 그 요청이 실제 settle될 때까지 다음 배치에 주지 않는다. fetch만 끊고 곧바로 다음
+요청을 보내면 서버의 기존 추론은 계속 돌아 두 작업이 겹칠 수 있기 때문이다. 요청이 없을 때는 즉시 해제한다.
+SW 재시작 시 대기 세션은 저장된 <code>seq</code> 순서로 다시 큐에 넣고, 실행 중이던 세션은 오류로 바꿔 재시도를
+요구한다. 복구 직후에는 이전 SW가 시작한 서버 작업이 남았을 수 있으므로 <code>GET /activity</code>가
+<code>busy:false</code>를 확인하기 전 새 lease를 grant하지 않는다. activity 조회 실패나 비정상 장기 busy는 원본을
+인코딩하지 않은 채 엔진 사용 중/복구 오류로 fail-closed한다.</p>
+<p>grant 이후의 <code>SCAN_MULTI_PROMPT</code>, 모든 <code>SCAN_MULTI_ITEM</code>,
+<code>FINISH_MULTI_SCAN</code>/<code>ABORT_MULTI_SCAN</code>에는 반드시
+<code>{sessionId, leaseId, requestId, itemSeq, itemId}</code>를 넣는다.
+prompt는 <code>{itemSeq:0,itemId:'prompt'}</code>, 문서는 스테이징 순서대로 1..N과 docId, finish는
+<code>{itemSeq:N+1,itemId:null}</code>이다. SW는 현재 lease 소유 <code>tabId+frameId+documentId</code>와 세션,
+예상 순번·itemId를 모두 대조한다. 이미 완료된 것과 같은 <code>requestId</code> 재전송은 저장된 ACK를 돌려주고
+엔진을 다시 호출하지 않는다. 아직 처리 중인 같은 requestId는 기존 in-flight Promise의 결과에 합류시키고 두 번째
+엔진 요청을 만들지 않는다. 같은 순번의 다른 requestId·역전 메시지·취소된 lease·다른 문서의 lease·전체 문서
+처리 전 finish는 상태를 바꾸지 않고 거절한다. finish도 같은 requestId에 한해 멱등이며 lease 해제 뒤 도착한
+늦은 엔진 응답은 폐기한다. parser timeout/busy의 abort는 아직 보내지 않은 나머지 문서를
+<code>skipped-after-parser-timeout</code> 오류로 확정하고 ready 상태로 넘어가며, 사용자는 성공 파일만 보내거나 오류
+파일을 제외할 수 있다. 사용자 취소 abort는 세션 전체를 즉시 닫는다.</p>
+</div>
+
+<div class="box risk">
+<h4>프롬프트는 맨 처음 검사하되, 파일 요청마다 엔진이 다시 로컬 검사한다</h4>
+<p>현재 <code>scanCombined()</code>는 문서 인젝션이 사용자의 실제 지시와 충돌하는지 판단하기 위해
+<code>POST /jobs</code>에 <code>userPrompt</code>를 보낸다. 다중 검사도 각 파일마다 반드시 같은 값을 보낸다.
+같은 프롬프트를 N번 다시 검사하는 낭비를 줄이려고 <code>scanUserPrompt=false</code> 같은 <b>건너뛰기 플래그</b>를
+넣고 싶어지는데, 그 순간 원문이 외부로 나간다. 체인이 이미 그렇게 연결돼 있다:</p>
+<ul>
+<li><code>orchestrator.py:277</code> — 프롬프트를 검사해야 <code>user_prompt_masked</code>가 만들어진다. 건너뛰면 <code>None</code>.</li>
+<li><code>orchestrator.py:167</code> — <code>None</code>이면 <code>meta["user_prompt_masked"]</code> 키 자체를 넣지 않는다.</li>
+<li><code>llm_mcp.py:564</code> — <code>meta_d.get("user_prompt_masked", user_prompt)</code>. 키가 없으니 <b>원문으로 폴백</b>해
+Upstage Solar로 나간다. 파일마다 한 번씩, 총 N번.</li>
+</ul>
+<p><code>/jobs/prompt</code>는 패널에 프롬프트 탐지 결과를 먼저 보여주기 위한 호출일 뿐, 이후 요청의
+보안 증명으로 사용하지 않는다. 각 <code>POST /jobs</code>에는 <code>userPrompt</code> 원문만 보내고 엔진이 기존 단일
+경로와 동일하게 PII를 다시 로컬 검사해 <code>user_prompt_masked</code>를 만든다. 클라이언트가 보낸
+<code>userPromptMasked</code>는 받지 않거나 무시한다. 호출자가 원문을 “마스킹됨”이라고 속여 외부 모델로
+내보낼 수 있는 신뢰 경계를 만들지 않는 것이 우선이다. 비용은 짧은 프롬프트의 로컬 검사 N회이며,
+문서 파싱·청크 검사와 Solar 호출에 비해 작다. 나중에 최적화가 필요하면 서버가 발급하고 원문 해시와
+결합한 불투명 <code>promptContextId</code>만 별도 설계한다.</p>
+<p>프롬프트 원문은 <code>SCAN_MULTI_PROMPT</code>에서 SW 세션에 정확히 한 번 저장하고, 이후 content가 파일마다
+다시 보내지 않는다. SW가 모든 <code>/jobs</code>에 그 동일 문자열을 넣는다. 패널 표시와 최종 <code>promptText</code>의
+유일한 기준은 첫 <code>/jobs/prompt</code> 결과다. 각 파일 응답의 <code>userPromptOriginal</code>·
+<code>userPromptMasked</code>·<code>userPromptPiiItems</code>는 그 파일의 Solar 호출을 안전하게 만들었다는 결과일 뿐
+UI나 최종 결정의 입력으로 합치지 않고 저장 전에 제거한다. 파일 수만큼 프롬프트 원문과 탐지 배열을 중복 저장하거나,
+마지막 파일 결과가 첫 결과를 덮는 일을 막는다.</p>
+<p>프롬프트 검사가 실패하면 배치 전체를 <b>fail-closed</b> 처리한다.
+또한 파일별 <code>/jobs</code>에서 프롬프트 재검사나 마스킹 생성이 실패해도 해당 파일을 오류로 두고 전송하지 않는다.</p>
+</div>
+
+<div class="box risk">
+<h4>세션 소유자는 탭이 아니라 문서다</h4>
+<p>manifest가 두 content script를 모두 <code>all_frames:true</code>로 실행하므로 <code>tabId</code>만 확인하면 같은 탭의
+다른 iframe이 세션 메시지를 보낼 수 있다. START 시 <code>sender.tab.id</code>, <code>sender.frameId</code>,
+<code>sender.documentId</code>를 SW가 직접 기록하고 content가 보낸 소유자 필드는 신뢰하지 않는다. 이후 lease·item·
+artifact META/CHUNK/ACK·decision pull·finalize는 이 세 값이 모두 같은 sender만 허용한다. lease가 끝난 뒤의
+요청은 세션의 <code>clientBatchNonce</code>도 일치해야 한다. SW→content 결정도
+<code>chrome.tabs.sendMessage</code>의 <code>frameId/documentId</code> 옵션으로 정확한 문서에만 보낸다. 최상위 문서의
+<code>tabs.onUpdated(status:'loading')</code>와 탭 닫힘은 즉시 정리하고, 자식 frame만 사라져 종료 신호를 못 받은
+경우는 짧은 세션 watchdog이 정리한다. 늦게 도착한 이전 <code>documentId</code> 메시지는 항상 거절한다.</p>
+</div>
+
+<div class="box risk">
+<h4>문서 내용은 디스크에 쓰지 않는다 — 그래서 IndexedDB가 아니다</h4>
+<p>무거운 결과를 어디에 둘지는 성능 문제처럼 보이지만, 이 코드베이스에서는 이미 내려진 보안 결정이다.
+<code>service-worker.js:282</code> 주석이 그대로 적어두고 있다 — “<code>chrome.storage.session</code> 은 브라우저
+세션 동안만 살아 있고 <b>디스크에 남지 않는다</b> — 검토 중인 문서 내용이 들어가므로 local 이 아니라
+session 이어야 한다.” IndexedDB는 디스크 저장소이고, 옮기려던 <code>originalText</code>·전체
+<code>segments</code>·마스킹 바이너리가 바로 그 “검토 중인 문서 내용”이다. TTL 스윕은 <b>얼마나 오래</b>
+남는지를 줄일 뿐 <b>디스크에 쓰이는지</b>를 되돌리지 못한다. 기밀 유출을 막는 게이트웨이가 방금 검사한 기밀을
+평문으로 프로필 폴더에 떨어뜨리는 건 방향이 반대다. 그래서 저장 계층은 디스크로 내려가지 않는다:</p>
+<ul>
+<li><b>메타 + <code>originalText</code> + 탐지 항목(<code>piiItems</code>/<code>injectionItems</code>)</b> →
+<code>chrome.storage.session</code>. 지금과 같다. 메모리 기반이고 브라우저를 닫으면 사라진다.
+<b>segments 는 저장하지 않는다</b> — <code>buildSegments()</code>(<code>sidepanel.js:80</code>) 출력은
+<code>{type:'text', text}</code>와 <code>{type:'item', original}</code>이라 <b>그 자체가 문서 텍스트 전체</b>다.
+둘 다 저장하면 같은 본문을 두 벌 갖게 된다. <code>maskedText</code>, <code>maskedFile</code>, 전체 progress 배열도
+세션에서 제외하고 진행률은 파일별 최신 단계와 퍼센트만 저장한다.</li>
+<li><b>검사 중에는 마스킹 바이너리를 만들거나 저장하지 않는다.</b> 다중 경로의 <code>/jobs</code>는
+<code>wrapFile=false</code>를 보낸다. 완전 마스킹과 부분 해제 모두 결정 시점에 저장된 텍스트+항목으로
+최종 문자열을 만든 뒤 SW의 하나의 표준 wrapper로 <code>.md</code>를 생성한다. 따라서 SW 재시작 여부에 따라
+DOCX/MD가 달라지지 않는다. <b>새로 만드는 것은 없다 — 셋 다 이미 있다:</b>
+<code>run_pipeline</code>의 <code>wrap_file</code>은 <code>orchestrator.py:192</code>에 있고 <b>기본값이 이미
+<code>False</code></b>다. <code>POST /jobs</code>만 <code>jobs.py:113</code>에서 <code>wrap_file=True</code>를
+하드코딩하고 있으므로, 폼 필드를 받아 그 자리에 넘기고 <b>필드가 없으면 <code>True</code></b>로 두면 단일 경로는
+그대로다. MD wrapper도 <code>service-worker.js:18</code>이 <code>wrapMaskedFile</code>을 이미 import 하고
+<code>:587</code>의 <code>WRAP_MASKED_TEXT</code> 핸들러가 이미 쓰고 있다(manifest 가 <code>type:module</code>이라 배선도 끝나 있다).
+따라서 이 단계의 실제 작업은 <b>기존 파라미터를 폼으로 노출하고, 기존 wrapper를 <code>masked</code>와
+<code>scanned-prefix</code> 산출물에 호출하는 것</b>이다. <code>original</code>은 content가 가진 원래 File을 쓰고
+<code>exclude</code>는 파일을 만들지 않으므로 wrapper 대상이 아니다.</li>
+<li><b>결정 뒤의 전송 대기 artifact</b>만 <code>sessions</code> 바깥 SW 메모리 Map에 잠시 둔다. 세션에는
+artifact ID·문서 ID·action·소유 <code>tabId/frameId/documentId</code>·<code>pending|delivered</code> 상태 같은
+재생성 가능한 descriptor만 저장한다. SW가 재시작하면 pending artifact만 같은 텍스트·항목·
+<code>unmaskedKeys</code>로 다시 만들며, 불가능하면 <code>stale</code>로 닫는다. delivered artifact는 재생성하거나
+다시 내려주지 않는다.</li>
+<li>따라서 <b>IndexedDB도 <code>chrome.alarms</code>도 쓰지 않는다.</b> 다만 setTimeout만으로 둔 watchdog은 SW 재시작 때
+사라지므로 세션별 <code>expiresAt</code>은 저장하고, hydration과 모든 세션 메시지 진입 때 만료 세션을 먼저 쓸어낸다.
+별도 alarm 권한 없이도 다음 활동 시 확실히 회수되며, 브라우저가 계속 열려 있어도 stale 세션이 영구히 남지 않는다.
+manifest 권한은 현재의
+<code>activeTab·scripting·sidePanel·storage·tabs</code>에서 늘지 않는다(<code>alarms</code>는 지금 선언돼 있지도 않다).</li>
+</ul>
+<p><b>10MB 쿼터는 확장 전체 한도</b>다. 파일 5개 × 20만 자 계산은 배치 하나에만 해당하고, 서로 다른 탭의
+검토 세션은 합산된다. <code>persistSessions()</code>를 fire-and-forget으로 두거나 오류를 삼키지 않고
+<code>await persistSessionsOrThrow()</code>로 바꾼다. 모든 상태 쓰기는 하나의 <code>stateWriteChain</code> 안에서
+snapshot 생성부터 <code>storage.session.set()</code> 완료까지 직렬화하고, 단조 증가 <code>stateRevision</code>으로
+오래된 쓰기가 최신 draft를 덮지 못하게 한다. 모든 읽기·변경 핸들러는 같은 체인 안에서
+<code>ensureHydrated()</code>를 먼저 완료하며, hydration 실패를 “메모리로만 계속” 처리하지 않고 새 작업을
+fail-closed한다. 한 transaction 실패가 Promise chain 전체를 영구 reject시키지 않도록 다음 작업은
+<code>stateWriteChain.then(tx, tx)</code> 형태로 연결하고 각 호출자에게 자기 오류를 반환한다.</p>
+<p>이전 안의 <code>reservedBytes</code> 선예약은 제거한다. <code>MAX_TEXT_CHARS</code>는 본문만 제한하고 탐지 항목 배열에는
+고정 상한이 없어 START 시 “최악 크기”를 정확히 계산할 수 없기 때문이다. 대신 엔진 응답에서 허용 필드와 유효한
+offset만 정규화하고, 파일 응답의 중복 <code>userPrompt*</code>·<code>maskedText</code>·<code>maskedFile</code>·전체 progress를
+제거한 후보 snapshot을 만든다. 같은 write chain 안에서 UTF-8 직렬화 크기와
+<code>storage.session.getBytesInUse(null)</code>/<code>getBytesInUse(SESSION_STATE_KEY)</code>를 확인해
+<code>전체 현재 사용량 - 현재 state key 사용량 + 후보 state 크기</code>가 확장 전체 8MB soft limit 안일 때만
+원자적으로 교체한다.
+탐지 항목이 비정상적으로 많아 후보가 한도를 넘으면 그 큰 결과는 Map에도 확정하지 않고 해당 파일을
+<code>result-too-large</code> 오류 메타로 바꾼 작은 snapshot만 저장한다. set/get/hydration이 실패해도 기존 snapshot은
+지우지 않고 새 세션 또는 새 결과만 fail-closed한다. 저장 성공을 확인한 뒤에만 패널 메시지를 보낸다.</p>
+<p><code>PANEL_SCAN_INIT/ITEM/DONE</code>을 보낼 때도 세션 상태를 먼저 저장하고 성공을 기다린다.
+패널에서 탭을 바꾸거나 마스킹/제외 선택을 수정할 때마다 <code>PANEL_DRAFT_UPDATE</code>로
+<code>activeTab</code>, 안정적인 <code>unmaskedKeys</code>, 파일별 <code>decision</code>을 SW에 저장한다.
+따라서 패널 재로드 후 <code>PANEL_READY</code> 스냅샷으로 검사 결과뿐 아니라 미완료 선택도 복구된다.
+<b>패널 결정은 종료가 아니다.</b> 정상 결정 시 세션을 <code>awaiting-injection</code>으로 바꿔 유지하고,
+content의 <code>FINALIZE_MULTI_SESSION</code>을 받은 뒤에만 세션과 남은 artifact를 지운다. 취소·타임아웃·탭 종료는
+주입할 것이 없으므로 즉시 정리한다.
+페이지가 실제로 새 문서로 교체될 때(<code>tabs.onUpdated</code>의 <code>changeInfo.status === 'loading'</code>)와
+탭이 닫힐 때(<code>tabs.onRemoved</code>) 세션을 <code>stale</code>로 만들고 산출물을 정리한다. SPA의 history/hash
+URL 변경만으로는 세션을 취소하지 않는다.
+서비스 워커가 검사 도중 재시작되면 미완료 항목을 오류로 바꾸고 재시도를 요구한다.
+<code>kind:'multi'</code>는 명시적으로 분기하며 알 수 없는 kind를 프롬프트 검사로 폴스루시키지 않는다.</p>
+</div>
+
+<div class="box key">
+<h4>세션 수명과 전역 직렬화 계약</h4>
+<p><code>startPanelSession()</code>처럼 “한 번 보내고 한 번 기다리는” 함수는 분할 메시지와 맞지 않는다.
+<code>createPanelSession({kind:'multi', itemsMeta})</code>가 content가 배치 캡처 때 한 번 만든
+<code>startRequestId</code>/<code>clientBatchNonce</code>와 함께
+<code>START_MULTI_SCAN</code>을 보내고, SW가 sender에서
+소유 문서를 확정하고 충돌 없는 sessionId를 발급한 뒤 <code>{sessionId, decisionPromise}</code>를 반환하게 한다.
+START 응답이 유실돼 같은 소유 문서가 같은 startRequestId를 재전송하면 기존 sessionId를 멱등 반환하고, 다른
+startRequestId는 활성 배치 중복으로 거절한다. content가 만든 tabId/sessionId를 권한 근거로 쓰지 않는다.
+호출자는 발급받은 <code>sessionId</code>로
+prompt/item/finish를 차례로 보낸 뒤 마지막에
+<code>await decisionPromise</code>한다. 결정 뒤 artifact 수령과 주입을 마치면 성공/부분 성공/실패 정보를 담아
+<code>FINALIZE_MULTI_SESSION</code>을 반드시 보내며, <code>finally</code>에서도 실패 finalize를 시도한다.
+같은 탭의 중복 배치는 content와 SW 양쪽에서 거절하고, 서로 다른 탭의 배치도
+SW의 <b>전역 검사 큐/뮤텍스</b>를 거쳐 한 번에 하나만 엔진으로 보낸다. 그래야 탭 두 개가 동시에
+base64와 엔진 청크를 쌓아 순차 처리의 메모리 상한을 깨지 않는다. 취소·탭 종료는 큐의 대기 작업도 제거한다.</p>
+<p><b>큐는 <code>FINISH_MULTI_SCAN</code>에서 해제한다 — 검토 대기는 큐를 잡지 않는다.</b>
+큐를 두는 이유가 검사 구간의 메모리이므로 사람이 패널을 보고 있는 시간까지 잡을 근거가 없고,
+<code>decisionPromise</code>까지 뮤텍스로 감싸면 탭 B가 탭 A의 사용자가 결정을 누를 때까지 <b>상한 없이</b> 막힌다.
+패널은 <code>setOptions({tabId, path})</code>로 이미 탭별이라 두 탭이 동시에 검토 상태여도 충돌하지 않는다.
+동시 검토를 막는 규칙은 탭 단위(같은 탭의 새 배치 거절) 하나뿐이다.</p>
+</div>
+
+<h2><span class="n">4</span>패널 — 탭</h2>
+
+<div class="tabs">
+  <span class="on">계약서.pdf · 7건</span>
+  <span>급여대장.xlsx · 3건</span>
+  <span class="wait">제안서.docx · 검사 중…</span>
+  <span class="err">사양서.hwp · 실패</span>
+  <span class="part">회의록.txt · 부분 검사</span>
+  <span>프롬프트 · 1건</span>
+</div>
+
+<ul>
+<li>탭은 <b>스테이징 순서대로 즉시</b> 만들고 상태만 갱신한다. 검사가 끝난 순서로 탭이 재정렬되면 사용자가 혼란스럽다</li>
+<li>탭 라벨에 <b>탐지 건수</b>를 띄운다 — 어느 파일이 문제인지 열어보지 않고 알 수 있어야 한다</li>
+<li>실패한 탭은 <b>남긴다</b>. 조용히 빼면 "검사했다" 는 착각을 만든다 — 파싱 실패·미지원은 지금도 <code>scanStatus</code> 로 고지하고 있다</li>
+<li><code>truncated</code> 탭은 실패가 아니라 <b>부분 검사</b>로 따로 표시하고 <code>검사 200,000자 / 전체 N자</code>를 보여준다. “앞부분만 새 파일”, “미검사 원본 전체(2회 확인)”, “제외” 중 하나를 고르기 전에는 전송할 수 없다</li>
+<li>실패 파일은 “재시도” 또는 “이 파일 제거”, 미지원 파일은 “원본 포함” 또는 “제거” 중 하나를 사용자가 골라야 한다</li>
+<li>전송 버튼은 <b>전부 끝나고 모든 오류 항목에 결정이 있어야</b> 열린다. 라벨도 <code>2개 전송 · 1개 제외</code>처럼 실제 결과를 밝힌다</li>
+<li>탭은 <code>role="tablist"</code>/<code>role="tab"</code>, 방향키 이동, 포커스 표시, 좁은 패널에서 가로 스크롤을 지원한다</li>
+</ul>
+
+<div class="box key">
+<h4>브로드캐스트에는 메타만, 본문은 현재 탭이 pull 한다</h4>
+<p><code>PANEL_SCAN_ITEM</code>/<code>PANEL_SCAN_PROMPT</code>는 전역 runtime 채널을 지나므로
+<code>{sessionId, tabId, itemId, status, counts}</code> 메타만 알린다. 파일은 docId, 프롬프트는 고정
+<code>itemId:'prompt'</code>를 쓴다. 이 broadcast도 갱신 힌트이며, 패널은 non-terminal 세션 동안 메타 snapshot을
+backoff polling해 알림 유실을 복구한다. 패널은 활성 탭을 그릴 때
+<code>GET_PANEL_ITEM_RESULT {sessionId, itemId}</code>를 보내고, SW는 메시지의 tabId를 신뢰하지 않고
+<code>sender.url</code>이 정확히 <code>chrome-extension://…/sidepanel/sidepanel.html?tabId=N</code>인지 파싱해 얻은 N과
+세션 소유 tabId를 확인한 뒤 그 항목의 <code>originalText</code>, <code>piiItems</code>, <code>injectionItems</code>만 반환한다.
+패널 재로드의 <code>PANEL_READY</code>도 문서 본문 전체를 한꺼번에 반환하지 않고 메타+draft를 돌려준 다음 활성
+문서 하나를 같은 방식으로 pull 한다. 다른 탭·세션·문서 ID 조회는 거절한다. 패널 URL에 항상 tabId가 있으므로
+현재 <code>activeSessionId</code> 전역 폴백은 제거하고, URL 소유 탭에 열린 세션이 없으면 “세션 없음”만 반환한다.</p>
+<p>같은 검증을 읽기뿐 아니라 <code>PANEL_DRAFT_UPDATE</code>·<code>PANEL_DECISION</code>·취소에도 적용한다. 현재는
+<code>sidepanel/*</code>가 <code>web_accessible_resources</code>에 있지만 네이티브 sidePanel은 이 선언이 필요 없고
+iframe 오버레이도 이미 제거됐다. 구현 시 이 WAR 항목을 삭제해 사이트가 패널 문서를 임의로 삽입할 표면도 없앤다.
+패널 경로가 아니거나 URL의 tabId와 세션 소유자가 다르면 원문 조회와 상태 변경을 모두 거절한다.</p>
+</div>
+
+<div class="box risk">
+<h4>실패 파일을 자동으로 빼고 보내지 않는다</h4>
+<p>파싱 실패·엔진 오류는 전송을 막는다. 사용자가 “이 파일 제거”를 누르면 그때만 나머지를 보낼 수 있다.
+미지원 원본 통과도 사용자의 명시적 선택으로만 허용한다. 이 결정은 위치가 아니라 파일 <code>id</code>에 묶고,
+패널은 <code>files:[{id, action, unmaskedKeys}]</code>만 SW에 보낸다. SW가 검증·산출물 생성을 마친 뒤 content에
+<code>CONTENT_BATCH_DECISION {files:[{id, action, artifactId?}]}</code>를 중계한다. <code>maskedBase64</code>, 원문,
+Blob은 <code>PANEL_DECISION</code>에 싣지 않는다.
+그래야 제외·재정렬·동일 파일명 상황에서도 잘못된 파일에 결정을 적용하지 않는다.</p>
+</div>
+
+<div class="box key">
+<h4>다중 경로 산출물은 결정 시점에 한 방식으로 만든다</h4>
+<p>현재 단일 경로는 엔진의 DOCX <code>maskedFile</code>과 SW의 MD wrapper 두 방식을 쓰지만, 다중 경로에서는
+둘을 섞지 않는다. 엔진은 <code>wrapFile=false</code>로 텍스트와 탐지 항목만 반환하고, 완전 마스킹·부분 해제·
+<code>truncated</code> 앞부분 모두 SW가 결정 시점에 <code>wrapMaskedFile()</code>로 MD를 만든다. 따라서 SW 재시작
+전후에도 파일명·MIME·내용이 같다. 패널은 바이너리를 만들거나 artifact ID를 고르지 않는다.</p>
+<p>패널 미리보기와 SW 산출물은 반드시 같은 순수 함수를 쓴다. 현재 <code>buildSegments()</code>와
+<code>buildFinalTextFrom()</code>가 <code>sidepanel.js</code> 안에만 있으므로 이를
+<code>utils/mask-segments.js</code>로 옮긴다. 단순 이동으로는 부족하다. 현재 패널은 겹친 두 번째 항목의 꼬리를
+별도 세그먼트로 만들지만 엔진의 <code>masker.py:56~161</code>는 <code>validate_and_fix</code> 뒤 겹침을 한 구간으로
+합치고 confidence(동률이면 길이)가 높은 유형을 대표로 고른다. 공용 모듈에 같은 offset 보정·중복 제거·겹침 병합·
+라벨 선택을 이식한 <code>normalizeItems(text, items)</code>, 그 결과를 받는
+<code>buildSegments(text, normalizedItems, keyPrefix)</code>,
+<code>buildFinalText(segments, unmaskedKeys)</code>를 export한다. SW는 이미 module이라
+(<code>manifest</code>의 <code>background.type:'module'</code>, <code>service-worker.js:18</code>이 같은
+<code>utils/</code>에서 import 중) 그대로 쓰면 되지만, <b>패널은 아직 module이 아니다</b> —
+<code>sidepanel.html:109</code>가 <code>&lt;script src="sidepanel.js"&gt;&lt;/script&gt;</code>라
+<code>type="module"</code>을 붙여야 <code>import</code>가 성립한다. 이 전환은 실행을 defer로 바꾸고 최상위
+스코프를 모듈로 가두는데, 확인해 보면 위험이 낮다: <code>sidepanel.html</code>에 인라인 핸들러가 없고 스크립트
+태그도 이것 하나뿐이며 <code>sidepanel.js</code>가 <code>window</code>에 아무것도 붙이지 않는다. 그래도 §7 회귀에
+단일 패널 동작 확인을 둔다. 그 위에서 sidepanel은 이 함수를 import해 미리보기를 만들고 SW도 같은 함수를
+import해 최종 프롬프트와 문서 문자열을 만든다. 겹침·중복·역순 탐지 항목에서도
+<b>패널에 보인 최종 문자열과 artifact를 디코딩한 문자열이 바이트 단위로 같아야</b> 한다.</p>
+<p>엔진 응답을 저장하기 전에는 모든 항목의 유효 범위와 <code>text</code> 일치를 위 함수로 정규화하고, 아무것도
+해제하지 않은 JS 결과가 엔진의 <code>maskedText</code>와 정확히 같은지 비교한다. 다르면 엔진/확장 마스킹 계약이
+어긋난 것이므로 <code>mask-contract-mismatch</code>로 fail-closed하고 원문이나 산출물을 만들지 않는다. 일치 확인 뒤
+<code>maskedText</code>는 중복 데이터이므로 저장 후보에서 제거한다. 이렇게 해야 “미리보기=artifact”뿐 아니라
+“엔진이 판정한 완전 마스킹=확장이 재구성한 완전 마스킹”도 보장된다.</p>
+<p>두 방식이 갈리는 지점은 코드에서 확인된다 — 엔진의 <code>wrap_masked_file()</code>은 DOCX <b>만</b> 낸다
+(<code>masker/docwrapper.py</code>. 같은 파일 상단 docstring 은 아직 “MD 래핑도 제공”이라 적혀 있지만
+<code>wrap_as_md</code> 는 지워져 지금 없다 — 읽고 호출하면 실패한다). 반대로 확장의
+<code>utils/docwrapper.js</code> 는 <code>wrapMaskedFile()</code> 이 곧 <code>wrapAsMd()</code> 라 <b>항상 MD</b>이고,
+그 이유(파서가 이미 레이아웃을 버렸고, 마스킹 토큰이 더 명확하다)가 파일 주석에 적혀 있다. 주석이 명시하는
+수신 확인 대상은 ChatGPT·Claude·Gemini·Copilot 네 곳뿐이며, Grok·Perplexity의 MD 수신은 §7에서 실측한다.
+다중 경로가 MD 로 통일하는 것은 새 취향이 아니라 <b>확장 쪽에 이미 적힌 결정을 따르는 것</b>이다.
+<b>한 줄 선행 정리:</b> <code>service-worker.js:590</code>이
+<code>wrapMaskedFile(text, mimeType, fileName, 0)</code>으로 네 번째 인자를 넘기는데 시그니처는 인자 셋이라 <code>0</code>은
+버려진다. 이 호출부를 <code>masked</code>/<code>scanned-prefix</code> 산출물 생성에 재사용하기 <b>전에</b> 지운다.</p>
+<p>Chrome 확장 메시징은 기본적으로 JSON 직렬화이므로 <code>Blob</code>/<code>File</code>을 응답으로 보내지 않는다.
+특정 Chrome 버전의 structured-clone이나 문서화되지 않은 대형 메시지 허용량에 기대지 않는다.
+<code>GET_SCAN_ARTIFACT_META</code>가 <code>{totalBytes,mimeType,fileName,sha256}</code>를 주고,
+<code>GET_SCAN_ARTIFACT_CHUNK {artifactId,offset,maxBytes}</code>가 원시 256KiB 이하 한 조각의 base64와
+<code>nextOffset</code>을 돌려준다. content는 한 artifact의 <code>Uint8Array(totalBytes)</code>를 만들고 순서대로 채운다.
+크기 근거는 원본 바이트가 아니라 <b>텍스트</b>다 — artifact 는 원본이 아니라 마스킹된 MD 텍스트다.
+다만 <code>MAX_TEXT_CHARS</code> 20만 자(<code>config.py:75</code>)는 <b>입력 상한이지 산출물 상한이 아니다</b>.
+마스킹은 길이를 <b>늘린다</b>: <code>masker.py:53</code>이 탐지 구간을 <code>[{label} 마스킹]</code>으로 치환하고,
+<code>redact_map.py:9</code>가 그 사실을 이미 적어 뒀다 — “자리표시자는 원본과 길이가 다르다(“홍길동” 3자 →
+“[이름 마스킹]” 8자)”. 짧은 PII가 조밀한 문서면 마스킹본이 원문보다 몇 배 길어진다.
+그래서 상한은 <code>20만 자 × 치환 확장 배수</code>로 잡는다. 한 글자짜리 탐지가 문서를 가득 채우는
+비현실적 최악에서도 수 MB가 될 수 있으므로 작은 메시지라고 가정하지 않는다. 실제 최대 placeholder의 UTF-8 길이와
+<code>MAX_TEXT_CHARS</code>로 <code>MAX_ARTIFACT_BYTES</code>를 계산하고, 생성물이 그 계약을 넘으면 fail-closed한다.
+content는 완성한 bytes의 sha256이 meta와 같은지 확인해 File로 만든 뒤 조각 base64 참조를 버리고 다음 artifact를
+요청한다. 배치 전체 base64를 한 메시지나 메모리에 동시에 두지 않는다.</p>
+<p><code>artifactId</code>는 탭·세션·문서·action에 묶인 능력 토큰이다. META/CHUNK는 응답 유실 시 재시도할 수 있도록
+ACK 전까지 offset별로 멱등이며, offset 경계·최대 조각 크기·총 길이를 SW가 검증한다. content가 전체 길이와 sha256
+검증 및 File 변환에 성공한 뒤 <code>ACK_SCAN_ARTIFACT</code>를 보내야 소비 처리한다.
+ACK는 descriptor의 <code>pending→delivered</code> 전이를 storage에 먼저 확정한 뒤 성공 응답하고, 같은 artifact의
+ACK 재전송에는 같은 성공을 돌려준다. content는 ACK 성공을 받기 전에는 MAIN world 승인이나 사이트 주입을 시작하지
+않는다. SW 재시작 뒤 GET은 pending만 재생성하고 delivered는 거절하므로 ACK 응답 유실·워커 재시작이 파일 중복
+주입으로 이어지지 않는다.
+<code>DELETE_SCAN_ARTIFACT</code>는 실패·취소 때 <b>받지 않은 잔여 artifact</b>를 정리하는 용도다. 원본 통과가
+명시된 파일은 content가 보존한 원래 File을 쓰며 SW 산출물로 위장하지 않는다.</p>
+</div>
+
+<div class="box risk">
+<h4>결정과 세션 종료 사이에 주입 단계가 있다</h4>
+<p><code>PANEL_DECISION</code>을 받으면 SW는 결정을 검증하고 artifact descriptor를 저장한 뒤 세션을
+<code>awaiting-injection</code>으로 바꾼 상태를 먼저 영속화한다. 그 뒤 정확한 소유 문서에
+<code>CONTENT_BATCH_DECISION_READY {sessionId}</code> 메타만 알리고, content가
+<code>GET_CONTENT_BATCH_DECISION {sessionId,clientBatchNonce}</code>으로 <code>promptText</code>와 파일 descriptor를
+pull한다. nonce는 runtime 메시지 안에서만 오가고 panel/MAIN world에는 보내지 않는다. READY가
+유실돼도 <code>decisionPromise</code>의 짧은 재확인 timer가 같은 GET을 보내며, GET은 finalize 전까지 멱등이다.
+패널에는 영속화 성공 뒤에만 결정 접수 성공을 응답한다. 이 시점에는 세션을 삭제하지 않는다. content가 artifact들을 받아
+사이트 주입 증거를 확인한 다음 <code>FINALIZE_MULTI_SESSION {sessionId, batchId, status, consumedIds}</code>를
+보내야 SW가 세션·artifact를 삭제한다. 성공 finalize는 batchId/nonce가 맞고 <code>consumedIds</code>가 세션의
+delivered artifact 집합과 정확히 같을 때만 받는다. content는 성공·부분 성공·실패 모두 finalize하며, 메시지가 오지 않으면
+저장된 deadline 기반 watchdog과 탭 navigation/close가 정리한다. 파일이 있는 성공 순서는 source prompt 해시 확인 →
+최종 promptText 입력 → artifact META/CHUNK 조립과 ACK 전부 확인 → <code>CONTENT_APPROVE_BATCH</code> → 사이트 주입 및 항목별 증거
+확인 → 1회용 승인으로 프롬프트 재전송 → <code>CONTENT_CLOSE_BATCH</code> →
+<code>CONTENT_BATCH_SETTLED</code> 확인 → finalize다. 파일이 전부 제외되어 M=0이면 MAIN 승인 단계 없이 프롬프트
+재전송 증거 뒤 finalize한다.
+승인 뒤 주입 전에 실패하거나 취소되면 <code>CONTENT_ABORT_BATCH</code> → 실패 finalize 순서로 정리한다. 일부 파일만
+붙은 경우에도 프롬프트는 보내지 않고 성공/실패 ID를 finalize에 기록해 이미 붙은 파일을 자동 재주입하지 않는다.
+사용자 취소는 artifact 생성 없이 즉시 종료한다.</p>
+</div>
+
+<h2><span class="n">5</span>주입 — 여기가 제일 위험하다</h2>
+
+<p>검토가 끝나면 마스킹본 N개를 사이트에 넣어야 한다. 지금 <code>injectFileWithEvidence</code> 는
+파일 1개를 넣고 <b>"사이트가 받았다는 증거"</b> 를 기다리는 4단계 전략(살아있는input → 합성paste →
+input되돌리기 → 합성drop)으로 돼 있다. 이 부분은 실사용 실패를 겪으며 여러 번 뒤집힌 코드라
+건드릴 때 가장 조심해야 한다.</p>
+
+<div class="box risk">
+<h4>검토한 프롬프트와 지금 입력창이 같아야 한다</h4>
+<p>사용자는 네이티브 패널을 보는 동안 사이트 입력창을 계속 수정할 수 있다. START 때 정확한 UTF-8 원문의
+<code>sourcePromptSha256</code>을 세션에 묶고, 결정을 적용하기 직전에 <code>getEditorText()</code>로 다시 읽어 같은 해시인지
+확인한다. 다르면 artifact 승인·파일 주입·입력창 덮어쓰기·자동 전송을 모두 시작하지 않고 세션을 실패 finalize한 뒤
+“프롬프트가 변경되어 다시 검토해야 합니다”를 표시한다. 공백 정규화로 다른 문장을 같다고 보지 말고 실제 전송에 쓰는
+문자열과 같은 추출 규칙의 정확한 값으로 비교한다. 이 검사는 프롬프트 원문과 각 파일 인젝션 판정의 문맥도 함께
+고정한다.</p>
+<p>현재의 전역 boolean <code>promptApproved</code>도 그대로 확대하지 않는다. 파일 주입·업로드 대기 중에는 계속
+<code>blockedWhileScanning</code>으로 제출을 막고, 실제 <code>resubmitPrompt()</code> 직전에만
+<code>{batchId,finalPromptSha256,expiresAt,uses:1}</code> 1회용 승인을 만든다. submit 캡처러는 현재 에디터의 최종
+<code>promptText</code> 해시가 맞을 때 그 승인을 동기적으로 소비해 한 이벤트만 통과시키고, 성공·예외 모두 즉시
+폐기한다. 단순 <code>true</code> 상태를 await 구간에 걸쳐 유지하지 않는다.</p>
+</div>
+
+<div class="tw"><table>
+<tr><th></th><th>방식</th><th>평가</th></tr>
+<tr><td class="n">1순위</td><td><b>DataTransfer 하나에 N개</b> — <code>setFilesOnInput(input, files)</code>, <code>makeFileTransfer(files)</code></td><td>사이트가 다중 선택을 지원하면 이벤트 한 번으로 원래 사용자 동작과 가장 가깝다</td></tr>
+<tr><td class="n">증거</td><td>기준선 이후 N개 파일 각각의 칩/업로드 시작을 추적</td><td><code>input.files.length</code>는 기계적 성공일 뿐 사이트 수락 증거가 아니다</td></tr>
+<tr><td class="n">제한 폴백</td><td>사이트가 1개씩만 받는 것이 확인된 경우에만 성공하지 않은 파일을 순차 주입</td><td>부분 성공 목록을 보존하고 이미 성공한 파일은 절대 다시 쏘지 않는다</td></tr>
+</table></div>
+
+<div class="box risk">
+<h4>부분 성공이 불명확하면 전체 재시도하지 않는다</h4>
+<p><code>input.files?.length === expectedCount</code>는 필요한 수정이지만 충분하지 않다.
+프레임워크가 첫 파일만 처리했을 수 있기 때문이다. <code>watchAttachmentEvidence</code>와
+<code>waitForAttachmentReady</code>는 파일명별 기대 개수와 업로드 시작 증가량을 본다. 동일 파일명은 개수로 센다.
+배치 주입 후 일부 성공 여부를 확정할 수 없으면 paste/drop으로 전체 배치를 다시 쏘지 않고 전송을 멈춘다.
+최종 파일 N개는 모두 <code>contentOwnedFiles</code>에 등록하고 MAIN world에도 배치 ID와 함께 승인한 뒤 주입한다.</p>
+</div>
+
+<div class="box risk">
+<h4>다중 배치의 FormData는 교체하지 않고 전 엔트리를 승인 대조한다</h4>
+<p><code>interceptor.js:1020</code>의 <code>replaceFD(fd, origName, newFile)</code>는
+<code>val.name === origName</code>인 File 엔트리를 <b>전부</b> 같은 새 파일로 바꾼다. 그리고
+<code>findFileInFD</code>는 첫 지원 파일에서 <code>return</code>한다(§1 표의 그 줄이다).
+그런데 §2는 동일 파일명 배치를 허용하고 §7은 “동일 이름 N개”를 테스트로 못박아 뒀다 —
+같은 이름 두 개가 든 FormData에서 한 개의 마스킹본이 두 자리를 모두 덮어쓴다.
+MAIN/isolated world 사이에서는 같은 파일도 다른 JS 객체로 보이고 사이트가 File을 복사할 수도 있으므로 객체 동일성도
+키가 될 수 없다. 각 최종 파일을 한 번씩 준비하면서 <code>{docId,name,size,type,sha256,occurrence}</code> 승인을 만들고,
+MAIN world는 <code>fd.entries()</code>의 <b>모든 첨부 payload</b> File/Blob을 순회해 바이트 해시까지 일치하는 아직
+쓰지 않은 승인 하나에만 매칭한다. 사이트 adapter가 명시한 비첨부 메타 Blob만 제외할 수 있고, 모르는 File/Blob은
+통과시키지 않는다. 완전히 같은 바이트의 중복 파일은 occurrence로 승인 개수만 소진한다. 모든 첨부 엔트리가 정확히 한 번
+매칭되면 FormData 객체를 수정하지 않고 그대로 전송하며, 하나라도 미승인·중복 소진·추가 엔트리면 요청 전체를 막는다.
+이미 content가 최종 파일을 주입했으므로 MAIN에서 다시 교체하면 오히려 multipart 필드와 사이트별 메타를 깨뜨린다.
+기존 단일 파일 Layer 2 폴백의 <code>replaceFD</code>는 한 엔트리만 있을 때 정확한 엔트리 index/fingerprint로 바꾸도록
+고치되, 미승인 파일이 둘 이상이면 독립적으로 처리하지 않고 다중 캡처 경로로 다시 첨부하라고 차단한다.
+등록 JSON처럼 아직 바이트가 없는 요청은 이름+occurrence로 임시 상관관계를 만들 수 있지만, 실제 Blob/FormData
+업로드에서 해시 또는 사이트별 upload ID/URL 연결을 반드시 확인하지 못하면 fail-closed한다.</p>
+</div>
+
+<div class="box risk">
+<h4>MAIN world 승인은 다단계 업로드가 끝난 뒤 회수한다</h4>
+<p>현재 승인 레코드는 파일 메타 기준으로 오래 남으므로, N개를 먼저 승인한 뒤 일부만 주입되면 사용하지 않은
+승인이 다음 요청에 재사용될 수 있다. <code>CONTENT_APPROVE_BATCH {batchId, files[]}</code>로 승인 레코드에
+<code>batchId</code>와 위 최종 파일 fingerprint를 묶되 첫 일치 요청에서 제거하지 않는다. 사이트는 같은 파일을 등록 <code>fetch POST /files</code>,
+실제 XHR/PUT, 재시도·청크 요청으로 여러 번 쓸 수 있기 때문이다.</p>
+<p>수명 메시지를 세 개로 나눈다. 실제 주입 전에 취소·실패하면 <code>CONTENT_ABORT_BATCH</code>로 즉시 제거한다.
+파일 주입 증거를 확인하고 1회용 승인으로 프롬프트 재전송을 시작한 직후
+<code>CONTENT_CLOSE_BATCH</code>로 “새 승인 추가 금지” 상태만 표시한다. 이미 승인된 파일은 각 expected docId가
+적어도 하나의 실제 업로드 체인에 결합되고 그 체인의 in-flight 수가 0이며 마지막 일치 뒤 quiet period가 지난
+후 제거한다. CLOSE 직후 아직 보지 못한 파일을 quiet timer만으로 지우지 않는다. MAIN은
+<code>CONTENT_BATCH_SETTLED {batchId, uploadedIds, failedIds}</code>를 isolated world에 돌려주고, 누락/실패가 있으면
+성공으로 기록하지 않는다. hard TTL과 파일별 최대
+요청 수는 최종 안전장치다. content/SW watchdog도 우선 CLOSE를 보내고, 탭 navigation/close로 document가
+사라진 경우에만 즉시 폐기한다. 등록 요청→실제 업로드→정상 재시도까지는 같은 batch 안에서 허용하되, 등록 응답의
+upload ID나 실제 PUT URL을 사이트별 adapter가 승인 docId에 묶는다. 이후 재시도·청크는 그 상관관계와 요청 횟수/
+바이트 범위가 맞을 때만 허용하고, batchId·fingerprint·tab/frame/document 수명 중 하나라도 다르거나 adapter가
+관계를 입증하지 못하면 거절한다.</p>
+</div>
+
+<div class="box risk">
+<h4>지원 파일이 있는 활성 네트워크 경로는 오류에도 fail-closed다</h4>
+<p>현재 XHR/FormData 경로의 <code>.catch(() =&gt; _origXHRSend(...))</code>와 fetch의 알 수 없는 결과 폴백은
+처리 오류 때 원본을 보낸다(<code>interceptor.js:950·980·1005·1156·1192</code>). 다중 배치에서는 한 항목 오류가
+FormData 전체 원본 유출로 이어질 수 있다. 보호가 켜져 있고 지원 파일이 하나라도 포함된 활성 XHR/fetch/Blob/
+FormData 및 그 파일에서 파생된 <code>arrayBuffer</code>/<code>FileReader</code>/raw-binary 경로는 예외·타임아웃·
+알 수 없는 action·승인/엔트리 개수 불일치 때 요청을 보내지 않는다. XHR은 원본 <code>send</code>를 호출하지 않고
+공용 <code>blockXHR()</code>가 원본 <code>abort</code>를 호출한다. 아직 원본 send를 부르지 않은 XHR에서는 브라우저가
+종료 이벤트를 내지 않을 수 있으므로 microtask에서 <code>abort</code>/<code>loadend</code>를 정확히 한 번 통지해 사이트의
+Promise가 매달리지 않는지도 테스트한다. fetch는 성공처럼 보이는 가짜 200 응답이 아니라 <code>AbortError</code>로
+reject한다. 그래야 사이트가 차단을 업로드 성공으로 오인하지 않는다.
+원본 통과는 사용자가 패널에서 명시한 <code>original</code> action과 유효한 batch 승인으로만 가능하다. 보호 OFF와
+사이트 adapter가 명시한 비대상 URL만 기존 passthrough를 유지하며, 모르는 업로드 URL은 학습 목적으로 통과시키지
+않고 차단 로그와 사용자 오류를 남긴다.</p>
+</div>
+
+<div class="box key">
+<h4>남은 제품 결정 — 사이트 자체를 신뢰 경계 안에 둘 것인가</h4>
+<p>현재 isolated→MAIN 통신은 <code>window.postMessage</code>와 bridge token을 쓰지만
+<code>interceptor.js:48~54</code> 주석대로 페이지 스크립트도 토큰을 읽고 승인 메시지를 흉내 낼 수 있다. batchId·해시·
+TTL은 실수와 오래된 승인 재사용은 줄여도 악의적인 페이지 자체를 막는 보안 경계는 아니다. 따라서 이 설계가 보장하는
+범위는 <b>신뢰한 6개 사이트의 정상 페이지 코드에서 확장 내부 오류나 원본 폴백으로 유출하지 않는 것</b>이다.
+사이트 페이지 스크립트 자체까지 공격자로 보면 MAIN world 후킹으로는 보장할 수 없고, 네이티브 프록시/브라우저 정책
+같이 네트워크 경계 밖에서 강제하는 별도 아키텍처가 필요하다. 이 위협 모델 확대 여부만은 제품 범위 결정이므로 문서에서
+임의로 확정하지 않는다.</p>
+</div>
+
+<h2><span class="n">6</span>단계</h2>
+
+<div class="box hit">
+<h4>구현 상태 — 2026-09-19, 브랜치 <code>feat/multi-attach</code></h4>
+<p><b>착지한 것:</b> 1~6단계가 코드에 들어갔다. 엔진 <code>wrapFile</code> 폼 필드와
+<code>scannedChars/originalChars</code>(커밋 <code>8dda2c1</code>), 배치 수집·전역 lease·탭 검토·
+산출물 토큰·엔트리 단위 FormData 교체·활성 경로 fail-closed(커밋 <code>7e0266e</code>).
+공용 <code>utils/mask-segments.js</code> 를 새로 두어 패널 미리보기와 SW 산출물이 같은 순수 함수를 쓴다.
+테스트는 <code>mask-segments.test.js</code>(8블록)와 <code>multi-attach.test.js</code>(8블록)를 새로 추가했고
+<code>content-regression</code>·<code>panel-session</code> 을 새 계약으로 갱신해 전부 통과한다.</p>
+<p><b>구현하며 실제로 잡은 것 넷.</b> 셋은 이번에 새로 심은 것이고, 전부 테스트가 잡았거나
+코드를 되짚다 드러났다.</p>
+<ol>
+<li>lease 대기 등록이 <code>START_MULTI_SCAN</code> 전송보다 늦어, 먼저 도착한 grant 가 버려지는 경합.
+등록을 전송 앞으로 옮겼다.</li>
+<li>“검토 중 새 배치 거절” 가드가 <b>우리가 주입하려고 쏜 합성 paste/drop 까지</b> 막아 사이트가 문서를
+못 받았다. 우리 소유 파일을 그 가드보다 <b>먼저</b> 걸러야 한다.</li>
+<li>다중 요약이 <b>활성 탭</b>의 항목 수에서 <b>전체 탭</b>의 해제 수를 빼고 있었다. 다른 탭에서 해제를
+많이 하면 음수가 되고, 그러면 푸터가 “마스킹 없이 원본 전송”이라는 <b>정반대 문구</b>를 띄운다 —
+실제로는 마스킹해서 보내는데 원본이 나간다고 말하는, 검토 화면이 가장 하면 안 되는 거짓말이다.</li>
+<li>막힌 파일을 <b>고를 수단이 없었다.</b> <code>blockingReason()</code> 은 “미지원/실패/부분검사 파일에
+결정이 필요하다”며 전송을 막는데 <code>state.decisions</code> 에 쓰는 코드가 한 줄도 없어, 지원/미지원을
+섞어 첨부하면 전송이 영영 열리지 않고 취소밖에 길이 없었다. fail-closed 이긴 하나 빠져나갈 길이 없는
+막다른 길이고, §2 가 명시한 혼합 시나리오가 통째로 성립하지 않는 상태였다. 파일별 결정 바를 붙였다 —
+검사 안 한 원본을 통째로 내보내는 선택은 <b>두 번 눌러야</b> 확정된다.</li>
+</ol>
+<p><b>2차로 들어간 것</b>(처음 착지에서 빠졌던 항목들):</p>
+<ul>
+<li><b>MAIN world 배치 승인·회수.</b> 승인 레코드를 <code>batchId</code>에 묶고
+<code>APPROVE</code>/<code>CLOSE</code>/<code>ABORT</code> 로 수명을 관리한다. 첫 일치에서 지우면 안 되는 게
+핵심이었다 — 사이트는 등록 요청 → 실제 PUT → 재시도로 같은 파일을 여러 번 쓴다. 닫은 뒤
+“마지막 쓰임 + 20초 조용”에 회수하고 hard TTL 은 마지막 안전망으로만 남겼다.
+주입 경로가 배치 하나로 모이면서 <code>UPS_CONTENT_APPROVED_FILE</code> 은 보내는 쪽이 0이 되어
+수신부까지 지웠고, 거기 걸려 있던 위조 방지 검증은 배치 메시지로 옮겼다.</li>
+<li><b><code>PANEL_DRAFT_UPDATE</code>.</b> 해제 항목·파일별 선택·활성 탭을 세션에 붙여 재로드 시 복구한다.
+부분 갱신이라 탭만 알린 메시지가 해제 목록을 지우지 않는다.</li>
+<li><b>쿼터 예약.</b> <code>storage.session</code> 10MB 가 확장 전체 한도라는 점을 반영해 배치 시작 전에
+최악 크기를 잡고 8MB soft limit 을 넘으면 거절한다. 거절은 content 에
+<code>cancel(reason:'quota')</code> 로 알린다 — 조용히 거절하면 전송이 10분 타임아웃까지 매달린다.</li>
+<li><b>상태 쓰기 직렬화.</b> 스냅샷 생성부터 <code>set</code> 완료까지 한 체인. 늦게 시작한 쓰기가 먼저 끝나
+최신 draft 를 덮는 것을 막는다.</li>
+<li><b>실패 파일 재시도.</b> 그 파일만 다시 검사한다 — 배치 전체를 돌리면 이미 끝난 파일에 해 둔
+마스킹 선택이 날아간다. <code>retry</code> 는 결정이 아니라 동작이라 <code>decisions</code> 에 넣지 않는다.</li>
+<li><b>DataTransfer 일괄 주입(§5 1순위).</b> N개를 한 이벤트로 넣는다. 되돌아갈 수 있는 건
+<b>아무것도 안 붙은 것이 확인된 경우뿐</b>이고, 일부만 붙었거나 판단이 안 서면 순차 폴백으로
+내려가지 않고 멈춘다 — 다시 쏘면 그 일부가 두 번 붙는다.</li>
+</ul>
+<p><b>사이트 실측 — 2026-09-19, 로그인된 실제 브라우저.</b> §5 의 1순위가 성립하는지,
+즉 <b>프레임워크가 DataTransfer 하나에 담긴 N개를 실제로 처리하는지</b>를 직접 쟀다.
+살아 있는 file input 에 1×1 PNG 두 개를 한 <code>DataTransfer</code> 로 올리고 <code>change</code> 를
+쏜 뒤, 첨부 칩·제거 버튼·파일명이 <b>0에서 2로</b> 늘어나는지 본다.
+확장이 가로채지 않는 <code>.png</code> 를 쓴 이유는 여기서 재려는 것이 우리 코드가 아니라
+<b>사이트의 성질</b>이기 때문이다. 잰 뒤에는 첨부를 모두 제거해 되돌렸다.</p>
+<div class="tw"><table>
+<tr><th>사이트</th><th>file input</th><th>2개 한 번에</th><th>관측</th></tr>
+<tr><td>ChatGPT</td><td>있음(<code>multiple</code>)</td><td class="n">✅</td><td>칩 2, 제거 버튼 2</td></tr>
+<tr><td>Claude</td><td>있음(<code>multiple</code>)</td><td class="n">✅</td><td>썸네일 2, 파일명 2, 제거 2</td></tr>
+<tr><td>Copilot</td><td>있음(<code>multiple</code>)</td><td class="n">✅</td><td>0→2 (blob 이미지·제거 버튼)</td></tr>
+<tr><td>Grok</td><td>있음(<code>multiple</code>)</td><td class="n">✅</td><td>0→2 (제거 버튼)</td></tr>
+<tr><td>Perplexity</td><td>있음(<code>multiple</code>)</td><td class="n">✅</td><td>0→2 (blob·파일명·제거)</td></tr>
+<tr><td>Gemini</td><td><b>없음</b></td><td class="n">—</td><td>평상시 DOM 에 input 이 아예 없다</td></tr>
+</table></div>
+<p><b>결론 1 — 1순위는 가설이 아니라 사실이다(5/6).</b> 다섯 사이트 모두 배치 FileList 를 그대로 처리했고,
+“프레임워크가 첫 파일만 읽는다” 는 우려는 이들에서 재현되지 않았다. 입력 자체도 전부
+<code>multiple</code> 이다.</p>
+<p><b>결론 2 — Gemini 는 애초에 이 경로가 없다.</b> 평상시 DOM 에 file input 이 존재하지 않아
+배치 주입을 시도할 대상이 없고, 구현은 그대로 순차 체인으로 떨어진다(의도한 동작).
+합성 <code>paste</code> 로도 재봤지만 결과가 일관되지 않았다 — <code>.ql-editor</code> 는 무반응,
+<code>div.text-input-field</code> 는 한 번 파일명이 보였다가 사라졌다. 이 사이트에 4단계 전략 체인이
+있는 이유가 그대로 드러난 셈이고, 여기서 “배치 paste” 를 1순위로 올리지 않은 판단은 유지한다.</p>
+<p><b>아직 재지 못한 것.</b> 위는 <b>사이트의 수용 능력</b>만 잰 것이다. 우리 확장을 끼운 전 구간
+(수집 → 검사 → 탭 검토 → 주입)은 <b>엔진이 떠 있어야</b> 하고 이 브랜치를 unpacked 로 올려야 하는데,
+<code>chrome://extensions</code> 는 자동화가 접근할 수 없어(폴더 선택이 OS 창이다) 사람이 한 번 해야 한다.
+지금 브라우저에 로드된 것은 설치본이라 이 브랜치 코드가 아니다.
+그 한 단계만 지나면 매트릭스의 나머지(칩 수와 실제 모델 수신 파일 수 일치)를 이어서 잴 수 있다.</p>
+</div>
+
+<div class="tw"><table>
+<tr><th></th><th>단계</th><th>내용</th><th>검증</th></tr>
+<tr><td class="n">1</td><td>수집</td><td><code>pendingBatch</code>, 전체 원본 목록 보존, 5개/20MB 사전 검증, 파일 ID 부여</td><td>input/drop/paste에서 순서·지원 여부·동일 이름 보존</td></tr>
+<tr><td class="n">2</td><td>엔진 계약</td><td><code>/jobs/prompt</code> 선검사 후 각 <code>/jobs</code>에는 SW에 저장한 동일 <code>userPrompt</code>와 <code>wrapFile=false</code> 전달. 엔진이 매번 로컬 PII 재검사하고 <code>stats.scannedLength/sourceLength</code> 반환. timeout task를 추적하는 단일 parser slot 추가. <b><code>wrap_file</code>은 신규 파라미터 아님</b> — <code>orchestrator.py:192</code>의 기본 <code>False</code>를 <code>jobs.py:113</code>의 하드코딩 자리에 폼 필드로 연결</td><td><b>Solar 요청 N건 모두 엔진이 만든 마스킹 프롬프트</b>, 바이너리 응답 없음, 파일 응답의 중복 userPrompt 필드 제거, timeout 뒤 새 파서 0개·<code>parser_busy</code>, 필드 생략 시 단일 경로 DOCX 동작 그대로, 위조 <code>userPromptMasked</code> 무시</td></tr>
+<tr><td class="n">3</td><td>세션/검사</td><td>SW 발급 session → 전역 lease → prompt #0 → item #1..N → finish #(N+1). 모든 메시지의 leaseId/requestId/itemSeq/itemId와 소유 tab/frame/document 검증</td><td>lease 전 base64 0개, 같은 request 재전송 멱등, 충돌·역전·늦은 메시지 거절, SW 중단 오류 전환, 대기 작업 취소</td></tr>
+<tr><td class="n">4</td><td>저장/패널</td><td>session에는 정규화한 메타+<code>originalText</code>+탐지 항목+draft만 저장. <code>stateWriteChain</code>, revision, 후보 snapshot 실측, 8MB soft limit, 저장 deadline. 본문은 활성 패널이 문서별 pull</td><td>hydrate-before-mutate, 동시 draft 저장 순서, 다중 세션 합산 쿼터, URL 기반 패널/교차 frame pull 거절, 저장 실패 fail-closed, SPA URL 변경 유지</td></tr>
+<tr><td class="n">5</td><td>산출물/주입</td><td>엔진과 같은 정규화의 공용 <code>mask-segments.js</code>로 promptText/문서 생성 → MD wrapper → artifact별 META/256KiB CHUNK/해시 검증/영속 ACK → 승인 → 주입 → 1회 submit → CLOSE/SETTLED 또는 ABORT → <code>FINALIZE_MULTI_SESSION</code></td><td>엔진 maskedText=미리보기=전송 문자열, delivered 재수령 금지, SW 재시작 전후 동일 산출물, 정확히 N개 한 번씩 첨부, 업로드 settled, 종료 후 artifact/session 0개</td></tr>
+<tr><td class="n">6</td><td>MAIN world</td><td>FormData/XHR/fetch/파생 binary를 엔트리 단위로 검사. SHA-256 fingerprint와 사이트 upload ID/URL로 batch 승인 → ABORT 또는 CLOSE → in-flight/quiet period 뒤 회수. 활성 경로 오류는 reject/abort</td><td>등록+업로드+재시도 상관관계, 승인/미승인 혼합·동일 이름 처리, 가짜 200 없음, 예외/치환 불일치 원본 유출 0건</td></tr>
+<tr><td class="n">7</td><td>회귀/실측</td><td>단일 파일 경로 유지 후 6개 사이트 다중 첨부 측정</td><td>기존 테스트 전체 + 사이트별 2개/최대 개수</td></tr>
+</table></div>
+
+<p><b>수집·검사·세션·패널의 대부분은 사이트 없이 테스트한다.</b>
+<code>content-regression.test.js</code>만 늘리는 것으로 끝내지 않고
+<code>panel-session.test.js</code>, <code>sw-session-persistence.test.js</code>,
+<code>interceptor-bridge.test.js</code>에 각 책임의 테스트를 둔다. 실제 사이트가 필요한 부분은
+프레임워크가 배치 FileList를 수락하는지와 첨부 증거가 정확한지다.</p>
+
+<h2><span class="n">7</span>필수 테스트 매트릭스와 완료 조건</h2>
+
+<ul>
+<li><b>수집:</b> input/drop/paste × 1개·2개·5개·6개, 동일 파일명, 지원 파일 0개 무개입, 지원+미지원 혼합, 총량 초과, 첫 await 전 pendingBatch 확정, 검토 중 두 번째 이벤트 거절과 기존 배치 보존</li>
+<li><b>검사:</b> 모두 정상, PII/인젝션 혼합, 중간 파일 파싱 실패, 엔진 오류, 취소, 파싱 타임아웃 뒤 남은 파일 중단·새 파서 미생성·<code>parser_busy</code>, 위조 <code>userPromptMasked</code> 무시, 첫 prompt 결과만 최종 결정에 사용, 파일 응답의 중복 prompt 필드 제거, <b>20만 자 초과 파일의 <code>scannedLength/sourceLength</code> 표시와 세 선택지</b>, 앞부분 전송본의 실제 내용·파일명 검증</li>
+<li><b>직렬화:</b> START 응답 유실 뒤 같은 startRequestId는 같은 session 반환·다른 startRequestId는 거절, 같은 탭 새 배치 거절, 두 탭 lease 순서, GRANTED 알림 유실 뒤 status pull 복구, lease 전 base64 미호출, 잘못된 leaseId·requestId·itemSeq·itemId, in-flight/완료된 같은 request 재전송 멱등, 충돌 request/역전 item 거절, 조기 finish 거절과 같은 finish 재응답, 취소 중 HTTP settle 전 다음 grant 금지, 대기 탭 종료·워커 재시작 뒤 <code>/activity busy</code> 해제 전 grant 금지와 큐 복구</li>
+<li><b>세션:</b> 검사 중/결과 후 패널 재로드, 선택·활성 탭 복구, prompt 결정 복구, <code>awaiting-injection</code>, 결정 READY 유실 뒤 GET pull 복구와 같은 결정 멱등 응답, 잘못된 clientBatchNonce 거절, 영속 deadline/watchdog, 오래된 메시지 역전, 다른 frame/document 탈취 거절, 실제 reload 시 stale, 자식 frame 소멸 시 만료 정리, SPA history/hash 변경 시 유지</li>
+<li><b>저장:</b> local/IDB에 문서 내용 없음, session 중복 데이터 없음, hydrate-before-mutate와 동시 write revision 순서, 후보 snapshot UTF-8 실측, 탐지 항목 폭증 시 <code>result-too-large</code>, 여러 탭 합산 8MB, hydrate/set/getBytes 오류 시 기존 세션 보존</li>
+<li><b>패널 데이터:</b> INIT/ITEM/PROMPT broadcast에 원문 없음, broadcast 유실 뒤 메타 poll 복구, 활성 doc 또는 prompt만 pull, 메시지 tabId 무시와 <code>sender.url</code> 검증, 다른 tab/session/item 조회·draft·decision 거절, sidepanel WAR 제거, 재로드 직후 활성 항목만 pull</li>
+<li><b>산출물:</b> promptText 결정 전달, Python masker와 JS 정규화 fixture 일치, 엔진 maskedText·패널 미리보기·artifact 디코딩 문자열 일치(잘못된 offset·겹침·중복·역순 포함), 불일치 fail-closed, META와 0/1/다중/재전송/경계 밖 CHUNK, 길이·sha256 불일치 차단, 영속 ACK, delivered 재수령·교차 document 거절, SW 재시작 전후 동일, 종료 후 0개</li>
+<li><b>주입:</b> N개 일괄 성공, 첫 파일만 성공, 일부만 성공, 증거 없음, 동일 이름 N개, 이미 성공한 파일 재주입 금지, 산출물 한 개씩 CHUNK 조립/ACK, 검토 중 프롬프트 변경 시 승인·첨부·전송 0건, 1회용 최종 prompt 해시 승인은 정확히 한 submit만 통과하고 await 구간에서는 우회 0건</li>
+<li><b>MAIN world:</b> 등록 fetch→upload ID/URL→실제 XHR/PUT→정상 재시도/청크 상관관계, SHA-256과 occurrence, CLOSE 뒤 모든 expected ID 관측 전 회수 금지와 SETTLED 결과, ABORT 즉시 회수, hard TTL/요청 한도 종료는 실패, 승인/미승인 혼합, 동일 파일명·동일 바이트 중복 승인 개수 소진, 다중 FormData 무변경 전송, XHR/fetch 예외·알 수 없는 action·엔트리 개수 불일치 모두 원본 차단, 차단 fetch는 reject/XHR은 abort되고 가짜 200 없음</li>
+<li><b>회귀:</b> 단일 파일의 input/drop/paste, 원본 통과, 마스킹본, 주입 실패 fail-closed가 기존과 동일, <b><code>sidepanel.html</code> module 전환 뒤 패널 초기화·이벤트·재로드가 기존과 동일</b></li>
+<li><b>실사이트:</b> ChatGPT·Claude·Gemini·Copilot·Grok·Perplexity에서 2개와 5개를 첨부해 UI 칩 수와 실제 모델 수신 파일 수가 모두 일치</li>
+</ul>
+
+<div class="box hit">
+<h4>완료 조건</h4>
+<p>사용자가 고른 파일 N개가 패널의 N개 항목과 ID로 대응하고, 최종 화면에 표시된 전송 M개가 사이트에도
+정확히 M개, 각각 한 번만 도착해야 한다. 검사 실패·주입 증거 불명·세션 복구 실패 중 하나라도 있으면
+프롬프트를 자동 전송하지 않는다. 성공·실패·취소 뒤에는 해당 세션의 메모리 산출물과 MAIN world 미사용 승인이
+모두 0개이고, <code>FINALIZE_MULTI_SESSION</code>까지 확인돼야 한다. 성공한 업로드의 승인은 finalize 직후가 아니라
+모든 expected docId의 업로드 체인이 settled되고 in-flight 0 + quiet period가 지난 뒤 0개가 되어야 하며 hard TTL을
+넘겨 남아서는 안 된다. hard TTL이나 요청 한도 때문에 먼저 닫힌 batch는 성공 완료로 세지 않는다.
+<code>truncated</code> 파일은 사용자가 선택한
+범위와 실제 전송 내용이 정확히 일치해야 한다. 이 조건을 6개 사이트에서 만족해야 다중 첨부 완료로 본다.</p>
+</div>
+
+<footer>
+근거 코드 · 확장 · <code>content.js</code>(171·300·534·567·722·878·908·1907·2066) ·
+<code>interceptor.js</code>(32·191·227·675·950·980·1005·1156·1192 fail-open·990~1020·1020 <code>replaceFD</code>) ·
+<code>sidepanel.js</code>(40~60·80 <code>buildSegments</code>·427·521·531·541·556·615~645) ·
+<code>service-worker.js</code>(18·196·236·263~381·282·372·498·587·590) ·
+<code>utils/docwrapper.js</code>(<code>wrapMaskedFile</code>=MD 고정) ·
+<code>sidepanel.html</code>(109 classic script — module 전환 필요)<br>
+근거 코드 · 엔진 · <code>config.py</code>(64 <code>MAX_UPLOAD_BYTES</code>·75 <code>MAX_TEXT_CHARS</code>·105 <code>DETECT_CONCURRENCY</code>) ·
+<code>adapters/http_api/jobs.py</code>(59·79·94·113) ·
+<code>core/pipeline/orchestrator.py</code>(167·192 <code>wrap_file</code>·277·355 <code>truncated</code>·367 <code>maskedFile</code>) ·
+<code>core/detectors/injection/llm_mcp.py</code>(564) ·
+<code>core/masker/docwrapper.py</code>(<code>wrap_masked_file</code>=DOCX 고정, docstring 의 MD 언급은 낡음) ·
+<code>core/masker/masker.py</code>(53 치환 토큰) · <code>core/masker/redact_map.py</code>(9 치환 길이 변화)<br>
+구현 전제 · 사이트별 다중 첨부 실제 동작은 7단계에서 실측 · 검토 중인 문서 내용은 디스크에 쓰지 않는다(<code>service-worker.js:282</code>) · manifest 권한 추가 없음
+</footer>
+</div>

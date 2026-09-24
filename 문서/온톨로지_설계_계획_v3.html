@@ -1,0 +1,673 @@
+<meta charset="utf-8">
+<title>온톨로지 설계 계획 v3</title>
+<style>
+  :root{
+    --bg:#faf9f7; --fg:#1c1a17; --dim:#6b655c; --line:#e2ddd4;
+    --card:#fff; --accent:#b4552d; --accent-soft:#fdf1eb;
+    --ok:#2f6b45; --warn:#8a6d1f; --danger:#a03030;
+    --mono:ui-monospace,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }}
+  :root[data-theme=dark]{
+    --bg:#17161a; --fg:#eae7e1; --dim:#a09a90; --line:#332f2b;
+    --card:#1f1e22; --accent:#e08a5f; --accent-soft:#2a1f19;
+    --ok:#7cc79a; --warn:#d6b25e; --danger:#e28a8a;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);margin:0;
+    font:16px/1.75 "Pretendard","Malgun Gothic",-apple-system,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px;margin:0 auto;padding:56px 24px 120px}
+  header{border-bottom:2px solid var(--fg);padding-bottom:20px;margin-bottom:44px}
+  h1{font-size:31px;line-height:1.3;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0}
+  h2{font-size:22px;margin:56px 0 8px;letter-spacing:-.015em;
+     padding-top:20px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:16px;margin-right:10px}
+  h3{font-size:16px;margin:30px 0 6px;letter-spacing:-.01em}
+  p{margin:12px 0}
+  .lede{color:var(--dim);font-size:15px;margin:0 0 24px}
+  ul,ol{padding-left:22px;margin:12px 0}
+  li{margin:6px 0}
+  code{font-family:var(--mono);font-size:.88em;background:var(--accent-soft);
+    color:var(--accent);padding:1px 5px;border-radius:4px;word-break:break-all}
+  pre{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:6px;padding:16px 18px;overflow-x:auto;margin:16px 0}
+  pre code{background:none;color:var(--fg);padding:0;font-size:13px;line-height:1.65;
+    word-break:normal}
+  .tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:6px}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:600px}
+  th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--card);font-weight:600;font-size:13px;color:var(--dim);
+     letter-spacing:.02em;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td.x{color:var(--danger)} td.o{color:var(--ok)}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:18px 22px;margin:20px 0}
+  .box.key{border-left:3px solid var(--accent);background:var(--accent-soft)}
+  .box.warn{border-left:3px solid var(--warn)}
+  .box.stop{border-left:3px solid var(--danger)}
+  .box h4{margin:0 0 8px;font-size:14px;letter-spacing:.02em;color:var(--dim);
+    text-transform:uppercase;font-weight:600}
+  .box p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 8px;
+    border-radius:99px;border:1px solid currentColor;white-space:nowrap;letter-spacing:.02em}
+  .t-hi{color:var(--danger)} .t-mid{color:var(--warn)}
+  .t-lo{color:var(--dim)} .t-no{color:var(--ok)}
+  .flow{font-family:var(--mono);font-size:13px;line-height:2;color:var(--dim);
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:16px 18px;margin:16px 0;overflow-x:auto;white-space:pre}
+  .flow b{color:var(--accent);font-weight:600}
+  .flow s{color:var(--ok);text-decoration:none}
+  .flow i{color:var(--danger);font-style:normal}
+  em{color:var(--fg);font-style:normal;font-weight:600;
+    box-shadow:inset 0 -8px 0 var(--accent-soft)}
+  a{color:var(--accent)}
+  .tiers{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 0}
+  @media (max-width:680px){.tiers{grid-template-columns:1fr}}
+  .tiers > div{border:1px solid var(--line);border-radius:8px;padding:16px 18px;background:var(--card)}
+  .tiers h4{margin:0 0 8px;font-size:13px;letter-spacing:.03em;text-transform:uppercase;color:var(--dim)}
+  .tiers > div:first-child{border-top:3px solid var(--warn)}
+  .tiers > div:last-child{border-top:3px solid var(--ok)}
+  footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:13px}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>온톨로지 설계 계획 v3 — 서버가 KG 를 짓고, 앱이 KG 로 가린다</h1>
+  <p class="sub">Campfire · 2026-09-07 ·
+    <a href="온톨로지_설계_계획_v2.html">v2</a> 의 TBox(§2)는 §4 의 수정 4건 + <code>functional</code> 을 더해 유지, 벤치마크는 §7 이,
+    코드 접합점(v2 §4)은 §6 이 대체. 바뀐 것: 엣지 단위 기밀 판정, 2계층 LLM, 다중 소스 수집, 모델 제약.
+    <b>개정</b>(같은 날): KG 밖 기밀 경로 · 권한별 투영 · 개체 해소 지표 · Statement 묶음 ·
+    공시 주기 재판정 · 함수적 관계 · 보호 상태 표시 · 렌더러 다계열 + ASR 노이즈 · polarity · 잠정 마스킹 ·
+    통과형 정규화기 · 해시 전역 차단목록 · 사용자 신원 · LLM-3 7B · review 상태 · 외부 토큰 [기밀] ·
+    차단목록 high·다중토큰만 · 수집 큐 범위 · 4a/4b 분할 · 해제 감사 로그 ·
+    해시 교환 명시 · R4 = low 등급 · [기밀:차단목록] 라벨 ·
+    k-익명 접두 조회 · TBox 수정 4건 · 서버 실시간 구성요소 · 공시 KG = 1단계 KG ·
+    <code>Detection.basis</code> · 사내망 통신 소유자 · 감사 로그와 신원 ·
+    <b>ATOM 반영</b>: 관측/유효 시각 분리 · 종료 표현 · 안정성 Tier 2b.</p>
+</header>
+
+<p class="lede">
+v3 의 전제 넷. <em>기밀은 엣지에 붙는다</em>. <em>LLM 은 서버(A100)와 앱(&lt;10B) 두 계층</em>이고 역할이 다르다.
+<em>입력은 문서·회의 전사·메신저</em>다. <em>모든 모델은 SK·LG·NC·KT·Upstage 의 로컬 모델</em>이고 API 는 없다.
+</p>
+
+<h2><span class="n">0</span>구조 한 장</h2>
+
+<div class="flow"><b>[서버 · A100]</b>
+  문서 ──▶ <s>통과형</s>(청크 = Statement) ─┐
+  회의 전사 ─┬─▶ <b>LLM-1 정규화기</b> ──┼─▶ Statement[]  ──▶ <b>LLM-2 추출기</b> ──▶ 트리플 ──▶ <b>스키마 검증</b>
+  메신저 ───┘     (파인튜닝)           <s>원문 span 보존</s>      (프롬프트만)                  domain/range
+                                                                                       │
+                                     <b>엣지 판정기</b> ◀── KG 갱신(병합·버전·출처) ◀──────────┘
+                                     규칙 → 공시 대조 → LLM-2 잔여 → 보안담당자
+                                                │
+                                     <b>민감 투영</b> ─── 동기화 ───▶
+<b>[앱 · 일반 PC]</b>                                                    ▼  <s>권한 범위 투영 + 해시 접두 조회(오프라인은 로컬 목록)</s>
+  사용자 프롬프트/첨부 ──▶ AC 매처 ──▶ <b>LLM-3 연결기</b>(&lt;10B) ──▶ 엣지 조회 ──▶ 마스킹 ──▶ 외부
+                     └──▶ <b>LLM-3 클래스 탐지</b>  KG 없이 TBox 설명만 ──▶ [기밀 추정] ─┘
+                                     <s>후보 노드 중 고르기만</s>     <i>KG 수정 없음 · 외부 AI 호출 없음(사내망만)</i>
+  플래그 구간(원문, PII 마스킹 후) ──(사내망)──▶ 서버 수집 큐 ──▶ 다음 KG 갱신   <s>붙여넣기가 가장 신선한 소스</s></div>
+
+<div class="box key">
+<h4>역할 분리의 원칙</h4>
+<p><b>서버는 쓰고, 앱은 읽는다.</b> KG 를 바꾸는 모든 것(정규화·추출·판정)은 서버에 있고,
+앱은 이미 판정된 KG 의 <em>투영</em>(과 해시 목록)만 받아 가린다. 앱의 LLM 은 새 사실을 만들지 않는다 —
+후보 노드 중에서 <em>고르기만</em> 한다. 그래서 틀려도 KG 를 오염시키지 않는다.
+예외 하나 — KG 에 없는 내용을 위한 클래스 수준 탐지(§5)는 노드를 만들지 않고 <em>라벨만</em> 붙인다.
+그것도 새 사실이 아니다.</p>
+</div>
+
+<h2><span class="n">1</span>모델 — 다섯 회사, 로컬, 세 슬롯</h2>
+
+<p>다섯 회사의 공개 가중치를 전부 확인했다. 크기·라이선스·하드웨어 셋이 슬롯을 거의 결정한다.</p>
+
+<div class="tw"><table>
+<tr><th>모델</th><th>회사</th><th>크기</th><th>라이선스</th><th>1×A100 80GB</th><th>앱 &lt;10B</th></tr>
+<tr><td>A.X-K2</td><td>SK</td><td>688B MoE / 33B 활성</td><td>Apache 2.0</td><td class="x">✗ 800GiB 필요</td><td class="x">✗</td></tr>
+<tr><td><b>A.X-4.0</b></td><td>SK</td><td>72B (Qwen2.5 기반)</td><td class="o">Apache 2.0</td><td class="o">4-bit ≈40GB ✓ / bf16 은 2장</td><td class="x">✗</td></tr>
+<tr><td><b>A.X-4.0-Light</b></td><td>SK</td><td>7B (Qwen2.5 기반)</td><td class="o">Apache 2.0</td><td class="o">✓</td><td class="o">✓ 16k ctx</td></tr>
+<tr><td>EXAONE-4.0-32B</td><td>LG</td><td>31B</td><td class="x">1.2-<b>NC</b></td><td class="o">bf16 ≈62GB ✓</td><td class="x">✗</td></tr>
+<tr><td>EXAONE-4.0-1.2B</td><td>LG</td><td>1.2B</td><td class="x">1.2-<b>NC</b></td><td>—</td><td class="x">라이선스</td></tr>
+<tr><td>EXAONE-3.5-2.4B</td><td>LG</td><td>2.4B</td><td class="x"><b>NC</b> — 현재 앱 탑재</td><td>—</td><td class="x">라이선스</td></tr>
+<tr><td>Llama-VARCO-8B</td><td>NC</td><td>8B (Llama 3.1)</td><td class="o">Llama 3.1 CL</td><td class="o">✓</td><td class="o">✓ 8k ctx · 2024</td></tr>
+<tr><td><b>Mi:dm 2.0 Base</b></td><td>KT</td><td>11.5B</td><td class="o"><b>MIT</b></td><td class="o">bf16 ≈23GB ✓ · LoRA 쉬움</td><td class="x">✗ 11.5B</td></tr>
+<tr><td><b>Mi:dm 2.0 Mini</b></td><td>KT</td><td>2.3B</td><td class="o"><b>MIT</b></td><td>—</td><td class="o">✓ Q4 ≈1.5GB</td></tr>
+<tr><td>Solar-Open-100B</td><td>Upstage</td><td>102.6B MoE / 12B 활성</td><td class="o">Solar License(상업 OK)</td><td class="x">✗ 최소 4×A100</td><td class="x">✗</td></tr>
+<tr><td>Solar-Open2-250B</td><td>Upstage</td><td>250B MoE / 15B 활성</td><td class="o">Solar License</td><td class="x">✗</td><td class="x">✗</td></tr>
+<tr><td>solar-pro-preview</td><td>Upstage</td><td>22B</td><td class="o">MIT</td><td class="o">✓</td><td class="x">✗ · 4k ctx · 영어 위주 · 2024</td></tr>
+<tr><td>Solar Pro 3</td><td>Upstage</td><td>API 전용</td><td>—</td><td class="x">✗ — <b>현재 인젝션 2단계가 호출</b></td><td class="x">✗</td></tr>
+</table></div>
+
+<div class="box stop">
+<h4>기존 코드가 새 제약을 두 곳에서 위반한다</h4>
+<p><b>① 앱이 싣고 있는 EXAONE-3.5-2.4B 는 비상업 라이선스</b>다. “회사에 들어갈” 제품이면
+LG 와 별도 계약이 있거나 교체해야 한다. <b>② 인젝션 2단계가 Solar Pro 3 <em>API</em> 를 부른다</b> —
+“API 를 쓸 수 없다”에 정면으로 걸린다. 둘 다 온톨로지 작업과 무관하게 <em>지금도</em> 문제이고,
+4a 에서 같이 정리한다(§8).</p>
+</div>
+
+<h3>슬롯 배정</h3>
+
+<div class="tw"><table>
+<tr><th>슬롯</th><th>역할</th><th>1안</th><th>2안</th><th>이유</th></tr>
+<tr><td><b>LLM-1</b> 정규화기<br><span class="tag t-mid">서버 · 파인튜닝</span></td>
+    <td>회의·메신저 → Statement (문서는 통과형, §2)</td>
+    <td><b>Mi:dm 2.0 Base 11.5B</b> + LoRA</td>
+    <td>A.X-4.0-Light 7B + LoRA</td>
+    <td>좁은 과제라 중형이면 충분. 한국어 중심 기반, MIT 라 파생물 배포 깨끗. 1×A100 에서 LoRA 는 여유</td></tr>
+<tr><td><b>LLM-2</b> 추출기<br><span class="tag t-mid">서버 · 프롬프트</span></td>
+    <td>Statement → 트리플, 판정 잔여</td>
+    <td><b>A.X-4.0 72B</b> 4-bit</td>
+    <td>EXAONE-4.0-32B bf16 (LG 상업계약 시)</td>
+    <td>온톨로지 조건부 추출은 클수록 낫고 프롬프트로 조정한다. 1×A100 에 합법적으로 들어가는 가장 큰 모델. A100 2장이면 bf16</td></tr>
+<tr><td><b>LLM-3</b> 연결기 + 클래스 탐지<br><span class="tag t-no">앱 · &lt;10B</span></td>
+    <td>스팬 → KG 노드 (후보 중 선택) + <b>클래스 탐지</b> (후보 없음, §5)</td>
+    <td><b>A.X-4.0-Light 7B</b> Q4 (≈4.5GB)</td>
+    <td>Mi:dm 2.0 Mini 2.3B Q4 — 클래스 탐지는 첨부에만</td>
+    <td>연결은 선택형이라 작아도 되지만 <b>클래스 탐지는 후보 없는 분류</b>라 2.3B 론 과잉 마스킹이 난다(§10). 클래스 경로가 필수(§5)가 된 이상 7B 가 기본. 2.3B 는 클래스 탐지를 첨부에만 켜는 조건부</td></tr>
+</table></div>
+
+<p><b>인젝션 탐지도 LLM-3 로 통합한다 — 단, 교체가 아니라 재학습이다.</b> 지금 인젝션 1단계는
+EXAONE 2.4B 의 <em>은닉 상태 위에 학습한 MLP 헤드</em>다. 기반 모델을 바꾸면 그 헤드는 무효가 되고
+새 모델의 은닉 상태로 <b>다시 학습</b>해야 한다. 4a 비용에 넣는다. 그래도 하는 이유 —
+모델 하나가 인젝션 1단계·연결기·클래스 탐지를 겸하면 다운로드가 늘지 않고 라이선스 문제가 같이 풀린다.
+PII 인코더(<code>skt/A.X-Encoder-base</code>)는 이미 SK 로컬이라 그대로다.</p>
+
+<h2><span class="n">2</span>LLM-1 정규화기 — 형식은 바꾸되 사실은 안 바꾼다</h2>
+
+<p>세 소스는 모양이 전혀 다르다. 문서는 문단, 회의는 화자 교대와 지시어(“그거”, “아까 그 건”),
+메신저는 스레드·멘션·짧은 문장·이모지다. 추출기가 이걸 다 감당하면 프롬프트가 소스마다 갈라진다.
+그래서 <em>하나의 중간 표현</em>으로 먼저 모은다.</p>
+
+<h3>Statement — 중간 표현</h3>
+
+<pre><code>Statement
+  id
+  text          자기완결 문장. 대명사·지시어 해소
+  group_id      묶인 사실의 묶음 — 계약(당사자·금액·기간·조항)처럼 따로 떼면 뜻이 죽는 것
+  speaker       화자/작성자 (회의·메신저) — 문서는 null
+  time          <b>관측</b> 시각 — 발화·작성일(문서는 문서 날짜). “언제 말했나”
+  valid_from    사실이 <b>유효해지는</b> 시점. 원문이 밝히면 채우고 아니면 null
+  valid_to      유효가 끝나는 시점. 종료 표현(“더 이상 …아님”)이 여기를 채운다
+  source_type   doc | meeting | chat
+  source_ref    파일/회의ID/채널+스레드
+  span          원문 내 위치 (start, end) — <b>반드시 존재</b>
+  hedge         firm | tentative | negated   (엣지의 asserted 필드와 이름이 겹치지 않게)
+  dropped       잡담·인사 등 제거된 원문 구간 목록 (감사용)</code></pre>
+
+<div class="box key">
+<h4>오염의 정의 — 삭제는 괜찮고 추가가 오염이다</h4>
+<p>정규화기가 지켜야 하는 것은 넷이다. <b>원문에 없는 사실을 만들지 않는다</b>.
+<b>값·날짜·부정·조건을 보존한다</b>(“아직 확정 아님”이 “확정”이 되면 안 된다).
+<b>모든 Statement 는 원문 span 을 가진다</b> — 없으면 폐기. <b>잡담을 버리는 건 허용</b>된다.
+이 넷은 그대로 검증 지표(§7 Tier 0)가 된다. span 이 있으니 <em>기계적으로</em> 검사할 수 있다.</p>
+</div>
+
+<div class="box warn">
+<h4>“한 문장에 사실 하나”는 원칙이 아니라 기본값이다</h4>
+<p>계약은 당사자 둘·금액·기간·조항이 <em>묶여서</em> 하나다. 낱개로 쪼개면 추출기가 Contract 노드를
+재조립할 수 없고, 온톨로지에 Contract 를 노드로 둔 이유가 무너진다. 그래서 <code>group_id</code> 다 —
+따로 떼면 뜻이 죽는 사실은 <b>묶인 채로</b> 넘긴다. 정규화기가 배워야 할 판단이 하나 늘었다: “이건 쪼개도 되나”.</p>
+</div>
+
+<div class="box key">
+<h4>이 구조를 남이 먼저 재봤다 — ATOM (2026)</h4>
+<p>“문서를 원자적 사실로 먼저 쪼갠 뒤 추출한다”는 구조를 ATOM 이 독립적으로 같은 결론으로 세우고 <b>수치를 냈다</b>.
+직접 추출 대비 <b>사실 재현율 +31%</b>, <b>실행 간 안정성 +33%</b>(Jaccard 0.21 → 0.55).
+우리는 이 층을 “소스 형식이 달라서”라고만 정당화했는데, <em>성능 문제이기도 하다</em>는 근거가 생겼다.</p>
+<p>같은 논문이 대가도 잰다. 원자 분해는 <b>사실 정밀도를 약 9% 떨어뜨린다</b> —
+원문에 없는데 그럴듯한 사실을 만들어낸다. 이게 정확히 우리 “추가가 오염이다” 가 잡으려는 실패다.
+<b>Tier 0 은 있으면 좋은 게 아니라 이 구조의 필수 대응이다.</b></p>
+<p>가져오지 않는 것: ATOM 은 <b>온톨로지가 없다</b>(자유형 술어를 현재형으로 정규화할 뿐). 우리 전제와 정면으로 다르니 추출 방식은 안 가져온다.
+대신 검증 가능한 가설이 하나 생긴다 — <em>고정 스키마 + domain/range 검증이 있으면 안정성이 0.55 보다 높아야 한다.</em>
+그게 사실이면 v2 이후의 온톨로지 고집이 숫자로 정당화된다.</p>
+</div>
+
+<h3>왜 이것만 파인튜닝하나</h3>
+<ul>
+<li><b>목표 형식이 고정</b>이다 — Statement 스키마는 온톨로지가 바뀌어도 안 바뀐다. 파인튜닝 대상으로 안정적</li>
+<li><b>소스 특유 패턴</b>(화자 교대, 스레드 맥락, 회사 말투)은 프롬프트로 다 못 적는다. 배우게 하는 게 맞다</li>
+<li>반대로 <b>추출기(LLM-2)는 온톨로지 조건부</b>라 온톨로지가 진화하면 프롬프트만 고치면 된다. 재학습 없이 따라간다</li>
+</ul>
+
+<div class="box key">
+<h4>문서는 LLM-1 을 거치지 않는다 — 통과형 정규화기</h4>
+<p>문서는 이미 문단이다. 청크 하나를 Statement 하나로 그대로 감싼다 — span 은 청크 범위, speaker 는 null,
+time 은 문서 날짜. 모델이 없으니 오염도 없다. 이게 중요한 이유는 <b>순서</b>다: 출처 사슬과 접근 범위(§3)가
+전부 Statement 위에 서 있는데 LLM-1 은 5단계다. 통과형이 없으면 2~4단계의 엣지엔 span 도 ACL 도 없다.
+<em>Statement 층은 첫날부터 있고, LLM-1 은 회의·메신저에만 필요하다.</em></p>
+</div>
+
+<h3>학습 데이터 — 정답이 공짜인 곳에서 만든다</h3>
+<div class="flow">DART 공시 문단 (사실이 알려짐)
+    ──<b>렌더러 2개 이상</b>, 다른 계열──▶  합성 회의록 / 합성 스레드
+      A.X-4.0 72B + VARCO 8B  (Mi:dm 은 LLM-1 기반이라 제외)   + 정답 Statement (원문에서 자동)
+      <s>실제 전사의 통계</s>(발화 길이·군말 비율)를 프롬프트에
+    ──<b>ASR 노이즈 주입</b>──▶  동음이의어 치환 · 숫자 오인식 · 문장 경계 소실
+    ──▶ (렌더링 → Statement) 쌍으로 LoRA
+    + 실제 회의·메신저 <b>소량 수작업</b> — <i>검증 전용</i></div>
+<p>회사 회의록·메신저에 정답이 달린 공개 한국어 코퍼스는 없다(AI Hub 는 비상업). 합성으로 시작하고
+실제 데이터는 <b>검증셋</b>으로 쓴다 — 합성으로 배운 게 실제에서 무너지는지가 거기서 보인다.</p>
+
+<div class="box warn">
+<h4>순환을 끊는다</h4>
+<p>렌더링을 LLM-2 하나로 하면 LLM-1 은 실제 회의체가 아니라 <em>A.X 72B 의 회의체 흉내</em>를 배운다.
+그래서 렌더러를 다른 계열로 둘 이상 섞고, 실제 전사에서 잰 통계(발화 길이·군말 비율·화자 교대 빈도)를
+프롬프트로 넣어 분포를 실제 쪽으로 끌어온다. LLM-1 의 기반 모델(Mi:dm)은 렌더러에서 <b>뺀다</b> —
+자기 출력을 자기가 배우는 것이 가장 순환적이다. 그리고 실제 전사엔 <b>STT 오류</b>가 있다 —
+동음이의어(“사월/삼월”), 숫자 오인식(“12,400”→“이만사백”), 문장 경계 소실. 합성엔 없으니 <b>주입</b>한다.
+안 그러면 LLM-1 은 깨끗한 텍스트만 본 채로 더러운 입력을 받는다.</p>
+</div>
+
+<div class="box warn">
+<h4>입력 요구사항 — STT 는 화자를 줘야 한다</h4>
+<p>회의 전사에 화자 분리가 없으면 <code>speaker</code> 가 비고, 그러면
+<code>Person —memberOf→</code>·<code>Person —holds→</code> 류 엣지의 출처가 사라진다.
+STT 는 상류라 우리 범위 밖이지만, <em>화자 라벨이 있는 전사</em>를 입력 계약으로 못 박는다.</p>
+</div>
+
+<h2><span class="n">3</span>LLM-2 추출기와 KG 갱신</h2>
+
+<p>추출은 v2 §5 그대로 — 온톨로지(클래스·관계·domain/range)를 프롬프트에 주고 트리플을 받아
+스키마로 거른다. v3 에서 더해지는 것은 <b>갱신</b>이다. 새 문서가 오면 KG 가 자란다.</p>
+
+<div class="tw"><table>
+<tr><th>단계</th><th>내용</th></tr>
+<tr><td><b>개체 해소</b></td><td>새 언급 → 별칭표 → 애매하면 LLM-2 가 <b>판별 키</b>로 판단(사람: 소속·직함·생년 / 조직: 사업자번호·상위조직 / 프로젝트: 소속 조직·기간) → 없으면 새 노드. 관측된 표기(“김 부장”, “AUR”)는 별칭으로 <b>누적</b>된다 — §5 투영의 별칭이 여기서 나온다</td></tr>
+<tr><td><b>접근 범위</b></td><td>엣지는 출처 Statement 의 <b>소스 ACL 을 상속</b>한다 — 채널 멤버십, 문서 폴더 권한. 여러 출처면 합집합. §5 투영의 범위 기준이다</td></tr>
+<tr><td><b>엣지 병합</b></td><td>같은 (s, p, o) 면 <b>출처만 추가</b>. <b>함수적 관계</b>(값이 하나 — 대표이사, 출시일)에서 o 가 바뀌면 <b><code>valid_from</code> 순</b>(없으면 <code>time</code> 폴백)으로 새 버전, 옛 엣지는 <code>valid_to</code>. 어느 관계가 함수적인지는 <b>TBox 에 <code>functional</code> 플래그</b>로 선언한다 — 없으면 “3월로 연기”와 “아니 4월”이 둘 다 <code>asserted</code> 로 공존한다</td></tr>
+<tr><td><b>출처 사슬</b></td><td>엣지 → Statement → 원문 span. <em>모든 엣지가 원문 한 곳을 가리킨다</em>. 이게 오염 방지의 끝단 보증이다</td></tr>
+<tr><td><b>추정·부정</b></td><td><code>hedge=tentative</code> 면 <code>asserted=false</code>, <code>hedge=negated</code> 면 <code>polarity=negative</code> 로 들어간다 — 둘 다 판정은 받는다. 미공개 제품 <em>소문</em>도, “삼성 납품 <em>아님</em>”도 기밀이다. 부정은 경쟁 정보다</td></tr>
+<tr><td><b>종료 표현</b></td><td>“더 이상 삼성 납품 아님” 은 두 가지를 동시에 한다 — 기존 엣지의 <code>valid_to</code> 를 닫고, <b>부정 사실 자체도 남긴다</b>(<code>polarity=negative</code>). 닫기만 하면 “납품 안 한다” 는 경쟁 정보가 사라지고, 남기기만 하면 옛 엣지가 계속 유효한 것처럼 보인다. ATOM 은 종료 표현을 추출 단계에서 긍정형+<code>t_end</code> 로 바꿔 병합에서 LLM 을 안 쓰게 한다 — 그 방식을 따르되 부정 사실은 버리지 않는다</td></tr>
+<tr><td><b>재판정</b></td><td>갱신 시엔 건드린 엣지 + 1-hop 만. 그리고 <b>주기 실행</b>이 따로 있다 — 공개성은 KG 밖에서 바뀐다(§4)</td></tr>
+</table></div>
+
+<div class="box stop">
+<h4>관측 시각과 유효 시각을 뭉개면 R3 이 틀린 날짜로 판정한다</h4>
+<p>회의에서 “그 계약 작년 3월부터였어” 라고 하면 <b>관측</b>은 2026-09(회의일)이고 <b>유효 시작</b>은 2025-03 이다.
+이 둘을 하나로 두면 계약이 회의 날짜에 시작한 것으로 기록된다. ATOM 이 Graphiti 의 결함으로 지목한 것이 정확히 이 뭉개기이고,
+<em>v3 초안도 같은 뭉개기를 하고 있었다</em>(“Statement <code>time</code> 순으로 새 버전”).</p>
+<p>우리에게 이건 문체 문제가 아니라 <b>판정 오류</b>다. R3 은 “기간이 아직 공시되지 않음” 으로 발화하는데,
+그 기간이 관측 시각이면 공시 대조가 엉뚱한 시점을 본다. 미공개 제품의 <code>unreleased</code> 상태에도 끝나는 시점이 있다.
+그래서 Statement 가 <code>time</code> · <code>valid_from</code> · <code>valid_to</code> 셋을 따로 가진다(§2).</p>
+</div>
+
+<h2><span class="n">4</span>엣지 판정기 — 규칙이 바닥, 사람이 천장</h2>
+
+<p>기밀은 노드가 아니라 <b>엣지</b>에 붙는다. “삼성전자”가 아니라 “오로라 —suppliesTo→ 삼성전자”가 기밀이다.
+v2 의 규칙 R1~R6 을 <em>전부 엣지 수준</em>으로 다시 썼다 — 노드 속성이던 것도 엣지가 됐다.</p>
+
+<div class="tw"><table>
+<tr><th>규칙</th><th>엣지 패턴</th><th>위험</th><th>정답 출처</th></tr>
+<tr><td><b>R1</b></td><td><code>Contract —hasClause→ Clause</code>, Clause ∈ CUAD 민감 부분집합(가격제한·수익배분·독점·경업금지·최소구매·MFN·IP귀속)</td><td><span class="tag t-hi">high</span></td><td>CUAD</td></tr>
+<tr><td><b>R2</b></td><td><code>Product —hasStatus→ unreleased</code></td><td><span class="tag t-hi">high</span></td><td>주입셋</td></tr>
+<tr><td><b>R3</b></td><td><code>X —hasFact→ FinancialFact</code>, 범위가 Project 이거나 기간이 <b>아직 공시되지 않음</b></td><td><span class="tag t-hi">high</span></td><td>DART 음성</td></tr>
+<tr><td><b>R4</b></td><td><code>Person —memberOf→ Org</code> (with Role)</td><td><span class="tag t-lo">low</span> 서버 전용</td><td>DART 임원현황</td></tr>
+<tr><td><b>R5</b></td><td><code>Org —owns→ Asset</code></td><td><span class="tag t-mid">mid</span></td><td>주입셋</td></tr>
+<tr><td><b>R6</b></td><td>공개 노드 2개를 잇는 <b>비공개 엣지</b> — <code>Project —suppliesTo→ Org</code></td><td><span class="tag t-hi">high</span></td><td>주입셋 (quasi-identifier)</td></tr>
+<tr><td><b>R7</b> <span class="tag t-hi">결합</span></td><td>R4 엣지의 Person 에 <code>—hasFact→ 보수</code> 가 붙으면 R4 를 high 로 승격</td><td><span class="tag t-hi">high</span></td><td>DART 개인별 보수</td></tr>
+</table></div>
+
+<div class="box warn">
+<h4>규칙이 요구하는 TBox 수정 4건 — 없으면 규칙 셋이 자기 스키마에 거부당한다</h4>
+<p>v2 관계 정의에 R2·R6·R7 을 대보니 셋이 안 맞았다. “스키마가 거부한다”가 이 설계의 핵심 장치인데
+자기 규칙 예시가 거부당하면 안 된다.</p>
+<div class="tw"><table>
+<tr><th>규칙</th><th>문제</th><th>수정</th></tr>
+<tr><td>R2</td><td><code>hasStatus</code> 가 TBox 에 없다 — v2 에선 속성이었다</td><td><code>hasStatus: Product → ReleaseStatus{unreleased, released}</code> 관계 신설, <code>functional</code></td></tr>
+<tr><td>R6</td><td><code>suppliesTo</code> 도메인이 Organization 뿐 — Project 가 주어일 수 없다</td><td>도메인을 <code>Organization|Project</code> 로</td></tr>
+<tr><td>R7</td><td><code>hasFact</code> 도메인이 Org|Project|Product — Person 이 없다</td><td>도메인에 <code>Person</code> 추가(보수·지분)</td></tr>
+<tr><td>R6</td><td>“공개 노드”의 정의가 없다</td><td>노드 공개성 = <b>공시 KG 에 존재</b>. 엣지 <code>reason=public</code> 과 별개로 노드에 파생</td></tr>
+</table></div>
+<p>+ <code>functional</code> 플래그(§3). 이 다섯이 v2 TBox 에 대한 v3 의 수정 전부다 — 다른 데선 안 건드린다.</p>
+</div>
+
+<h3>4층 판정</h3>
+
+<div class="flow">입력: 엣지 + <b>1-hop 이웃</b>     ← R7 같은 결합은 엣지 하나로는 못 본다
+
+  1  규칙 R1~R7      결정적 · 회사 무관 · 테스트 가능          → <b>바닥</b>
+  2  공시 대조        공시 KG 에 있으면 public 으로 덮어쓴다      → <b>음성</b>
+                     <s>공시 KG = 1단계의 OpenDART KG</s> — 벤치마크 정답이 곧 공개성의 기준
+                     <s>주기 실행</s> — 새 DART·보도자료로 mid 이상 엣지 전체를 재대조
+  3  LLM-2 잔여       1·2 가 못 정한 엣지만, 서버에서, 배치로     → <b>제안</b>
+                     <i>잠정 적용</i> — 제안대로 즉시 가리되 검토 큐에 올린다. none 으로는 못 내린다
+  4  보안담당자       승인 UI. <i>항상 이긴다</i>                    → <b>천장</b>
+
+저장:  sensitivity ∈ {none, low, mid, high}   low = 서버 전용(R7 재료) — 투영·목록 비대상
+       reason      ∈ {R1..R7, public, llm, human}
+       judged_at · valid_to
+       access      출처 ACL 의 합집합 (§3)
+       polarity    positive | negative — 부정 사실도 기밀이다 (§3)
+       asserted    확정 | 추정
+       review      pending | approved | rejected — reason=llm 엣지의 검토 상태. 큐와 Tier 3 일치율의 근거
+노드 위험도 = 붙은 엣지의 최댓값 (저장 안 함 — 진실은 한 곳에)</div>
+
+<p>“사람”은 둘이다. <b>보안담당자</b>는 엣지를 승인·기각한다 — KG 를 바꾼다.
+<b>일반 사용자</b>는 자기 화면에서 항목 하나를 해제할 뿐이다 — KG 를 못 바꾼다. v1 의 HITL 패널 그대로.
+둘을 섞으면 누구나 기밀을 “아님”으로 만들 수 있다.</p>
+
+<p>그리고 <b>해제는 기록된다.</b> 언제·어느 엣지(또는 해시)를 풀었는지 로컬에 남고 서버로 동기화된다.
+기업 DLP 에서 이건 기능이 아니라 전제다 — <em>감사 로그 없는 해제 버튼은 유출 버튼</em>이다.</p>
+<p>다만 <b>“누가”는 신원이 있어야 적힌다.</b> 4a 는 신원 없이 배포되므로 거기서 남는 것은
+<em>기기 단위 해제 이력</em>이고, 사람에 귀속되는 감사 로그는 신원이 붙는 4b 부터다.
+둘을 같은 이름으로 부르면 안 된다 — 4a 의 것은 감사가 아니라 집계다.</p>
+
+<div class="box warn">
+<h4>공개성은 KG 밖에서 바뀐다</h4>
+<p>미공개 제품이 출시되면 보도자료가 나오지, 회사 내부 문서가 “이제 공개됨”이라고 쓰진 않는다.
+재판정이 “건드린 엣지만”이면 그 엣지는 영원히 high 로 남고 <em>오탐이 시간과 함께 쌓인다</em> —
+v1 이 가장 경계한 신뢰 붕괴가 느리게 온다. 그래서 2층(공시 대조)은 갱신과 별개로 <b>주기 실행</b>된다.
+새 DART 공시·보도자료 피드를 대상으로 mid 이상 엣지 전체를 다시 대조하고, 공개된 것은 <code>public</code> 으로 내린다.</p>
+<p>3층의 <b>잠정 적용</b>도 같은 논리의 반대편이다. 보안 게이트웨이의 기본은 보수적이어야 하니
+LLM 제안은 검토 전에도 <em>가리는 쪽으로만</em> 적용되고, <code>none</code> 으로 내리는 건 사람만 한다.</p>
+</div>
+
+<p>v1 §2 에서 확인한 두 사실이 이 순서를 정했다. 규칙은 재현율 천장이 있으니 <b>바닥</b>이고,
+LLM 은 관계 판단에서 신뢰가 낮으니 <b>제안</b>까지다. 사람의 승인·기각은 <code>reason=human</code> 으로 남고,
+그게 쌓이면 3층의 학습 데이터가 된다.</p>
+
+<h2><span class="n">5</span>앱 — 투영을 받아 가린다</h2>
+
+<h3>민감 투영 — 사용자가 알 수 있는 만큼만</h3>
+<p>KG 는 <em>회사 기밀의 지도</em>다. “필요한 것만 내려보낸다”고 해도 그 필요한 것이 곧 기밀 목록 자체라,
+노트북마다 두면 <b>기밀을 줄이는 게 아니라 농축</b>한다. 암호화는 사용 중엔 풀려 있어 답이 못 된다.
+답은 범위다 — 투영은 <em>그 사용자의 권한 안에 있는 엣지</em>만 담는다.</p>
+
+<pre><code>Projection(user)                                  ← 평문, 사용자별
+  edges:  sensitivity ≥ mid  AND  user ∈ edge.access     ← §3 출처 ACL 상속
+  nodes:  위 엣지에 닿은 노드만 — label, aliases, type
+  version, issued_at, ttl, user
+
+Blocklist(global)                                 ← 해시, 전원 동일
+  hashes: sensitivity = <b>high</b> 엣지에 닿은 노드의 정규화 label·alias 해시
+          <b>다중 토큰 n-gram 만</b> — 단일 토큰·짧은 별칭은 넣지 않는다
+          Person 노드 제외 — 이름은 PII 층의 몫
+  평문 없음 — 정확 일치만. 우연한 열람은 막고, 작정한 공격자는 못 막는다</code></pre>
+
+<p>마케팅 직원의 노트북엔 R&amp;D 프로젝트 그래프가 갈 이유가 없다. <b>평문 투영</b>이 뚫리면 그 사람이 이미 아는 만큼만 샌다 —
+회사가 이미 정해둔 접근 권한을 그대로 따르니 새 정책을 만들 필요도 없다.
+공개 엣지·출처 Statement·원문 span 은 <b>서버에만</b> 있다. 단, 해시 목록은 이 보장 밖이다(아래 “교환”).</p>
+
+<div class="box stop">
+<h4>권한별 투영만으로는 구멍이 난다</h4>
+<p>권한 <em>밖</em>의 사용자가 복도에서 들은 기밀을 붙여넣으면, 그 엣지는 그의 투영에 없어서 <b>안 가려진다</b> —
+정확히 DLP 가 존재하는 이유인 내부자 유출이다. “뚫려도 아는 만큼만”은 기기 침해 얘기지 마스킹 범위 얘기가 아니었다.
+그래서 둘을 겹친다.</p>
+<ul>
+<li><b>해시 차단목록</b> — high 노드의 다중 토큰 label·alias 해시로 대조한다(경계는 아래 상자, 어디서 대조하는지는 “교환”).
+정확 언급은 가려진다. 정규화 n-gram 을 열거해 해시 집합에 조회한다 — AC 가 아니다</li>
+<li><b>클래스 탐지 경로</b>(아래) — KG 없이 돌아가니 권한 밖의 <em>바꿔 말한</em> 유출도 <b>일부</b> 잡는다. 클래스 전형적 내용만이고 “그 건 4월로 밀렸어”는 못 잡는다. 그래도 보조가 아니라 <b>필수</b>다</li>
+</ul>
+<p>평문 범위 투영은 연결기(바꿔 말하기)용, 해시 전역 목록은 정확 일치용. 역할이 다르다.</p>
+</div>
+
+<div class="box warn">
+<h4>차단목록의 두 경계</h4>
+<p><b>목록은 high 만, 그리고 R4 는 <code>low</code> 다.</b> 임직원의 <code>memberOf</code> 가 투영이나 목록에 들어가면
+“김철수 부장님께 전달해줘”가 “[기밀] 부장님께 전달해줘”가 된다. 이름은 이미 PII 층이 가리고, 사용자는 첫날 신뢰를 잃는다.
+그래서 R4 는 서버 전용 등급 <code>low</code> — R7 승격의 재료일 뿐, <code>≥ mid</code> 인 투영·목록에 <em>자동으로</em> 안 들어간다.
+예외 조항이 아니라 등급이다.</p>
+<p><b>짧은 것도 넣지 않는다.</b> “AUR”·“오로라” 의 해시는 사전 공격으로 몇 초면 뒤집힌다 — 클라이언트가 해시를 계산하니 솔트도 거기 있다.
+그래서 “복원 불가”는 거짓이고, 정직한 말은 <em>우연한 열람은 막고 작정한 공격자는 못 막는다</em>다.
+목록엔 <b>다중 토큰 n-gram 만</b> 넣는다. 어차피 진짜 위험한 건 준식별자 결합이고 그건 다중 토큰이다.
+단일 토큰 기밀은 평문 투영과 클래스 탐지가 맡는다.</p>
+</div>
+
+<div class="box stop">
+<h4>교환 — 권한 밖 유출을 막는 대가, 그리고 그걸 줄이는 방법</h4>
+<p>로컬 목록은 R&amp;D 의 다중 토큰 high 용어를 <em>마케팅 노트북에도</em> 내린다. 해시는 작정한 공격자에겐 평문과 같다.
+즉 권한별 투영이 막으려던 유출을 차단목록이 <b>다시 들여온다</b>. 반대로 “앱이 자기 n-gram 해시를 전부 서버로 보내 대조”하면
+<em>전 직원이 외부 AI 에 입력하는 모든 텍스트의 해시가 서버에 간다</em> — 수집 큐에서 금지한 감시 도구를 더 넓게 여는 셈이다.
+둘 다 안 된다.</p>
+<p><b>k-익명 접두 조회</b>(HIBP 방식)가 둘 사이를 지난다.</p>
+<div class="flow">앱    정규화 n-gram → 해시 → <b>앞 k 비트만</b> 서버로           서버는 입력을 복원 못 한다
+서버  그 접두를 가진 목록 항목 전부(버킷)를 돌려준다           앱은 목록의 1/2^k 만 본다
+앱    버킷과 로컬 대조 → 일치하면 마스킹                        한 요청에 여러 접두를 묶어 보낸다</div>
+<p>기기에 전체 목록이 없고, 서버에 전체 입력이 없다. 남는 노출은 “서버는 접두를, 앱은 버킷 하나를 안다”뿐이고
+둘 다 사전 공격이 안 된다. <b>오프라인이면 로컬 목록으로 떨어진다</b> — 그때만 위 교환을 감수하고, 앱은 “오프라인 모드”를 표시한다.
+“아는 만큼만”은 여전히 평문 투영에만 성립한다.</p>
+</div>
+
+<div class="box warn">
+<h4>앱은 사용자가 누구인지 알아야 한다</h4>
+<p><code>Projection(user)</code> 는 신원을 전제하는데 지금 앱엔 로그인이 없다.
+회사 SSO 든 기기 인증서든 <b>신원 소스가 선행 요건</b>이다. 없으면 권한별 투영은 성립하지 않고
+해시 전역 목록 + 클래스 탐지만 남는다 — 그것만으로도 다중 토큰 정확 언급과 클래스 전형적 내용은 가려진다.
+신원은 연결기의 재현율을 올리는 층이지 보호의 전제는 아니다.</p>
+</div>
+
+<div class="box stop">
+<h4>빈 KG 는 조용한 실패다</h4>
+<p>회사 문서를 아직 안 넣은 첫날, 앱은 아무것도 안 가리면서 보호 중인 것처럼 보인다. #143 과 같은 유형이다.
+투영에 <code>ttl</code> 을 두고, 앱은 <b>버전 · 마지막 갱신 · 엣지 수</b>를 항상 보여준다.
+비어 있거나 <code>ttl</code> 을 넘겼으면(오프라인 일주일) “<b>기밀 보호 없음</b>”을 명시한다 — 차단이 아니라 경고다.
+PII·인젝션 보호는 그대로 돌아간다. UI 한 줄인데 신뢰에서 제일 크다.</p>
+</div>
+
+<h3>탐지 — 세 단계, 새 사실 없음</h3>
+
+<div class="flow">스팬 ──▶ <b>정확 일치</b>  평문 투영은 AC 매처                          (v1 그대로, 한국어 경계 §5)
+                      해시 목록은 <s>n-gram 열거 + 집합 조회</s> — AC 가 아니다. 접두 조회면 버킷과, 오프라인이면 로컬 목록과
+                      해시 일치 → 로컬 패널엔 [기밀:차단목록]   <i>엣지 상세 없음 — 권한 밖이면 알 이유도 없다</i>
+     ──▶ <b>LLM-3</b>    매처가 놓친 것 — 바꿔 말하기·지시어      “우리 차기 주력 모델” → Product 노드
+                      입력: 스팬 + <s>투영의 노드 목록</s>        출력: 노드 id 또는 none
+     ──▶ <b>엣지 조회</b> 노드에 붙은 엣지 중 sensitivity 최댓값
+     ──▶ 외부로는 <b>[기밀]</b> · 로컬 패널엔 [회사기밀:R6]        <i>규칙·클래스는 밖으로 안 나간다</i></div>
+
+<p>연결기로서의 LLM-3 는 <b>주어진 후보 중 고르기</b>만 한다. 자유 생성이 아니라 <em>제약된 선택</em>이라
+틀려도 오탐 하나일 뿐 KG 는 그대로다 — 모델 크기는 이쪽이 아니라 클래스 탐지가 정한다(§1). 이것이 v1 §2-② 의
+“키워드 방식 재현율 천장”을 앱 쪽에서 메우는 장치다 — 등록 안 된 표현도 노드에 닿는다.</p>
+
+<p><b>외부로 나가는 토큰은 <code>[기밀]</code> 하나다.</b> <code>[회사기밀:R6]</code> 이 외부 AI 로 나가면
+“여기 준식별자 관계가 있었다”를 알려주는 셈이고, 클래스명이 들어가면 “여기 계약 단가 조항이 있었다”가 된다.
+규칙·클래스·추정 여부는 로컬 검토 패널에서만 보인다 — 거기선 사용자가 판단해야 하니 상세가 필요하다.</p>
+
+<h3>두 번째 경로 — KG 에 없는 기밀</h3>
+<p>새 프로젝트 제안서를 ChatGPT 에 붙여넣는 순간은 <em>어떤 문서도 아직 서버에 도달하지 않은</em> 시점이다.
+연결기는 아는 노드에만 닿으니 이건 그냥 통과한다. v3 초안의 가장 큰 구멍이었다.</p>
+
+<div class="flow">스팬 ──▶ <b>LLM-3 클래스 탐지</b>   입력: 텍스트 + <s>TBox 클래스 설명</s>  (KG 없음)
+                              출력: 이 구간은 어느 클래스의 내용인가 — Clause? FinancialFact? Product 사양?
+     ──▶ <b>R1·R2·R3·R5</b> 를 클래스 수준으로      Clause(가격) → high · FinancialFact(프로젝트 범위) → high
+                              <i>R6·R7 은 관계 결합이라 KG 없이는 불가</i>
+     ──▶ 외부로는 <b>[기밀]</b> · 로컬 패널엔 [기밀 추정:R1]   연결기의 [회사기밀:R1] 과 다르다 — 신뢰도가 다르니까</div>
+
+<p>이 경로는 <b>필수</b>다 — KG 에 없는 기밀과 <em>권한 밖 사용자의 바꿔 말한 유출</em>을 잡는 유일한 경로다(위 상자).
+v1 §2-② 의 “키워드는 작은 일부만 잡는다”에 대한 앱 쪽 답이기도 하다. 정밀도는 연결기보다 낮다.
+그래서 라벨을 나눠 사용자가 구분해 해제할 수 있게 하고, <b>플래그된 구간을 사내망으로 서버 수집 큐에 넣는다</b>.
+사용자가 붙여넣는 텍스트가 가장 신선한 소스다 — 다음 KG 갱신에서 이 내용은 노드가 되고,
+그 다음부턴 첫 번째 경로가 잡는다.</p>
+
+<div class="box stop">
+<h4>수집 큐의 범위 — 감시 도구가 되면 도입이 막힌다</h4>
+<p>큐로 가는 것은 <b>마스킹 전 원문</b>이어야 한다 — 가려진 텍스트는 <code>[기밀]</code> 뿐이라 KG 를 못 만든다.
+즉 <em>원문이 노트북을 떠난다</em>. 회사 서버로만 가지만 그래도 범위를 못 박는다:
+<b>클래스 탐지가 플래그한 구간 + 앞뒤 한 문장</b>만, <b>PII 마스킹을 거친 뒤</b>, 붙여넣기 전체는 절대 아니다.
+직원이 ChatGPT 에 붙여넣는 모든 것이 서버에 남는 설계는 보안 제품이 아니라 감시 도구다.</p>
+</div>
+
+<h2><span class="n">6</span>구현 계약 — 코드와 네트워크</h2>
+
+<p>여기까지가 설계다. 이 절은 그 설계가 <em>지금 있는 코드</em>에 붙을 때 무엇이 바뀌는지만 적는다.</p>
+
+<div class="box stop">
+<h4>이걸 지금 코드로 못 쓴다 — <code>Detection.basis</code> 가 필요하다</h4>
+<p>현재 마스커의 <code>placeholder_for(item_type)</code> 는 <code>[{라벨} 마스킹]</code> 을 돌려준다.
+밖으로 나가는 문자열이 <b>타입만의 함수</b>다. 그러면 이중 라벨이 성립하지 않는다 —
+타입을 셋으로 나누면 <code>[회사기밀:R6 마스킹]</code> 이 그대로 사이트로 나가 규칙이 새고,
+타입을 하나로 두면 패널이 차단목록 일치와 클래스 추정을 구분할 수 없다.</p>
+<div class="tw"><table>
+<tr><th>바꿀 것</th><th>내용</th></tr>
+<tr><td><code>Detection</code> (base.py)</td><td><code>basis: str</code> 추가 — <code>R1..R7 | blocklist | class</code>. 지금은 type·start·end·text·confidence·source 뿐이다. <b>엣지의 <code>reason</code>(§4)과 다른 것이라 이름을 나눈다</b> — 그쪽은 “누가 판정했나”(llm·human), 이쪽은 “왜 가렸나”</td></tr>
+<tr><td><code>placeholder_for</code></td><td>그대로 둔다. <code>CONFIDENTIAL</code> 타입 하나 → 밖으로 나가는 실제 문자열은 <code>[기밀 마스킹]</code> 하나다 (이 문서의 흐름도에선 <code>[기밀]</code> 로 줄여 적었다)</td></tr>
+<tr><td>검토 패널</td><td>라벨을 <b>마스킹된 텍스트가 아니라 항목 목록에서</b> 그린다. <code>basis</code> 로 [회사기밀:R6] / [기밀:차단목록] / [기밀 추정:R1] 을 구분</td></tr>
+</table></div>
+<p>v2 §4 의 접합점(<code>_detect_pii()</code> 에 한 줄, <code>CONFIDENTIAL</code> 을 <code>PII_TYPES</code> 에, 마스커 라벨 한 줄)은
+<b>그대로 유효하되 <code>basis</code> 한 필드가 늘어난다.</b> 이 필드는 익스텐션 <code>masker.js</code> 까지 같이 간다.</p>
+</div>
+
+<h3>사내망 통신은 누가 하나</h3>
+
+<p>지금 제품은 셋이다. <b>엔진</b>(FastAPI, 127.0.0.1, 인증 없음), <b>데스크탑</b>(Electron, 이미 업데이터·모델 다운로드로 네트워크를 쓴다), <b>익스텐션</b>.
+사내망 통신이 넷 생겼는데 소유자가 정해져 있지 않았다.</p>
+
+<div class="tw"><table>
+<tr><th>통신</th><th>소유자</th><th>이유</th></tr>
+<tr><td><b>접두 조회</b></td><td>엔진</td><td>탐지 경로 안에서 요청마다 일어난다. 다른 데로 빼면 홉이 하나 늘고 지연이 붙는다</td></tr>
+<tr><td>투영·목록 동기화</td><td>데스크탑</td><td>주기 작업. 이미 업데이터가 하는 일과 같은 성격</td></tr>
+<tr><td>수집 큐 전송</td><td>데스크탑</td><td>배치. 앱이 꺼져도 재시도해야 한다</td></tr>
+<tr><td>해제 이력 전송</td><td>데스크탑</td><td>배치</td></tr>
+</table></div>
+
+<p><b>자격증명은 데스크탑이 쥔다</b> — OS 키체인, 이미 있는 설정 저장소. 엔진에는 접두 조회에 쓸 <em>토큰만</em> 주입한다.</p>
+
+<div class="box warn">
+<h4>엔진이 토큰을 쥐면 생기는 문제, 그리고 더 싼 답</h4>
+<p>엔진의 인바운드 포트에는 <b>인증이 없다</b>. 로컬 전용일 때는 감수했지만 엔진이 사내망 토큰을 쥐면
+<em>같은 기기의 아무 프로세스나 엔진을 통해 접두 조회를 대신 시킬 수 있다</em>.</p>
+<p>처음엔 “엔진에 로컬 토큰을 붙인다”고 적었는데 <b>그건 구현이 안 된다</b>.
+익스텐션은 48200~48209 를 스캔해 시그니처로 엔진을 찾는 구조라, 데스크탑이 발급한 토큰을 받을 채널이 없다
+(확장은 로컬 파일을 못 읽고, 네이티브 메시징은 이 문제 하나에 과하다).</p>
+<p>더 싼 답은 <b>접두 조회를 독립 엔드포인트로 만들지 않는 것</b>이다. 조회는 스캔 작업 <em>안에서만</em> 일어난다.
+그러면 악성 로컬 프로세스가 조회를 유발하려면 전체 스캔 잡을 제출해야 하는데, 그건 지금도 할 수 있는 일이라
+<em>새 노출이 아니다</em>. 인바운드 인증은 이 계획과 무관한 기존 부채로 남긴다.</p>
+</div>
+
+<h2><span class="n">7</span>벤치마크 — 계층이 하나 늘었다</h2>
+
+<div class="tw"><table>
+<tr><th>Tier</th><th>질문</th><th>지표</th><th>정답</th></tr>
+<tr><td><b>0</b> <span class="tag t-hi">신설</span></td><td>정규화기가 오염시키지 않나</td><td>추가 사실률 · 값/날짜 보존율 · 부정 보존율 · <b>묶음 보존율</b> · span 커버리지</td><td>합성 렌더링(DART, 렌더러 다계열, ASR 노이즈) + 실제 소량</td></tr>
+<tr><td><b>1</b></td><td>KG 를 정확히 뽑나 — <b>같은 것을 같은 노드로 모으나</b></td><td>엔티티·트리플 P/R/F1 + <b>개체 해소 B-cubed</b></td><td>OpenDART API 30종 · REFinD · CUAD. 해소 정답 = 임원현황에서 연도·회사를 넘어 반복되는 같은 사람(생년월일)</td></tr>
+<tr><td><b>2</b></td><td>온톨로지에 맞나</td><td>Text2KGBench 7지표 — 적합률·환각 3종</td><td>Tier 1 출력</td></tr>
+<tr><td><b>2b</b> <span class="tag t-hi">신설</span></td><td>같은 문서를 두 번 돌리면 <b>같은 KG 인가</b></td><td>실행 간 <b>Jaccard</b>(트리플 집합). ATOM 기준선: 직접 추출 0.21, 원자 분해 0.55 — 우리는 고정 스키마가 있으니 <em>0.55 를 넘어야 한다</em></td><td>같은 문서 N 회 반복</td></tr>
+<tr><td><b>3</b></td><td>판정기가 맞나 — <b>추출과 분리</b></td><td>정답 엣지에 판정기만 → 규칙별 P/R</td><td>CUAD(R1) · DART(음성 — 공시된 임원 memberOf 가 public 으로 덮이는지 · R7) · 주입셋(R2·R5·R6)</td></tr>
+<tr><td><b>4</b> <span class="tag t-hi">신설</span></td><td>앱 연결기가 바꿔 말하기를 잡나</td><td>(바꿔 말한 표현 → 노드) 재현율, AC 단독 대비</td><td>주입셋에 바꿔 말하기 변형 추가</td></tr>
+<tr><td><b>5</b> <span class="tag t-hi">신설</span></td><td>KG 에 <b>없는</b> 기밀을 클래스로 잡나</td><td>클래스 수준 P/R — 투영·해시 목록 <b>양쪽</b>에서 해당 노드를 빼고 측정</td><td>주입셋의 노드 절반을 투영·해시 목록에서 제거한 변형</td></tr>
+<tr><td><b>E2E</b></td><td>기밀 엣지 내용이 실제로 가려지나</td><td>유출 재현율 × 오탐률, <b>회사 간 최소값·분산</b>, <b>권한 밖 사용자</b> 재현율</td><td>회사 10개 × 3업종 × 사용자 2종(권한 안 / 권한 밖) × 온라인·오프라인</td></tr>
+</table></div>
+
+<div class="box key">
+<h4>안정성을 왜 따로 재나</h4>
+<p>LLM 추출은 결정적이지 않다. ATOM 실측으로 직접 추출은 같은 문서를 두 번 돌리면 트리플이 <b>0.21</b> 만 겹친다.
+다른 제품이면 품질 문제지만 <em>우리에겐 신뢰 문제</em>다 — KG 가 마스킹을 정하니,
+불안정한 KG 는 <b>오늘 가려지고 내일 안 가려지는</b> 항목을 만든다. 사용자가 제일 먼저 눈치채는 종류의 실패다.
+Tier 1 의 F1 이 높아도 2b 가 낮으면 제품은 못 나간다.</p>
+</div>
+
+<div class="box key">
+<h4>Tier 3 가 깨끗해진 이유</h4>
+<p>v2 에선 “엣지를 뽑았나”와 “잘 판정했나”가 섞여 있었다. 판정이 엣지에 붙으니
+<b>정답 엣지를 주고 판정기만 돌리면</b> 판정 품질이 추출 오류와 무관하게 나온다.
+E2E 는 그 둘의 곱이고, 어느 쪽이 병목인지 처음으로 분리해 볼 수 있다.</p>
+</div>
+
+<div class="box warn">
+<h4>개체 해소가 없으면 R7 은 조용히 실패한다</h4>
+<p>김철수가 두 노드로 갈라지면 <code>memberOf</code> 와 <code>hasFact 보수</code> 가 다른 노드에 붙고
+R7 은 발화하지 않는다 — 오류가 아니라 <em>침묵</em>이다. 그래서 Tier 1 에 해소 지표를 넣었다.
+정답은 공짜다: OpenDART 임원현황은 같은 사람을 여러 해·여러 회사에 걸쳐 생년월일과 함께 싣는다.</p>
+</div>
+
+<h2><span class="n">8</span>단계</h2>
+
+<div class="tw"><table>
+<tr><th>단계</th><th>내용</th><th>모델</th></tr>
+<tr><td><b>0</b> 확정</td><td>TBox(v2 + §4 수정 4건 + <code>functional</code>) + 엣지 규칙 R1~R7 + Statement 스키마 + 슬롯 배정</td><td>이 문서</td></tr>
+<tr><td><b>1</b> 정답 KG</td><td>OpenDART 회사 10개 → 트리플. <b>코드 전에 개수부터</b>. 이 KG 가 벤치마크 정답이자 판정기 2층의 <b>공시 KG</b> 다 — 같은 것을 두 용도로</td><td>—</td></tr>
+<tr><td><b>2</b> 추출기</td><td><b>문서만</b>, <b>통과형 정규화기</b>(청크 = Statement)로 — 사업보고서 → Statement → 트리플 → 스키마 검증 → <b>개체 해소</b> → Tier 1·2. 출처 사슬·ACL 이 첫날부터 선다</td><td>LLM-2</td></tr>
+<tr><td><b>3</b> 판정기</td><td>규칙 → 공시 대조(<b>주기 실행</b> 포함) → LLM-2 잔여(<b>잠정 적용</b>) → <b>보안담당자</b> 승인 UI. 출처 ACL 상속 · <code>functional</code> · <code>polarity</code>. Tier 3</td><td>LLM-2</td></tr>
+<tr><td><b>4a</b> 앱 최소 보호</td><td><b>해시 접두 조회</b>(서버 엔드포인트 + 오프라인 로컬 목록) + AC(평문) + 외부 토큰 <code>[기밀]</code> + <b>보호 상태 표시</b>(목록 버전·갱신·항목 수·ttl) + 기기 단위 해제 이력 + <code>Detection.basis</code>. <b>EXAONE 2.4B 교체(인젝션 헤드 재학습) · Solar API 제거</b>. <em>신원 없이 배포 가능</em>. 7B 는 여기서 미리 싣는다 — 4b 까지 인젝션만 쓰지만 헤드를 두 번 학습하지 않기 위해 다운로드 +3GB 를 먼저 낸다</td><td>LLM-3 (인젝션만)</td></tr>
+<tr><td><b>4b</b> 앱 확장</td><td>신원 연동 + <b>권한별</b> 투영 + <b>사람 귀속 감사 로그</b> + LLM-3 연결 + <b>LLM-3 클래스 탐지</b> + 수집 큐(플래그 구간만)</td><td>LLM-3</td></tr>
+<tr><td><b>5</b> 정규화기</td><td>합성 쌍 생성(<b>렌더러 다계열 + ASR 노이즈</b>) → LoRA → 회의·메신저 개통 → Tier 0</td><td>LLM-1</td></tr>
+<tr><td><b>6</b> 그래프 뷰</td><td>v1 그대로. 엣지 색 = sensitivity</td><td>—</td></tr>
+</table></div>
+
+<p><b>LLM-1 이 5단계인 이유.</b> 통과형 정규화기가 Statement 층을 2단계에 먼저 세우니, 문서만으로 2~4 단계가
+<em>전 구간</em>을 통과한다 — 회의·메신저는 소스를 <b>추가</b>하지 소스 체인을 바꾸지 않는다.
+그리고 파인튜닝용 합성 데이터를 만들려면 LLM-2 가 먼저 돌아가야 한다. 순서가 아니라 의존성이다.</p>
+
+<p><b>4a 가 3단계 직후 나가는 이유.</b> 차단목록은 판정된 high 엣지만 있으면 만들어지고, 정확 일치 보호는
+신원도 연결기도 필요 없다. 4a 하나로 “등록된 기밀의 정확 언급은 전원에게서 가려진다”가 성립하고,
+4b 는 그 위에 재현율(바꿔 말하기·KG 밖 기밀)을 얹는다. 4a 를 먼저 내보내면 실측이 그만큼 일찍 시작된다.</p>
+
+<h2><span class="n">9</span>하드웨어</h2>
+
+<div class="tiers">
+<div>
+<h4>서버 · A100 80GB ×1</h4>
+<ul>
+<li>LLM-2 A.X-4.0 72B 4-bit ≈40GB</li>
+<li>LLM-1 Mi:dm 11.5B bf16 ≈23GB</li>
+<li>둘 다 상주하면 ≈63GB + KV — 빠듯. LLM 작업은 전부 배치라 <b>순차 실행</b></li>
+<li>LoRA 파인튜닝(11.5B) · 인젝션 헤드 재학습(7B 은닉 상태) — 여유</li>
+<li>A100 2장이면 LLM-2 를 bf16 으로</li>
+<li><b>접두 조회 엔드포인트</b> — 유일한 <em>실시간</em> 구성요소. GPU 를 안 쓴다, 별도 프로세스. 죽으면 앱은 로컬 목록으로 폴백하고 오프라인 모드를 표시한다</li>
+<li>나머지(투영 배포·수집 큐 수신·해제 이력 수신)는 배치로 충분하다</li>
+</ul>
+</div>
+<div>
+<h4>앱 · 일반 PC</h4>
+<ul>
+<li>LLM-3 A.X-4.0-Light 7B Q4 ≈4.5GB RAM (2안 Mi:dm Mini 2.3B ≈1.5GB)</li>
+<li><b>연결</b> 프롬프트는 짧다 — CPU 에서 즉시</li>
+<li><b>클래스 탐지</b>는 첨부 전체를 훑는다 — CPU 에서 3장이면 수십 초. 프롬프트는 연결기만 즉시, 첨부는 클래스 탐지까지 <em>배경 + 진행 표시</em></li>
+<li>PII 인코더 149M — 그대로. 인젝션 헤드는 <b>재학습본</b></li>
+<li>투영(사용자별, 평문, 암호화) + 해시 목록(오프라인 폴백만) — 합쳐 수 MB. 온라인이면 접두 조회, 버킷은 캐시하지 않는다</li>
+</ul>
+</div>
+</div>
+
+<h2><span class="n">10</span>정직하게 남는 것</h2>
+
+<ul>
+<li><b>EXAONE 은 라이선스 계약 없이는 못 쓴다.</b> 성능·크기로는 32B 가 1×A100 에 가장 잘 맞는데,
+1.2-NC 라 “회사에 들어갈” 제품엔 LG 와의 상업 계약이 선행돼야 한다. 그래서 2안이다</li>
+<li><b>Solar API 제거는 인젝션 2단계의 품질 재측정을 요구한다.</b> 지금 위치 특정은 Solar Pro 3 가 하고 있다.
+로컬로 옮기면 떨어질 수 있고, 떨어지면 그건 새 제약의 비용이다</li>
+<li><b>72B 4-bit 의 한국어 추출 손실은 미측정</b>이다. Tier 2 적합률이 bf16 대비 얼마나 빠지는지 2단계에서 잰다</li>
+<li><b>정답 있는 한국어 회의·메신저 코퍼스는 없다.</b> Tier 0 은 합성 + 소량 수작업이다. 합성에서 배운 게 실제에서 무너지는지가 이 계획의 가장 큰 미지수다</li>
+<li><b>접근 범위 상속은 소스가 ACL 을 내줘야 성립한다.</b> 메신저 채널 멤버십·문서 폴더 권한을 커넥터가 읽어야 한다.
+못 읽는 소스의 엣지는 <em>가장 좁은</em> 범위(보안담당자만)로 떨어뜨린다 — 넓게 잘못 주는 것보다 낫다</li>
+<li><b>클래스 수준 탐지의 정밀도는 미지수</b>다. KG 없이 “이건 계약 단가 같다”를 7B 가 판단하는 것이라 과잉 마스킹이 날 수 있다.
+라벨을 나눈 이유가 그것이고, Tier 5 가 그 숫자를 처음 준다. 나쁘면 첨부에만 켜되 <em>끄지는 않는다</em> — 권한 밖 유출을 막는 유일한 경로다</li>
+<li><b>신원 소스가 없으면 권한별 투영은 없다.</b> SSO·기기 인증서 연동은 회사마다 다르고 우리 코드 밖이다. 없는 동안은 해시 목록 + 클래스 탐지로만 간다</li>
+<li><b>인젝션 헤드 재학습은 새 비용</b>이다. 기존 학습 데이터가 남아 있어야 하고, 7B 은닉 상태에서 같은 성능이 나오는지는 실측이다</li>
+<li><b>원자 분해는 정밀도를 깎는다.</b> ATOM 실측으로 약 9% — 원문에 없는 그럴듯한 사실이 늘어난다. Tier 0 이 그걸 잡도록 설계돼 있지만, <em>재현율과 정밀도를 동시에 얻는 구조가 아니라는 것</em>은 인정하고 간다</li>
+<li><b>안정성 0.55 는 낮다.</b> 고정 스키마로 그 위를 노리지만 얼마나 올라갈지는 미측정이다. 못 올리면 “같은 문서, 같은 결과” 를 보장하려고 <em>추출 결과를 캐시</em>하는 쪽으로 가야 한다 — 재추출을 명시적 사건으로 만드는 설계다</li>
+<li><b>해시 목록은 다중 토큰의 정확 일치만</b> 잡는다. 조사·띄어쓰기는 정규화로 흡수되지만 오타·약어·단일 토큰은 못 잡는다 — 단일 토큰은 평문 투영·클래스 탐지가, 오타·약어는 별칭 누적(§3)이 채운다. 그리고 해시는 <em>작정한 공격자에겐 평문과 같다</em> — 그래서 기본은 k-익명 접두 조회이고, 로컬 목록은 오프라인 폴백이다. 위협 모델을 속이지 않는다</li>
+<li><b>서버에 실시간 구성요소가 생겼다.</b> 접두 조회 전까지 서버는 전부 배치였다. 이제 가용성 요구가 있고,
+폴백(로컬 목록)은 교환을 다시 들여온다 — <em>서버 다운타임이 곧 보안 등급 하락</em>이다. 앱이 그 상태를 숨기면 안 된다</li>
+<li><b>Upstage 는 슬롯에 못 들어갔다.</b> 상업 허용 모델은 100B·250B 라 A100 한 장을 넘고, 22B preview 는 4k 문맥·영어 위주·2024 다. 다섯 회사 중 하나가 빠지는 게 문제면 A100 을 더 붙이거나 preview 를 감수해야 한다</li>
+<li><b>NC 는 VARCO 8B 하나</b>고 2024 년 Llama 3.1 기반이다. 앱 슬롯 3안으로는 되지만 Mi:dm·A.X 가 더 새롭고 라이선스가 깨끗하다</li>
+</ul>
+
+<h2><span class="n">11</span>첫 액션</h2>
+
+<ol>
+<li><b>OpenDART 인증키</b> — 사람이</li>
+<li><b>A100 이 몇 장인가</b> — 1장이면 LLM-2 는 4-bit 확정, 2장이면 bf16. 슬롯 배정이 여기서 갈린다</li>
+<li><b>LG 상업 계약 가능성</b> — 있으면 LLM-2 2안(EXAONE 32B bf16)이 1안이 된다</li>
+<li><b>회의 STT 출력 샘플 하나</b> — 화자 라벨이 있는지. 없으면 §2 의 입력 계약부터 협의</li>
+<li><b>신원 소스</b> — 회사 SSO 인가 기기 인증서인가. 없으면 권한별 투영은 뒤로 미루고 해시 목록으로 시작</li>
+<li><b>ACL 커넥터가 실제로 내주는 것</b> — 메신저는 채널 멤버십을 주는가, 문서는 어느 시스템(SharePoint·Drive·NAS)의 폴더 권한인가</li>
+<li><b>사내망 서버가 어디에 서는가</b> — A100 장비와 같은 곳인가 별도인가. 접두 조회는 실시간이라 앱에서 닿는 경로와 지연이 4a 설계를 좌우한다</li>
+<li>그다음 v2 의 1단계(정답 KG 개수 세기)로</li>
+</ol>
+
+<footer>
+확인한 것(HF 모델 카드): A.X-4.0 72B·Light 7B(Apache 2.0) / A.X-K2 688B(800GiB) / EXAONE-4.0-32B 31B·1.2-NC /
+Llama-VARCO-8B(Llama 3.1 CL) / Mi:dm 2.0 Base 11.5B·Mini 2.3B(MIT) / Solar-Open-100B 12B 활성·4×A100 / Solar-Open2-250B /
+solar-pro-preview 22B(MIT, 4k).<br>
+참고: <b>ATOM</b> — <i>AdapTive and OptiMized dynamic temporal knowledge graph construction using LLMs</i>, Lairgi 외, arXiv:2510.22590 (2025-10 제출, 2026-01 개정). 원자 분해·이중 시간·실행 간 안정성 지표의 출처. 데이터는 2020-COVID-NYT(1,076 기사), 베이스라인은 Graphiti·iText2KG.<br>
+확인하지 않은 것: EXAONE 1.2-NC 조문 전문, 4-bit 양자화 후 한국어 품질, 각 모델의 실제 추출 성능(전부 실측 대상).
+</footer>
+</div>

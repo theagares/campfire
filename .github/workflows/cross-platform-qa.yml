@@ -1,0 +1,61 @@
+name: Cross-platform browser QA
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "extension/**"
+      - "qa/browser/**"
+      - ".github/workflows/cross-platform-qa.yml"
+  push:
+    branches: [main]
+    paths:
+      - "extension/**"
+      - "qa/browser/**"
+      - ".github/workflows/cross-platform-qa.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extension-e2e:
+    name: Extension E2E (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            label: Windows x64
+          - os: macos-15
+            label: macOS arm64
+          - os: macos-15-intel
+            label: macOS x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: qa/browser/package-lock.json
+
+      - name: Install QA dependencies
+        working-directory: qa/browser
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: qa/browser
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+        run: npx playwright install chromium
+
+      - name: Run six-site prompt and file fixture E2E
+        working-directory: qa/browser
+        run: npm test
