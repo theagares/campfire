@@ -9,11 +9,13 @@ REST 어댑터 (PLAN §2). 기존 EC2 API 계약 호환:
   POST /models/fetch        가중치 다운로드(백그라운드 job, /jobs/{id}/events 로 진행 폴링)
   GET  /activity            지금 처리 중인 job 스냅샷
   GET  /activity/stream     처리 단계 변화 실시간 SSE (대시보드 처리현황 동기화)
+  GET  /mcp-risk-scanner/v1/status
+  POST /mcp-risk-scanner/v1/assess  선택형 stdio MCP 사이드카 정적 검사
 """
 
 from fastapi import APIRouter
 
-from . import activity, decisions, events, health, jobs, models, proxy_control
+from . import activity, decisions, events, health, jobs, mcp_risk_scanner, models, proxy_control
 
 router = APIRouter()
 router.include_router(health.router)
@@ -21,5 +23,6 @@ router.include_router(jobs.router)
 router.include_router(events.router)
 router.include_router(models.router)
 router.include_router(activity.router)
+router.include_router(mcp_risk_scanner.router)
 router.include_router(decisions.router)
 router.include_router(proxy_control.router)
