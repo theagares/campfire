@@ -25,7 +25,14 @@ const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', 'sidepanel', 'sidepanel.js'), 'utf8');
+// sidepanel.js 는 utils/mask-segments.js 를 import 하는 module 이다(sidepanel.html 도
+// type="module"). vm 은 import 를 못 돌리므로, 공용 모듈을 export 만 떼어 **같은
+// 컨텍스트에** 먼저 실행한다 — 브라우저에서 script 태그 두 개를 쓴 것과 같은 효과라
+// 최상위 const/function 바인딩이 뒤 스크립트에 그대로 보인다.
+const SHARED = fs.readFileSync(path.join(__dirname, '..', 'utils', 'mask-segments.js'), 'utf8')
+  .replace(/^export /gm, '');
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'sidepanel', 'sidepanel.js'), 'utf8')
+  .replace(/^import .*from '[^']+';$/gm, '');
 const noop = () => {};
 
 /** sidepanel.js 를 스텁 DOM 위에 올리고 조작 손잡이를 돌려준다. */
@@ -91,7 +98,9 @@ function loadPanel(opts = {}) {
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
 
-  vm.runInContext(SRC, vm.createContext(sandbox), { filename: 'sidepanel.js' });
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(SHARED, ctx, { filename: 'mask-segments.js' });
+  vm.runInContext(SRC, ctx, { filename: 'sidepanel.js' });
   assert.ok(listeners.length, 'sidepanel 이 onMessage 리스너를 달지 않았다 — 하네스가 스크립트를 건너뛴 것');
 
   const send = (msg) => listeners.forEach((fn) => fn(msg));

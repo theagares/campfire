@@ -95,6 +95,22 @@ def test_html_survives_unclosed_tags():
     assert "살아있음" in extract_html("<p>살아있음<div>".encode())
 
 
+def test_html_never_swallows_document_on_unclosed_script():
+    """닫히지 않은 script/style/head 가 문서를 통째로 삼키면 안 된다.
+
+    파서 안에서 태그 깊이를 세어 건너뛰던 구현은 여기서 빈 문자열을 냈다. 그러면
+    STATUS_OK + 탐지 0건으로 끝나 "검사했다" 고 표시되지만 실제로는 아무것도 안 본다.
+    """
+    for broken in (
+        "<script>var a=1;<p>홍길동 010-1234-5678</p>",
+        "<style>.a{}<p>홍길동 010-1234-5678</p>",
+        "<head><title>x</title><p>홍길동 010-1234-5678</p>",
+    ):
+        out = extract_html(broken.encode())
+        assert "홍길동" in out, broken
+        assert "010-1234-5678" in out, broken
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

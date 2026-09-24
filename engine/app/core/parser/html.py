@@ -10,14 +10,23 @@ HTML 파싱 — .html / .htm (PLAN §6). 표준 라이브러리 html.parser 만 
 
 BeautifulSoup 를 쓰지 않는 이유: 우리가 필요한 건 "보이는 텍스트" 하나뿐이고
 HTMLParser 로 충분하다. 파서 의존성 하나를 더 들일 값어치가 없다.
+
+script/style 을 **정규식으로 먼저 걷어내고** 파서에는 건너뛰기 상태를 두지 않는다.
+처음엔 파서 안에서 태그 깊이를 세어 건너뛰었는데, `<script>` 가 닫히지 않으면 깊이가
+영원히 남아 **문서 전체가 빈 문자열로 나왔다**(실측). 그러면 파이프라인은 STATUS_OK
+에 탐지 0건으로 끝난다 — 검사했다고 표시되지만 실제로는 아무것도 안 본, 이 코드베이스가
+가장 경계하는 침묵 실패다. 닫히지 않은 script 의 내용이 본문에 섞이는 건 잡음일 뿐이고,
+보안 게이트웨이에서 잡음은 침묵보다 낫다.
 """
 
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 
-# 안에 든 글자가 화면에 안 보이는 태그. 내용을 통째로 버린다.
-_SKIP = {"script", "style", "noscript", "template", "head"}
+# 온전히 닫힌 script/style 블록만 제거한다. 안 닫힌 것은 남겨서 잡음으로 흘린다.
+_SCRIPTISH = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+
 # 블록 요소 — 앞뒤로 줄을 넣어야 문장이 붙지 않는다.
 _BLOCK = {
     "p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -29,30 +38,23 @@ class _Extractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self._skip_depth = 0
 
-    def handle_starttag(self, tag, attrs):
-        if tag in _SKIP:
-            self._skip_depth += 1
-        elif tag in _BLOCK:
+    def _brk(self, tag):
+        if tag in _BLOCK:
             self.parts.append("\n")
 
-    def handle_endtag(self, tag):
-        if tag in _SKIP and self._skip_depth:
-            self._skip_depth -= 1
-        elif tag in _BLOCK:
-            self.parts.append("\n")
+    handle_starttag = lambda self, tag, attrs: self._brk(tag)  # noqa: E731
+    handle_endtag = lambda self, tag: self._brk(tag)  # noqa: E731
 
     def handle_data(self, data):
-        if not self._skip_depth:
-            self.parts.append(data)
+        self.parts.append(data)
 
 
 def strip_tags(text: str) -> str:
     """HTML 문자열 → 보이는 텍스트. eml.py 의 HTML 전용 메일도 이걸 쓴다."""
     p = _Extractor()
     try:
-        p.feed(text)
+        p.feed(_SCRIPTISH.sub(" ", text))
         p.close()
     except Exception:  # noqa: BLE001 - 깨진 HTML 이어도 그때까지 모은 것은 쓴다
         pass

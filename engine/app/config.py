@@ -178,11 +178,11 @@ def _load_dotenv_value(key: str) -> str:
     return ""
 
 
-# ── 인젝션 2단계 세부 위치 특정 (Upstage Solar Pro 3) ─────────────────────────
+# ── 인젝션 2단계 세부 위치 특정 (Upstage Solar Pro 4) ─────────────────────────
 # EXAONE hybrid 분류기는 청크 전체를 misaligned/aligned/non_instruction 로만
 # 판정하고 청크 내 구체적 위치는 모르는 구조라(어텐션/hidden state 를 청크 전체에
 # 걸쳐 풀링해서 분류), misaligned 판정 시 청크 전체가 통째로 마스킹된다. Solar
-# Pro 3 에 "이 청크에서 실제 인젝션 지시문이 정확히 어느 부분이냐"를 다시 물어
+# Pro 4 에 "이 청크에서 실제 인젝션 지시문이 정확히 어느 부분이냐"를 다시 물어
 # 그 부분만 정밀하게 마스킹하기 위한 2단계 호출. 1단계(EXAONE)가 이미
 # misaligned 라고 판정한 청크에 대해서만 호출하므로 비용/지연이 항상 붙지 않는다.
 # 실패/애매하면(빈 응답, API 오류, 응답이 원문과 정확히 일치하지 않음) 기존처럼
@@ -193,9 +193,9 @@ UPSTAGE_API_KEY: str = (
     or _load_dotenv_value("upstage_key")
 )
 UPSTAGE_API_BASE: str = os.environ.get(
-    "SECUREDOC_UPSTAGE_API_BASE", "https://api.upstage.ai/v1/solar/chat/completions"
+    "SECUREDOC_UPSTAGE_API_BASE", "https://api.upstage.ai/v1/chat/completions"
 )
-UPSTAGE_MODEL: str = os.environ.get("SECUREDOC_UPSTAGE_MODEL", "solar-pro3")
+UPSTAGE_MODEL: str = os.environ.get("SECUREDOC_UPSTAGE_MODEL", "solar-pro4")
 UPSTAGE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_UPSTAGE_TIMEOUT_SEC", "20"))
 # API 키가 없으면(로컬 전용 배포 등) 자동으로 비활성화 — 2단계 없이 기존 청크
 # 전체 마스킹 동작 그대로 유지.

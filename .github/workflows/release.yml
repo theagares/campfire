@@ -106,10 +106,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2022
+            platform: windows
+            arch: x64
             script: dist:win
-          - os: macos-latest
+            build_arg: --x64
+          - os: macos-15
+            platform: macos
+            arch: arm64
             script: dist:mac
+            build_arg: --arm64
+            app_dir: mac-arm64
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+            script: dist:mac
+            build_arg: --x64
+            app_dir: mac
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -167,12 +180,12 @@ jobs:
           # 끝나고(경고만 찍고 무서명으로 통과) 실제 서명은 afterPack 훅(scripts/afterPack.js)
           # 이 담당한다(package.json _comment_mac_signing 참고).
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run ${{ matrix.script }} -- --publish always
+        run: npm run ${{ matrix.script }} -- ${{ matrix.build_arg }} --publish always
 
       # 빌드가 "성공"해도 번들된 엔진이 실제로 뜨는지는 별개 문제였다(portable Python
       # 전환의 원인이 된 버그) — 설치 파일을 실제로 설치/실행해 /health 를 확인한다.
       - name: Verify installed app can start the bundled engine (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
@@ -228,19 +241,61 @@ jobs:
           }
           if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 5분 대기)"; exit 1 }
 
+          # /health 만 200인 것은 충분하지 않다. 모델 다운로드가 끝나기 전에도 엔진은
+          # 살아 있고 요청을 "models_not_ready"로 통과시킨다. 실제 설치본에서 모델
+          # 준비와 마스킹 결과까지 확인해, portable Python 의 의존성/모델 경로/파이프라인
+          # 중 하나라도 빠지면 릴리스를 공개하지 않는다.
+          $modelsDeadline = (Get-Date).AddMinutes(30)
+          $modelsReady = $false
+          while (-not $modelsReady -and (Get-Date) -lt $modelsDeadline) {
+            try {
+              $models = Invoke-RestMethod "http://127.0.0.1:$port/models/status" -TimeoutSec 5 -UseBasicParsing
+              $modelsReady = !!($models.pii.ready -and $models.injection.ready)
+              if (-not $modelsReady) { Write-Output "모델 준비 대기 중: $($models | ConvertTo-Json -Compress)" }
+            } catch {
+              Write-Output "모델 상태 조회 재시도: $($_.Exception.Message)"
+            }
+            if (-not $modelsReady) { Start-Sleep -Seconds 10 }
+          }
+          if (-not $modelsReady) { Write-Error "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1 }
+
+          # 실재하지 않는 테스트 전용 토큰이다. credential detector가 반드시 가리고,
+          # scanStatus=ok는 모델 미준비 시의 무검사 통과가 아니었음을 보장한다.
+          $rawSecret = 'ghp_16C7e42F292c6912E7710c838347Ae178B4a'
+          $result = Invoke-RestMethod "http://127.0.0.1:$port/jobs/prompt" -Method Post -Body @{ text = "GITHUB_TOKEN=$rawSecret" } -TimeoutSec 420 -UseBasicParsing
+          if (-not $result.done -or $result.result.scanStatus -ne 'ok') {
+            throw "실제 스캔이 완료되지 않았습니다: $($result | ConvertTo-Json -Depth 10)"
+          }
+          if (@($result.result.piiItems).Count -lt 1) {
+            throw "PII/자격증명 탐지 결과가 비어 있습니다: $($result | ConvertTo-Json -Depth 10)"
+          }
+          if ($result.result.maskedText -match [regex]::Escape($rawSecret)) {
+            throw "자격증명이 마스킹되지 않았습니다: $($result.result.maskedText)"
+          }
+          Write-Output "패키지 E2E 마스킹 검증 통과 (port $port)"
+
       - name: Verify packaged app can start the bundled engine (macOS)
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'macos'
         shell: bash
         run: |
           echo "runner arch: $(arch), uname -m: $(uname -m)"
           # arm64 러너에서 x64 빌드(Rosetta 변환 필요)를 테스트하면 변수가 하나 더 생기니,
           # 먼저 네이티브 arm64 빌드로 격리해서 확인한다.
-          APP=$(find desktop/release/mac-arm64 -maxdepth 1 -iname "*.app" | head -1)
-          if [ -z "$APP" ]; then APP=$(find desktop/release -maxdepth 3 -iname "*.app" | head -1); fi
+          APP=$(find "desktop/release/${{ matrix.app_dir }}" -maxdepth 1 -iname "*.app" | head -1)
           if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
           echo "실행: $APP"
-          file "$APP/Contents/MacOS/Campfire" || true
+          APP_FILE=$(file -L "$APP/Contents/MacOS/Campfire")
+          echo "$APP_FILE"
           RES="$APP/Contents/Resources/engine"
+          PY_FILE=$(file -L "$RES/.venv/bin/python")
+          echo "$PY_FILE"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            echo "$APP_FILE" | grep -q arm64
+            echo "$PY_FILE" | grep -q arm64
+          else
+            echo "$APP_FILE" | grep -Eq 'x86_64|x86-64'
+            echo "$PY_FILE" | grep -Eq 'x86_64|x86-64'
+          fi
 
           echo "--- codesign/gatekeeper 상태 ---"
           codesign -dv --verbose=4 "$APP" 2>&1 || true
@@ -280,14 +335,58 @@ jobs:
           # 응답했는데도 이 마지막 단발성 확인에서만 하필 재시작 사이 짧은 공백에 걸려
           # 실패한 사례가 있었다. 60초간 5초 간격으로 재시도해 그 공백을 흡수한다.
           ok=0
+          PORT=""
           deadline=$((SECONDS + 60))
           while [ "$ok" -ne 1 ] && [ "$SECONDS" -lt "$deadline" ]; do
             for port in $(seq 48200 48209); do
-              if curl -sf "http://127.0.0.1:$port/health"; then ok=1; echo "엔진 정상: 포트 $port"; break; fi
+              if curl -sf "http://127.0.0.1:$port/health"; then ok=1; PORT="$port"; echo "엔진 정상: 포트 $port"; break; fi
             done
             if [ "$ok" -ne 1 ]; then sleep 5; fi
           done
           if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
+
+          # health 200은 모델이 아직 없는 무검사 통과 상태에서도 가능하다. 자동 다운로드가
+          # 끝날 때까지 기다린 뒤 실제 요청을 보내 portable Python·모델·마스킹 경로를 함께
+          # 검증한다.
+          models_ready=0
+          models_deadline=$((SECONDS + 1800))
+          while [ "$models_ready" -ne 1 ] && [ "$SECONDS" -lt "$models_deadline" ]; do
+            models=$(curl -fsS "http://127.0.0.1:$PORT/models/status" 2>&1) || models=""
+            if python3 - "$models" <<'PY'
+          import json
+          import sys
+          try:
+              status = json.loads(sys.argv[1])
+              raise SystemExit(not (status["pii"]["ready"] and status["injection"]["ready"]))
+          except Exception:
+              raise SystemExit(1)
+          PY
+            then
+              models_ready=1
+            else
+              echo "모델 준비 대기 중: ${models:-상태 조회 실패}"
+              sleep 10
+            fi
+          done
+          if [ "$models_ready" -ne 1 ]; then echo "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1; fi
+
+          raw_secret='ghp_16C7e42F292c6912E7710c838347Ae178B4a'
+          result=$(curl -fsS --max-time 420 --data-urlencode "text=GITHUB_TOKEN=$raw_secret" "http://127.0.0.1:$PORT/jobs/prompt")
+          python3 - "$result" "$raw_secret" <<'PY'
+          import json
+          import sys
+
+          payload = json.loads(sys.argv[1])
+          secret = sys.argv[2]
+          result = payload.get("result", {})
+          if not payload.get("done") or result.get("scanStatus") != "ok":
+              raise SystemExit(f"실제 스캔이 완료되지 않았습니다: {payload}")
+          if not result.get("piiItems"):
+              raise SystemExit(f"PII/자격증명 탐지 결과가 비어 있습니다: {payload}")
+          if secret in result.get("maskedText", ""):
+              raise SystemExit(f"자격증명이 마스킹되지 않았습니다: {result['maskedText']}")
+          PY
+          echo "패키지 E2E 마스킹 검증 통과 (port $PORT)"
 
   # 두 플랫폼 빌드가 모두 성공했을 때만 릴리스를 공개한다.
   #

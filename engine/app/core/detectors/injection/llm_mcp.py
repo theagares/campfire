@@ -29,10 +29,10 @@ system_prompt/user_prompt 는 "문서 검토/요약"이라는 gateway 실사용 
 positive 로 보고, gateway 의 세부 인젝션 타입(7종)까지는 구분 못 하므로
 OTHER_INJECTION 으로 매핑한다.
 
-2단계 세부 위치 특정(Upstage Solar Pro 3): EXAONE hybrid 는 청크 전체를 한 번에
+2단계 세부 위치 특정(Upstage Solar Pro 4): EXAONE hybrid 는 청크 전체를 한 번에
 분류하는 구조라 청크 내 어느 부분이 실제 인젝션인지는 모른다 — misaligned 로
 판정되면 원래는 청크 전체(start=0, end=len(text))가 통째로 마스킹된다. 이를
-완화하기 위해 misaligned 판정이 나온 청크에 한해 Solar Pro 3 에게 "정확히 어느
+완화하기 위해 misaligned 판정이 나온 청크에 한해 Solar Pro 4 에게 "정확히 어느
 문구가 인젝션이냐"를 다시 묻고(config.UPSTAGE_API_KEY 가 있을 때만), 그 응답이
 원문과 정확히 일치하는 서브스트링일 때만 그 구간만 마스킹한다. Solar 호출이
 비활성화·실패·애매(원문과 불일치)하면 기존처럼 청크 전체를 마스킹하는
@@ -431,7 +431,7 @@ class InjectionLlmMcpDetector:
         user_prompt: str | None = None,
         pii_spans: list[dict[str, Any]] | None = None,
     ) -> list[tuple[int, int]] | None:
-        """1차(EXAONE)가 misaligned 로 판정한 청크에서 Solar Pro 3 에게 세부 위치를
+        """1차(EXAONE)가 misaligned 로 판정한 청크에서 Solar Pro 4 에게 세부 위치를
         다시 묻는다.
 
         반환값을 3가지로 구분한다 — 호출부의 처리가 완전히 달라지기 때문이다:

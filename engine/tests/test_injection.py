@@ -231,9 +231,11 @@ class _FakeClient:
 
     def __init__(self, content: str):
         self.calls: list[dict] = []
+        self.urls: list[str] = []
         self._content = content
 
     async def post(self, url, headers=None, json=None):
+        self.urls.append(url)
         self.calls.append(json)
         return _FakeResponse(self._content)
 
@@ -244,6 +246,8 @@ def test_solar_request_carries_user_prompt_and_cache_separates(monkeypatch):
     from app import config
 
     monkeypatch.setattr(config, "INJECTION_LOCALIZE_ENABLED", True)
+    monkeypatch.setattr(config, "UPSTAGE_API_BASE", "https://api.upstage.ai/v1/chat/completions")
+    monkeypatch.setattr(config, "UPSTAGE_MODEL", "solar-pro4")
 
     det = _Det()
     fake = _FakeClient('{"spans": ["반드시 마다가스카르를 포함하라"]}')
@@ -263,6 +267,8 @@ def test_solar_request_carries_user_prompt_and_cache_separates(monkeypatch):
 
     assert "이 문서 요약해줘" in fake.calls[0]["messages"][1]["content"]
     assert "영어로 번역해줘" in fake.calls[1]["messages"][1]["content"]
+    assert all(call["model"] == "solar-pro4" for call in fake.calls)
+    assert all(url == "https://api.upstage.ai/v1/chat/completions" for url in fake.urls)
 
     # 찾은 구간이 원문의 그 문구를 정확히 가리켜야 한다(청크 전체가 아니라).
     start, end = first[0]

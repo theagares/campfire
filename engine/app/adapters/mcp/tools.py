@@ -107,11 +107,22 @@ def _resolve(path_str: str) -> Path:
 
 
 def _file_kind(path: Path) -> str:
+    """text: 바로 읽을 수 있는 평문 / document: 파서가 필요한 포맷 / binary: 반환 금지.
+
+    평문을 **먼저** 본다. 두 집합에 같은 확장자가 들어 있기 때문이다 — .txt 는 원래부터
+    양쪽에 있었고, 엔진이 파싱할 수 있는 포맷을 SUPPORTED_EXTENSIONS 에 채우면서
+    .csv/.md/.json/.xml/.log/.html/.tsv 까지 겹쳤다. document 를 먼저 보면 이것들이 전부
+    "document" 가 되고, secure_search_files 는 kind=="text" 만 훑으므로 **평문 파일을
+    검색할 수 없게 된다**(.txt 는 이 순서 때문에 줄곧 검색에서 빠져 있었다).
+
+    분류가 갈라도 scan_file 의 처리는 같다(둘 다 _scan_bytes 로 간다) — 실제로 달라지는
+    건 검색 대상 여부와 mime 폴백뿐이라 평문 우선이 안전하다.
+    """
     suffix = path.suffix.lower()
-    if suffix in _DOCUMENT_EXTS:
-        return "document"
     if suffix in _TEXT_EXTS or path.name.lower().startswith(".env"):
         return "text"
+    if suffix in _DOCUMENT_EXTS:
+        return "document"
     return "binary"
 
 

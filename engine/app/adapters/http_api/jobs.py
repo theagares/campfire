@@ -82,6 +82,7 @@ async def create_job(
     mimeType: str = Form(""),
     fileName: str = Form(""),
     userPrompt: str = Form(""),
+    wrapFile: bool = Form(True),
 ):
     """userPrompt: 문서와 함께 사용자가 실제로 보내려는 프롬프트(선택).
 
@@ -89,6 +90,12 @@ async def create_job(
     때까지 보류했다가, 전송 시점에 파일과 함께 넘기는 시나리오에서 채워진다.
     주어지면 인젝션 탐지가 placeholder 대신 이 실제 프롬프트를 근거로 판단하고,
     프롬프트 자체도 PII 스캔해 결과에 포함한다(userPromptMasked/PiiItems).
+
+    wrapFile: 마스킹본 파일(maskedFile)을 만들어 응답에 실을지. 기본 True 라
+    기존 단일 첨부 경로는 그대로다. 다중 첨부는 False 로 부른다 — 검사 시점에는
+    사용자가 아직 아무 마스킹도 해제하지 않아 "최종본" 이 정해지지 않았고,
+    N개의 base64 를 세션에 쌓지 않으려는 것이다. 최종 파일은 사용자의 결정이
+    끝난 뒤 확장(SW)이 한 번만 만든다.
     """
     file_bytes = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(file_bytes) > config.MAX_UPLOAD_BYTES:
@@ -110,7 +117,7 @@ async def create_job(
             mime_type=mime,
             file_name=name,
             emit=emit,
-            wrap_file=True,
+            wrap_file=wrapFile,
             user_prompt=userPrompt or None,
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
