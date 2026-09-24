@@ -2376,6 +2376,62 @@ cancelScan(stuckScan);
     }
   }
 
+  // (30) 파일을 **나눠서** 붙여도 다 살아남는다.
+  //
+  //      한 번에 여러 개를 고르는 사람도 있지만, 하나 붙이고 또 하나 붙이는 사람이
+  //      더 많다(실사용 확인). 처음엔 pendingBatch 가 있기만 하면 "검토 중입니다" 로
+  //      거절했는데, 그러면 두 번째 파일이 그냥 사라진다 — 고치려던 "마지막 것만
+  //      된다" 와 사용자가 보기에 똑같은 증상이다.
+  {
+    // 앞 시나리오는 첨부 준비 대기(최대 1.5초) 뒤 promptApproved를 3초 더
+    // 유지한다. 4초는 느린 환경에서 아직 승인 창 안이라 Enter가 무시될 수 있다.
+    await new Promise(r => setTimeout(r, 7000));
+    domBySelector.set('[data-testid="send-button"]', sendButtonStub);
+
+    const mk = (name) => {
+      const f = new FileStub(['pdf bytes'], name, { type: 'application/pdf' });
+      const inp = new HTMLInputElementStub(f, name);
+      dispatchDocumentEvent('change', {
+        target: inp,
+        composedPath: () => [inp, documentStub],
+        preventDefault() {},
+        stopImmediatePropagation() {},
+      });
+      return inp;
+    };
+
+    mk('split-1.pdf');
+    await flush();
+    mk('split-2.pdf');
+    await flush();
+    mk('split-3.pdf');
+    await flush();
+
+    actionLog.length = 0;
+    runtimeMessages.length = 0;
+    promptEditorStub.value = '세 문서 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    nextDecision = { action: 'send', promptText: '세 문서 요약해줘', files: [] };
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+
+    const start30 = runtimeMessages.find(m => m.type === 'START_MULTI_SCAN');
+    if (!start30) throw new Error('나눠 붙인 뒤 전송했는데 검사가 시작되지 않았다');
+    const names30 = (start30.payload?.items || []).map(i => i.fileName).sort().join(',');
+    if (names30 !== 'split-1.pdf,split-2.pdf,split-3.pdf') {
+      throw new Error(`나눠 붙인 파일이 다 안 살아남았다: ${names30 || '(없음)'}`);
+    }
+    // id 는 배치 안에서 유일해야 한다 — 합칠 때 인덱스를 다시 매기면 앞 파일 id 가
+    // 바뀌어 결정이 엉뚱한 파일에 붙는다.
+    const ids30 = (start30.payload.items || []).map(i => i.id);
+    if (new Set(ids30).size !== ids30.length) {
+      throw new Error(`합치면서 파일 id 가 겹쳤다: ${ids30.join(',')}`);
+    }
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();

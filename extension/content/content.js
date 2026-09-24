@@ -871,39 +871,65 @@
     const fresh = files.filter(f => !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
     if (!fresh.some(isSupportedFile)) return false;   // 검사할 게 없으면 개입하지 않는다
 
-    // 검토 중에는 새 배치를 받지 않는다(§2 정책). 큐에 쌓지 않는 이유는, 큐는 배치별
-    // 주입 컨텍스트를 언제까지 유효하게 들고 있을지를 정해야 하는데 그 답이 사이트마다
-    // 다르기 때문이다. 거절이 유일하게 확실한 동작이다.
-    if (pendingBatch) {
-      showBlockedBadge('⚠️ 먼저 첨부한 파일을 검토 중입니다. 검토를 끝낸 뒤 다시 첨부해 주세요.');
+    // **검사가 시작된 뒤**에만 새 첨부를 거절한다.
+    //
+    // 처음엔 pendingBatch 가 있기만 하면 거절했는데, 그건 사람이 파일을 붙이는 방식과
+    // 어긋난다(실사용 확인): 한 번에 여러 개를 고르는 사람도 있지만, 하나 붙이고 또
+    // 하나 붙이는 사람이 더 많다. 그때마다 "검토 중입니다" 를 띄우면 두 번째 파일이
+    // 그냥 사라진다 — 고치려던 "마지막 것만 된다" 와 사용자가 보기에 똑같은 증상이다.
+    //
+    // 그래서 아직 검사 전이면 **기존 배치에 합친다**. 검사가 돌기 시작한 뒤라야
+    // 거절한다 — 그때는 이미 SW 에 세션이 있고 탭도 그려져 있어서, 중간에 파일이
+    // 끼어들면 패널이 보여준 것과 실제로 보내는 것이 달라진다.
+    if (pendingBatch && promptInProcess) {
+      showBlockedBadge('⚠️ 먼저 첨부한 파일을 검사 중입니다. 검토를 끝낸 뒤 다시 첨부해 주세요.');
       return true;
     }
 
-    if (fresh.length > MAX_BATCH_FILES) {
+    // 합칠 때는 이미 들고 있는 것까지 합쳐 상한을 본다. 새로 온 것만 세면
+    // 하나씩 여섯 번 붙여 5개 제한을 넘길 수 있다.
+    const kept = pendingBatch ? pendingBatch.items : [];
+    const merged = kept.length + fresh.length;
+    if (merged > MAX_BATCH_FILES) {
       showBlockedBadge(`⚠️ 한 번에 최대 ${MAX_BATCH_FILES}개까지 첨부할 수 있습니다 `
-        + `(${fresh.length}개를 고르셨습니다). 나눠서 보내주세요.`);
+        + `(지금 ${kept.length}개 + ${fresh.length}개). 나눠서 보내주세요.`);
       return true;
     }
-    const total = fresh.reduce((sum, f) => sum + (f.size || 0), 0);
+    const total = kept.reduce((sum, i) => sum + (i.fileSize || 0), 0)
+      + fresh.reduce((sum, f) => sum + (f.size || 0), 0);
     if (total > MAX_BATCH_BYTES) {
       showBlockedBadge(`⚠️ 첨부 용량이 큽니다 (${Math.round(total / 1048576)}MB). `
         + `합계 ${MAX_BATCH_BYTES / 1048576}MB 이하로 나눠서 보내주세요.`);
       return true;
     }
 
-    pendingBatch = {
-      id: newSessionId(),
-      source,
-      items: fresh.map((file, i) => ({
-        id: `f${i}`,
-        file,
-        fileName: file.name,
-        fileSize: file.size,
-        mimeType: file.type || 'application/octet-stream',
-        supported: isSupportedFile(file),
-      })),
-      injectionContext,
-    };
+    // 파일 id 는 배치 안에서만 유일하면 된다. 합칠 때 인덱스를 다시 매기면 앞 파일의
+    // id 가 바뀌어(f0 → f1) 이미 붙은 것과 어긋나므로, 한 번 쓴 번호는 다시 쓰지 않는다.
+    const seq = pendingBatch ? pendingBatch.nextId : 0;
+    const added = fresh.map((file, i) => ({
+      id: `f${seq + i}`,
+      file,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || 'application/octet-stream',
+      supported: isSupportedFile(file),
+    }));
+
+    if (pendingBatch) {
+      pendingBatch.items = kept.concat(added);
+      pendingBatch.nextId = seq + added.length;
+      // 주입 지점은 **가장 최근** 것을 쓴다. 그 사이 SPA 가 컴포저를 다시 그렸으면
+      // 먼저 잡아둔 input 은 이미 고아 노드다.
+      pendingBatch.injectionContext = injectionContext || pendingBatch.injectionContext;
+    } else {
+      pendingBatch = {
+        id: newSessionId(),
+        source,
+        items: added,
+        nextId: added.length,
+        injectionContext,
+      };
+    }
 
     const names = supportedItems(pendingBatch).map(i => i.fileName);
     showPendingBadge(names.length === 1 ? names[0] : `${names.length}개 파일`);
