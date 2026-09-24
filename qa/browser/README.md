@@ -38,9 +38,11 @@ npm run qa:live:bg    # same run detached, with no browser or terminal window
 ```
 
 `node live-qa.mjs run --sites=chatgpt.com` limits the run to one site;
-`--drop` chooses synthetic drag/drop. `--headed` runs a minimized window when
+`--drop` uses Chromium's input layer to deliver real file paths as drag/drop.
+`--headed` runs a minimized window when
 headless checks trigger a challenge. `--settle` waits longer for a provider's
-upload and response, and `--sequential` selects Claude files one at a time.
+upload and response. With `--drop`, `--sequential` dispatches one drop per file
+instead of putting both file paths in one drag payload.
 `qa:live` can submit test messages and
 files to real AI providers. It uses a test phone number only, never user files.
 Its report distinguishes a 2xx response to a masked upload request from an

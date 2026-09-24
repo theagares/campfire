@@ -11,7 +11,7 @@ const profileDir = path.join(here, '.qa-profile');
 const resultsDir = path.join(here, 'live-results');
 const command = process.argv[2] || 'preflight';
 const requestedSites = process.argv.find(arg => arg.startsWith('--sites='))?.slice(8)?.split(',');
-const method = process.argv.includes('--drop') ? 'drop-simulated' : 'picker';
+const method = process.argv.includes('--drop') ? 'drop-cdp' : 'picker';
 const sequential = process.argv.includes('--sequential');
 const headed = process.argv.includes('--headed');
 const settle = process.argv.includes('--settle');
@@ -156,6 +156,12 @@ async function blockerOf(page) {
   }).catch(() => null);
 }
 
+function hasProviderUploadLimit(site, bodyText) {
+  if (site.host !== 'chatgpt.com') return false;
+  return /파일 업로드(?:를)? 모두 사용|파일 업로드 남은 횟수:\s*0회|file uploads? (?:have been )?(?:all )?used|upload limit/i
+    .test(bodyText || '');
+}
+
 async function ensureFileInput(page, site) {
   let inputCount = await page.locator('input[type="file"]').count();
   if (!inputCount && site.host === 'gemini.google.com') {
@@ -226,16 +232,28 @@ async function inspectSite(context, site) {
 }
 
 async function attachFiles(page, site, files) {
-  if (method === 'drop-simulated') {
+  if (method === 'drop-cdp') {
     await ensureFileInput(page, site);
-    await page.evaluate(files => {
-      const transfer = new DataTransfer();
-      for (const file of files) transfer.items.add(new File([file.text], file.name, { type: 'text/plain' }));
-      const target = document.querySelector('main') || document.body;
-      for (const type of ['dragenter', 'dragover', 'drop']) {
-        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: transfer }));
+    const cdp = await page.context().newCDPSession(page);
+    const target = page.locator('main').first();
+    const box = await target.boundingBox() || await page.locator('body').boundingBox();
+    if (!box) throw new Error('Drop target has no visible bounds');
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    for (const selected of sequential ? files.map(file => [file]) : [files]) {
+      const paths = [];
+      for (const file of selected) {
+        const filePath = path.join(resultsDir, file.name);
+        await writeFile(filePath, file.text);
+        paths.push(filePath);
       }
-    }, files);
+      const data = { items: [], files: paths, dragOperationsMask: 1 };
+      await cdp.send('Input.dispatchDragEvent', { type: 'dragEnter', x, y, data });
+      await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', x, y, data });
+      await cdp.send('Input.dispatchDragEvent', { type: 'drop', x, y, data });
+      if (sequential) await pause(750);
+    }
+    await cdp.detach();
   } else {
     await ensureFileInput(page, site);
     const buffers = files.map(file => ({ name: file.name, mimeType: 'text/plain', buffer: Buffer.from(file.text) }));
@@ -264,7 +282,8 @@ async function clearOwnQaDraft(page, site) {
   const removeButtons = page.locator('button[data-cds-attachment-remove]');
   // Inspect the labels directly: do not remove anything outside our synthetic QA files.
   const labels = await removeButtons.evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label') || ''));
-  if (labels.some(label => !label.startsWith('CFQA-'))) throw new Error('Unrelated Claude draft attachment is present');
+  const isQaAttachment = label => label.startsWith('CFQA-') || label.startsWith('CLAUDEPROBE-');
+  if (labels.some(label => !isQaAttachment(label))) throw new Error('Unrelated Claude draft attachment is present');
   let removed = 0;
   while (await removeButtons.count()) {
     if (removed >= 30) throw new Error('Too many QA draft attachments to clear safely');
@@ -279,8 +298,15 @@ async function sendDecision(context, worker, tabId, session, action) {
   const panel = await context.newPage();
   try {
     await panel.goto(`chrome-extension://${extensionId}/sidepanel/sidepanel.html?tabId=${tabId}`);
+    const promptFindingCount = (session.prompt?.counts?.pii || 0)
+      + (session.prompt?.counts?.injection || 0);
     const decision = action === 'cancel' ? { action: 'cancel' } : {
-      action: 'send', prompt: { action: 'masked', unmaskedKeys: [] },
+      // QA prompts contain only synthetic instructions. Keep every detected segment
+      // so a prompt false positive cannot hide the request used for content proof.
+      action: 'send', prompt: {
+        action: 'masked',
+        unmaskedKeys: Array.from({ length: promptFindingCount }, (_, i) => `prompt:${i}`),
+      },
       files: session.docs.map(doc => ({ id: doc.id, action: 'masked', unmaskedKeys: [] })),
     };
     return await panel.evaluate(({ sessionId, tabId, decision }) =>
@@ -297,7 +323,8 @@ async function runSite(context, worker, site) {
   const marker = `CFQA-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const files = Array.from({ length: fileCount }, (_, index) => {
     const n = index + 1;
-    return { name: `${marker}-${n}.txt`, text: `${marker} file ${n}\n010-9876-5432` };
+    const key = `${n === 1 ? 'ALPHA' : 'BRAVO'}-${marker.slice(5, 18)}`;
+    return { name: `${marker}-${n}.txt`, key, text: `QA_KEY: ${key}\n010-9876-5432` };
   });
   const requests = { masked: false, original: false, responses: [] };
   const outbound = [];
@@ -347,7 +374,7 @@ async function runSite(context, worker, site) {
     if (clearedQaDrafts) diagnostics.push(`Cleared ${clearedQaDrafts} stale CFQA attachments`);
     tabId = await tabIdFor(worker, page.url());
     if (tabId == null) throw new Error('Chrome tab ID not found');
-    await editor.fill(`${marker}: Test 010-9876-5432. Reply QA OK.`);
+    await editor.fill(`${marker}: 첨부한 문서의 QA_KEY 값을 각각 알려줘.`);
     phase = 'attachment';
     await attachFiles(page, site, files);
     phase = 'submit';
@@ -356,7 +383,7 @@ async function runSite(context, worker, site) {
     session = await waitForSession(worker, tabId);
     if (!session || session.status !== 'ready') throw new Error(`Scan not ready: ${session?.status || 'missing'}`);
     if (session.docs?.length !== fileCount || session.docs.some(doc => doc.status !== 'done' || !doc.counts?.pii)
-        || session.prompt?.status !== 'done' || !session.prompt.counts?.pii) {
+        || session.prompt?.status !== 'done') {
       throw new Error(`Scan incomplete: ${session.docs?.map(doc => doc.status).join(',')} / prompt=${session.prompt?.status}`);
     }
     phase = 'approval';
@@ -364,10 +391,14 @@ async function runSite(context, worker, site) {
     if (!response?.ok) throw new Error(`Approval failed: ${JSON.stringify(response)}`);
     approved = true;
     const evidenceStart = performance.now();
-    while (elapsed(evidenceStart) < (settle ? 45000 : 12000)) {
+    while (elapsed(evidenceStart) < (settle ? 90000 : 12000)) {
       if (requests.original) throw new Error('Original filename appeared in outbound request');
+      if (diagnostics.some(value => value.includes('문서를 첨부하지 못해 전송을 중단했습니다'))) break;
       const body = await page.locator('body').innerText().catch(() => '');
-      if (allUploadsOk() || (!settle && files.every(file => body.includes(maskedBase(file))))
+      if (hasProviderUploadLimit(site, body)) break;
+      const contentReadOk = files.every(file => body.includes(file.key));
+      const contentResponseOk = contentReadOk && files.every(file => body.includes(maskedBase(file)));
+      if (contentResponseOk || (allUploadsOk() && (!settle || contentReadOk)) || (!settle && files.every(file => body.includes(maskedBase(file))))
           || (!settle && requests.masked && elapsed(evidenceStart) > 5000)) break;
       await pause(500);
     }
@@ -377,11 +408,13 @@ async function runSite(context, worker, site) {
       markerPresent: body.includes(marker.slice(0, 14)),
       maskedNames: files.filter(file => body.includes(maskedBase(file))).map(file => maskedBase(file)),
       qaOkVisible: body.includes('QA OK'),
+      responseKeys: files.filter(file => body.includes(file.key)).map(file => file.key),
       matchingLabels: await page.locator('[title], [aria-label]').evaluateAll((elements, prefix) =>
         elements.flatMap(element => [element.getAttribute('title'), element.getAttribute('aria-label')])
           .filter(value => value?.includes(prefix)).slice(0, 20), marker.slice(0, 14)),
     };
     const uploadOk = allUploadsOk();
+    const contentReadOk = files.every(file => body.includes(file.key));
     const siteUploadOk = ['copilot.microsoft.com', 'grok.com'].includes(site.host)
       && visibleMasked.every(Boolean)
       && outbound.filter(response => response.status >= 200 && response.status < 300
@@ -391,18 +424,27 @@ async function runSite(context, worker, site) {
       inputs.map(input => [...input.files].map(file => file.name)));
     const namesInInputs = fileInputs.flat();
     const maskedInputOnly = files.every(file => namesInInputs.some(name => name.startsWith(maskedBase(file))));
-    const status = requests.original ? 'failed-leak' : uploadOk || siteUploadOk ? 'upload-response-ok'
+    const transportOk = uploadOk || siteUploadOk;
+    const contentResponseOk = contentReadOk && visibleMasked.every(Boolean);
+    const providerUploadLimit = hasProviderUploadLimit(site, body);
+    const attachFailed = diagnostics.some(value => value.includes('문서를 첨부하지 못해 전송을 중단했습니다'));
+    const status = requests.original ? 'failed-leak' : providerUploadLimit ? 'provider-upload-limit'
+      : attachFailed ? 'attachment-reinject-failed'
+      : contentResponseOk ? 'content-response-ok'
+      : transportOk && (!settle || contentReadOk) ? 'upload-response-ok'
+      : transportOk ? 'uploaded-awaiting-content-proof'
       : actualUploadResponses().length ? 'partial-upload-response' : requests.masked ? 'upload-request-observed'
         : visibleMasked.every(Boolean) ? 'masked-in-composer'
           : maskedInputOnly ? 'masked-input-only' : 'inconclusive';
-    const screenshot = status === 'upload-response-ok' ? null
+    const screenshot = ['upload-response-ok', 'content-response-ok'].includes(status) ? null
       : path.join(resultsDir, `${site.host.replaceAll('.', '-')}.png`);
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
     return {
       site: site.host, status,
       method, durationMs: elapsed(start), docs: session.docs.map(doc => doc.status),
       maskedRequest: requests.masked, uploadResponses: requests.responses, maskedVisible: visibleMasked,
-      finalSessionStatus: finalSession?.status || null, fileInputs, screenshot, diagnostics, outbound, uiEvidence,
+      providerUploadLimit, finalSessionStatus: finalSession?.status || null,
+      fileInputs, screenshot, diagnostics, outbound, uiEvidence,
       note: 'Approval used the real extension service worker; native side-panel UI was not clicked.',
     };
   } catch (error) {
@@ -439,10 +481,15 @@ async function main() {
       : health.ok ? await Promise.all(sites.map(async site => runSite(context, worker, site))) : [];
     const report = { generatedAt: new Date().toISOString(), command, headless: !headed,
       profileDir, engine: health, durationMs: elapsed(started), results };
-    const reportPath = path.join(resultsDir, `${command}.json`);
+    const siteSuffix = sites.map(site => site.host.split('.')[0]).join('+');
+    const reportSuffix = command === 'run'
+      ? `-${method}${sequential ? '-sequential' : ''}-${siteSuffix}` : '';
+    const reportPath = path.join(resultsDir, `${command}${reportSuffix}.json`);
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(JSON.stringify({ durationMs: report.durationMs, engine: health, results: results.map(({ site, status, durationMs }) => ({ site, status, durationMs })), reportPath }, null, 2));
-    if (!health.ok || results.some(result => result.status !== (command === 'preflight' ? 'ready' : 'upload-response-ok'))) process.exitCode = 1;
+    const successfulRunStatuses = new Set(['upload-response-ok', 'content-response-ok']);
+    if (!health.ok || results.some(result => command === 'preflight'
+      ? result.status !== 'ready' : !successfulRunStatuses.has(result.status))) process.exitCode = 1;
   } finally {
     await context.close();
   }
