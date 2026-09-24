@@ -24,9 +24,50 @@
   const _origFRReadAsAB            = FileReader.prototype.readAsArrayBuffer;
   const _origFRReadAsDataURL       = FileReader.prototype.readAsDataURL;
   const _origFRReadAsBinStr        = FileReader.prototype.readAsBinaryString;
-  const _origFetch                 = window.fetch.bind(window);
+  const _rawFetch                  = window.fetch.bind(window);
   const _origXHROpen               = XMLHttpRequest.prototype.open;
   const _origXHRSend               = XMLHttpRequest.prototype.send;
+
+  // ── 프록시 병행: "내 트래픽이 실제로 프록시를 지나는가" ────────────────────
+  //
+  // 로컬 프록시가 켜져 있어도 내 브라우저가 PAC 를 안 따르면 트래픽은 프록시를 안
+  // 지난다. "프록시 프로세스가 떴나"(status)로 판단하면 그 경우 확장까지 꺼져 무방비가
+  // 된다. 그래서 프록시가 **실제로 응답에 찍은 표식 헤더**가 보일 때만 손을 뗀다.
+  //
+  // 표식은 모든 응답 경로에서 관찰돼야 한다 — 손 뗀 동안에도. 안 그러면 TTL 이 만료돼
+  // 다시 켜지고, 그 요청에서 표식을 또 봐서 다시 꺼지는 깜빡임이 난다. 그래서 관찰을
+  // 원본 fetch 를 감싼 _origFetch 에 넣는다(모든 분기가 결국 이걸 부른다).
+  const _PROXY_MARK_HEADER = 'x-campfire-proxy';
+  const _PROXY_TTL_MS = 15000;   // 이 시간 안에 표식을 못 보면 프록시가 빠진 것으로 본다
+  let _proxyMarkAt = 0;
+  let _lastProxyPost = 0;
+
+  function proxyInPath() {
+    return Date.now() - _proxyMarkAt < _PROXY_TTL_MS;
+  }
+
+  function _noteProxyMark() {
+    _proxyMarkAt = Date.now();
+    // isolated(content.js)도 게이트를 내려야 한다. 매번 보내면 시끄러우니 2초로 throttle.
+    if (_bridgeToken && Date.now() - _lastProxyPost > 2000) {
+      _lastProxyPost = Date.now();
+      try {
+        window.postMessage({
+          __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
+          type: 'SECUREDOC_PROXY_IN_PATH', ttlMs: _PROXY_TTL_MS,
+        }, '*');
+      } catch { /* noop */ }
+    }
+  }
+
+  // 모든 실제 네트워크 fetch 는 이걸 지난다. 응답에 프록시 표식이 있으면 기록한다.
+  const _origFetch = function (input, init) {
+    const p = _rawFetch(input, init);
+    p.then((r) => {
+      try { if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER)) _noteProxyMark(); } catch { /* noop */ }
+    }, () => {});
+    return p;
+  };
   const _origShowOpenFilePicker    = window.showOpenFilePicker?.bind(window);
   const _origShowSaveFilePicker    = window.showSaveFilePicker?.bind(window);
   const CONTENT_OWNS_LAYER1_UPLOADS = true;
@@ -90,11 +131,13 @@
   });
 
   function isProtectionEnabled() {
-    return _protectionEnabled;
+    // 프록시가 실제 경로에 있으면 확장은 전부 손을 뗀다 — 프록시가 단독으로 맡는다.
+    // 관찰(_origFetch/XHR)은 이 값과 무관하게 계속 돌아, 프록시가 빠지면 다시 켜진다.
+    return _protectionEnabled && !proxyInPath();
   }
 
   function isFileInterceptEnabled() {
-    return _fileInterceptEnabled;
+    return _fileInterceptEnabled && !proxyInPath();
   }
 
   // ─── content.js(isolated world)가 이미 검토를 마치고 주입한 파일 ─────────────
@@ -874,6 +917,16 @@
 
 
   XMLHttpRequest.prototype.send = function (body) {
+    // 프록시 표식 관찰: 손 뗀 상태에서도 응답을 봐야 프록시가 빠지면 다시 켜진다.
+    // isProtectionEnabled 체크보다 **앞**에 둔다(그 아래로는 손 뗄 때 바로 return 하므로).
+    try {
+      this.addEventListener('loadend', function () {
+        try {
+          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)) _noteProxyMark();
+        } catch { /* noop */ }
+      }, { once: true });
+    } catch { /* noop */ }
+
     if (!isProtectionEnabled()) return _origXHRSend.call(this, body);
 
     // ── [DEBUG] XHR body 타입 로깅 ───────────────────────────────────────────

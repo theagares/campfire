@@ -160,6 +160,37 @@ def test_모르는_호스트는_통과한다():
     assert f.response is None
 
 
+# ── 프록시 표식 헤더 (확장이 "내 트래픽이 프록시를 지난다"를 아는 근거) ──────
+
+def _resp_flow(host="claude.ai"):
+    f = tflow.tflow(req=tutils.treq(host=host, path="/api/x"), resp=tutils.tresp(content=b"{}"))
+    return f
+
+
+def test_응답에_프록시_표식_헤더를_찍는다():
+    a = CampfireAddon()
+    f = _resp_flow()
+    a.response(f)
+    assert f.response.headers.get("X-Campfire-Proxy") == "1", "표식이 없으면 확장이 손을 못 뗀다"
+
+
+def test_표식을_cross_origin_에서_읽게_노출한다():
+    a = CampfireAddon()
+    f = _resp_flow()
+    a.response(f)
+    expose = f.response.headers.get("access-control-expose-headers", "")
+    assert "X-Campfire-Proxy" in expose
+
+
+def test_기존_expose_헤더를_보존한다():
+    a = CampfireAddon()
+    f = _resp_flow()
+    f.response.headers["access-control-expose-headers"] = "X-Request-Id"
+    a.response(f)
+    expose = f.response.headers.get("access-control-expose-headers", "")
+    assert "X-Request-Id" in expose and "X-Campfire-Proxy" in expose
+
+
 # ── ChatGPT: PUT 재시도가 통과하지 않는지 ───────────────────────────────────
 
 

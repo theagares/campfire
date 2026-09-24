@@ -147,8 +147,18 @@
   let promptInProcess = false;
   let promptApproved = false;
 
+  // 프록시 병행: MAIN world 가 프록시 표식을 본 마지막 시각. 그 동안 확장은 손을 뗀다.
+  // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
+  let proxyMarkAt = 0;
+  let proxyTtlMs = 15000;
+  function proxyInPath() {
+    return Date.now() - proxyMarkAt < proxyTtlMs;
+  }
+
   function isSupportedFile(file) {
-    if (!protectionEnabled || !fileInterceptEnabled || !file) return false;
+    // proxyInPath: 프록시가 실제 경로에 있으면 가로채지 않는다 — 파일을 그대로 사이트로
+    // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
+    if (!protectionEnabled || !fileInterceptEnabled || proxyInPath() || !file) return false;
     return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '');
   }
 
@@ -2054,7 +2064,7 @@
     // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
-    if (!protectionEnabled || promptApproved) return;
+    if (!protectionEnabled || proxyInPath() || promptApproved) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
@@ -2269,6 +2279,15 @@
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
     if (!event.data?.__securedoc || event.data.direction !== 'main-to-isolated') return;
+
+    // MAIN world(interceptor)가 "프록시가 실제 경로에 있다"를 알린다. 그 동안 확장은
+    // 파일 staging·프롬프트 게이트를 멈춘다 — 프록시가 단독으로 맡는다(위조는 bridgeToken 검증).
+    if (event.data.type === 'SECUREDOC_PROXY_IN_PATH') {
+      if (event.data.bridgeToken !== bridgeToken) return;
+      proxyMarkAt = Date.now();
+      proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
+      return;
+    }
 
     if (event.data.type === 'SECUREDOC_FILE_SELECTED') {
       if (event.data.bridgeToken !== bridgeToken) return; // 위조 메시지 차단

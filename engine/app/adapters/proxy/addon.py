@@ -44,6 +44,10 @@ logger = logging.getLogger("securedoc.proxy")
 # 꼬리에 바이트를 붙이는 게 안전하다고 검증되지 않았다. 텍스트는 자명하게 안전하다.
 MASKED_MIME = "text/markdown"
 
+# 프록시가 실제로 경로에 있음을 확장에게 알리는 표식. 확장은 이 헤더가 보이는
+# 동안에만 자기 검사를 끈다(프록시·확장 병행 계획). 값은 뭐든 상관없고 존재만 본다.
+PROXY_MARK_HEADER = "X-Campfire-Proxy"
+
 
 def masked_name_for(original: str) -> str:
     stem = original.rsplit(".", 1)[0] if "." in original else original
@@ -300,6 +304,21 @@ class CampfireAddon:
 
     def _on_response(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
+
+        # 확장 프로그램에게 "네 트래픽이 실제로 이 프록시를 지난다"를 알린다.
+        # 확장은 이 헤더가 보일 때만 손을 뗀다(파일 가로채기·프롬프트 게이트 중단).
+        # "프록시 프로세스가 떠 있나"(status)로 판단하면, PAC 를 안 따르는 브라우저가
+        # 확장까지 끈 채 무방비가 된다 — 실제 경로 증거로만 양보하게 하려는 헤더다.
+        # AI 사이트 응답에만 붙으므로 확장 content script(같은 오리진)가 읽을 수 있다.
+        if flow.response is not None:
+            flow.response.headers[PROXY_MARK_HEADER] = "1"
+            # 다른 서브도메인에서 부르는 경우(cross-origin)에도 JS 가 읽게 노출한다.
+            prev = flow.response.headers.get("access-control-expose-headers", "")
+            if PROXY_MARK_HEADER.lower() not in prev.lower():
+                flow.response.headers["access-control-expose-headers"] = (
+                    f"{prev}, {PROXY_MARK_HEADER}".lstrip(", ") if prev else PROXY_MARK_HEADER
+                )
+
         if (config.PROXY_LOG_REQUESTS and host in CHATGPT_HOSTS
                 and flow.request.path.endswith("/claim_and_finish")):
             logger.info("[proxy]   확정 req %s", (flow.request.get_text() or "")[:400])
