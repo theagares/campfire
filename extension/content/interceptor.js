@@ -43,7 +43,9 @@
   let _lastProxyPost = 0;
 
   function proxyInPath() {
-    return Date.now() - _proxyMarkAt < _PROXY_TTL_MS;
+    // _proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 명시 검사가 없으면
+    // Date.now() 가 작을 때 0-0<TTL 이 참이 돼 오판한다.
+    return _proxyMarkAt > 0 && Date.now() - _proxyMarkAt < _PROXY_TTL_MS;
   }
 
   function _noteProxyMark() {

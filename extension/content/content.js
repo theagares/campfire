@@ -152,7 +152,9 @@
   let proxyMarkAt = 0;
   let proxyTtlMs = 15000;
   function proxyInPath() {
-    return Date.now() - proxyMarkAt < proxyTtlMs;
+    // proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 이 명시 검사가 없으면
+    // Date.now() 가 작을 때(테스트의 가상 시계 등) 0-0<TTL 이 참이 돼 오판한다.
+    return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
   }
 
   function isSupportedFile(file) {
