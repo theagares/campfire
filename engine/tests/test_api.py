@@ -32,6 +32,22 @@ def test_health_signature(client):
     assert body["service"] == "campfire"  # 시그니처 필수 (PLAN §11)
     assert body["status"] == "ok"
     assert "port" in body
+    assert body["mcpRiskScanner"]["blocksTargetUse"] is False
+    assert body["mcpRiskScanner"]["scoreAffectsAppBehavior"] is False
+
+
+def test_mcp_risk_scanner_is_optional_and_versioned(client):
+    status = client.get("/mcp-risk-scanner/v1/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["contractVersion"] == 1
+    assert body["state"] in {"disabled", "ready", "unavailable"}
+    if body["state"] != "ready":
+        response = client.post(
+            "/mcp-risk-scanner/v1/assess",
+            json={"serverId": "fixture", "tools": [{"name": "search"}]},
+        )
+        assert response.status_code == 503
 
 
 @_needs_models
