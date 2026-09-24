@@ -10,7 +10,7 @@
  *
  *   - UPS_PROTECTION_STATE      → 한 줄로 XHR/fetch/drop/file input 훅을 전부 끌 수 있었다.
  *                                 사용자 팝업 토글은 ON 인 채라 꺼진 걸 알 방법이 없다.
- *   - UPS_CONTENT_APPROVED_FILE → 이 목록에 든 파일은 업로드 훅이 검사 없이 통과시킨다.
+ *   - UPS_CONTENT_APPROVE_BATCH → 이 목록에 든 파일은 업로드 훅이 검사 없이 통과시킨다.
  *                                 등록 대조가 파일명만이라, 사용자가 방금 고른 파일명을
  *                                 아는 페이지(자기 input 이니 안다)가 그 이름만 등록하면
  *                                 마스킹되지 않은 원본이 그대로 올라갔다.
@@ -184,13 +184,12 @@ async function main() {
     );
   }
 
+  const APPROVED = { name: 'secret.pdf', size: 2048, type: 'application/pdf' };
+
   // (5) 토큰 없는 "검토 완료" 등록은 면제되지 않는다.
   {
     const t = withToken();
-    t.config({
-      type: 'UPS_CONTENT_APPROVED_FILE',
-      meta: { name: 'secret.pdf', size: 2048, type: 'application/pdf' },
-    });
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', batchId: 'b1', files: [APPROVED] });
     assert.strictEqual(
       await t.passedThrough('secret.pdf'), false,
       '페이지가 파일명만 등록해 마스킹 안 된 원본을 통과시켰다',
@@ -200,13 +199,59 @@ async function main() {
   // (6) 토큰이 있으면 면제된다 — content.js 의 정상 경로.
   {
     const t = withToken();
-    t.config({
-      type: 'UPS_CONTENT_APPROVED_FILE', bridgeToken: TOKEN,
-      meta: { name: 'secret.pdf', size: 2048, type: 'application/pdf' },
-    });
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b1', files: [APPROVED] });
     assert.strictEqual(
       await t.passedThrough('secret.pdf'), true,
       '검토를 마친 파일이 다시 인터셉트됐다 — content.js 가 자기 첨부를 삼키게 된다',
+    );
+  }
+
+  // (7) 주입 전에 취소·실패하면 승인을 즉시 회수한다.
+  //     남겨 두면 다음 첨부가 우연히 같은 메타를 가질 때 검사 없이 통과한다.
+  {
+    const t = withToken();
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b2', files: [APPROVED] });
+    t.config({ type: 'UPS_CONTENT_ABORT_BATCH', bridgeToken: TOKEN, batchId: 'b2' });
+    assert.strictEqual(
+      await t.passedThrough('secret.pdf'), false,
+      '취소된 배치의 승인이 살아남아 검사 없이 통과했다',
+    );
+  }
+
+  // (8) 회수 메시지도 증거를 요구한다 — 토큰 없는 abort 로는 남의 승인을 못 지운다.
+  //     지울 수 있으면 페이지가 정상 배치를 무력화해 전송을 방해할 수 있다.
+  {
+    const t = withToken();
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b3', files: [APPROVED] });
+    t.config({ type: 'UPS_CONTENT_ABORT_BATCH', batchId: 'b3' });   // 토큰 없음
+    assert.strictEqual(
+      await t.passedThrough('secret.pdf'), true,
+      '토큰 없는 abort 가 정상 승인을 지웠다',
+    );
+  }
+
+  // (9) 닫힌 배치에는 새 승인을 붙일 수 없다.
+  //     붙일 수 있으면 회수 직전에 끼어든 등록 하나가 수명을 처음부터 다시 시작시킨다.
+  {
+    const t = withToken();
+    t.config({ type: 'UPS_CONTENT_CLOSE_BATCH', bridgeToken: TOKEN, batchId: 'b4' });
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b4', files: [APPROVED] });
+    assert.strictEqual(
+      await t.passedThrough('secret.pdf'), false,
+      '닫힌 배치에 새 승인이 추가됐다',
+    );
+  }
+
+  // (10) 닫은 직후에는 아직 통과해야 한다 — 사이트는 같은 파일을 등록 요청 →
+  //      실제 PUT → 재시도로 여러 번 쓴다. 첫 일치에서 지우면 그 다음 요청이
+  //      검사 패널을 다시 띄운다.
+  {
+    const t = withToken();
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b5', files: [APPROVED] });
+    t.config({ type: 'UPS_CONTENT_CLOSE_BATCH', bridgeToken: TOKEN, batchId: 'b5' });
+    assert.strictEqual(
+      await t.passedThrough('secret.pdf'), true,
+      '닫자마자 승인이 사라져 다단계 업로드의 다음 요청이 막혔다',
     );
   }
 
