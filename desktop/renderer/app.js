@@ -626,6 +626,7 @@ function openSettings() {
   $('#detector-progress').style.display = 'none';
   $('#remote-url').value = s.remoteUrl || '';
   $('#upstage-api-key').value = s.upstageApiKey || '';
+  $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
   refreshCleanup();
@@ -753,6 +754,7 @@ $('#settings-save').addEventListener('click', async () => {
   // remoteUrl 과 달리 API 키는 사용자가 "완전히 비워서 지우기"도 할 수 있어야 하므로
   // 빈 문자열도 patch 에 포함시킨다(trim() 만 하고 빈 값이어도 그대로 실어보냄).
   patch.upstageApiKey = $('#upstage-api-key').value.trim();
+  patch.mcpRiskScannerEnabled = $('#mcp-risk-scanner-enabled').checked;
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.

@@ -26,6 +26,7 @@ logger = logging.getLogger("securedoc.engine")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.adapters.mcp import mcp_session_context
+    from app.adapters.mcp_risk_scanner import risk_scanner_context
     from app.core.detectors import registry
     from app.models_sync import sync_bundled_model_files
     from app.store import db
@@ -41,9 +42,13 @@ async def lifespan(app: FastAPI):
         config.INJECTION_POLICY,
         config.BOUND_PORT,
     )
-    # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
-    async with mcp_session_context():
-        yield
+    # 위험 검사기는 별도 stdio MCP 프로세스다. 기본 비활성이고, 기동 실패도 기존 엔진과
+    # 대상 MCP 사용을 막지 않는다. 앱에는 이 좁은 어댑터 외의 구현 의존성이 없다.
+    async with risk_scanner_context() as risk_scanner:
+        app.state.mcp_risk_scanner = risk_scanner
+        # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
+        async with mcp_session_context():
+            yield
     db.close_db()
 
 

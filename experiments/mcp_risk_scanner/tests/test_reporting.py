@@ -41,6 +41,36 @@ class ReportTests(unittest.TestCase):
             self.assertIn("기준 지문과의 차이:", result)
             self.assertIn("search: modified", result)
 
+    def test_cli_creates_and_verifies_signed_baseline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshot = root / "snapshot.json"
+            baseline = root / "baseline.json"
+            key = root / "baseline.key"
+            snapshot.write_text(json.dumps([{"name": "search"}]), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = main(["scan", str(snapshot), "--server-id", "demo",
+                             "--save-baseline", str(baseline),
+                             "--baseline-key-file", str(key)])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(key.read_bytes()), 32)
+            saved = json.loads(baseline.read_text(encoding="utf-8"))
+            self.assertEqual(saved["format"], 2)
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = main(["scan", str(snapshot), "--server-id", "demo",
+                             "--baseline", str(baseline),
+                             "--baseline-key-file", str(key)])
+            self.assertEqual(code, 0)
+            saved["fingerprints"]["search"] = "0" * 64
+            baseline.write_text(json.dumps(saved), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = main(["scan", str(snapshot), "--server-id", "demo",
+                             "--baseline", str(baseline),
+                             "--baseline-key-file", str(key)])
+            self.assertEqual(code, 2)
+            self.assertIn("baseline integrity check failed", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

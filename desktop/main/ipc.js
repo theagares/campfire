@@ -109,7 +109,11 @@ function register(ctx) {
     // truthy 체크만 하면 "키 지우기"가 재시작을 못 일으켜 이전 env 가 그대로 남는다.
     const apiKeyChanged =
       patch && patch.upstageApiKey !== undefined && patch.upstageApiKey !== prev.upstageApiKey;
-    if (policyChanged || detectorChanged || apiKeyChanged) {
+    const riskScannerChanged =
+      patch &&
+      patch.mcpRiskScannerEnabled !== undefined &&
+      !!patch.mcpRiskScannerEnabled !== !!prev.mcpRiskScannerEnabled;
+    if (policyChanged || detectorChanged || apiKeyChanged || riskScannerChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }

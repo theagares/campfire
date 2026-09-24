@@ -248,6 +248,17 @@
           <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
         </div>
 
+        <!-- 구현은 앱 코어 밖의 별도 stdio MCP 프로세스. 기본 OFF, 정책 차단에는 미사용. -->
+        <div class="field">
+          <div class="setting-row">
+            <div>
+              <label for="mcp-risk-scanner-enabled">MCP 위험 검사기</label>
+              <div class="hint">도구 정의를 결정론적으로 평가하는 선택 기능입니다. 대상 MCP를 차단하거나 안전을 인증하지 않으며, 변경 시 엔진이 재시작됩니다.</div>
+            </div>
+            <input type="checkbox" id="mcp-risk-scanner-enabled" />
+          </div>
+        </div>
+
         <div class="divider"></div>
 
         <!-- 탐지 모델(encoder/llm_mcp) — 유일한 모드라 고를 게 없다(룰베이스 폴백 제거).

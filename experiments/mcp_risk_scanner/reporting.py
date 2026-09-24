@@ -43,6 +43,7 @@ FINDING_LABELS = {
     "broad_scope": "수정·관리 권한을 줄 수 있는 넓은 인가 범위입니다",
     "definition_changed": "도구 정의가 저장된 기준 지문과 달라졌습니다",
     "sensitive_argument": "도구 인자에서 민감 경로나 자격증명 형태의 값을 관찰했습니다",
+    "uninspectable_argument": "도구 인자가 검사 예산을 초과해 일부를 검사하지 못했습니다",
     "poisoned_result": "도구 응답에서 공격 지시 또는 자격증명 형태의 값을 관찰했습니다",
     "catalog_changed": "도구 목록이 저장된 기준 지문과 달라졌습니다",
     "uninspectable_result": "도구 응답 일부를 검사하지 못했습니다",

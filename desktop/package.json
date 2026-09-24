@@ -68,6 +68,11 @@
         ]
       },
       {
+        "from": "../experiments/mcp_risk_scanner",
+        "to": "engine/mcp_risk_scanner",
+        "filter": ["**/*.py", "!tests/**", "!**/__pycache__/**"]
+      },
+      {
         "from": "../extension",
         "to": "extension",
         "filter": ["**/*", "!tests/**"]
