@@ -1,0 +1,420 @@
+name: Build desktop installers (draft release)
+
+# 수동 실행(workflow_dispatch)으로 Windows/macOS 설치 파일을 electron-builder 로 빌드해
+# GitHub Releases에 올린다. 흐름은 prepare -> build(matrix) -> publish 3단계다:
+#   prepare : 해당 태그의 릴리스를 draft 로 "한 번만" 만든다(없으면 생성, 이미 공개돼
+#             있으면 draft 로 되돌린다). 두 빌드가 각자 릴리스를 만들려다 충돌하던
+#             경쟁(422 already_exists)을 여기서 없앤다.
+#   build   : 두 플랫폼이 병렬로 빌드해 그 draft 릴리스에 에셋만 업로드한다.
+#   publish : 두 플랫폼이 "모두" 성공하고 설치 파일 에셋이 다 붙었을 때만 공개한다.
+#             한쪽이 실패하면 릴리스는 draft 로 남아 사용자에게 노출되지 않는다.
+#
+# Windows 로컬(개발자 PC, 비관리자 세션)에서는 electron-builder 가 코드사이닝 도구 묶음
+# (winCodeSign, macOS dylib 심볼릭 링크 포함)을 내려받다 "Cannot create symbolic link"로
+# 실패한다(심볼릭 링크 생성엔 관리자 권한/개발자 모드 필요) — GitHub 호스팅 러너는 이 제약이
+# 없어 빌드가 정상적으로 된다.
+#
+# 엔진 Python 런타임은 stdlib venv(python -m venv) 대신 uv 가 관리하는 portable Python
+# (python-build-standalone)을 그대로 복사해서 번들한다. stdlib venv 는 Windows에서
+# Scripts/python.exe 가 pyvenv.cfg 의 home(빌드 머신 전용 절대경로)을 찾는 런처 스텁이고,
+# mac/linux 는 bin/python 이 그 절대경로를 가리키는 심볼릭 링크라 — 둘 다 다른 머신에
+# 설치하면 실행이 안 된다(실측 확인됨: "No Python at ...". portable 빌드는 자기 완결적이라
+# 폴더째 복사해도 그대로 동작한다.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  # 릴리스를 "먼저, 한 번만" 만들어 둔다.
+  #
+  # 왜: Windows/macOS 잡이 병렬로 돌면서 각자 electron-builder 로 릴리스를 만들려 한다.
+  # 둘 다 "이 태그 릴리스가 있나?" 를 확인하고 둘 다 없다고 판단한 뒤 둘 다 생성하는
+  # 경쟁(TOCTOU)이 있어, 늦게 도착한 쪽이 이렇게 죽는다:
+  #   HttpError: 422 Validation Failed — {"resource":"Release","code":"already_exists"}
+  # 실제로 v0.2.1 에서 macOS 가 이걸로 실패했다. 타이밍에 따라 무작위로 터지므로
+  # (v0.1.7~v0.2.0 은 우연히 피해갔다) 릴리스 "생성" 자체를 단일 잡으로 분리한다.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "이미 존재하는 릴리스를 재사용합니다: $tag"
+            # electron-builder 는 GitHub 상의 실제 릴리스 타입과 package.json 의
+            # releaseType 이 다르면 "호환 안 됨" 으로 보고 업로드를 조용히 건너뛴다
+            # (실측 기록: desktop/package.json 의 _comment_updater 참고 — 빌드는
+            # 전부 "성공" 인데 새 파일이 하나도 안 올라갔다). 우리 설정은 draft 이므로
+            # 이미 공개된 태그로 재빌드하는 경우 draft 로 되돌려 상태를 맞춘다.
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
+              gh release edit "$tag" --draft=true
+              echo "공개돼 있던 릴리스를 draft 로 되돌렸습니다(재빌드 중 업로드 건너뜀 방지): $tag"
+            fi
+          else
+            # draft 로 만든다 — 두 플랫폼이 모두 성공하기 전에는 공개되면 안 된다.
+            # v0.2.1 때 macOS 가 실패해 Windows 에셋만 담긴 릴리스가 Latest 로 공개돼
+            # 버렸다(자동 업데이트가 그걸 보게 되고, mac 사용자는 받을 파일이 없다).
+            gh release create "$tag" --draft --title "$version" --target "$GITHUB_SHA" \
+              --notes "빌드 중입니다. 두 플랫폼 빌드가 모두 끝나면 공개됩니다."
+            echo "릴리스를 draft 로 생성했습니다: $tag"
+          fi
+
+      # 스토어 업로드용 확장 패키지를 같은 릴리스에 붙인다. 웹스토어 심사에 올리는 zip 과
+      # 개발자 모드("압축해제된 확장 프로그램 로드")용 zip 이 같은 파일이라, 받은 사람이
+      # 어느 경로로든 쓸 수 있다. 두 가지가 지켜져야 심사가 되돌아오지 않는다:
+      #   - manifest.json 이 zip "루트"에 있어야 한다(extension/ 폴더째 압축하면 안 된다).
+      #   - tests/ 는 넣지 않는다 — 탐지기 픽스처에 가짜 토큰/주민번호가 들어 있어
+      #     심사자가 실제 자격증명으로 오해할 소지가 있고, 런타임에 쓰이지도 않는다.
+      # 확인은 zip 을 실제로 열어서 한다(패턴만 맞다고 믿지 않는다).
+      - name: Package extension for Chrome Web Store
+        # 이 단계가 실패해도 설치 파일 빌드는 계속 간다 — 확장 패키징은 데스크톱
+        # 릴리스에 부수적인데, 여기서 잡을 죽이면 build 가 아예 돌지 않아 아무도
+        # 설치 파일을 못 받는다. 검증은 업로드 "전"에 하므로 깨진 zip 이 올라가진 않는다.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./extension/manifest.json').version")
+          out="$PWD/campfire-extension-${version}.zip"
+          # -D: 디렉터리 엔트리를 만들지 않는다. -x 는 tests/ 안의 "파일"만 빼기 때문에
+          # 빈 tests/ 엔트리가 남을 수 있고, 그러면 아래 검증이 헛되게 실패한다.
+          (cd extension && zip -qrD "$out" . -x 'tests/*' './tests/*')
+          unzip -l "$out" | grep -q ' manifest.json$' || {
+            echo "manifest.json 이 zip 루트에 없습니다"; unzip -l "$out"; exit 1;
+          }
+          if unzip -l "$out" | grep -q 'tests/'; then
+            echo "tests/ 가 패키지에 포함됐습니다"; unzip -l "$out"; exit 1
+          fi
+          gh release upload "${{ steps.meta.outputs.tag }}" "$out" --clobber
+          echo "확장 패키지를 릴리스에 올렸습니다: $(basename "$out")"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+            arch: x64
+            script: dist:win
+            build_arg: --x64
+          - os: macos-15
+            platform: macos
+            arch: arm64
+            script: dist:mac
+            build_arg: --arm64
+            app_dir: mac-arm64
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+            script: dist:mac
+            build_arg: --x64
+            app_dir: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install uv
+        shell: bash
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Set up portable engine runtime (extraResources 로 앱에 번들됨)
+        working-directory: engine
+        shell: bash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.11
+          PYEXE=$(uv python find 3.11)
+          echo "uv managed python: $PYEXE"
+          rm -rf .venv
+          if [[ "$PYEXE" == *.exe ]]; then
+            # Windows: uv 배포본은 <root>/python.exe 플랫 레이아웃
+            PYROOT=$(dirname "$PYEXE")
+            cp -r "$PYROOT" .venv
+          else
+            # macOS/Linux: uv 배포본은 <root>/bin/python3.x 레이아웃. uv 는 버전 별칭 경로
+            # 자체가 실제 설치 디렉터리를 가리키는 심볼릭 링크라(예: cpython-3.11-...) 그냥
+            # cp -R 만 하면 "복사본"이 실제로는 러너 전용 캐시 경로를 가리키는 심볼릭 링크로
+            # 그대로 남아 다른 머신(사용자 Mac)에서 못 찾는다(실측 확인됨) — -L 로 실제
+            # 내용을 완전히 역참조해서 복사해야 진짜로 자기 완결적인 사본이 된다.
+            PYROOT=$(dirname "$(dirname "$PYEXE")")
+            cp -RL "$PYROOT" .venv
+            ln -sf "$(basename "$PYEXE")" .venv/bin/python
+          fi
+          # uv 가 관리하던 원본 설치는 PEP 668 "externally-managed" 마커가 있어 pip install 을
+          # 거부한다 — 복사본은 어차피 이 빌드 전용 일회성 사본이니 마커를 지우고 무시한다.
+          find .venv -name EXTERNALLY-MANAGED -delete
+          if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
+          "$PY" -m pip install --upgrade pip --break-system-packages
+          "$PY" -m pip install -e . --break-system-packages
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build & upload as draft release asset
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # electron-builder 자체 코드사이닝 탐색은 양쪽 다 끈다: Windows 는 코드사이닝
+          # 도구(winCodeSign, macOS dylib 심볼릭 링크 포함)를 내려받다 실패하는 문제 회피용,
+          # macOS 는 어차피 진짜 인증서가 없어 electron-builder 자체 탐색은 늘 실패로
+          # 끝나고(경고만 찍고 무서명으로 통과) 실제 서명은 afterPack 훅(scripts/afterPack.js)
+          # 이 담당한다(package.json _comment_mac_signing 참고).
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run ${{ matrix.script }} -- ${{ matrix.build_arg }} --publish always
+
+      # 빌드가 "성공"해도 번들된 엔진이 실제로 뜨는지는 별개 문제였다(portable Python
+      # 전환의 원인이 된 버그) — 설치 파일을 실제로 설치/실행해 /health 를 확인한다.
+      - name: Verify installed app can start the bundled engine (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $setupExe = Get-ChildItem -Path "desktop\release" -Filter "*Setup*.exe" -Recurse | Select-Object -First 1
+          if (-not $setupExe) { Write-Error "설치 파일을 찾지 못했습니다"; exit 1 }
+          # 실측: 설치 프로세스가 종료 코드 -1073741819(0xC0000005, ACCESS_VIOLATION)로
+          # 즉시 크래시하는 경우가 있었다(설치 폴더가 완전히 빈 채로 남음 — 단순 지연이
+          # 아니라 진짜 크래시). 방금 signtool 로 서명이 끝난 EXE 를 Defender 가 아직
+          # 스캔 중일 때 실행하면 발생하는 것으로 추정되는 CI 러너 특유의 문제라, 짧게
+          # 쉬었다가 재시도하면 통과하는 경우가 많다 — 최대 3회 재시도한다.
+          $appExe = "$env:LOCALAPPDATA\Programs\Campfire\Campfire.exe"
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Output "설치 시도 $attempt/3..."
+            $installProc = Start-Process -FilePath $setupExe.FullName -ArgumentList "/S" -Wait -PassThru
+            Write-Output "설치 프로세스 종료 코드: $($installProc.ExitCode)"
+            if ($installProc.ExitCode -eq 0 -and (Test-Path $appExe)) { $installed = $true; break }
+            Write-Output "--- %LOCALAPPDATA%\Programs 내용(시도 $attempt 직후) ---"
+            Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            Write-Output "설치 프로세스는 성공(exit 0)했지만 실행파일이 아직 없을 수 있어 추가 대기한다."
+          }
+          # NSIS /S 는 -Wait 로 잡히는 런처 프로세스가 실제 설치 작업을 마치기 전에 먼저
+          # 끝나버릴 때가 있다(관측된 간헐적 실패 — 러너별 부하에 따라 60초로도 부족한
+          # 경우가 실측 확인됨). 180초로 더 여유를 둔다. 그래도 못 찾으면 설치 프로세스
+          # 종료 코드/디렉터리 목록을 위에서 이미 남겼으니 설치 자체가 실패했는지
+          # 단순히 느린 건지 로그로 구분할 수 있다.
+          $deadline = (Get-Date).AddSeconds(180)
+          while (-not (Test-Path $appExe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (-not (Test-Path $appExe)) {
+            Write-Output "--- %LOCALAPPDATA%\Programs 내용(대기 종료 시점) ---"
+            Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+            Write-Error "설치된 실행파일을 찾지 못했습니다: $appExe"
+            exit 1
+          }
+          Start-Process -FilePath $appExe
+          # 최초 실행 시 Windows Defender 실시간 검사가 방금 설치된 대용량 엔진 번들
+          # (torch 등 수천 개 파일)을 스캔하느라 /health 가 뜨기까지 몇 분씩 걸리는
+          # 경우가 실측 확인됐다(짧은 단발성 스캔 대신 5분간 5초 간격으로 재시도).
+          $ok = $false
+          $healthDeadline = (Get-Date).AddSeconds(300)
+          while (-not $ok -and (Get-Date) -lt $healthDeadline) {
+            foreach ($port in 48200..48209) {
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
+                if ($resp.StatusCode -eq 200) { Write-Output "엔진 정상: 포트 $port, $($resp.Content)"; $ok = $true; break }
+              } catch {}
+            }
+            if (-not $ok) { Start-Sleep -Seconds 5 }
+          }
+          if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 5분 대기)"; exit 1 }
+
+          # /health 만 200인 것은 충분하지 않다. 모델 다운로드가 끝나기 전에도 엔진은
+          # 살아 있고 요청을 "models_not_ready"로 통과시킨다. 실제 설치본에서 모델
+          # 준비와 마스킹 결과까지 확인해, portable Python 의 의존성/모델 경로/파이프라인
+          # 중 하나라도 빠지면 릴리스를 공개하지 않는다.
+          $modelsDeadline = (Get-Date).AddMinutes(30)
+          $modelsReady = $false
+          while (-not $modelsReady -and (Get-Date) -lt $modelsDeadline) {
+            try {
+              $models = Invoke-RestMethod "http://127.0.0.1:$port/models/status" -TimeoutSec 5 -UseBasicParsing
+              $modelsReady = !!($models.pii.ready -and $models.injection.ready)
+              if (-not $modelsReady) { Write-Output "모델 준비 대기 중: $($models | ConvertTo-Json -Compress)" }
+            } catch {
+              Write-Output "모델 상태 조회 재시도: $($_.Exception.Message)"
+            }
+            if (-not $modelsReady) { Start-Sleep -Seconds 10 }
+          }
+          if (-not $modelsReady) { Write-Error "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1 }
+
+          # 실재하지 않는 테스트 전용 토큰이다. credential detector가 반드시 가리고,
+          # scanStatus=ok는 모델 미준비 시의 무검사 통과가 아니었음을 보장한다.
+          $rawSecret = 'ghp_16C7e42F292c6912E7710c838347Ae178B4a'
+          $result = Invoke-RestMethod "http://127.0.0.1:$port/jobs/prompt" -Method Post -Body @{ text = "GITHUB_TOKEN=$rawSecret" } -TimeoutSec 420 -UseBasicParsing
+          if (-not $result.done -or $result.result.scanStatus -ne 'ok') {
+            throw "실제 스캔이 완료되지 않았습니다: $($result | ConvertTo-Json -Depth 10)"
+          }
+          if (@($result.result.piiItems).Count -lt 1) {
+            throw "PII/자격증명 탐지 결과가 비어 있습니다: $($result | ConvertTo-Json -Depth 10)"
+          }
+          if ($result.result.maskedText -match [regex]::Escape($rawSecret)) {
+            throw "자격증명이 마스킹되지 않았습니다: $($result.result.maskedText)"
+          }
+          Write-Output "패키지 E2E 마스킹 검증 통과 (port $port)"
+
+      - name: Verify packaged app can start the bundled engine (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          echo "runner arch: $(arch), uname -m: $(uname -m)"
+          # arm64 러너에서 x64 빌드(Rosetta 변환 필요)를 테스트하면 변수가 하나 더 생기니,
+          # 먼저 네이티브 arm64 빌드로 격리해서 확인한다.
+          APP=$(find "desktop/release/${{ matrix.app_dir }}" -maxdepth 1 -iname "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "빌드된 .app 을 찾지 못했습니다"; exit 1; fi
+          echo "실행: $APP"
+          APP_FILE=$(file -L "$APP/Contents/MacOS/Campfire")
+          echo "$APP_FILE"
+          RES="$APP/Contents/Resources/engine"
+          PY_FILE=$(file -L "$RES/.venv/bin/python")
+          echo "$PY_FILE"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            echo "$APP_FILE" | grep -q arm64
+            echo "$PY_FILE" | grep -q arm64
+          else
+            echo "$APP_FILE" | grep -Eq 'x86_64|x86-64'
+            echo "$PY_FILE" | grep -Eq 'x86_64|x86-64'
+          fi
+
+          echo "--- codesign/gatekeeper 상태 ---"
+          codesign -dv --verbose=4 "$APP" 2>&1 || true
+          spctl -a -v "$APP" 2>&1 || true
+
+          echo "--- 엔진을 Electron 없이 직접 실행해서 원인 격리 ---"
+          (cd "$RES" && ./.venv/bin/python -m app.main > /tmp/engine-direct.log 2>&1 &)
+          sleep 6
+          echo "direct engine log (len=$(wc -c < /tmp/engine-direct.log)):"
+          cat /tmp/engine-direct.log || true
+          for port in $(seq 48200 48209); do
+            if curl -sf "http://127.0.0.1:$port/health"; then echo "direct engine healthy on port $port"; break; fi
+          done
+          pkill -f "app.main" 2>/dev/null || true
+          sleep 1
+
+          echo "--- Electron 앱 실행 ---"
+          log show --predicate 'eventMessage contains "Campfire"' --style compact --last 1m > /tmp/before.log 2>&1 || true
+          "$APP/Contents/MacOS/Campfire" > /tmp/upsec-app.log 2>&1 &
+          APP_PID=$!
+          for i in 1 2 3 4 5 6; do
+            sleep 2
+            echo "[t=${i}x2s] process tree:"
+            ps -eo pid,ppid,stat,comm | grep -i campfire | grep -v grep || echo "  (none)"
+          done
+          echo "--- app stdout/stderr (len=$(wc -c < /tmp/upsec-app.log)) ---"
+          cat /tmp/upsec-app.log || true
+          echo "--- process check ---"
+          ps aux | grep -i -E "campfire|python" | grep -v grep || echo "(no matching process)"
+          kill -0 "$APP_PID" 2>/dev/null && echo "electron main pid $APP_PID alive" || echo "electron main pid $APP_PID NOT alive"
+          echo "--- crash reports ---"
+          find "$HOME/Library/Logs/DiagnosticReports" -iname "*campfire*" -o -iname "*electron*" 2>/dev/null | while read -r f; do echo "== $f =="; cat "$f"; done
+          echo "--- unified log (last 1 min, mentions Campfire) ---"
+          log show --predicate 'eventMessage contains "Campfire" OR processImagePath contains "Campfire"' --style compact --last 1m 2>&1 | tail -100 || true
+          # 실측: 이 시점에 앱이 모델 자동 설치(설치 직후 advanced 모드로 전환)를 이미
+          # 끝내고 엔진을 재시작하는 중일 수 있다 — 로그상 /health 는 여러 번 200 OK로
+          # 응답했는데도 이 마지막 단발성 확인에서만 하필 재시작 사이 짧은 공백에 걸려
+          # 실패한 사례가 있었다. 60초간 5초 간격으로 재시도해 그 공백을 흡수한다.
+          ok=0
+          PORT=""
+          deadline=$((SECONDS + 60))
+          while [ "$ok" -ne 1 ] && [ "$SECONDS" -lt "$deadline" ]; do
+            for port in $(seq 48200 48209); do
+              if curl -sf "http://127.0.0.1:$port/health"; then ok=1; PORT="$port"; echo "엔진 정상: 포트 $port"; break; fi
+            done
+            if [ "$ok" -ne 1 ]; then sleep 5; fi
+          done
+          if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
+
+          # health 200은 모델이 아직 없는 무검사 통과 상태에서도 가능하다. 자동 다운로드가
+          # 끝날 때까지 기다린 뒤 실제 요청을 보내 portable Python·모델·마스킹 경로를 함께
+          # 검증한다.
+          models_ready=0
+          models_deadline=$((SECONDS + 1800))
+          while [ "$models_ready" -ne 1 ] && [ "$SECONDS" -lt "$models_deadline" ]; do
+            models=$(curl -fsS "http://127.0.0.1:$PORT/models/status" 2>&1) || models=""
+            if python3 - "$models" <<'PY'
+          import json
+          import sys
+          try:
+              status = json.loads(sys.argv[1])
+              raise SystemExit(not (status["pii"]["ready"] and status["injection"]["ready"]))
+          except Exception:
+              raise SystemExit(1)
+          PY
+            then
+              models_ready=1
+            else
+              echo "모델 준비 대기 중: ${models:-상태 조회 실패}"
+              sleep 10
+            fi
+          done
+          if [ "$models_ready" -ne 1 ]; then echo "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1; fi
+
+          raw_secret='ghp_16C7e42F292c6912E7710c838347Ae178B4a'
+          result=$(curl -fsS --max-time 420 --data-urlencode "text=GITHUB_TOKEN=$raw_secret" "http://127.0.0.1:$PORT/jobs/prompt")
+          python3 - "$result" "$raw_secret" <<'PY'
+          import json
+          import sys
+
+          payload = json.loads(sys.argv[1])
+          secret = sys.argv[2]
+          result = payload.get("result", {})
+          if not payload.get("done") or result.get("scanStatus") != "ok":
+              raise SystemExit(f"실제 스캔이 완료되지 않았습니다: {payload}")
+          if not result.get("piiItems"):
+              raise SystemExit(f"PII/자격증명 탐지 결과가 비어 있습니다: {payload}")
+          if secret in result.get("maskedText", ""):
+              raise SystemExit(f"자격증명이 마스킹되지 않았습니다: {result['maskedText']}")
+          PY
+          echo "패키지 E2E 마스킹 검증 통과 (port $PORT)"
+
+  # 두 플랫폼 빌드가 모두 성공했을 때만 릴리스를 공개한다.
+  #
+  # needs 는 build 매트릭스의 "모든" 잡이 성공해야 통과한다 — fail-fast: false 로 한쪽이
+  # 실패해도 다른 쪽은 계속 돌지만, 그 경우 이 잡은 실행되지 않으므로 릴리스는 draft 로
+  # 남는다. 반쪽짜리 릴리스가 Latest 로 공개되던 문제(v0.2.1)를 이걸로 막는다.
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${{ needs.prepare.outputs.tag }}"
+          # 에셋이 실제로 붙었는지 확인 — 빌드가 "성공" 했는데 업로드가 비어 있으면
+          # 공개해선 안 된다.
+          count=$(gh release view "$tag" --json assets --jq '[.assets[] | select(.name | endswith(".exe") or endswith(".dmg"))] | length')
+          echo "설치 파일 에셋 수: $count"
+          if [ "$count" -lt 3 ]; then
+            echo "에셋이 부족합니다(exe 1 + dmg 2 = 3 기대) — draft 로 둡니다."
+            exit 1
+          fi
+          # draft 생성 때 넣어둔 "빌드 중입니다" placeholder 가 공개된 뒤에도 그대로
+          # 남아있던 문제 — publish 단계가 notes 를 갱신한 적이 없었다. generate-notes
+          # API 로 이전 릴리스 이후 커밋/PR 목록을 만들어 채운다.
+          notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$tag" --jq .body)
+          gh release edit "$tag" --notes "$notes" --draft=false --latest
+          echo "릴리스를 공개했습니다: $tag"
