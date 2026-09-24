@@ -1,0 +1,20 @@
+{
+  "name": "campfire-browser-qa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node run-extension-e2e.mjs",
+    "qa:engine": "node run-engine-e2e.mjs",
+    "qa:engine:drop": "node run-engine-e2e.mjs --drop",
+    "qa:init": "node live-qa.mjs init",
+    "qa:login": "node live-qa.mjs login",
+    "qa:manual": "node live-qa.mjs manual",
+    "qa:preflight": "node live-qa.mjs preflight",
+    "qa:preflight:bg": "node background.mjs preflight",
+    "qa:live": "node live-qa.mjs run",
+    "qa:live:bg": "node background.mjs run"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
