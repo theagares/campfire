@@ -20,7 +20,7 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mcp.server.fastmcp import FastMCP
 
@@ -104,6 +104,22 @@ def _resolve(path_str: str) -> Path:
             "다른 위치를 열어야 하면 SECUREDOC_PROJECT_ROOT 로 작업 루트를 지정하세요."
         )
     return p
+
+
+def _iter_root_files(root_path: Path, pattern: str) -> Iterator[Path]:
+    """루트 안의 **실제** 파일만 내놓는다.
+
+    rglob 은 루트 안에 있는 심볼릭 링크·정션을 따라가므로, 이름만 루트 안일 뿐
+    실제로는 밖을 가리키는 파일을 그대로 돌려준다(예: 루트 안의 link → /etc/passwd).
+    _resolve 가 루트 경계를 지켜도 열거는 그 관문을 안 거치므로, 여기서 한 번 더
+    resolve 해서 밖을 가리키는 항목을 걸러낸다.
+    """
+    for path in sorted(root_path.rglob(pattern)):
+        if not path.is_file():
+            continue
+        if not _within_root(path.resolve()):
+            continue  # 루트 안의 링크가 밖을 가리킨다
+        yield path
 
 
 def _file_kind(path: Path) -> str:
@@ -286,7 +302,7 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
 
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(items) >= max_results:
             break
         if not path.is_file():
@@ -397,7 +413,7 @@ async def secure_list_files(root: str = ".", pattern: str = "*", max_results: in
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
 
     files: list[dict[str, Any]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(files) >= max_results:
             break
         if path.is_file():
@@ -419,7 +435,7 @@ async def secure_search_files(
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
 
     results: list[dict[str, Any]] = []
-    for path in sorted(root_path.rglob(pattern)):
+    for path in _iter_root_files(root_path, pattern):
         if len(results) >= max_results:
             break
         if not path.is_file() or _file_kind(path) != "text":

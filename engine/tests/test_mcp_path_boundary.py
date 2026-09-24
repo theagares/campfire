@@ -11,7 +11,9 @@
     사용자도 "걸러진 값" 으로 취급한다 — 실제로는 PII 만 가리므로, 예컨대 .env 나
     개인키를 읽히면 자격증명이 그대로 나간다(별건으로 추적).
 
-    경계는 _resolve() 한 곳에서만 지키면 된다. 다섯 도구가 모두 그리로 들어온다.
+    _resolve() 는 경로를 "요청" 할 때의 관문이다. 하지만 열거(rglob)는 그 관문을
+    안 거치므로, 루트 안에 두고 밖을 가리키는 링크는 _iter_root_files 에서 따로
+    걸러야 한다(안 그러면 secure_list_files/secure_search_files/scan_files 가 훑는다).
 """
 
 from __future__ import annotations
@@ -90,3 +92,20 @@ def test_symlink_escaping_root_is_rejected(rooted, tmp_path_factory):
         pytest.skip("이 환경에서는 심볼릭 링크를 만들 수 없다(Windows 권한 등)")
     with pytest.raises(tools.PathOutsideRootError):
         tools._resolve(str(link / "secret.txt"))
+
+
+def test_enumeration_excludes_link_escaping_root(rooted, tmp_path_factory):
+    """열거(rglob)는 _resolve 를 안 거친다 — 루트 안의 링크가 밖을 가리키면
+    _iter_root_files 가 걸러내야 secure_list_files/secure_search_files/scan_files
+    가 링크 너머 파일을 훑지 않는다."""
+    outside_dir = tmp_path_factory.mktemp("outside")
+    (outside_dir / "secret.txt").write_text("KEY=abc", encoding="utf-8")
+    link = rooted / "escape.txt"
+    try:
+        link.symlink_to(outside_dir / "secret.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("이 환경에서는 심볼릭 링크를 만들 수 없다(Windows 권한 등)")
+
+    found = {p.name for p in tools._iter_root_files(rooted, "*")}
+    assert "escape.txt" not in found  # 밖을 가리키는 링크는 빠진다
+    assert "doc.txt" in found         # 진짜 루트 안 파일은 남는다
