@@ -21,6 +21,9 @@ const ipc = require('./ipc');
 const systemMetrics = require('./system-metrics');
 const { initAutoUpdater } = require('./updater');
 const models = require('./models');
+const proxyToggleMod = require('./proxy-toggle');
+const systemProxyMod = require('./system-proxy');
+const pacServer = require('./pac-server');
 
 // 단일 인스턴스 (중복 실행 방지)
 const gotLock = app.requestSingleInstanceLock();
@@ -43,7 +46,7 @@ if (process.defaultApp) {
 
 let mainWindow = null;
 let tray = null;
-let engineManager = null;
+let engineManager = null, proxyToggle = null;
 let config = null;
 let metricsTimer = null;
 let statsTimer = null;
@@ -102,6 +105,9 @@ async function cleanup() {
   if (metricsTimer) clearInterval(metricsTimer);
   if (statsTimer) clearInterval(statsTimer);
   if (tray) tray.destroy();
+  // 엔진보다 먼저 시스템 프록시를 돌려놓는다. 거꾸로 하면 앱이 꺼진 뒤에도
+  // 브라우저가 죽은 PAC·프록시를 찾는다.
+  if (proxyToggle) await proxyToggle.suspend().catch((err) => console.error('[main] 프록시 해제 실패:', err.message));
   if (engineManager) await engineManager.dispose();
 }
 
@@ -188,10 +194,17 @@ app.whenReady().then(async () => {
 
   config = new ConfigStore(app.getPath('userData'));
   engineManager = new EngineManager(app, config);
+  proxyToggle = proxyToggleMod.create({
+    config,
+    engineManager,
+    systemProxy: systemProxyMod.create(),
+    pacServer,
+  });
 
   ipc.register({
     engineManager,
     config,
+    proxyToggle,
     onShowDashboard: () => showDashboard('dashboard'),
     onQuit: quitApp,
     onEnsureModels: ensureModelsAutoDownload,
@@ -216,6 +229,16 @@ app.whenReady().then(async () => {
   }
 
   startBroadcastLoops();
+
+  // 지난 실행이 시스템 프록시를 걸어 둔 채 죽었으면 지금 되돌린다. 엔진보다 먼저 —
+  // 아직 PAC 서버가 없으므로 안 되돌리면 브라우저가 없는 PAC 를 찾는다.
+  await proxyToggle.recoverOnLaunch();
+  // 엔진이 뜰 때마다: 사용자가 프록시를 켜 뒀으면 다시 건다(이미 걸려 있으면 아무것도 안 한다).
+  engineManager.on('status', (s) => {
+    if (s.state === 'running') {
+      proxyToggle.resumeIfDesired().catch((err) => console.error('[main] 프록시 재적용 실패:', err.message));
+    }
+  });
 
   // 엔진 사이드카 기동 (securityEnabled=false 면 disabled 로 남음)
   engineManager.start().catch((err) => console.error('[main] 엔진 start 실패:', err.message));

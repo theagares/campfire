@@ -15,6 +15,7 @@
  *     동작해 인젝션 청크 전체를 마스킹하는 fail-safe 로 빠진다. 평문 저장(비암호화)임에
  *     유의 — settings.json 은 암호화되지 않는다.)
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
+ *   - mcpRiskScannerEnabled: bool          (선택형 별도 stdio MCP 사이드카, 기본 OFF)
  *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
  *   - detector 선택 항목은 없다. 엔진 registry 가 종류별 구현을 하나씩만 들고 있어
  *     (pii: encoder, injection: llm_mcp) 고를 대상이 없고, 실제로 예전의
@@ -36,8 +37,15 @@ const DEFAULTS = {
   // 인젝션 localize 를 못 하고 청크 전체 마스킹 fail-safe 로 동작한다.
   upstageApiKey: '',
   securityEnabled: true,
+  // 대상 MCP 동작을 차단하지 않는 선택형 검사기. 아직 설정 UI에는 노출하지 않고,
+  // 저장 설정/환경 경계만 둔다. false 면 검사기 프로세스 자체를 띄우지 않는다.
+  mcpRiskScannerEnabled: false,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
+  // 프록시 토글(proxy-toggle.js). proxySystemPrevious 는 우리가 시스템 프록시를 덮어쓰기
+  // **전의** 값이다 — null 이면 안 덮어썼다. 앱이 강제 종료돼도 다음 실행 때 이걸로 되돌린다.
+  proxyEnabled: false,
+  proxySystemPrevious: null,
 };
 
 class ConfigStore {

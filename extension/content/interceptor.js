@@ -24,9 +24,52 @@
   const _origFRReadAsAB            = FileReader.prototype.readAsArrayBuffer;
   const _origFRReadAsDataURL       = FileReader.prototype.readAsDataURL;
   const _origFRReadAsBinStr        = FileReader.prototype.readAsBinaryString;
-  const _origFetch                 = window.fetch.bind(window);
+  const _rawFetch                  = window.fetch.bind(window);
   const _origXHROpen               = XMLHttpRequest.prototype.open;
   const _origXHRSend               = XMLHttpRequest.prototype.send;
+
+  // ── 프록시 병행: "내 트래픽이 실제로 프록시를 지나는가" ────────────────────
+  //
+  // 로컬 프록시가 켜져 있어도 내 브라우저가 PAC 를 안 따르면 트래픽은 프록시를 안
+  // 지난다. "프록시 프로세스가 떴나"(status)로 판단하면 그 경우 확장까지 꺼져 무방비가
+  // 된다. 그래서 프록시가 **실제로 응답에 찍은 표식 헤더**가 보일 때만 손을 뗀다.
+  //
+  // 표식은 모든 응답 경로에서 관찰돼야 한다 — 손 뗀 동안에도. 안 그러면 TTL 이 만료돼
+  // 다시 켜지고, 그 요청에서 표식을 또 봐서 다시 꺼지는 깜빡임이 난다. 그래서 관찰을
+  // 원본 fetch 를 감싼 _origFetch 에 넣는다(모든 분기가 결국 이걸 부른다).
+  const _PROXY_MARK_HEADER = 'x-campfire-proxy';
+  const _PROXY_TTL_MS = 15000;   // 이 시간 안에 표식을 못 보면 프록시가 빠진 것으로 본다
+  let _proxyMarkAt = 0;
+  let _lastProxyPost = 0;
+
+  function proxyInPath() {
+    // _proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 명시 검사가 없으면
+    // Date.now() 가 작을 때 0-0<TTL 이 참이 돼 오판한다.
+    return _proxyMarkAt > 0 && Date.now() - _proxyMarkAt < _PROXY_TTL_MS;
+  }
+
+  function _noteProxyMark() {
+    _proxyMarkAt = Date.now();
+    // isolated(content.js)도 게이트를 내려야 한다. 매번 보내면 시끄러우니 2초로 throttle.
+    if (_bridgeToken && Date.now() - _lastProxyPost > 2000) {
+      _lastProxyPost = Date.now();
+      try {
+        window.postMessage({
+          __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
+          type: 'SECUREDOC_PROXY_IN_PATH', ttlMs: _PROXY_TTL_MS,
+        }, '*');
+      } catch { /* noop */ }
+    }
+  }
+
+  // 모든 실제 네트워크 fetch 는 이걸 지난다. 응답에 프록시 표식이 있으면 기록한다.
+  const _origFetch = function (input, init) {
+    const p = _rawFetch(input, init);
+    p.then((r) => {
+      try { if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER)) _noteProxyMark(); } catch { /* noop */ }
+    }, () => {});
+    return p;
+  };
   const _origShowOpenFilePicker    = window.showOpenFilePicker?.bind(window);
   const _origShowSaveFilePicker    = window.showSaveFilePicker?.bind(window);
   const CONTENT_OWNS_LAYER1_UPLOADS = true;
@@ -64,13 +107,33 @@
       _bridgeToken = String(event.data.token || '');
       return;
     }
-    if (event.data.type === 'UPS_CONTENT_APPROVED_FILE') {
-      // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅(_isContentApproved*)이
-      // 그냥 통과시킨다. 게다가 등록 단계 대조는 파일명만 본다. 즉 사용자가 방금 고른 파일명을
-      // 아는 페이지(자기 input 이니 당연히 안다)가 그 이름만 등록하면, 마스킹되지 않은 원본이
-      // 그대로 올라간다. 증거 없는 등록은 받지 않는다.
+    // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
+    //
+    // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅
+    // (_isContentApproved*)이 그냥 통과시킨다. 게다가 등록 단계 대조는 파일명만 본다.
+    // 즉 사용자가 방금 고른 파일명을 아는 페이지(자기 input 이니 당연히 안다)가 그
+    // 이름만 등록하면 마스킹되지 않은 원본이 그대로 올라간다. 증거 없는 등록은 받지 않는다.
+    //
+    // 예전엔 파일 하나짜리 UPS_CONTENT_APPROVED_FILE 도 있었는데, 주입 경로가 배치
+    // 하나로 모이면서 보내는 쪽이 사라져 함께 지웠다. batchId 가 붙는 덕에 수명을
+    // 묶어 회수할 수 있다는 게 본질적인 차이다.
+    if (event.data.type === 'UPS_CONTENT_APPROVE_BATCH') {
       if (!fromIsolated(event.data)) return;
-      _rememberContentApproved(event.data.meta);
+      for (const meta of event.data.files || []) _rememberContentApproved(meta, event.data.batchId);
+      return;
+    }
+    // 주입 전에 취소·실패했다 — 쓰이지 않은 승인을 즉시 지운다.
+    if (event.data.type === 'UPS_CONTENT_ABORT_BATCH') {
+      if (!fromIsolated(event.data)) return;
+      _dropBatch(event.data.batchId);
+      return;
+    }
+    // 주입까지 끝났다 — "새 승인 추가 금지" 만 걸고, 이미 등록된 것은 마지막 사용
+    // 이후 조용한 기간이 지나야 지운다. 사이트는 같은 파일을 등록 요청 → 실제 PUT →
+    // 재시도로 여러 번 쓰므로, 첫 일치에서 지우면 그 다음 요청이 검사 패널을 다시 띄운다.
+    if (event.data.type === 'UPS_CONTENT_CLOSE_BATCH') {
+      if (!fromIsolated(event.data)) return;
+      _closeBatch(event.data.batchId);
       return;
     }
     if (event.data.type !== 'UPS_PROTECTION_STATE') return;
@@ -90,11 +153,13 @@
   });
 
   function isProtectionEnabled() {
-    return _protectionEnabled;
+    // 프록시가 실제 경로에 있으면 확장은 전부 손을 뗀다 — 프록시가 단독으로 맡는다.
+    // 관찰(_origFetch/XHR)은 이 값과 무관하게 계속 돌아, 프록시가 빠지면 다시 켜진다.
+    return _protectionEnabled && !proxyInPath();
   }
 
   function isFileInterceptEnabled() {
-    return _fileInterceptEnabled;
+    return _fileInterceptEnabled && !proxyInPath();
   }
 
   // ─── content.js(isolated world)가 이미 검토를 마치고 주입한 파일 ─────────────
@@ -114,24 +179,72 @@
   // 문자열 키 하나로 합치지 않고 필드를 그대로 들고 비교한다.
   const _contentApproved = [];
 
+  // 닫힌 배치의 승인은 "마지막 쓰임" 뒤 이만큼 조용하면 회수한다. 등록 요청 →
+  // 실제 업로드 → 정상 재시도까지가 이 안에 들어갈 만큼은 넉넉해야 하고, 다음 첨부가
+  // 그 승인을 주워 쓰지 못할 만큼은 짧아야 한다.
+  const _CLOSED_BATCH_QUIET_MS = 20 * 1000;
+  // batchId -> 닫은 시각. Set 이 아니라 Map 인 이유: "레코드가 남아 있는 동안만"
+  // 기억하면, 레코드가 없는 배치를 닫았을 때 표시가 그 자리에서 사라져 **닫은 뒤
+  // 도착한 승인이 그대로 등록된다.** 닫힘은 레코드 수명이 아니라 시간으로 잊는다.
+  const _closedBatches = new Map();
+
   function _pruneContentApproved() {
     const now = Date.now();
     for (let i = _contentApproved.length - 1; i >= 0; i--) {
-      if (_contentApproved[i].expiresAt <= now) _contentApproved.splice(i, 1);
+      const e = _contentApproved[i];
+      // hard TTL 은 마지막 안전망일 뿐 정상 회수 수단이 아니다. 정상 경로는 아래
+      // "닫힌 배치 + 조용한 기간" 이고, 그게 훨씬 먼저 걷어간다.
+      const expired = e.expiresAt <= now;
+      const settled = e.batchId != null && _closedBatches.has(e.batchId)
+        && now - e.lastUsedAt > _CLOSED_BATCH_QUIET_MS;
+      if (expired || settled) _contentApproved.splice(i, 1);
+    }
+    // 닫힘 표시는 hard TTL 이 지나야 잊는다(무한 증가 방지). 그 전까지는 레코드가
+    // 하나도 없어도 기억하고 있어야 늦게 도착한 승인을 거절할 수 있다.
+    for (const [id, closedAt] of _closedBatches) {
+      if (now - closedAt > _CONTENT_APPROVED_TTL_MS) _closedBatches.delete(id);
     }
   }
 
-  function _rememberContentApproved(meta) {
+  function _dropBatch(batchId) {
+    if (batchId == null) return;
+    let n = 0;
+    for (let i = _contentApproved.length - 1; i >= 0; i--) {
+      if (_contentApproved[i].batchId === batchId) { _contentApproved.splice(i, 1); n++; }
+    }
+    _closedBatches.delete(batchId);
+    debugLog(`[SecureDoc] 배치 승인 즉시 회수: ${n}건`);
+  }
+
+  function _closeBatch(batchId) {
+    if (batchId == null) return;
+    _closedBatches.set(batchId, Date.now());
+    _pruneContentApproved();
+    debugLog('[SecureDoc] 배치 승인 닫힘 — 조용한 기간 뒤 회수');
+  }
+
+  function _rememberContentApproved(meta, batchId = null) {
     if (!meta?.name) return;
     _pruneContentApproved();
+    // 닫힌 배치에는 새 승인을 더 붙일 수 없다. 이게 없으면 회수 직전에 끼어든
+    // 등록 하나가 수명을 처음부터 다시 시작시킨다.
+    if (batchId != null && _closedBatches.has(batchId)) return;
     while (_contentApproved.length >= _CONTENT_APPROVED_MAX) _contentApproved.shift();
+    const now = Date.now();
     _contentApproved.push({
       name: String(meta.name),
       size: Number(meta.size),
       type: meta.type || 'application/octet-stream',
-      expiresAt: Date.now() + _CONTENT_APPROVED_TTL_MS,
+      batchId,
+      lastUsedAt: now,
+      expiresAt: now + _CONTENT_APPROVED_TTL_MS,
     });
     debugLog('[SecureDoc] content 검토 완료 파일 등록:', meta.name);
+  }
+
+  /** 승인이 실제로 쓰였다 — 조용한 기간을 다시 센다(다단계 업로드 허용). */
+  function _touchApproved(entry) {
+    entry.lastUsedAt = Date.now();
   }
 
   /** 이름만으로 대조 — 사이트가 등록 요청 JSON 에 size/mime 를 자기 방식대로 채워
@@ -139,7 +252,10 @@
   function _isContentApprovedName(name) {
     if (!name) return false;
     _pruneContentApproved();
-    return _contentApproved.some(e => e.name === name);
+    const hit = _contentApproved.find(e => e.name === name);
+    if (!hit) return false;
+    _touchApproved(hit);
+    return true;
   }
 
   /** Blob/File 대조 — 사이트가 File 을 이름 없는 Blob 으로 다시 감싸 업로드하는
@@ -148,10 +264,12 @@
     if (!blob) return false;
     _pruneContentApproved();
     const type = blob.type || 'application/octet-stream';
-    if (blob.name) {
-      return _contentApproved.some(e => e.name === blob.name && e.size === blob.size && e.type === type);
-    }
-    return _contentApproved.some(e => e.size === blob.size && e.type === type);
+    const hit = blob.name
+      ? _contentApproved.find(e => e.name === blob.name && e.size === blob.size && e.type === type)
+      : _contentApproved.find(e => e.size === blob.size && e.type === type);
+    if (!hit) return false;
+    _touchApproved(hit);
+    return true;
   }
 
   debugLog('[SecureDoc] ✅ Interceptor 로드됨 (MAIN world)');
@@ -880,6 +998,16 @@
 
 
   XMLHttpRequest.prototype.send = function (body) {
+    // 프록시 표식 관찰: 손 뗀 상태에서도 응답을 봐야 프록시가 빠지면 다시 켜진다.
+    // isProtectionEnabled 체크보다 **앞**에 둔다(그 아래로는 손 뗄 때 바로 return 하므로).
+    try {
+      this.addEventListener('loadend', function () {
+        try {
+          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)) _noteProxyMark();
+        } catch { /* noop */ }
+      }, { once: true });
+    } catch { /* noop */ }
+
     if (!isProtectionEnabled()) return _origXHRSend.call(this, body);
 
     // ── [DEBUG] XHR body 타입 로깅 ───────────────────────────────────────────
@@ -942,12 +1070,13 @@
           if (blobAsFile) _setCachedDrop(blobAsFile, result.file);
           _origXHRSend.call(self, result.file);
           debugLog('[SecureDoc] ✅ [2-L3] 마스킹본 XHR 전송');
-        } else if (result?.action === 'cancel' || result?.action === 'download') {
-          debugLog('[SecureDoc] 🚫 [2-L3] XHR 차단');
-        } else {
+        } else if (result?.action === 'passthrough') {
+          // 사용자가 원본 통과를 **명시한** 경우에만 원본이 나간다.
           _origXHRSend.call(self, body);
+        } else {
+          debugLog(`[SecureDoc] 🚫 [2-L3] XHR 차단: ${result?.action || 'unknown'}`);
         }
-      }).catch(() => _origXHRSend.call(self, body));
+      }).catch((e) => debugLog(`[SecureDoc] 🚫 [2-L3] XHR 차단(fail-closed): ${e.message}`));
       return;
     }
 
@@ -988,21 +1117,31 @@
     }
 
     // ── FormData ──────────────────────────────────────────────────────────────
+    //
+    // 첫 파일만 보지 않는다. 한 FormData 에 지원 파일이 여럿이면 예전 코드는 첫 번째만
+    // 검사하고 나머지는 **원본 그대로** 같이 올려보냈다 — 다중 첨부에서는 그게 기본 상황이다.
     if (body instanceof FormData) {
-      const file = findFileInFD(body);
-      if (file && !_inProcess.has(file) && !_approvedFiles.has(file) && !_isContentApprovedBlob(file)) {
+      const pending = unapprovedEntries(body);
+      if (pending.length) {
         const self = this;
-        debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${file.name}`);
-        requestProcessing(file).then((result) => {
-          if (result?.action === 'upload' && result.file) {
-            _approvedFiles.add(result.file);
-            _origXHRSend.call(self, replaceFD(body, file.name, result.file));
-          } else if (result?.action === 'cancel' || result?.action === 'download') {
-            // 차단
-          } else {
-            _origXHRSend.call(self, body);
+        debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${pending.length}개 파일`);
+        (async () => {
+          const swaps = [];
+          for (const entry of pending) {
+            const result = await requestProcessing(entry.file);
+            if (result?.action === 'upload' && result.file) {
+              _approvedFiles.add(result.file);
+              swaps.push({ at: entry.at, file: result.file });
+            } else if (result?.action !== 'passthrough') {
+              // cancel·download·알 수 없는 결과는 전부 차단이다. 예전엔 여기서
+              // 원본을 그대로 올렸다 — 처리 오류 하나가 배치 전체의 원본 유출이 된다.
+              throw new Error(`blocked:${result?.action || 'unknown'}`);
+            }
           }
-        }).catch(() => _origXHRSend.call(self, body));
+          _origXHRSend.call(self, swaps.length ? replaceEntriesAt(body, swaps) : body);
+        })().catch((e) => {
+          debugLog(`[SecureDoc] 🚫 [2] XHR FormData 차단(fail-closed): ${e.message}`);
+        });
         return;
       }
     }
@@ -1011,21 +1150,49 @@
   };
 
   // ── FormData 헬퍼 ─────────────────────────────────────────────────────────
+  //
+  // 이름이 아니라 **자리**로 다룬다. 예전 replaceFD 는 val.name === origName 인 엔트리를
+  // 전부 같은 새 파일로 바꿨다. 다중 첨부는 같은 파일명을 허용하므로(사용자가 서로
+  // 다른 폴더의 동명 파일을 함께 고를 수 있다), 그러면 한 개의 마스킹본이 두 자리를
+  // 모두 덮어써 다른 문서가 통째로 사라진다. 이름은 로그·표시용이지 식별자가 아니다.
+  function fileEntriesOf(fd) {
+    const out = [];
+    let i = 0;
+    for (const [key, val] of fd.entries()) {
+      if (val instanceof File) out.push({ at: i, key, file: val });
+      i++;
+    }
+    return out;
+  }
+
   function findFileInFD(fd) {
     for (const [, val] of fd.entries()) {
       if (val instanceof File && isSupportedFile(val)) return val;
     }
     return null;
   }
-  function replaceFD(fd, origName, newFile) {
+
+  /** 검사가 필요한(=아직 승인되지 않은) 파일 엔트리들. */
+  function unapprovedEntries(fd) {
+    return fileEntriesOf(fd).filter(e => (
+      isSupportedFile(e.file) && !_inProcess.has(e.file)
+      && !_approvedFiles.has(e.file) && !_isContentApprovedBlob(e.file)
+    ));
+  }
+
+  /** at(자리) 기준으로 갈아끼운다. 같은 이름이 여러 개여도 서로를 덮지 않는다. */
+  function replaceEntriesAt(fd, replacements) {
+    const byAt = new Map(replacements.map(r => [r.at, r.file]));
     const out = new FormData();
+    let i = 0;
     for (const [key, val] of fd.entries()) {
-      if (val instanceof File && val.name === origName) out.append(key, newFile, newFile.name);
+      const swap = byAt.get(i);
+      if (swap) out.append(key, swap, swap.name);
       else out.append(key, val);
+      i++;
     }
     return out;
   }
-
   // ════════════════════════════════════════════════════════════════════════════
   // 레이어 3: fetch
   //   3a: ChatGPT 파일 등록 API (/backend-api/files POST)
@@ -1123,6 +1290,10 @@
     }
     if (body instanceof FormData) {
       const file = findFileInFD(body);
+      // 이름이 아니라 자리로 갈아끼우기 위해 이 파일이 몇 번째 엔트리인지 기억해 둔다
+      // (같은 파일명이 두 개면 이름 기준 교체는 한 개로 두 자리를 덮어쓴다).
+      const fileAt = file ? (fileEntriesOf(body).find(e => e.file === file)?.at ?? -1) : -1;
+      const swapAt = (fd, f) => (fileAt >= 0 ? replaceEntriesAt(fd, [{ at: fileAt, file: f }]) : fd);
       if (file && isSupportedFile(file)) _autoDetectUploadLayer('fetch-formdata');
       if (file && _isContentApprovedBlob(file)) {
         debugLog(`[SecureDoc] ✅ content 검토 완료 파일 업로드 통과 (fetch FormData): ${file.name}`);
@@ -1147,7 +1318,7 @@
             const result = await prom;
             if (result?.action === 'upload' && result.file) {
               _setCachedDrop(file, result.file);
-              return _origFetch(input, { ...init, body: replaceFD(body, file.name, result.file) });
+              return _origFetch(input, { ...init, body: swapAt(body, result.file) });
             }
             _lastDropResult = null;
             if (result?.action === 'cancel' || result?.action === 'download') {
@@ -1158,7 +1329,7 @@
           // 캐시된 결과 재사용 (같은 파일로 두 번 이상 요청하는 사이트)
           if (cachedMasked) {
             debugLog(`[SecureDoc] 📁 [3] fetch FormData 캐시 재사용: ${file.name}`);
-            return _origFetch(input, { ...init, body: replaceFD(body, file.name, cachedMasked) });
+            return _origFetch(input, { ...init, body: swapAt(body, cachedMasked) });
           }
           // 일반 경로: 파일 인풋 업로드
           if (!inProc) {
@@ -1166,7 +1337,7 @@
             const result = await requestProcessing(file);
             if (result?.action === 'upload' && result.file) {
               _approvedFiles.add(result.file);
-              return _origFetch(input, { ...init, body: replaceFD(body, file.name, result.file) });
+              return _origFetch(input, { ...init, body: swapAt(body, result.file) });
             }
             if (result?.action === 'cancel' || result?.action === 'download') {
               return new Response('{}', { status: 200 });

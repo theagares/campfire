@@ -68,7 +68,7 @@ function buildStats(engineManager) {
 }
 
 function register(ctx) {
-  const { engineManager, config, onShowDashboard, onQuit, onEnsureModels } = ctx;
+  const { engineManager, config, proxyToggle, onShowDashboard, onQuit, onEnsureModels } = ctx;
 
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
@@ -85,11 +85,20 @@ function register(ctx) {
   });
 
   ipcMain.handle('engine:setSecurity', async (_e, enabled) => {
+    // 보안을 끄면 엔진이 내려간다. 프록시가 걸려 있으면 AI 사이트가 죽은 포트를
+    // 향하므로 먼저 시스템을 돌려놓는다(켜 둔 선택은 기억 — 다시 켜면 재적용).
+    if (!enabled && proxyToggle) await proxyToggle.suspend().catch(() => {});
     await engineManager.setSecurityEnabled(!!enabled);
     return engineManager.getStatus();
   });
 
   ipcMain.handle('stats:get', () => buildStats(engineManager));
+
+  ipcMain.handle('proxy:status', () => proxyToggle.status());
+  ipcMain.handle('proxy:set', async (_e, enabled) => {
+    const result = await proxyToggle.set(!!enabled);
+    return { result, status: await proxyToggle.status() };
+  });
 
   ipcMain.handle('metrics:get', () => systemMetrics.sample());
 
@@ -108,7 +117,11 @@ function register(ctx) {
     // truthy 체크만 하면 "키 지우기"가 재시작을 못 일으켜 이전 env 가 그대로 남는다.
     const apiKeyChanged =
       patch && patch.upstageApiKey !== undefined && patch.upstageApiKey !== prev.upstageApiKey;
-    if (policyChanged || apiKeyChanged) {
+    const riskScannerChanged =
+      patch &&
+      patch.mcpRiskScannerEnabled !== undefined &&
+      !!patch.mcpRiskScannerEnabled !== !!prev.mcpRiskScannerEnabled;
+    if (policyChanged || apiKeyChanged || riskScannerChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }

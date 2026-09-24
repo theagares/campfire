@@ -118,6 +118,10 @@ class EngineManager extends EventEmitter {
       // 함께 뺐다(ipc.js). 가중치는 설치 파일에 없고 설치 후 자동으로 내려받지만
       // (MODELS.md), 없어도 엔진 자체는 정상 기동하고 검사 시점에 model_status
       // 게이트가 통과 처리한다.
+      // 선택형 위험 검사기는 엔진이 별도 stdio MCP 프로세스로 관리한다. 기본 OFF이며
+      // 실패해도 엔진/기존 MCP 사용을 막지 않는다.
+      SECUREDOC_MCP_RISK_SCANNER_ENABLED:
+        this.config.get('mcpRiskScannerEnabled') ? '1' : '0',
       // Upstage Solar API 키. 설정 화면(#upstage-api-key)에서 저장한 값을 그대로
       // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
       // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).
@@ -145,6 +149,9 @@ class EngineManager extends EventEmitter {
       SECUREDOC_STORE_DIR: paths.resolveStoreDir(),
       // cwd 를 번들 밖으로 뺐으므로 app 패키지를 PYTHONPATH 로 알려준다(아래 주석).
       PYTHONPATH: this.engineDir,
+      // 프록시를 켜 둔 상태로 엔진이 재시작되면 엔진이 스스로 프록시를 다시 띄운다.
+      // 그 사이 PAC 는 그대로라 AI 사이트는 죽은 포트로 가서 막힌다(fail-closed).
+      SECUREDOC_PROXY_ENABLED: this.config.get('proxyEnabled') ? '1' : '0',
     };
 
     try {

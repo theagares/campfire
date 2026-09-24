@@ -54,6 +54,42 @@ HOST: str = os.environ.get("SECUREDOC_HOST", "127.0.0.1")
 # 실제 바인딩된 포트. main.py 가 기동 시점에 채운다. /health 가 이 값을 반환.
 BOUND_PORT: int | None = None
 
+# ── 선택형 MCP 위험 검사기 사이드카 ──────────────────────────────────────────
+#
+# 앱 코어와 검사기 구현을 분리한다. 엔진은 아래 실행 정보로 **별도 stdio MCP
+# 프로세스**를 띄우며, 검사기 Python 모듈을 import하지 않는다. 기본값은 꺼짐이다.
+# 데스크탑 배포본은 experiments/mcp_risk_scanner 를 resources/engine/mcp_risk_scanner
+# 로 별도 복사하므로, 나중에 이 설정·어댑터·패키징 항목만 제거해도 앱 코어에는 영향이
+# 없다. 개발 체크아웃에서는 원래 experiments 패키지를 그대로 사용한다.
+MCP_RISK_SCANNER_ENABLED: bool = os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+MCP_RISK_SCANNER_PYTHON_EXECUTABLE: str = os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_PYTHON_EXECUTABLE", sys.executable
+)
+
+_bundled_scanner = APP_DIR.parent / "mcp_risk_scanner"
+_checkout_root = APP_DIR.parent.parent
+if _bundled_scanner.is_dir():
+    _default_scanner_module = "mcp_risk_scanner.cli"
+    _default_scanner_pythonpath = APP_DIR.parent
+else:
+    _default_scanner_module = "experiments.mcp_risk_scanner.cli"
+    _default_scanner_pythonpath = _checkout_root
+
+MCP_RISK_SCANNER_MODULE: str = os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_MODULE", _default_scanner_module
+)
+MCP_RISK_SCANNER_PYTHONPATH: Path = Path(os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_PYTHONPATH", str(_default_scanner_pythonpath)
+))
+MCP_RISK_SCANNER_START_TIMEOUT_SEC: float = float(os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_START_TIMEOUT_SEC", "10"
+))
+MCP_RISK_SCANNER_CALL_TIMEOUT_SEC: float = float(os.environ.get(
+    "SECUREDOC_MCP_RISK_SCANNER_CALL_TIMEOUT_SEC", "15"
+))
+
 # ── 파이프라인 (PLAN §6) ──────────────────────────────────────────────────────
 # 실측(인젝션 LLM, 6,000자 문서 기준): 1,500자 청크(5개)=0.36초/3.67GB peak vs
 # 1,000자 청크(7개)=0.34초/3.09GB peak — 1,000자가 속도·VRAM 둘 다 더 나은
@@ -267,3 +303,30 @@ SUPPORTED_EXTENSIONS: set[str] = {
     ".csv", ".tsv", ".md", ".json", ".xml", ".log",
 }
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
+
+# ── 프록시 게이트웨이 (adapters/proxy) ────────────────────────────────────────
+# 확장 프로그램 대신 로컬 TLS 프록시로 업로드를 가로채는 경로. 기본은 꺼짐 —
+# 켜려면 mitmproxy 가 필요하고(`pip install -e ".[proxy]"`) 루트 CA 도 깔아야 한다.
+PROXY_ENABLED: bool = os.environ.get("SECUREDOC_PROXY_ENABLED", "0") == "1"
+PROXY_PORT: int = int(os.environ.get("SECUREDOC_PROXY_PORT", "48210"))
+
+# 사람이 검토하는 동안 요청을 붙들고 있는 최대 시간.
+#
+# 길게 잡고 싶어지는 값이지만 상한은 우리가 정하는 게 아니다 — 사이트 JS 의 abort
+# 타임아웃이 먼저 끊으면 사용자는 이유를 알 수 없는 업로드 실패를 본다. 그 값은
+# 아직 못 쟀으므로(§실측 문서) 보수적으로 잡고, 재고 나서 올린다.
+PROXY_DECISION_TIMEOUT_S: float = float(os.environ.get("SECUREDOC_PROXY_DECISION_TIMEOUT_S", "120"))
+
+# 기본 목록 밖의 호스트도 multipart 검사 대상에 넣는다(쉼표 구분).
+# 사이트가 도메인을 바꿨을 때 릴리스 없이 막기 위한 것이고, 검증용 로컬 서버를
+# 붙일 때도 쓴다.
+PROXY_EXTRA_HOSTS: set[str] = {
+    h.strip() for h in os.environ.get("SECUREDOC_PROXY_EXTRA_HOSTS", "").split(",") if h.strip()
+}
+
+# 프록시가 본 요청을 한 줄씩 남긴다. 어떤 호스트로 업로드가 가는지 특정할 때 쓴다.
+# 기본은 꺼짐 — 켜면 방문 URL 이 로그에 남는다.
+PROXY_LOG_REQUESTS: bool = os.environ.get("SECUREDOC_PROXY_LOG_REQUESTS", "0") == "1"
+
+# 프록시가 본 RPC 본문을 이 폴더에 덤프한다(필드 구조 분석용). 기본 꺼짐.
+PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")

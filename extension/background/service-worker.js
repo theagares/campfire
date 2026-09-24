@@ -16,6 +16,7 @@
  */
 
 import { wrapMaskedFile } from '../utils/docwrapper.js';
+import { finalTextFrom } from '../utils/mask-segments.js';
 import {
   LOCAL_HOST, BASE_PORT, PORT_SCAN_COUNT,
   HEALTH_TIMEOUT_MS, isOurEngine, CACHE_KEY,
@@ -233,7 +234,7 @@ async function scanPrompt({ text }, onProgress) {
 // POST /jobs 에 파일 + userPrompt 를 한 번에 보낸다 — 문서/프롬프트 양쪽 결과가
 // 한 응답(result.piiItems/injectionItems = 문서, result.userPromptPiiItems = 프롬프트)
 // 에 함께 담겨 온다(engine/app/core/pipeline/orchestrator.py 참고).
-async function scanCombined({ text, base64Data, mimeType, fileName }, onProgress) {
+async function scanCombined({ text, base64Data, mimeType, fileName, wrapFile = true }, onProgress) {
   const binary = atob(base64Data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -244,6 +245,9 @@ async function scanCombined({ text, base64Data, mimeType, fileName }, onProgress
   form.append('mimeType', mimeType);
   form.append('fileName', fileName);
   form.append('userPrompt', text);
+  // 다중 첨부는 false. 사용자가 아직 아무것도 해제하지 않아 "최종본" 이 정해지지 않았고,
+  // N개의 base64 를 세션에 쌓지 않으려는 것이다(최종 파일은 결정 뒤 여기서 한 번 만든다).
+  if (!wrapFile) form.append('wrapFile', 'false');
 
   const { res } = await fetchServer('/jobs', { method: 'POST', body: form });
   if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
@@ -306,18 +310,63 @@ function ensureHydrated() {
   return hydrating;
 }
 
+// 상태 쓰기는 한 줄로 세운다.
+//
+// storage.session.set 은 비동기다. 검사 중에는 파일마다 결과가 들어오면서 저장이
+// 연달아 나가는데, 스냅샷을 만드는 시점과 실제로 쓰이는 시점이 어긋나면 **늦게
+// 시작한 쓰기가 먼저 끝나** 옛 상태가 최신 draft 를 덮어쓸 수 있다. 사용자가 방금
+// 해제한 항목이 소리 없이 되돌아가는 모양이다.
+//
+// 그래서 스냅샷 생성부터 set 완료까지를 하나의 체인 안에서 차례로 돌린다.
+let _stateWriteChain = Promise.resolve();
+
+function _snapshot() {
+  return {
+    [SESSION_STATE_KEY]: {
+      sessions: Object.fromEntries(sessions),
+      activeSessionId,
+      sessionSeq,
+    },
+  };
+}
+
 /** 메모리 상태를 storage 에 덮어쓴다. 실패해도 흐름을 막지 않는다 —
- *  저장이 안 되면 예전처럼 메모리로만 동작할 뿐이다. */
+ *  저장이 안 되면 예전처럼 메모리로만 동작할 뿐이다.
+ *  쿼터 초과처럼 "저장이 됐는지" 가 중요한 자리에서는 persistSessionsOrThrow() 를 쓴다. */
 function persistSessions() {
-  try {
-    chrome.storage.session.set({
-      [SESSION_STATE_KEY]: {
-        sessions: Object.fromEntries(sessions),
-        activeSessionId,
-        sessionSeq,
-      },
-    })?.catch?.(() => {});
-  } catch (_) { /* ignore */ }
+  persistSessionsOrThrow().catch(() => {});
+}
+
+function persistSessionsOrThrow() {
+  _stateWriteChain = _stateWriteChain
+    .catch(() => {})
+    .then(() => chrome.storage.session.set(_snapshot()));
+  return _stateWriteChain;
+}
+
+// ── 세션 저장 용량 ──────────────────────────────────────────────────────────
+//
+// chrome.storage.session 의 약 10MB 는 **확장 전체** 한도다. 파일 5개 × 20만 자라는
+// 계산은 배치 하나에만 해당하고, 서로 다른 탭의 검토 세션은 합산된다. 그래서 배치를
+// 시작할 때 최악 크기를 미리 잡아 두고, 잡힌 총량이 soft limit 을 넘으면 검사 전에
+// 거절한다 — 검사를 다 돌린 뒤 저장에서 터지면 그 시간이 통째로 버려진다.
+const SESSION_QUOTA_SOFT_BYTES = 8 * 1024 * 1024;
+// 파일당 최악 추출 텍스트(엔진 MAX_TEXT_CHARS 20만 자) × UTF-16 보관 추정.
+const PER_FILE_WORST_BYTES = 200000 * 2;
+const _reservedBytes = new Map();   // sessionId -> bytes
+
+const reservedTotal = () => [..._reservedBytes.values()].reduce((a, b) => a + b, 0);
+
+/** 배치가 쓸 최악 용량을 예약한다. 넘으면 false — 호출자는 검사를 시작하지 않는다. */
+function reserveQuota(sessionId, fileCount) {
+  const want = Math.max(1, fileCount) * PER_FILE_WORST_BYTES;
+  if (reservedTotal() + want > SESSION_QUOTA_SOFT_BYTES) return false;
+  _reservedBytes.set(sessionId, want);
+  return true;
+}
+
+function releaseQuota(sessionId) {
+  _reservedBytes.delete(sessionId);
 }
 
 function pushToPanel(message) {
@@ -380,6 +429,228 @@ async function runScan(sessionId, kind, payload, tabId) {
     setActionBadge('!', BADGE_ERROR);
     pushToPanel({ type: 'PANEL_ERROR', sessionId, tabId, seq: session.seq, error: err.message, meta: session.meta });
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 다중 첨부 — 배치 하나를 순차로 검사한다
+//
+// 왜 순차인가: 엔진은 detector 마다 _request_lock 으로 GPU 추론을 이미 직렬화한다.
+// 병렬로 던져도 큐에 쌓일 뿐 전체 시간이 줄지 않고, 파일 N개 × 청크마다
+// DETECT_CONCURRENCY 팬아웃이 곱해져 메모리만 커진다. 순차면 진행률도 정확하고
+// 실패한 파일을 특정하기도 쉽다.
+//
+// lease 를 HTTP 요청이 아니라 **인코딩 앞**에 두는 이유: 두 탭의 content 가 각각
+// base64 를 다 만든 뒤에 줄을 서면, 기다리는 동안 거대한 문자열 두 개가 동시에 살아
+// 있다. 차례가 왔다는 신호를 받고 나서 인코딩하게 해야 그 상한이 지켜진다.
+//
+// 저장 위치: 텍스트와 탐지 항목은 chrome.storage.session(메모리 기반, 디스크에 안
+// 남는다 — 위 SESSION_STATE_KEY 주석 참고), **마스킹 바이너리는 sessions 바깥의
+// 메모리 Map**. sessions 안에 넣으면 persistSessions() 가 통째로 직렬화하면서
+// 그대로 storage 로 따라 들어간다.
+// ════════════════════════════════════════════════════════════════════════════
+
+// 전역 검사 큐. 한 번에 한 배치만 엔진으로 보낸다.
+// 검토(사람이 패널을 보는 시간)는 잡지 않는다 — 그건 상한이 없어서, 탭 B 가 탭 A 의
+// 사용자가 결정을 누를 때까지 무한정 막힌다. finish 에서 반드시 푼다.
+const scanQueue = [];
+let scanLeaseHolder = null;   // { sessionId, leaseId, tabId }
+
+function grantNextLease() {
+  if (scanLeaseHolder || !scanQueue.length) return;
+  const next = scanQueue.shift();
+  const session = sessions.get(next.sessionId);
+  if (!session || session.status === 'cancelled') { grantNextLease(); return; }
+
+  scanLeaseHolder = { ...next, leaseId: `lease_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}` };
+  session.status = 'scanning';
+  persistSessions();
+  if (next.tabId != null) {
+    chrome.tabs.sendMessage(next.tabId, {
+      type: 'SCAN_LEASE_GRANTED', sessionId: next.sessionId, leaseId: scanLeaseHolder.leaseId,
+    }).catch(() => releaseLease(next.sessionId));
+  }
+}
+
+function releaseLease(sessionId) {
+  if (scanLeaseHolder?.sessionId !== sessionId) return;
+  scanLeaseHolder = null;
+  grantNextLease();
+}
+
+/** 세션이 끝났다 — 큐·예약·산출물을 한꺼번에 놓는다. 하나라도 빠뜨리면
+ *  다음 배치가 막히거나(예약) 메모리에 산출물이 남는다. */
+function endSession(sessionId) {
+  dropArtifactsOf(sessionId);
+  releaseLease(sessionId);
+  releaseQuota(sessionId);
+}
+
+/** lease 를 쥔 세션이 보낸 메시지인가. 중복·역전·다른 탭·취소된 lease 를 전부 막는다. */
+function leaseOk(message, sender) {
+  const h = scanLeaseHolder;
+  if (!h || h.sessionId !== message.sessionId || h.leaseId !== message.leaseId) return null;
+  const tabId = sender?.tab?.id ?? null;
+  if (h.tabId != null && tabId != null && h.tabId !== tabId) return null;
+  return sessions.get(message.sessionId) || null;
+}
+
+/** 결정 뒤 전송을 기다리는 마스킹본. sessions 바깥에 둬야 storage 로 새지 않는다. */
+const scanArtifacts = new Map();   // artifactId -> { sessionId, docId, tabId, bytes, mimeType, fileName }
+
+function dropArtifactsOf(sessionId) {
+  for (const [id, a] of scanArtifacts) if (a.sessionId === sessionId) scanArtifacts.delete(id);
+}
+
+function bytesToBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin);
+}
+
+async function startMultiScan(sessionId, payload, tabId) {
+  await ensureHydrated();
+
+  // 예약은 세션을 만들기 전에 잡는다. 만들고 나서 거절하면 패널에 빈 세션이 남는다.
+  if (!reserveQuota(sessionId, (payload.items || []).length)) {
+    pushToPanel({
+      type: 'PANEL_ERROR', sessionId, tabId, seq: ++sessionSeq,
+      error: '검토 중인 다른 탭이 많아 지금은 새 검사를 시작할 수 없습니다. '
+        + '열려 있는 검토를 끝낸 뒤 다시 시도해 주세요.',
+    });
+    if (tabId != null) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CONTENT_BATCH_DECISION', sessionId, decision: { action: 'cancel', reason: 'quota' },
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  const session = {
+    tabId, kind: 'multi', status: 'queued', progress: [], error: null,
+    // 패널이 탭을 즉시 그릴 수 있게 메타를 먼저 채운다. 검사가 끝난 순서로 탭이
+    // 재정렬되면 사용자가 혼란스러우므로 순서는 여기서 고정된다.
+    docs: (payload.items || []).map(it => ({
+      id: it.id, fileName: it.fileName, fileSize: it.fileSize, mimeType: it.mimeType,
+      supported: it.supported, status: it.supported ? 'pending' : 'unsupported',
+      counts: null, truncated: false, scannedChars: 0, originalChars: 0, error: null,
+    })),
+    prompt: { status: 'pending', counts: null },
+    results: {},   // docId -> { originalText, piiItems, injectionItems }  (+ 'prompt')
+    seq: 0,
+  };
+  session.seq = ++sessionSeq;
+  sessions.set(sessionId, session);
+  activeSessionId = sessionId;
+  persistSessions();
+
+  pushToPanel({ type: 'PANEL_SCAN_INIT', sessionId, tabId, seq: session.seq, docs: session.docs });
+  scanQueue.push({ sessionId, tabId });
+  grantNextLease();
+}
+
+async function scanMultiPrompt(sessionId, session, text) {
+  const tabId = session.tabId;
+  try {
+    const result = await scanPrompt({ text }, (event) => {
+      pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: 'prompt' });
+    });
+    session.results.prompt = {
+      originalText: result.originalText || text,
+      piiItems: result.piiItems || [],
+      injectionItems: result.injectionItems || [],
+    };
+    session.prompt = {
+      status: 'done',
+      counts: { pii: (result.piiItems || []).length, injection: (result.injectionItems || []).length },
+    };
+  } catch (err) {
+    // 프롬프트 검사 실패는 배치 전체 fail-closed. 프롬프트는 모든 파일 검사에
+    // 문맥으로 들어가므로 이게 없으면 나머지도 의미가 없다.
+    session.prompt = { status: 'error', error: err.message, counts: null };
+  }
+  persistSessions();
+  pushToPanel({
+    type: 'PANEL_SCAN_PROMPT', sessionId, tabId, seq: session.seq, prompt: session.prompt,
+  });
+}
+
+async function scanMultiItem(sessionId, session, payload) {
+  const tabId = session.tabId;
+  const doc = session.docs.find(d => d.id === payload.docId);
+  if (!doc) return;
+
+  // content 가 파일을 아예 읽지 못한 경우. 엔진을 부르지 않고 바로 오류로 세운다 —
+  // 대기 상태로 두면 그 탭이 영영 안 끝나 배치 전체가 전송 불가가 된다.
+  if (payload.readError) {
+    doc.status = 'error';
+    doc.error = payload.readError;
+    persistSessions();
+    pushToPanel({ type: 'PANEL_SCAN_ITEM', sessionId, tabId, seq: session.seq, doc });
+    return;
+  }
+
+  doc.status = 'scanning';
+  persistSessions();
+
+  try {
+    const result = await scanCombined(
+      { text: payload.userPrompt || '', base64Data: payload.base64Data,
+        mimeType: payload.mimeType, fileName: payload.fileName, wrapFile: false },
+      (event) => pushToPanel({
+        type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: doc.id,
+      }),
+    );
+
+    if (result.scanStatus && result.scanStatus !== 'ok') {
+      doc.status = 'error';
+      doc.error = result.reason || '검사하지 못했습니다';
+    } else {
+      // 텍스트와 탐지 항목만 세션에 남긴다. maskedText/maskedFile 은 저장하지 않는다 —
+      // 최종본은 사용자가 결정한 뒤 이 자리에서 한 번 만든다.
+      session.results[doc.id] = {
+        originalText: result.originalText || '',
+        piiItems: result.piiItems || [],
+        injectionItems: result.injectionItems || [],
+      };
+      doc.truncated = !!result.truncated;
+      doc.scannedChars = result.scannedChars ?? 0;
+      doc.originalChars = result.originalChars ?? 0;
+      // 잘린 파일은 "완료" 가 아니다. 뒷부분을 아예 안 봤는데 탐지 0건으로 보이면
+      // 사용자는 안전하다고 읽는다 — 별도 상태로 두고 결정을 받는다.
+      doc.status = doc.truncated ? 'truncated' : 'done';
+      doc.counts = {
+        pii: (result.piiItems || []).length,
+        injection: (result.injectionItems || []).length,
+      };
+    }
+  } catch (err) {
+    doc.status = 'error';
+    doc.error = err.message;
+  }
+  persistSessions();
+  pushToPanel({ type: 'PANEL_SCAN_ITEM', sessionId, tabId, seq: session.seq, doc });
+}
+
+/** 결정 하나를 최종 파일로 만든다. 패널 미리보기와 같은 순수 함수를 쓴다. */
+function buildArtifact(session, sessionId, file) {
+  const src = session.results[file.id];
+  const doc = session.docs.find(d => d.id === file.id);
+  if (!src || !doc) return null;
+
+  const text = finalTextFrom(
+    src.originalText, src.piiItems, src.injectionItems, file.id, file.unmaskedKeys || [],
+  );
+  const wrapped = wrapMaskedFile(text, doc.mimeType, doc.fileName);
+  const artifactId = `art_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  scanArtifacts.set(artifactId, {
+    sessionId, docId: file.id, tabId: session.tabId,
+    bytes: wrapped.bytes, mimeType: wrapped.mimeType,
+    // 앞부분만 보내는 선택은 결과가 잘린 파일임을 이름에 남긴다.
+    fileName: doc.truncated && file.action === 'masked'
+      ? wrapped.fileName.replace(/(_masked)?\.md$/, '_partial_masked.md')
+      : wrapped.fileName,
+  });
+  return artifactId;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -572,6 +843,235 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // 응답이 비동기 — 채널을 열어둔다
   }
 
+  // ── 다중 첨부 프로토콜 ────────────────────────────────────────────────────
+  // 모든 메시지가 leaseId 를 들고 온다. 중복·역전·다른 탭·취소된 lease 는
+  // 상태를 바꾸지 않고 조용히 떨어뜨린다 — 늦게 도착한 응답이 새 배치를 덮으면
+  // 사용자는 다른 파일의 결과를 보게 된다.
+  if (type === 'START_MULTI_SCAN') {
+    const tabId = sender?.tab?.id ?? asTabId(message.tabId);
+    startMultiScan(message.sessionId, message.payload || {}, tabId);
+    sendResponse({ ok: true, queued: true });
+    return false;
+  }
+
+  if (type === 'SCAN_MULTI_PROMPT') {
+    const session = leaseOk(message, sender);
+    if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
+    scanMultiPrompt(message.sessionId, session, message.text || '')
+      .then(() => sendResponse({ ok: true, prompt: session.prompt }));
+    return true;
+  }
+
+  if (type === 'SCAN_MULTI_ITEM') {
+    const session = leaseOk(message, sender);
+    if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
+    scanMultiItem(message.sessionId, session, message.payload || {})
+      .then(() => sendResponse({ ok: true, doc: session.docs.find(d => d.id === message.payload?.docId) }));
+    return true;
+  }
+
+  if (type === 'FINISH_MULTI_SCAN') {
+    const session = leaseOk(message, sender);
+    // lease 를 못 쥔 finish 라도 큐는 풀어야 한다 — 안 그러면 뒤 배치가 영원히 막힌다.
+    releaseLease(message.sessionId);
+    if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
+    session.status = 'ready';
+    persistSessions();
+    pushToPanel({
+      type: 'PANEL_SCAN_DONE', sessionId: message.sessionId, tabId: session.tabId,
+      seq: session.seq, docs: session.docs, prompt: session.prompt,
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // 패널이 활성 탭을 그릴 때 본문을 끌어간다. 브로드캐스트에는 메타만 실리므로
+  // (runtime 채널은 열려 있는 모든 확장 페이지에 전역으로 도달한다) 원문은
+  // 이렇게 요청한 탭에만, 요청한 항목 하나만 내보낸다.
+  // 패널이 바꾼 "아직 결정 전" 상태를 세션에 붙여 둔다.
+  //
+  // 이게 없으면 검토 도중 패널을 닫았다 다시 열었을 때 검사 결과와 탭은 돌아오는데
+  // **사용자가 이미 해제한 항목과 파일별 선택만 초기화된다.** 긴 문서에서 수십 개를
+  // 하나씩 풀어 둔 사람에게는 그게 곧 처음부터 다시 하라는 뜻이다.
+  // 패널 → content 재시도 중계.
+  //
+  // 엔진을 여기서 바로 부를 수 없다. 파일 바이트는 content 가 들고 있고(base64 는
+  // 검사 직전에만 만든다) SW 에는 텍스트 결과만 남기 때문이다. 그래서 요청만 넘긴다.
+  // 재검사를 위해 lease 를 다시 받는다. 검사 구간은 전역 큐를 거쳐야 하는데
+  // finish 에서 이미 풀었으므로 줄을 다시 서야 한다.
+  if (type === 'RESUME_MULTI_LEASE') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const tabId = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && tabId != null && session.tabId !== tabId)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      scanQueue.push({ sessionId: message.sessionId, tabId: session.tabId });
+      grantNextLease();
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (type === 'RETRY_MULTI_ITEM') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const requester = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && requester != null && session.tabId !== requester)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      const doc = session.docs?.find(d => d.id === message.docId);
+      if (!doc) { sendResponse({ ok: false, reason: 'no-doc' }); return; }
+      doc.status = 'pending';
+      doc.error = null;
+      persistSessions();
+      if (session.tabId != null) {
+        chrome.tabs.sendMessage(session.tabId, {
+          type: 'CONTENT_RETRY_ITEM', sessionId: message.sessionId, docId: message.docId,
+        }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (type === 'PANEL_DRAFT_UPDATE') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const requester = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && requester != null && session.tabId !== requester)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      // 통째로 덮어쓰지 않고 온 것만 갱신한다 — 탭 전환만 알린 메시지가
+      // 해제 목록을 지워버리면 안 된다.
+      const draft = session.draft || {};
+      if (Array.isArray(message.unmaskedKeys)) draft.unmaskedKeys = message.unmaskedKeys;
+      if (message.decisions) draft.decisions = message.decisions;
+      if (message.activeTab != null) draft.activeTab = message.activeTab;
+      session.draft = draft;
+      persistSessions();
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (type === 'GET_PANEL_ITEM_RESULT') {
+    ensureHydrated().then(() => {
+      const session = sessions.get(message.sessionId);
+      const requester = sender?.tab?.id ?? asTabId(message.tabId);
+      if (!session || (session.tabId != null && requester != null && session.tabId !== requester)) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      const item = session.results?.[message.itemId];
+      sendResponse(item ? { ok: true, itemId: message.itemId, ...item } : { ok: false, reason: 'no-item' });
+    });
+    return true;
+  }
+
+  // 결정 → 산출물 생성. 패널은 unmaskedKeys 와 action 만 보내고 바이너리도
+  // artifactId 도 만들지 않는다. 여기서 검증하고 만든 뒤 descriptor 만 중계한다.
+  if (type === 'PANEL_MULTI_DECISION') {
+    ensureHydrated().then(() => {
+      const { sessionId, decision } = message;
+      const session = sessions.get(sessionId);
+      if (!session || session.kind !== 'multi') {
+        sendResponse({ ok: false, reason: 'stale-session' });
+        return;
+      }
+
+      if (decision?.action === 'cancel') {
+        endSession(sessionId);
+        if (session.tabId != null) {
+          chrome.tabs.sendMessage(session.tabId, {
+            type: 'CONTENT_BATCH_DECISION', sessionId, decision: { action: 'cancel' },
+          }).catch(() => {});
+        }
+        disablePanelForTab(session.tabId);
+        sessions.delete(sessionId);
+        if (activeSessionId === sessionId) activeSessionId = null;
+        persistSessions();
+        sendResponse({ ok: true });
+        return;
+      }
+
+      const files = [];
+      for (const file of decision?.files || []) {
+        if (file.action === 'exclude') { files.push({ id: file.id, action: 'exclude' }); continue; }
+        if (file.action === 'original') { files.push({ id: file.id, action: 'original' }); continue; }
+        const artifactId = buildArtifact(session, sessionId, file);
+        if (!artifactId) {
+          // 산출물을 못 만들면 그 파일만 조용히 빼지 않는다 — 배치 전체를 멈춘다.
+          // 예약은 아직 놓지 않는다 — 세션이 살아 있어 사용자가 다시 시도할 수 있다.
+          dropArtifactsOf(sessionId);
+          sendResponse({ ok: false, reason: 'artifact-failed', id: file.id });
+          return;
+        }
+        files.push({ id: file.id, action: file.action, artifactId });
+      }
+
+      const src = session.results?.prompt;
+      const promptText = src
+        ? finalTextFrom(src.originalText, src.piiItems, src.injectionItems, 'prompt',
+                        decision?.prompt?.unmaskedKeys || [])
+        : null;
+
+      // 결정은 종료가 아니다. content 가 산출물을 받아 실제로 주입한 뒤
+      // FINALIZE_MULTI_SESSION 을 보내야 세션과 남은 산출물을 지운다.
+      session.status = 'awaiting-injection';
+      persistSessions();
+
+      if (session.tabId != null) {
+        chrome.tabs.sendMessage(session.tabId, {
+          type: 'CONTENT_BATCH_DECISION', sessionId,
+          decision: { action: 'send', promptText, files },
+        }).catch(() => {});
+      }
+      disablePanelForTab(session.tabId);
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  // 산출물은 한 개씩 건넨다 — 배치 전체 base64 를 한 메시지에 싣지 않는다.
+  // artifactId 는 저장소 키가 아니라 탭·세션·문서에 묶인 1회용 토큰이다.
+  if (type === 'GET_SCAN_ARTIFACT') {
+    const art = scanArtifacts.get(message.artifactId);
+    const requester = sender?.tab?.id ?? null;
+    if (!art || art.sessionId !== message.sessionId || art.docId !== message.docId
+        || (art.tabId != null && requester != null && art.tabId !== requester)) {
+      sendResponse({ ok: false, reason: 'no-artifact' });
+      return false;
+    }
+    // ACK 전까지는 멱등이다 — 응답이 유실돼도 content 가 다시 요청할 수 있어야 한다.
+    sendResponse({
+      ok: true, base64: bytesToBase64(art.bytes), mimeType: art.mimeType, fileName: art.fileName,
+    });
+    return false;
+  }
+
+  if (type === 'ACK_SCAN_ARTIFACT') {
+    scanArtifacts.delete(message.artifactId);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (type === 'FINALIZE_MULTI_SESSION') {
+    ensureHydrated().then(() => {
+      endSession(message.sessionId);
+      const session = sessions.get(message.sessionId);
+      if (session) disablePanelForTab(session.tabId);
+      sessions.delete(message.sessionId);
+      if (activeSessionId === message.sessionId) activeSessionId = null;
+      persistSessions();
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
   if (type === 'GET_CONNECTION_INFO') {
     checkEngineHealth().then((info) => sendResponse(info));
     return true;
@@ -587,7 +1087,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'WRAP_MASKED_TEXT') {
     const { text, mimeType, fileName } = message.payload;
     try {
-      const wrapped = wrapMaskedFile(text, mimeType, fileName, 0);
+      const wrapped = wrapMaskedFile(text, mimeType, fileName);
       let bin = '';
       for (let i = 0; i < wrapped.bytes.length; i += 8192) {
         bin += String.fromCharCode(...wrapped.bytes.subarray(i, i + 8192));

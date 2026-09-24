@@ -31,7 +31,10 @@ $('#global-banner-close').addEventListener('click', hideGlobalBanner);
 function goto(view) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
-  if (view === 'connect') refreshMcpClients();
+  if (view === 'connect') {
+    refreshMcpClients();
+    refreshProxy();
+  }
 }
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => goto(b.dataset.view)));
 
@@ -126,6 +129,88 @@ $('#mcp-client-list').addEventListener('click', async (e) => {
   }
   actionBtn.textContent = originalLabel;
   await refreshMcpClients();
+});
+
+// ── 프록시 게이트웨이 ─────────────────────────────────────────────────────────
+// 토글 하나가 엔진 프록시·PAC·시스템 설정을 같이 움직인다(main/proxy-toggle.js).
+// 표시등은 저장된 설정이 아니라 **지금 실제 상태**를 그린다 — 켜 두었는데 엔진이
+// 내려가 있으면 그게 그대로 보여야 한다.
+async function refreshProxy() {
+  state.proxy = await api.getProxyStatus().catch(() => null);
+  renderProxy();
+}
+function setLight(sel, on) {
+  const el = $(sel);
+  if (!el) return;
+  el.classList.toggle('on', !!on);
+  el.classList.toggle('off', !on);
+}
+function renderProxy() {
+  const toggle = $('#proxy-toggle');
+  const hint = $('#proxy-hint');
+  if (!toggle || !hint) return;
+  const st = state.proxy;
+  if (!st || !st.supported) {
+    toggle.disabled = true;
+    toggle.checked = false;
+    ['#proxy-light-engine', '#proxy-light-ca', '#proxy-light-system'].forEach((s) => setLight(s, false));
+    hint.innerHTML = `<div class="hint">${st ? 'Windows 에서만 지원합니다.' : '상태를 불러오지 못했습니다.'}</div>`;
+    return;
+  }
+  const eng = st.engine;
+  const running = !!(eng && eng.running);
+  const applied = !!(st.system && st.system.ours);
+  toggle.disabled = !!state.proxyBusy || !eng;
+  toggle.checked = !!st.desired;
+  setLight('#proxy-light-engine', running);
+  setLight('#proxy-light-ca', eng && eng.caTrusted === true);
+  setLight('#proxy-light-system', applied);
+  hint.innerHTML = proxyHintHtml(st, running, applied);
+}
+function proxyHintHtml(st, running, applied) {
+  const err = st.lastError;
+  if (state.proxyBusy) return '<div class="hint">적용 중…</div>';
+  if (!st.engine) return '<div class="hint">엔진이 실행 중이어야 켤 수 있습니다.</div>';
+  if (err && err.code === 'ca') {
+    // 신뢰 저장소를 바꾸는 일이라 앱이 대신 하지 않는다. 명령을 보여 주고 사용자가 실행한다.
+    const cmd = `certutil -user -addstore Root "${err.caPath}"`;
+    return `<div class="hint">CA 인증서를 먼저 신뢰해야 합니다. 명령 프롬프트에서 아래를 실행한 뒤(관리자 권한 불필요, 보안 경고에서 "예") 다시 켜세요.</div>
+      <div class="codeblock-row"><code>${escapeHtml(cmd)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(cmd)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>`;
+  }
+  if (err) return `<div class="hint warn">${escapeHtml(err.message)}</div>`;
+  if (st.desired && applied && !running) {
+    // 엔진이 반복 종료로 포기한 상태(error)면 저절로 안 풀린다 — 그걸 "다시 뜨면
+    // 풀립니다" 라고 하면 사용자는 기다리기만 한다.
+    if (state.engine && state.engine.state === 'error') {
+      return '<div class="hint warn">엔진이 반복해서 종료돼 AI 사이트가 막혀 있습니다. 프록시를 끄거나 엔진을 재시작하세요.</div>';
+    }
+    return '<div class="hint warn">엔진 프록시가 내려가 있어 AI 사이트가 막혀 있습니다. 검사 없이 나가지 않도록 일부러 막은 상태이며, 엔진이 다시 뜨면 풀립니다.</div>';
+  }
+  if (st.desired && applied) return '<div class="hint">켜짐 — AI 사이트로 가는 업로드가 검토 대기로 붙들립니다. 다른 사이트는 평소처럼 직접 나갑니다.</div>';
+  if (st.desired) return '<div class="hint">켜는 중…</div>';
+  return '<div class="hint">꺼짐 — 브라우저가 평소처럼 직접 나갑니다.</div>';
+}
+$('#proxy-toggle').addEventListener('change', async (e) => {
+  const want = e.currentTarget.checked;
+  state.proxyBusy = true;
+  renderProxy();
+  try {
+    const { result, status } = await api.setProxyEnabled(want);
+    state.proxy = status;
+    if (!result.ok && result.code !== 'ca') {
+      showGlobalBanner(`프록시를 ${want ? '켜지' : '끄지'} 못했습니다: ${result.message}`);
+    }
+  } catch (err) {
+    showGlobalBanner(`프록시 전환 실패: ${err.message || err}`);
+  } finally {
+    state.proxyBusy = false;
+    await refreshProxy();
+  }
+});
+$('#proxy-hint').addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('.copy-btn');
+  if (!copyBtn) return;
+  navigator.clipboard.writeText(decodeURIComponent(escape(atob(copyBtn.dataset.copy || '')))).catch(() => {});
 });
 
 // ── 대시보드 ──────────────────────────────────────────────────────────────────
@@ -626,6 +711,7 @@ function openSettings() {
   $('#detector-progress').style.display = 'none';
   $('#remote-url').value = s.remoteUrl || '';
   $('#upstage-api-key').value = s.upstageApiKey || '';
+  $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
   refreshCleanup();
@@ -753,6 +839,7 @@ $('#settings-save').addEventListener('click', async () => {
   // remoteUrl 과 달리 API 키는 사용자가 "완전히 비워서 지우기"도 할 수 있어야 하므로
   // 빈 문자열도 patch 에 포함시킨다(trim() 만 하고 빈 값이어도 그대로 실어보냄).
   patch.upstageApiKey = $('#upstage-api-key').value.trim();
+  patch.mcpRiskScannerEnabled = $('#mcp-risk-scanner-enabled').checked;
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.
@@ -788,7 +875,13 @@ async function init() {
 
   renderAll();
 
-  api.onEngineStatus((s) => { state.engine = s; renderHome(); renderDashboard(); });
+  api.onEngineStatus((s) => {
+  state.engine = s;
+  renderHome();
+  renderDashboard();
+  // 엔진이 오르내리면 프록시 표시등도 바뀐다. 연결 화면을 보고 있을 때만 다시 묻는다.
+  if ($('#view-connect').classList.contains('active')) refreshProxy();
+});
   api.onMetrics((m) => { state.metrics = m; renderResources($('#db-resources')); });
   api.onStats((s) => { state.stats = s; renderHome(); renderDashboard(); });
   api.onNavigate((view) => goto(view));
