@@ -60,9 +60,11 @@ function load() {
   store.File = class extends BlobStub {
     constructor(name) { super(); this.name = name || 'secret.pdf'; }
   };
-  store.FileReader = function () {};
+  store.FileReader = function () { this.lastBlob = null; };
   store.FileReader.prototype = {
-    readAsArrayBuffer: noop, readAsDataURL: noop, readAsBinaryString: noop,
+    readAsArrayBuffer(blob) { this.lastBlob = blob; return 'original-reader'; },
+    readAsDataURL(blob) { this.lastBlob = blob; return 'original-reader'; },
+    readAsBinaryString(blob) { this.lastBlob = blob; return 'original-reader'; },
   };
   store.XMLHttpRequest = function () {};
   store.XMLHttpRequest.prototype = { open: noop, send: noop };
@@ -131,7 +133,18 @@ function load() {
     return origFetchCalls.length > 0;
   }
 
-  return { config, passedThrough };
+  async function readApprovedBytes(fileName = 'secret.pdf') {
+    const file = new store.File(fileName);
+    const arrayBufferLength = await Promise.race([
+      file.arrayBuffer().then(ab => ab.byteLength),
+      new Promise(resolve => setTimeout(() => resolve('timeout'), 100)),
+    ]);
+    const reader = new store.FileReader();
+    const readerResult = reader.readAsArrayBuffer(file);
+    return { arrayBufferLength, readerResult, readerBlob: reader.lastBlob };
+  }
+
+  return { config, passedThrough, readApprovedBytes };
 }
 
 const withToken = () => {
@@ -204,6 +217,18 @@ async function main() {
       await t.passedThrough('secret.pdf'), true,
       '검토를 마친 파일이 다시 인터셉트됐다 — content.js 가 자기 첨부를 삼키게 된다',
     );
+  }
+
+  // Layer 4 must honor the same content-approved metadata as fetch/XHR. Claude
+  // reads a selected file locally before upload; re-processing that read used to
+  // return an empty buffer and leave Claude with a 0-byte attachment.
+  {
+    const t = withToken();
+    t.config({ type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'layer4', files: [APPROVED] });
+    const read = await t.readApprovedBytes('secret.pdf');
+    assert.strictEqual(read.arrayBufferLength, 2048, 'approved arrayBuffer read was replaced or stalled');
+    assert.strictEqual(read.readerResult, 'original-reader', 'approved FileReader read was intercepted again');
+    assert.ok(read.readerBlob, 'approved FileReader did not receive the file');
   }
 
   // (7) 주입 전에 취소·실패하면 승인을 즉시 회수한다.

@@ -1312,7 +1312,8 @@
   // Layer 4: File.arrayBuffer / FileReader (backup interceptors)
   // ════════════════════════════════════════════════════════════════════════════
   Blob.prototype.arrayBuffer = async function () {
-    if (this instanceof File && isSupportedFile(this) && !_approvedFiles.has(this)) {
+    if (this instanceof File && isSupportedFile(this)
+        && !_approvedFiles.has(this) && !_isContentApprovedBlob(this)) {
       // passthrough-fetch 드롭 대기 (Grok JSON+base64, Copilot raw binary 등)
       if (_matchesPendingDrop(this)) {
         debugLog(`[SecureDoc] [4] arrayBuffer() 드롭 대기: ${this.name}`);
@@ -1344,7 +1345,8 @@
 
   function makeHook(orig) {
     return function (blob, ...a) {
-      if (blob instanceof File && isSupportedFile(blob) && !_approvedFiles.has(blob)) {
+      if (blob instanceof File && isSupportedFile(blob)
+          && !_approvedFiles.has(blob) && !_isContentApprovedBlob(blob)) {
         const self = this;
         // passthrough-fetch 드롭 대기 (Grok readAsDataURL 등)
         if (_matchesPendingDrop(blob)) {

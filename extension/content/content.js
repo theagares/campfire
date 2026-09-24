@@ -1095,6 +1095,46 @@
    *
    *  반환: { mode, landed }  — mode 'all' | 'none' | 'partial'
    */
+  async function injectFilesByDropAtOnce(files, preferredTarget) {
+    const cfg = getPromptConfig();
+    const target = preferredTarget?.isConnected
+      ? preferredTarget
+      : dropTargets(preferredTarget)[0];
+    if (!target || !files.length) return { mode: 'none', landed: [] };
+
+    for (const file of files) contentOwnedFiles.add(file);
+    const watchers = files.map(file => watchAttachmentEvidence(cfg, file.name));
+    try {
+      const transfer = new DataTransfer();
+      for (const file of files) transfer.items.add(file);
+      const init = {
+        bubbles: true, cancelable: true, composed: true, dataTransfer: transfer,
+      };
+      target.dispatchEvent(new DragEvent('dragenter', init));
+      target.dispatchEvent(new DragEvent('dragover', init));
+      target.dispatchEvent(new DragEvent('drop', init));
+
+      const results = await Promise.all(
+        watchers.map(watcher => watcher.settle(INJECT_BATCH_EVIDENCE_MS)),
+      );
+      const landed = files.filter((_, index) => results[index].ok).map(file => file.name);
+      console.log(
+        `[SecureDoc] ChatGPT 다중 드롭 재주입 판정: target=${describeNode(target)} `
+        + `files=${files.length} evidence=${results.map(result => (
+          result.ok ? result.why : `없음(${result.why})`
+        )).join(' | ')}`,
+      );
+      if (landed.length === files.length) return { mode: 'all', landed };
+      if (!landed.length) return { mode: 'none', landed: [] };
+      return { mode: 'partial', landed };
+    } catch (error) {
+      console.warn('[SecureDoc] ChatGPT 다중 드롭 재주입 실패:', error?.message || error);
+      return { mode: 'none', landed: [] };
+    } finally {
+      for (const watcher of watchers) watcher.stop();
+    }
+  }
+
   async function injectFilesAtOnce(files, opts = {}) {
     const cfg = getPromptConfig();
     const input = liveFileInput(opts.preferred);
@@ -1112,6 +1152,11 @@
       const mechanical = input.files?.length === files.length;
       const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
       const landed = files.filter((_, i) => results[i].ok).map(f => f.name);
+      console.log(
+        `[SecureDoc] 다중 첨부 주입 판정: input=${describeNode(input)} `
+        + `files=${input.files?.length ?? 0}/${files.length} mechanical=${mechanical} `
+        + `evidence=${results.map(result => result.ok ? result.why : `없음(${result.why})`).join(' | ')}`,
+      );
 
       if (landed.length === files.length) return { mode: 'all', landed };
       // 아무 증거도 없고 기계적으로도 안 들어갔으면 "아무것도 안 붙었다" 로 본다 —
@@ -1164,6 +1209,15 @@
     const ctx = batch.injectionContext || {};
     const injected = [];
     let allOk = true;
+    // Claude's composer accepts repeated one-file selections and appends them, but
+    // ignores a synthetic FileList containing multiple files. The input still
+    // reports length=N in that case, so the generic batch path cannot distinguish
+    // it from a partial delivery. Skip that ambiguous path on Claude and replay the
+    // files one at a time, which matches the site's own supported interaction.
+    const claudeHost = location.hostname === 'claude.ai'
+      || location.hostname.endsWith('.claude.ai');
+    const chatGptDrop = batch.source === 'drop'
+      && (location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com'));
 
     // 승인은 주입 직전에 파일 단위로 붙이고(아래), 이 함수를 어떻게 빠져나가든
     // finally 에서 반드시 닫는다. 예전엔 승인만 남기고 회수가 없어, 주입에 실패한
@@ -1179,9 +1233,11 @@
       if (f) ready.push(f); else allOk = false;
     }
 
-    if (ready.length > 1) {
+    if (ready.length > 1 && !claudeHost) {
       await announceApprovedBatch(batch.id, ready);
-      const batchRes = await injectFilesAtOnce(ready, ctx);
+      const batchRes = chatGptDrop
+        ? await injectFilesByDropAtOnce(ready, ctx.dropTarget)
+        : await injectFilesAtOnce(ready, ctx);
       if (batchRes.mode === 'all') {
         injected.push(...batchRes.landed);
         return { allOk, injected };
@@ -1274,9 +1330,10 @@
     if (Array.from(event.dataTransfer?.items ?? []).some(i => i.kind === 'file')) event.preventDefault();
   }, true);
 
-  // Copilot은 document capture 에 도달하기 전에 원본 drop 을 받아 첨부 칩과
-  // 업로드를 시작한다. 다른 사이트의 동작은 유지하고 Copilot만 더 이른 window
-  // capture 에서 가로챈다. 그래야 승인 전 원본과 승인 후 마스킹본이 함께 붙지 않는다.
+  // Copilot과 ChatGPT는 document capture 에 도달하기 전에 원본 drop 을 받아 첨부
+  // 처리 또는 업로드 한도 검사를 시작한다. 다른 사이트의 동작은 유지하고 두 사이트만
+  // 더 이른 window capture 에서 가로챈다. 그래야 승인 전 원본이 사이트에 닿지 않고,
+  // 승인 후 마스킹본만 첨부된다.
   async function captureDroppedFiles(event) {
     const files = Array.from(event.dataTransfer?.files ?? []);
     if (!files.length) return;
@@ -1300,9 +1357,11 @@
     clearSiteDragState(target, clientX, clientY);
   }
 
-  const copilotDropHost = location.hostname === 'copilot.microsoft.com'
-    || location.hostname.endsWith('.copilot.microsoft.com');
-  (copilotDropHost ? window : document).addEventListener('drop', captureDroppedFiles, true);
+  const earlyDropHost = location.hostname === 'copilot.microsoft.com'
+    || location.hostname.endsWith('.copilot.microsoft.com')
+    || location.hostname === 'chatgpt.com'
+    || location.hostname.endsWith('.chatgpt.com');
+  (earlyDropHost ? window : document).addEventListener('drop', captureDroppedFiles, true);
 
   // ── 붙여넣기 — 즉시 스캔하지 않고 보류 ────────────────────────────────────────
   document.addEventListener('paste', async (event) => {
@@ -1956,7 +2015,9 @@
     if (pick.length < 4) return null;
     // 앞부분만 쓴다. 사이트는 칩에 긴 파일명을 줄여서 그린다("2025년_인사평…최종.pdf")
     // — 이름 전체를 찾으려 하면 실제로 붙어 있는 첨부를 "없다" 고 판정한다.
-    return pick.slice(0, 12);
+    // Use the full stem. Prefix-only matching cannot distinguish two files that
+    // share a generated or user-provided prefix (for example report-1/report-2).
+    return pick;
   }
 
   /** 컴포저에서 "에디터 밖" 텍스트만 모은다.
@@ -1986,11 +2047,30 @@
     let mo = null;
 
     const textOf = (n) => {
-      try { return String(n?.textContent || '').toLowerCase(); } catch (_) { return ''; }
+      try {
+        let value = String(n?.textContent || '');
+        if (n?.nodeType === 1) {
+          value += ` ${n.getAttribute?.('title') || ''} ${n.getAttribute?.('aria-label') || ''}`;
+          for (const el of n.querySelectorAll?.('[title], [aria-label]') || []) {
+            value += ` ${el.getAttribute?.('title') || ''} ${el.getAttribute?.('aria-label') || ''}`;
+          }
+        }
+        return value.toLowerCase();
+      } catch (_) { return ''; }
+    };
+    const evidenceText = () => {
+      let value = textOutsideEditor(root, editor);
+      try {
+        for (const el of root?.querySelectorAll?.('[title], [aria-label]') || []) {
+          if (editor && (el === editor || editor.contains?.(el))) continue;
+          value += ` ${el.getAttribute?.('title') || ''} ${el.getAttribute?.('aria-label') || ''}`;
+        }
+      } catch (_) { /* text-only fallback */ }
+      return value.toLowerCase();
     };
     // 기준선: 넣기 전부터 이름이 화면에 있었다면(프롬프트에 파일명을 적었다거나 이전
     // 칩이 남아 있다거나) 그건 증거가 아니다.
-    const baselineNamed = !!needle && textOutsideEditor(root, editor).toLowerCase().includes(needle);
+    const baselineNamed = !!needle && evidenceText().includes(needle);
 
     if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
       try {
@@ -2014,7 +2094,7 @@
       if (uploadStartCount > netBase) return '업로드 시작 관측';
       // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
       // textContent 가 아직 비어 있는 프레임워크가 있다).
-      if (needle && !baselineNamed && (named || textOutsideEditor(root, editor).toLowerCase().includes(needle))) {
+      if (needle && !baselineNamed && (named || evidenceText().includes(needle))) {
         return '첨부 칩에 파일 이름이 나타남';
       }
       return null;

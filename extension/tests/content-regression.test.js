@@ -649,7 +649,8 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 첨부는 일으키지 않으면서 드래그 상태만 정리한다.
   const dropTarget = new DropTargetStub();
   const dropFile = new FileStub(['pdf bytes'], 'dropped.pdf', { type: 'application/pdf' });
-  dispatchDocumentEvent('drop', {
+  windowStub.dispatchEvent({
+    type: 'drop',
     target: dropTarget,
     dataTransfer: { files: [dropFile] },
     clientX: 10, clientY: 20,
