@@ -92,3 +92,19 @@ def test_바이너리는_메시지로_오인하지_않는다():
     # 메시지로 못 읽혔으면 message is None, 원시 값 보존
     assert f.message is None
     assert msg.serialize() == raw
+
+
+def _nested(depth: int, leaf: bytes) -> bytes:
+    data = leaf
+    for _ in range(depth):
+        data = _ld(1, data)
+    return data
+
+
+def test_아주_깊은_중첩도_안_터지고_보존된다():
+    # 예전엔 _try_parse_message 가 depth 를 0 으로 리셋해 깊이 가드가 죽어 있었고,
+    # 깊게 중첩된 본문은 RecursionError 로 떨어졌다. 이제 100 을 넘으면 그 아래는
+    # 메시지로 더 안 풀고 원시 바이트로 둔다 — 안 건드렸으니 바이트까지 왕복한다.
+    deep = _nested(2000, _ld(3, "안녕".encode()))
+    msg = pb.decode(deep)            # 예외(RecursionError) 없이 풀린다
+    assert msg.serialize() == deep   # 손 안 댔으니 원본 그대로
