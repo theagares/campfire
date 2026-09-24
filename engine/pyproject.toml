@@ -42,6 +42,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "httpx>=0.27"]
+# 로컬 TLS 프록시 경로(adapters/proxy). 기본 설치에는 넣지 않는다 — 확장 프로그램
+# 경로만 쓰는 설치에 TLS MITM 스택을 끌고 올 이유가 없다.
+proxy = ["mitmproxy>=10"]
 
 [tool.setuptools.packages.find]
 where = ["."]

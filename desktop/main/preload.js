@@ -15,12 +15,15 @@ const api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getModelsStatus: () => ipcRenderer.invoke('models:status'),
   scanCleanup: () => ipcRenderer.invoke('cleanup:scan'),
+  getProxyStatus: () => ipcRenderer.invoke('proxy:status'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   savePipelineLayout: (layout) => ipcRenderer.invoke('settings:setPipelineLayout', layout),
   restartEngine: () => ipcRenderer.invoke('engine:restart'),
   setSecurityEnabled: (enabled) => ipcRenderer.invoke('engine:setSecurity', enabled),
+  // 시스템 프록시 설정을 바꾼다. 확인 창 없이 바로 적용된다 — 되돌리기는 끄기 한 번.
+  setProxyEnabled: (enabled) => ipcRenderer.invoke('proxy:set', enabled),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   fetchModels: () => ipcRenderer.invoke('models:fetch'),
   openExtensionFolder: () => ipcRenderer.invoke('extension:openFolder'),

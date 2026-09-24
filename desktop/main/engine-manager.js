@@ -145,6 +145,9 @@ class EngineManager extends EventEmitter {
       SECUREDOC_STORE_DIR: paths.resolveStoreDir(),
       // cwd 를 번들 밖으로 뺐으므로 app 패키지를 PYTHONPATH 로 알려준다(아래 주석).
       PYTHONPATH: this.engineDir,
+      // 프록시를 켜 둔 상태로 엔진이 재시작되면 엔진이 스스로 프록시를 다시 띄운다.
+      // 그 사이 PAC 는 그대로라 AI 사이트는 죽은 포트로 가서 막힌다(fail-closed).
+      SECUREDOC_PROXY_ENABLED: this.config.get('proxyEnabled') ? '1' : '0',
     };
 
     try {

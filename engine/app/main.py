@@ -41,9 +41,17 @@ async def lifespan(app: FastAPI):
         config.INJECTION_POLICY,
         config.BOUND_PORT,
     )
+    # 프록시 게이트웨이(adapters/proxy)는 같은 루프에 얹는다 — 애드온이 붙든 요청과
+    # 사람의 판단이 메모리 안의 Future 하나로 이어져야 IPC 없이 HITL 이 된다.
+    # 꺼져 있거나 mitmproxy 가 없으면 조용히 건너뛴다.
+    from app.adapters import proxy
+
+    await proxy.start()
+
     # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
     async with mcp_session_context():
         yield
+    await proxy.stop()
     db.close_db()
 
 
