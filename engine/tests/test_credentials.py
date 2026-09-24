@@ -113,3 +113,51 @@ def test_multiple_secrets_in_one_document():
     out = _masked(text)
     for secret in ("wJalrXUtnFEMI", "ghp_16C7e42F292c6912E7710c838347Ae178B4a", "hunter2"):
         assert secret not in out, f"{secret} 이 마스킹되지 않았다"
+
+
+# ── 리뷰 후속(#148 롤업 리뷰) — 미탐 3종과 성능 ──────────────────────────────
+@pytest.mark.parametrize(
+    "name, text, secret",
+    [
+        # 키가 따옴표로 감싸이면 통째로 미탐이었다. MCP 파일 도구가 읽는 자격증명
+        # 파일(서비스 계정 json, config.json, API 응답)은 대부분 이 형태다.
+        ("json api_key", '{"api_key": "sk_live_abcdef123456"}', "sk_live_abcdef123456"),
+        ("json password", '{"password": "hunter2xyz"}', "hunter2xyz"),
+        ("json 작은따옴표", "{'access_key': 'AbCdEf123456'}", "AbCdEf123456"),
+        # 자리표시자 접두 매칭 때문에 your/my/the/some/any 로 "시작하는" 진짜 값이
+        # 통째로 버려졌다. 구분자가 없으면 자리표시자가 아니다.
+        ("my 로 시작하는 실제 값", "password=mysecret123", "mysecret123"),
+        ("the 로 시작하는 실제 값", "api_key=theRealKey99", "theRealKey99"),
+        ("some 로 시작하는 실제 값", "token=someRandomTokenValue", "someRandomTokenValue"),
+        ("any 로 시작하는 실제 값", "password=anyThing123", "anyThing123"),
+    ],
+)
+def test_previously_missed_credential_is_detected(name, text, secret):
+    assert secret not in _masked(text), f"{name} 이 마스킹되지 않았다 — 그대로 외부로 나간다"
+
+
+def test_quoted_value_with_spaces_is_masked_to_the_closing_quote():
+    """따옴표로 연 값은 공백이 있어도 끝까지 가린다.
+
+    값 패턴이 공백에서 끊겨서 첫 단어만 가려지고 나머지가 남았다 — 패스프레이즈와
+    connection string 이 뒷부분을 그대로 흘렸다.
+    """
+    out = _masked('db_password = "correct horse battery"')
+    for part in ("correct", "horse", "battery"):
+        assert part not in out, f"'{part}' 이 남았다: {out}"
+    assert out.startswith("db_password = "), "키 이름은 남아야 한다"
+
+
+def test_key_value_scan_is_linear():
+    """단어문자가 끊기지 않는 긴 런에서 백트래킹이 터지지 않는다.
+
+    식별자 꼬리가 `*` 였을 때 40KB 한 덩어리에 2.9초가 걸렸다(n²). detect() 는
+    async _detect_pii 안에서 **동기로** 불리므로 그동안 이벤트 루프가 멎고
+    /health·SSE 가 같이 멈춘다.
+    """
+    import time
+
+    start = time.perf_counter()
+    credentials.detect("token" * 40_000)   # 200KB = config.MAX_TEXT_CHARS 상한
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"200KB 스캔에 {elapsed:.2f}초 — 백트래킹이 터졌다"
