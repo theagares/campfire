@@ -112,12 +112,12 @@ class EngineManager extends EventEmitter {
       ...process.env,
       // PLAN §4/§8: 인젝션 정책을 spawn 시점에 반영. 엔진 config.py 가 이 env 를 읽는다.
       SECUREDOC_INJECTION_POLICY: this.config.get('injectionPolicy') || 'mask',
-      // config-store 의 piiDetector/injectionDetector 를 실제로 엔진에 반영. 룰베이스
-      // 폴백을 완전히 제거한 뒤에는 encoder/llm_mcp 가 유일한 값이다 — 모델 가중치는
-      // 설치 파일에 없고 설치 후 자동 다운로드되지만(MODELS.md), 가중치가 아직 없어도
-      // 엔진 자체는 정상 기동하고 검사 시점에 model_status 게이트가 통과 처리한다.
-      SECUREDOC_PII_DETECTOR: this.config.get('piiDetector') || 'encoder',
-      SECUREDOC_INJECTION_DETECTOR: this.config.get('injectionDetector') || 'llm_mcp',
+      // SECUREDOC_PII_DETECTOR / _INJECTION_DETECTOR 는 더 보내지 않는다 — 엔진
+      // registry 가 그 값을 읽지 않는다(구현이 종류별로 하나씩뿐이라 조회표를 없앴다).
+      // 보내기만 하고 아무 효과가 없던 env 라, 값이 바뀔 때 엔진을 재시작하던 것도
+      // 함께 뺐다(ipc.js). 가중치는 설치 파일에 없고 설치 후 자동으로 내려받지만
+      // (MODELS.md), 없어도 엔진 자체는 정상 기동하고 검사 시점에 model_status
+      // 게이트가 통과 처리한다.
       // 선택형 위험 검사기는 엔진이 별도 stdio MCP 프로세스로 관리한다. 기본 OFF이며
       // 실패해도 엔진/기존 MCP 사용을 막지 않는다.
       SECUREDOC_MCP_RISK_SCANNER_ENABLED:

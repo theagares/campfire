@@ -107,12 +107,11 @@ function register(ctx) {
   ipcMain.handle('settings:set', async (_e, patch) => {
     const prev = config.get();
     const next = config.set(patch || {});
-    // 인젝션 정책 / detector 선택 변경 → 엔진 재시작으로 env 반영 (엔진엔 REST 쓰기 없음)
+    // 인젝션 정책 변경 → 엔진 재시작으로 env 반영 (엔진엔 REST 쓰기 없음)
+    //
+    // detector 선택 변경은 더 보지 않는다. 엔진이 그 값을 읽지 않으므로 재시작해도
+    // 결과가 같았다 — 검사 중이던 작업만 끊고 아무것도 바꾸지 못하는 재시작이었다.
     const policyChanged = patch && patch.injectionPolicy && patch.injectionPolicy !== prev.injectionPolicy;
-    const detectorChanged =
-      patch &&
-      ((patch.piiDetector && patch.piiDetector !== prev.piiDetector) ||
-        (patch.injectionDetector && patch.injectionDetector !== prev.injectionDetector));
     // upstageApiKey 는 사용자가 빈 문자열로 "지우기"도 할 수 있어야 하므로(patch 에 값이
     // undefined 가 아니라 '' 로 명시적으로 실려온 경우도 변경으로 간주) 다른 필드처럼
     // truthy 체크만 하면 "키 지우기"가 재시작을 못 일으켜 이전 env 가 그대로 남는다.
@@ -122,7 +121,7 @@ function register(ctx) {
       patch &&
       patch.mcpRiskScannerEnabled !== undefined &&
       !!patch.mcpRiskScannerEnabled !== !!prev.mcpRiskScannerEnabled;
-    if (policyChanged || detectorChanged || apiKeyChanged || riskScannerChanged) {
+    if (policyChanged || apiKeyChanged || riskScannerChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }

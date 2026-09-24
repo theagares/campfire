@@ -146,8 +146,6 @@ DETECT_CONCURRENCY: int = max(
 # 룰베이스 폴백은 완전히 제거했다 — encoder/llm_mcp(실 모델)만 남는다. 가중치가
 # 아직 안 받아진 상태에서는 detector 자체가 아니라 파이프라인의 model_status 게이트가
 # 미검사 통과를 처리한다(app/core/pipeline/orchestrator.py).
-PII_DETECTOR: str = os.environ.get("SECUREDOC_PII_DETECTOR", "encoder")
-INJECTION_DETECTOR: str = os.environ.get("SECUREDOC_INJECTION_DETECTOR", "llm_mcp")
 
 # ── 인젝션 정책 (PLAN §4 / §8) ────────────────────────────────────────────────
 # mask: 구간을 [인젝션 마스킹]으로 치환 후 통과 (기본). block: 인젝션 탐지 시 차단.

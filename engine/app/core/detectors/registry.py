@@ -1,18 +1,22 @@
 """
 app/core/detectors/registry.py
-설정에서 활성 detector 를 선택한다 (PLAN §5).
+활성 detector 를 들고 있는다 (PLAN §5).
 
-룰베이스 폴백은 제거했다 — pii: encoder, injection: llm_mcp 만 남는다(설정값은
-config.PII_DETECTOR / config.INJECTION_DETECTOR). 가중치 미준비 시 미검사 통과는
-여기가 아니라 파이프라인의 app.core.model_status 게이트가 처리한다.
+**설정으로 고르지 않는다.** 룰베이스 폴백을 없앤 뒤 종류별 구현이 하나씩뿐이라
+이름→빌더 조회표를 걷어냈는데, 그때 config.PII_DETECTOR / INJECTION_DETECTOR 만
+남아 "고를 수 있다" 는 인상을 계속 줬다. 실제로는 아무도 그 값을 읽지 않는다 —
+데스크탑이 spawn env 로 실어 보내고 값이 바뀌면 엔진을 재시작까지 했지만 결과는
+언제나 같았다. 그래서 그 두 키를 config.py 에서 지웠다. 종류가 늘면 조회표를
+되살리는 게 맞지, 읽지 않는 설정을 남겨두는 게 아니다.
+
+가중치 미준비 시 미검사 통과는 여기가 아니라 파이프라인의
+app.core.model_status 게이트가 처리한다.
 """
 
 from __future__ import annotations
 
 import contextlib
 from typing import Any
-
-from app import config
 
 from .base import Detector
 from .injection import llm_mcp as injection_llm_mcp
@@ -46,9 +50,16 @@ def get_injection_detector() -> Detector:
 
 
 def active_detectors() -> dict[str, str]:
+    """실제로 돌고 있는 detector 이름. /health 와 MCP get_status 가 이걸 보여준다.
+
+    예전 폴백은 config 값이었다 — 이름이 없는 detector 가 오면 **환경변수에 적힌
+    문자열**을 활성 detector 라고 보고하게 된다. 그 값은 아무도 읽지 않으므로
+    실제로 도는 것과 무관하고, 보안 도구에서 "무엇이 검사 중인가" 를 틀리게
+    말하는 건 모르는 것보다 나쁘다. 모르면 모른다고 한다.
+    """
     return {
-        "pii": getattr(get_pii_detector(), "name", config.PII_DETECTOR),
-        "injection": getattr(get_injection_detector(), "name", config.INJECTION_DETECTOR),
+        "pii": getattr(get_pii_detector(), "name", "unknown"),
+        "injection": getattr(get_injection_detector(), "name", "unknown"),
     }
 
 

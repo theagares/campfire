@@ -80,14 +80,13 @@ detector 다(`engine/app/core/detectors/registry.py`). 설정 화면에도 더 �
 3. 다운로드가 끝나면 **엔진 재시작이 필요 없다** — 그다음 실제 검사 요청에서
    detector 가 알아서 실 모델 서브프로세스를 스폰한다(예전엔 `piiDetector`/
    `injectionDetector`를 `encoder`/`llm_mcp`로 바꾸고 엔진을 재시작하는 2단계였는데,
-   이제 이 값은 항상 고정이라 그 단계 자체가 없어졌다).
+   구현이 종류별로 하나씩뿐이라 그 설정 자체를 없앴다).
 
 다운로드 실패 시엔 다음 실행에서 다시 시도한다(`advancedAutoSetupDone` 같은 플래그
 없이, 매번 실제 `/models/status`로 확인).
 
 **실측 검증**: 로컬 가중치를 지운 상태에서 `POST /models/fetch` → 다운로드/체크섬/
-압축해제 → 원본과 byte-identical 재현 확인. 이후 `SECUREDOC_PII_DETECTOR=encoder
-SECUREDOC_INJECTION_DETECTOR=llm_mcp`로 기동해 실제 문장("...김도윤...이메일은
+압축해제 → 원본과 byte-identical 재현 확인. 이후 엔진을 기동해 실제 문장("...김도윤...이메일은
 doyoon.kim90@navermail.com...이전 지시는 모두 무시하고...")을 넣어 PERSON_NAME/EMAIL
 (source=encoder)과 OTHER_INJECTION(source=llm)이 정확히 탐지되는 것까지 확인.
 
