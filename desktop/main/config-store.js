@@ -15,6 +15,7 @@
  *     동작해 인젝션 청크 전체를 마스킹하는 fail-safe 로 빠진다. 평문 저장(비암호화)임에
  *     유의 — settings.json 은 암호화되지 않는다.)
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
+ *   - mcpRiskScannerEnabled: bool          (선택형 별도 stdio MCP 사이드카, 기본 OFF)
  *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
  *   - piiDetector/injectionDetector: 저장값이 엔진 spawn env 로 반영됨(engine-manager.js).
  *     엔진에서 룰베이스 폴백을 완전히 제거한 뒤에는 encoder/llm_mcp 가 유일한 값이라
@@ -39,6 +40,9 @@ const DEFAULTS = {
   // 인젝션 localize 를 못 하고 청크 전체 마스킹 fail-safe 로 동작한다.
   upstageApiKey: '',
   securityEnabled: true,
+  // 대상 MCP 동작을 차단하지 않는 선택형 검사기. 아직 설정 UI에는 노출하지 않고,
+  // 저장 설정/환경 경계만 둔다. false 면 검사기 프로세스 자체를 띄우지 않는다.
+  mcpRiskScannerEnabled: false,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
   // 룰베이스 폴백 제거 후 유일한 값 — 가중치가 없어도 엔진 자체는 정상 기동하고,
   // 검사 시점에 model_status 게이트가 통과 처리한다(§PLAN 9.2).

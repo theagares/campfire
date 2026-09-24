@@ -118,6 +118,10 @@ class EngineManager extends EventEmitter {
       // 엔진 자체는 정상 기동하고 검사 시점에 model_status 게이트가 통과 처리한다.
       SECUREDOC_PII_DETECTOR: this.config.get('piiDetector') || 'encoder',
       SECUREDOC_INJECTION_DETECTOR: this.config.get('injectionDetector') || 'llm_mcp',
+      // 선택형 위험 검사기는 엔진이 별도 stdio MCP 프로세스로 관리한다. 기본 OFF이며
+      // 실패해도 엔진/기존 MCP 사용을 막지 않는다.
+      SECUREDOC_MCP_RISK_SCANNER_ENABLED:
+        this.config.get('mcpRiskScannerEnabled') ? '1' : '0',
       // Upstage Solar API 키. 설정 화면(#upstage-api-key)에서 저장한 값을 그대로
       // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
       // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).

@@ -37,6 +37,15 @@ async def health(request: Request):
     extension_last_seen_seconds_ago = (
         time.monotonic() - _last_extension_seen_at if _last_extension_seen_at is not None else None
     )
+    risk_scanner = getattr(request.app.state, "mcp_risk_scanner", None)
+    risk_scanner_status = risk_scanner.status() if risk_scanner is not None else {
+        "contractVersion": 1,
+        "enabled": False,
+        "state": "unavailable",
+        "transport": "stdio-mcp",
+        "blocksTargetUse": False,
+        "scoreAffectsAppBehavior": False,
+    }
 
     return {
         "service": config.SERVICE_NAME,       # 고정 시그니처 (PLAN §11)
@@ -53,6 +62,7 @@ async def health(request: Request):
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,
         "maxPromptChars": config.MAX_PROMPT_CHARS,
         "extensionLastSeenSecondsAgo": extension_last_seen_seconds_ago,
+        "mcpRiskScanner": risk_scanner_status,
         # 앱은 이 값으로 시스템 프록시를 걸지 말지 정한다. 저장된 설정이 아니라
         # **지금 실제로 듣고 있는지**를 봐야 죽은 포트로 브라우저를 돌리지 않는다.
         "proxy": proxy.status(),
