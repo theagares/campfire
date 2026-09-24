@@ -22,7 +22,6 @@ const $ = (id) => document.getElementById(id);
 const el = {
   counts: $('counts'),
   vProgress: $('view-progress'), vResult: $('view-result'), vError: $('view-error'),
-  errLink: $('err-link'),
   progressTitle: $('progress-title'), progressSub: $('progress-sub'),
   progressFill: $('progress-fill'), progressWarn: $('progress-warn'),
   docName: $('doc-name'), docType: $('doc-type'), diff: $('diff'), items: $('items'),
@@ -611,9 +610,6 @@ function showView(name) {
   el.vResult.hidden = name !== 'result';
   el.vError.hidden = name !== 'error';
   el.footer.hidden = name !== 'result';
-  // 오류 화면은 세 가지(엔진 연결 실패 / 검사 실패 / 검토 만료)인데 앱 다운로드
-  // 안내가 맞는 건 연결 실패뿐이다 — 기본은 감추고 renderError 만 켠다.
-  el.errLink.hidden = true;
 }
 
 function applyProgress(event) {
@@ -716,8 +712,6 @@ function renderResult(kind, result, meta) {
 
 function renderError(error, meta) {
   showView('error');
-  // 엔진 미실행이 가장 흔한 원인이라 받을 곳을 같이 건다.
-  el.errLink.hidden = false;
   el.errTitle.textContent = '검사 중 오류가 발생했습니다';
   el.errMsg.textContent = error || '엔진에 연결하지 못했습니다.';
   if (meta?.fileName) { el.docName.textContent = meta.fileName; el.docType.textContent = '오류'; }

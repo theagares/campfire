@@ -70,36 +70,6 @@ jobs:
             echo "릴리스를 draft 로 생성했습니다: $tag"
           fi
 
-      # 스토어 업로드용 확장 패키지를 같은 릴리스에 붙인다. 웹스토어 심사에 올리는 zip 과
-      # 개발자 모드("압축해제된 확장 프로그램 로드")용 zip 이 같은 파일이라, 받은 사람이
-      # 어느 경로로든 쓸 수 있다. 두 가지가 지켜져야 심사가 되돌아오지 않는다:
-      #   - manifest.json 이 zip "루트"에 있어야 한다(extension/ 폴더째 압축하면 안 된다).
-      #   - tests/ 는 넣지 않는다 — 탐지기 픽스처에 가짜 토큰/주민번호가 들어 있어
-      #     심사자가 실제 자격증명으로 오해할 소지가 있고, 런타임에 쓰이지도 않는다.
-      # 확인은 zip 을 실제로 열어서 한다(패턴만 맞다고 믿지 않는다).
-      - name: Package extension for Chrome Web Store
-        # 이 단계가 실패해도 설치 파일 빌드는 계속 간다 — 확장 패키징은 데스크톱
-        # 릴리스에 부수적인데, 여기서 잡을 죽이면 build 가 아예 돌지 않아 아무도
-        # 설치 파일을 못 받는다. 검증은 업로드 "전"에 하므로 깨진 zip 이 올라가진 않는다.
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          version=$(node -p "require('./extension/manifest.json').version")
-          out="$PWD/campfire-extension-${version}.zip"
-          # -D: 디렉터리 엔트리를 만들지 않는다. -x 는 tests/ 안의 "파일"만 빼기 때문에
-          # 빈 tests/ 엔트리가 남을 수 있고, 그러면 아래 검증이 헛되게 실패한다.
-          (cd extension && zip -qrD "$out" . -x 'tests/*' './tests/*')
-          unzip -l "$out" | grep -q ' manifest.json$' || {
-            echo "manifest.json 이 zip 루트에 없습니다"; unzip -l "$out"; exit 1;
-          }
-          if unzip -l "$out" | grep -q 'tests/'; then
-            echo "tests/ 가 패키지에 포함됐습니다"; unzip -l "$out"; exit 1
-          fi
-          gh release upload "${{ steps.meta.outputs.tag }}" "$out" --clobber
-          echo "확장 패키지를 릴리스에 올렸습니다: $(basename "$out")"
-
   build:
     needs: prepare
     strategy:
