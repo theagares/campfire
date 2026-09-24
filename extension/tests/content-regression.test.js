@@ -21,6 +21,57 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// ── 가상 시계 ────────────────────────────────────────────────────────────────
+// 이 테스트는 예전엔 실제 setTimeout 으로 총 245초를 그대로 기다렸다(12초 대기,
+// 8초 진단, promptApproved 3초 해제 …). content.js 는 setTimeout 과 Date.now 를
+// **함께** 시간 판단에 쓰므로(예: budgetDeadline = Date.now()+N, setTimeout(poll)),
+// 둘을 한 가상 시계로 묶어야 로직이 그대로 돌면서 실제 sleep 만 사라진다.
+//
+// 모듈 전역 setTimeout/clearTimeout 을 그림자 처리해서 스텁·샌드박스·테스트 본문이
+// 전부 이 시계를 쓴다. tick(ms) 가 그 시간 안의 타이머를 순서대로 발화하고, 발화
+// 사이마다 마이크로태스크(프로미스 연속)를 setImmediate 로 완전히 배출한다 —
+// content.js 의 await 체인이 타이머로만 풀리므로 이게 없으면 진행이 멎는다.
+function makeClock() {
+  let now = 0, seq = 0, timers = [];
+  const drain = () => new Promise((r) => setImmediate(r)); // 실제 매크로태스크 = 미결 마이크로태스크 전부 배출
+  function set(fn, delay = 0, ...args) {
+    const id = ++seq;
+    timers.push({ id, seq, at: now + Math.max(0, Math.floor(delay) || 0), fn, args });
+    return id;
+  }
+  function clr(id) { timers = timers.filter((t) => t.id !== id); }
+  async function tick(ms) {
+    const target = now + ms;
+    await drain();
+    let fired = 0;
+    for (;;) {
+      let next = null;
+      for (const t of timers) {
+        if (t.at <= target && (!next || t.at < next.at || (t.at === next.at && t.seq < next.seq))) next = t;
+      }
+      if (!next) break;
+      if (++fired > 200000) throw new Error('가상 시계: 타이머 무한 루프 의심');
+      timers = timers.filter((t) => t !== next);
+      now = next.at;
+      next.fn(...next.args);      // 콜백이 throw 하면 그대로 실패시킨다(실제 타이머와 동일)
+      await drain();
+    }
+    now = target;
+    await drain();
+  }
+  return { set, clr, tick, now: () => now };
+}
+const clock = makeClock();
+const setTimeout = clock.set;      // eslint-disable-line no-global-assign
+const clearTimeout = clock.clr;    // eslint-disable-line no-global-assign
+const RealDate = Date;
+function FakeDate(...a) { return a.length ? new RealDate(...a) : new RealDate(clock.now()); }
+FakeDate.now = () => clock.now();
+FakeDate.parse = RealDate.parse;
+FakeDate.UTC = RealDate.UTC;
+FakeDate.prototype = RealDate.prototype;
+
+
 const windowListeners = new Map();
 const documentListeners = new Map();
 const runtimeMessages = [];
@@ -457,6 +508,7 @@ const sandbox = {
   console: consoleStub,
   setTimeout,
   clearTimeout,
+  Date: FakeDate,
   crypto: { randomUUID: () => 'uuid-' + Math.random().toString(36).slice(2) },
   TextEncoder,
   TextDecoder,
@@ -498,7 +550,7 @@ const cancelScan = (scanMsg) => decisionListener?.({
   decision: { action: 'cancel' },
 });
 const isScanStart = (m) => m.type === 'START_SCAN' || m.type === 'START_MULTI_SCAN';
-const flush = () => new Promise(r => setTimeout(r, 60));
+const flush = () => clock.tick(60);
 
 (async () => {
   // (1) 위조 메시지: bridgeToken 불일치 → START_SCAN 없어야 함
@@ -678,7 +730,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 첨부가 보류된 제출은 이제 waitForAttachmentReady 를 거쳐 전송하므로 테스트 4가
   // 그만큼 늦게 끝난다 — 실측으로 이 값이 필요했다(6초로는 아직 promptApproved 가
   // 살아 있어 Enter 가 통째로 무시됐다).
-  await new Promise(r => setTimeout(r, 12000));
+  await clock.tick(12000);
   // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
   // 2026-08-05: 신호 없음 경로가 "2.5초 관측 + 900ms 고정 대기"에서 "1.5초 관측"으로
   // 짧아져 테스트 4 가 약 1.9초 빨리 끝난다. 이 값은 하한이라 그대로 둬도 안전하고,
@@ -695,7 +747,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     stopImmediatePropagation() {},
   });
 
-  await new Promise(r => setTimeout(r, 600)); // 버튼이 비활성인 동안
+  await clock.tick(600); // 버튼이 비활성인 동안
   if (sendButtonStub.clicks !== 0) {
     throw new Error('전송 버튼이 비활성인데도 클릭했다 (업로드 완료 전 전송 시도)');
   }
@@ -703,7 +755,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   sendButtonStub.disabled = false;              // 업로드 완료 → 활성화
   // 첨부가 보류돼 있으면 전송 전에 waitForAttachmentReady 가 "버튼이 다시 열릴 때까지"
   // 기다린 뒤에야 resubmitPrompt 로 넘어간다 — 그 왕복까지 덮는 창이어야 한다.
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
   if (sendButtonStub.clicks !== 1) {
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
@@ -747,7 +799,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   - 결정해 줄 화면도 없이 검사만 시작하면 안 된다 — 그러면 아무도 결정을
   //     내려줄 수 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다(#135 와
   //     같은 종류의 침묵이다).
-  await new Promise(r => setTimeout(r, 3200)); // 테스트 6이 세운 promptApproved 해제 대기
+  await clock.tick(3200); // 테스트 6이 세운 promptApproved 해제 대기
 
   failNextOpenPanel = true;
   appendedToRoot.length = 0;
@@ -779,7 +831,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   promptInProcess — 결정이 안 온 검사가 아직 진행 중일 수 있다.
   // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
-  await new Promise(r => setTimeout(r, 7000));
+  await clock.tick(7000);
   const stuckScan = runtimeMessages.filter(isScanStart).slice(-1)[0];
   if (stuckScan) {
 cancelScan(stuckScan);
@@ -897,7 +949,7 @@ cancelScan(stuckScan);
   const pendingScan9 = runtimeMessages.filter(isScanStart).slice(-1)[0];
   cancelScan(pendingScan9);
   await flush();
-  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
+  await clock.tick(7000); // promptApproved(3초) 해제 대기
 
   // 사이트 개편 재현: 설정된 선택자가 문서에서 하나도 안 잡히게 만든다.
   domBySelector.delete('#prompt-textarea');
@@ -924,7 +976,7 @@ cancelScan(stuckScan);
   }
   // resubmitPrompt 는 200ms 대기 후 폴링하므로 실제로 클릭될 때까지 기다린다.
   for (let i = 0; i < 30 && genericSendBtn.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (genericSendBtn.clicks < 1) {
     throw new Error('일반 전송 버튼 후보로 폴백하지 못했다 — 검토는 되는데 전송이 안 되는 증상 그대로다');
@@ -942,7 +994,7 @@ cancelScan(stuckScan);
   const pendingScan12 = runtimeMessages.filter(isScanStart).slice(-1)[0];
   cancelScan(pendingScan12);
   await flush();
-  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
+  await clock.tick(7000); // promptApproved(3초) 해제 대기
 
   // 선택자를 (11) 이 지웠으므로 되돌려 놓는다 — 이 테스트는 정상 사이트 전제다.
   domBySelector.set('#prompt-textarea', promptEditorStub);
@@ -1019,7 +1071,7 @@ cancelScan(stuckScan);
   const pendingScan13 = runtimeMessages.filter(isScanStart).slice(-1)[0];
   cancelScan(pendingScan13);
   await flush();
-  await new Promise(r => setTimeout(r, 7000));
+  await clock.tick(7000);
 
   // 증거 판정이 실제로 도는 환경에서 본다. 이게 없으면 맨 앞 전략이 기계적으로 성공만
   // 해도 이겨버려서 "paste 가 안 먹었을 때 되돌리기로 가는가" 를 확인할 수가 없다.
@@ -1080,7 +1132,7 @@ cancelScan(stuckScan);
 
   // paste 가 증거 없이 끝날 때까지 기다린다 — 이제 되돌리기는 그 다음 차례다.
   // (후보마다 200ms + 전략 끝에 3초 관찰)
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   if (!parent13.appended.includes(input13)) {
     throw new Error('원래 부모가 살아 있는데 input 을 되돌려 놓지 않았다');
@@ -1121,7 +1173,7 @@ cancelScan(stuckScan);
   // 끝나면서 이 테스트의 Enter 가 promptApproved 에 통째로 먹혀 "검사가 시작되지
   // 않았다"로 엉뚱하게 실패한다 — 되돌리기 실험이 무의미해진다. 두 경우를 모두 덮도록
   // 9초로 잡는다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
 
   // (14-a) 신호를 하나도 못 본 경로에서는 진단 기록이 남아야 한다.
   //
@@ -1177,7 +1229,7 @@ cancelScan(stuckScan);
 
   // 업로드가 5초 걸린다. 예전 코드는 2.5초 관측 + 900ms 고정 대기 후 약 3.6초에
   // 눌러버렸다 — 그 회귀를 여기서 잡는다.
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
   if (send14.clicks !== 0) {
     throw new Error(`첨부 업로드가 아직 끝나지 않았는데 전송했다 (clicks=${send14.clicks}) — 프롬프트만 먼저 나가고 첨부가 빠진다`);
   }
@@ -1191,7 +1243,7 @@ cancelScan(stuckScan);
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
   for (let i = 0; i < 40 && send14.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (send14.clicks !== 1) {
     throw new Error(`업로드가 끝났는데도 전송되지 않았다 (clicks=${send14.clicks})`);
@@ -1210,7 +1262,7 @@ cancelScan(stuckScan);
   // 그래서 여기서는 기준선으로 하나를 미리 띄워두고, 그 위에 업로드용 하나를 더
   // 얹었다가 내린다.
   // (14)의 재전송 직후부터 promptApproved 3초가 흐른다 — 여유를 두고 5초 기다린다.
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   const send15 = new SendButtonStub();
   send15.disabled = false;
@@ -1247,7 +1299,7 @@ cancelScan(stuckScan);
 
   // 주입 직후(= 기준선을 잡은 뒤) 첨부 칩의 진행률 표시가 하나 더 뜬다.
   domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }, { id: 'upload' }]);
-  await new Promise(r => setTimeout(r, 4500));
+  await clock.tick(4500);
   if (send15.clicks !== 0) {
     throw new Error(`진행률 표시가 떠 있는데 전송했다 (clicks=${send15.clicks}) — 업로드 도중 전송이다`);
   }
@@ -1257,7 +1309,7 @@ cancelScan(stuckScan);
   promptEditorStub.textContent = '📎 spinner.pdf';
   domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]);
   for (let i = 0; i < 40 && send15.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (send15.clicks !== 1) {
     throw new Error(`진행률 표시가 사라졌는데도 전송되지 않았다 (clicks=${send15.clicks}) — 기준선 progressbar 에 걸려 계속 기다린다`);
@@ -1280,7 +1332,7 @@ cancelScan(stuckScan);
   //
   // 여기서는 관찰이 가능한 환경(MutationObserver 존재)을 만들어, revive 가 기계적으로
   // 성공해도 컴포저에 아무 변화가 없으면 합성 drop 까지 내려가는지 확인한다.
-  await new Promise(r => setTimeout(r, 5000)); // (15)의 promptApproved(3초) 해제 대기
+  await clock.tick(5000); // (15)의 promptApproved(3초) 해제 대기
 
   MutationObserverStub.instances.length = 0;
   sandbox.MutationObserver = MutationObserverStub;
@@ -1345,7 +1397,7 @@ cancelScan(stuckScan);
   });
   // 전략 체인: 살아있는input(즉시 실패) → 합성paste(증거없음) → 되돌리기(증거없음)
   //           → 합성drop(사이트가 받아들임). 앞의 두 전략이 각각 증거 창을 다 쓴다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
 
   if (!parent16.appended.includes(input16)) {
     throw new Error('되돌리기 전략을 아예 시도하지 않았다 — 체인 순서가 깨졌다');
@@ -1377,7 +1429,7 @@ cancelScan(stuckScan);
   // ("문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다"). 사용자는 문서가
   // 갔다고 믿은 채 대화를 이어간다. 보안 제품에서 가장 나쁜 실패 모드다.
   // 실사용자 Gemini 에서 실제로 이 경로가 나왔다(네 전략 모두 증거 없음).
-  await new Promise(r => setTimeout(r, 5000)); // (16)의 promptApproved 해제 대기
+  await clock.tick(5000); // (16)의 promptApproved 해제 대기
 
   const send17 = new SendButtonStub();
   send17.disabled = false;
@@ -1418,7 +1470,7 @@ cancelScan(stuckScan);
   });
   // 전략 체인(증거 대기 포함) 통과 시간. 증거 관찰 창이 700ms → 3000ms 로 늘고 전략이
   // 하나(합성paste) 더 붙어서, 전부 헛돌면 최악 4×3초다.
-  await new Promise(r => setTimeout(r, 13000));
+  await clock.tick(13000);
 
   if (send17.clicks !== 0) {
     throw new Error(`문서를 못 붙였는데 프롬프트를 전송했다 (clicks=${send17.clicks}) — 사용자는 문서가 갔다고 믿는다`);
@@ -1446,7 +1498,7 @@ cancelScan(stuckScan);
   //   ① 프레임워크가 문단을 블록으로 렌더하면 Chrome innerText 가 블록 사이에 개행을
   //      "두 개" 넣는다 → 글자는 같은데 === 가 false → 성공을 실패로 오판
   //   ② 지우기(execCommand delete)가 무시되어 원문이 그대로 남는다
-  await new Promise(r => setTimeout(r, 5000)); // (17)에서 promptApproved 는 즉시 내려가지만 여유
+  await clock.tick(5000); // (17)에서 promptApproved 는 즉시 내려가지만 여유
 
   // (18-a) 지우기가 먹는 에디터: 개행 때문에 판정만 깨지던 경우 → 정확히 1벌, 전송됨.
   const ed18a = new ContentEditableStub('원래 프롬프트\n둘째 줄', { acceptDelete: true });
@@ -1460,7 +1512,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed18a.inserts !== 1) {
     throw new Error(`삽입이 ${ed18a.inserts}회 일어났다 — 판정이 깨져 전략이 연달아 덧씌운 그 회귀다`);
@@ -1478,7 +1530,7 @@ cancelScan(stuckScan);
 
   // (18-b) 우리가 어떤 방법으로도 못 바꾸는 에디터(지우기도 선택 영역 대체도 안 먹는다):
   //        삽입은 1회로 막고, 원문이 남았으므로 전송 금지 — fail-closed 가 살아 있는지.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
     acceptDelete: false, acceptSelectionReplace: false,
@@ -1493,7 +1545,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed18b.inserts > 1) {
     throw new Error(`지우지 못한 입력창에 ${ed18b.inserts}회 삽입했다 — 쌓임을 막지 못했다`);
@@ -1512,7 +1564,7 @@ cancelScan(stuckScan);
   //
   // 오판의 대가는 두 겹이다: 전송이 막히고, 그 전에 남은 전략들이 차례로 실행되어
   // 앞의 삽입 위에 덧쌓인다((18) 이 막는 그 쌓임과 같은 뿌리다).
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed18c = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
     acceptDelete: true, asyncApply: true,
@@ -1527,7 +1579,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
 
   const body18c = ed18c.lines.join(' ');
   if (body18c.includes('900101-1234567')) {
@@ -1557,7 +1609,7 @@ cancelScan(stuckScan);
   //
   // 지우기가 안 먹는(acceptDelete:false) 에디터를 쓰는 게 핵심이다 — 지우기가 먹으면
   // 넣어도 1벌이라 이 회귀가 드러나지 않는다.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const SAME = '이 문서 요약해줘';
   const ed19 = new ContentEditableStub(SAME, { acceptDelete: false });
@@ -1571,7 +1623,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed19.inserts !== 0) {
     throw new Error(`이미 목표 상태인 입력창에 ${ed19.inserts}회 삽입했다 — 그게 2벌이 되는 경로다`);
@@ -1597,7 +1649,7 @@ cancelScan(stuckScan);
   // 이 테스트가 성립하려면 스텁이 선택 영역을 모델링해야 한다(위 ContentEditableStub).
   // 지우기는 안 먹지만(acceptDelete:false) 선택 영역 대체는 먹는 — 실제 Lexical 이
   // 그렇다 — 에디터를 쓴다.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed20 = new ContentEditableStub('내 번호 010-1234-5678 로 연락해줘', { acceptDelete: false });
   domBySelector.set('#prompt-textarea', ed20);
@@ -1611,7 +1663,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   const body20 = ed20.lines.join(' ');
   if (body20.includes('010-1234-5678')) {
@@ -1638,7 +1690,7 @@ cancelScan(stuckScan);
   //   그래서 첫 삽입 전에는 지우기를 단 한 번도 부르지 않아야 한다.
   //   (지우기는 A 가 실패한 뒤 B 단계에서만 쓰이고, 거기서는 "비었음을 확인한 뒤에만"
   //    넣으므로 조각이 남을 수 없다.)
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ORIG21 = '홍길동이고 번호는 010-1234-5678 이야';
   const ed21 = new ContentEditableStub(ORIG21, { acceptDelete: true, partialDelete: true });
@@ -1653,7 +1705,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed21.deletesBeforeFirstInsert !== 0) {
     throw new Error(
@@ -1684,7 +1736,7 @@ cancelScan(stuckScan);
   // 그리고 실패한 되돌리기를 DOM 에 남겨두면 안 된다. 뒤따르는 "사이트 첨부 UI" 전략은
   // **새로 생긴 input** 으로 성공을 판정하는데, 우리가 붙여둔 노드가 기준 스냅샷에
   // 들어가면 사이트가 같은 노드를 재사용하는 구조일 때 영영 못 알아본다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   sandbox.MutationObserver = MutationObserverStub; // 관찰 가능 = 증거 판정이 실제로 돈다
   MutationObserverStub.instances.length = 0;       // 아무 변화도 안 쏜다 → 증거 없음
@@ -1731,7 +1783,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 6000)); // 증거 대기(700ms) × 전략 + 첨부 UI 예산
+  await clock.tick(6000); // 증거 대기(700ms) × 전략 + 첨부 UI 예산
 
   if (!composer22.appended.includes(input22) && input22.parentElement !== composer22) {
     throw new Error('되돌린 input 을 컴포저에 붙이지 않았다 — body 로 떨어지면 사이트가 못 듣는다');
@@ -1760,7 +1812,7 @@ cancelScan(stuckScan);
   //
   // 이 오탐이 특히 나쁜 이유: 성공을 선언해 뒤 전략으로 내려가지 못하게 막고, fail-closed
   // 까지 우회해 **문서 없이 프롬프트만 전송**시킨다. 우리가 막으려던 바로 그 실패다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   sandbox.MutationObserver = MutationObserverStub;
   MutationObserverStub.instances.length = 0;
@@ -1818,7 +1870,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 8000));
+  await clock.tick(8000);
   HTMLInputElementStub.prototype.dispatchEvent = origDispatch23;
 
   if (send23.clicks !== 0) {
@@ -1847,7 +1899,7 @@ cancelScan(stuckScan);
   //
   // 시간이 아니라 신호를 기다려야 한다 — 컴포저에 그 파일 이름이 나타나는 것.
   // 여기서는 사이트가 끝내 칩을 그리지 않는 상황을 만들고, 그때 전송하지 않는지 본다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   delete sandbox.MutationObserver;             // 증거 판정은 여기서 관심사가 아니다
   const send24 = new SendButtonStub();
@@ -1892,14 +1944,14 @@ cancelScan(stuckScan);
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
   });
-  await new Promise(r => setTimeout(r, 300));
+  await clock.tick(300);
   await dispatchWindowMessage({
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
 
   // 첨부 반영 대기(8초)가 끝날 때까지 지켜본다.
-  await new Promise(r => setTimeout(r, 10000));
+  await clock.tick(10000);
 
   // (2026-08-08 정정) 예전엔 여기서 "전송을 막아야 한다" 를 검사했다. 실사용자가 그
   // 판단이 틀렸음을 알려줬다 — "실제로는 첨부도 됐고 메시지도 들어가서 보내기만 하면
@@ -1928,7 +1980,7 @@ cancelScan(stuckScan);
   //
   // 여기서는 업로드가 1.2초 뒤에야 시작되는 사이트를 만든다. 700ms 창이면 놓치고,
   // 넉넉한 창이면 잡는다. 잘못된 "증거없음" 의 대가는 크다 — 되던 주입을 버린다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   // 관찰이 가능한 환경이어야 한다. MutationObserver 가 없으면 settle() 이 "관찰 불가 —
   // 기계적 성공" 으로 즉시 통과해 창 길이가 아무 의미도 없어진다(처음에 그렇게 썼다가
@@ -1994,7 +2046,7 @@ cancelScan(stuckScan);
   });
   // 합성paste 가 증거 없이 끝난 뒤(≈3.2초)에야 되돌리기 차례고, 거기서 다시 1.2초 뒤에
   // 업로드가 시작된다. 그 둘을 다 덮을 만큼 기다린다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
   HTMLInputElementStub.prototype.dispatchEvent = origInject25;
 
   const chain25 = consoleLines.filter(l => l.includes('첨부 주입 시도 경로')).slice(-1)[0] || '';
@@ -2012,7 +2064,7 @@ cancelScan(stuckScan);
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
-  await new Promise(r => setTimeout(r, 6500)); // 첨부 반영 대기(5초) + 재전송
+  await clock.tick(6500); // 첨부 반영 대기(5초) + 재전송
 
   // (26) 사이트 선택자가 깨졌고 입력창에 포커스도 없을 때 — 그래도 찾아내야 한다.
   //
@@ -2025,7 +2077,7 @@ cancelScan(stuckScan);
   //   · getEditorText 가 빈 문자열 → interceptPromptSubmit 이 그대로 물러나
   //     **검사 없이 원문이 나간다**(마우스로 전송 버튼을 누른 경우)
   // 후자가 특히 나쁘다 — 조용히 원문이 유출된다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   // keydown 경로에는 "포커스가 입력창 안인가" 가드가 따로 있고 그건 옳다. 위험한 건
   // **마우스로 전송 버튼을 누르는 경로** 다 — 그때 activeElement 는 버튼이라 편집
@@ -2050,7 +2102,7 @@ cancelScan(stuckScan);
     target: send26,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
 
   const scans26 = runtimeMessages.filter(isScanStart).length - scansBefore26;
   if (scans26 !== 1) {
@@ -2074,7 +2126,7 @@ cancelScan(stuckScan);
   // preventDefault + stopImmediatePropagation 으로 삼켜버린다 — 사이트는 문서를 못
   // 받고, 우리는 그걸 pendingAttachment 로 되돌려 놔서 다음 전송에 또 검사한다.
   // 전략 1·2(input 경로)는 _upsContentDone 으로 막고 있었는데 합성 이벤트만 뚫려 있었다.
-  await new Promise(r => setTimeout(r, 4000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(4000); // 앞 테스트의 promptApproved 해제 대기
 
   domBySelector.set('#prompt-textarea', promptEditorStub);
   domBySelector.delete('input[type="file"]');
@@ -2128,7 +2180,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   const pasted27 = promptEditorStub.dispatched.filter(e => e.type === 'paste' && e.clipboardData?.files?.length);
   if (!pasted27.length) {
@@ -2166,7 +2218,7 @@ cancelScan(stuckScan);
   //
   // 그리고 예전엔 후보 **전부에게 한꺼번에** 쐈다. 핸들러를 가진 조상이 둘이면 같은
   // 파일이 두 번 첨부되거나 사이트 상태가 꼬인다 — "여러 번 하면 될 때도 있다" 의 정체.
-  await new Promise(r => setTimeout(r, 4000));
+  await clock.tick(4000);
 
   MutationObserverStub.instances.length = 0;
   sandbox.MutationObserver = MutationObserverStub;
@@ -2247,7 +2299,7 @@ cancelScan(stuckScan);
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 6000));
+  await clock.tick(6000);
 
   // ★ 컴포저 루트보다 위에 있어도 후보에 들어가야 한다.
   if (!deepest28.dispatched.some(e => e.type === 'paste' && e.clipboardData?.files?.length)) {
@@ -2286,7 +2338,7 @@ cancelScan(stuckScan);
     // 그동안 keydown/click/submit 리스너가 전부 그냥 return 한다 — 사용자의 Enter 가
     // 검사 없이 사이트로 직행한다. 아무 로그도 안 남아서 "승인 0개" 로만 보였다.
     // 지금은 finally 안에서 반드시 재무장하므로 이 대기면 충분하다.
-    await new Promise(r => setTimeout(r, 4000));
+    await clock.tick(4000);
     // 28)이 전송 버튼 선택자를 전부 지웠다 — 첨부 대기가 그걸 신호로 쓰므로 되돌린다.
     domBySelector.set('[data-testid="send-button"]', sendButtonStub);
 
@@ -2385,7 +2437,7 @@ cancelScan(stuckScan);
   {
     // 앞 시나리오는 첨부 준비 대기(최대 1.5초) 뒤 promptApproved를 3초 더
     // 유지한다. 4초는 느린 환경에서 아직 승인 창 안이라 Enter가 무시될 수 있다.
-    await new Promise(r => setTimeout(r, 7000));
+    await clock.tick(7000);
     domBySelector.set('[data-testid="send-button"]', sendButtonStub);
 
     const mk = (name) => {
