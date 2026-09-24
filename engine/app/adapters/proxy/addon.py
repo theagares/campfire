@@ -103,6 +103,27 @@ UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
 # 구조가 ChatGPT 와 같다 — 크기를 먼저 선언하고 나중에 바이트를 보낸다. 그래서
 # 대응도 같다: 선언값을 N' 으로 바꿔 두고 본문을 N' 까지 채운다.
 # multipart 가 아니라 raw 본문이라 오히려 다루기 쉽다(파트를 찾을 필요가 없다).
+# ─── Claude 메시지 RPC (파일 업로드가 아닌 인라인 텍스트 경로) ─────────────────
+#
+# 2026-09-23 실측: 새 대화에서 텍스트 파일(.txt/.md)을 첨부하면 업로드가 아니라
+# 메시지 protobuf 에 인라인돼 이 RPC 로 나간다. 손으로 친 프롬프트도 같은 경로다.
+# 즉 파일 업로드 검사를 다 통과해도 텍스트는 여기로 샌다.
+#
+# 지금은 **텍스트가 들어 있으면 차단**한다. protobuf 를 풀어 마스킹하는 것이 목표지만,
+# 그 전까지 fail-open 으로 두면 검사 없이 나간다. content-type 이 application/proto 라
+# (connect+proto 아님) 봉투 없이 바로 protobuf 다 — 그 가정이 깨지면(decode 실패)
+# 통과가 아니라 차단으로 떨어진다.
+CLAUDE_RPC_HOSTS = {"claude.ai"}
+CLAUDE_MESSAGE_RPC_PATHS = (
+    "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction",
+)
+# 2026-09-24 실측(캡처 5건 디코드): 사용자 콘텐츠는 최상위 필드 2(=전송 액션) 안에만 있다.
+#   2.3     손으로 친 메시지 텍스트
+#   2.15.4  인라인된 텍스트 파일의 내용 (2.15.1=파일명, 2.15.3=mime, 파일마다 2.15 반복)
+# 나머지(세션 id·UUID·모델명 'claude-opus-5-5'·'ko-KR'·'Asia/Seoul')는 메타데이터라
+# 손대지 않는다. 필드 2 가 없는 액션(메타 핑 등)은 사용자 콘텐츠가 없어 통과시킨다.
+CLAUDE_USER_TEXT_PATHS = {(2, 3), (2, 15, 4)}
+
 GEMINI_UPLOAD_HOST = "push.clients6.google.com"
 GEMINI_UPLOAD_PATH = "/upload/"
 _GOOG_CMD = "x-goog-upload-command"
@@ -271,6 +292,9 @@ class CampfireAddon:
             logger.warning("[proxy] 다루지 못하는 업로드 형식 — 차단 %s%s", host, key)
             self._block(flow, "아직 지원하지 않는 업로드 형식이라 전송을 막았습니다")
             return
+        if host in CLAUDE_RPC_HOSTS and key in CLAUDE_MESSAGE_RPC_PATHS:
+            await self._claude_rpc(flow)
+            return
         if host in _multipart_hosts() and flow.request.method == "POST":
             await self._multipart(flow, host)
 
@@ -288,6 +312,69 @@ class CampfireAddon:
             self._chatgpt_register_response(flow)
         elif host == GEMINI_UPLOAD_HOST:
             self._gemini_start_response(flow)
+
+    # ── Claude 메시지 RPC 경로 ───────────────────────────────────────────────
+
+    async def _claude_rpc(self, flow: http.HTTPFlow) -> None:
+        from app.adapters.proxy import protobuf as pb
+
+        body = flow.request.content or b""
+
+        # 필드 구조를 뜨기 위한 캡처(옵션). 값은 검증용 가짜 텍스트라 민감하지 않다.
+        cap = config.PROXY_CAPTURE_DIR
+        if cap:
+            try:
+                import os
+                import time
+
+                os.makedirs(cap, exist_ok=True)
+                fn = os.path.join(cap, f"perform_{int(time.time()*1000)}_{len(body)}.bin")
+                with open(fn, "wb") as fh:
+                    fh.write(body)
+                logger.info("[proxy] RPC 캡처 %s (%d bytes, ct=%s)",
+                            fn, len(body), flow.request.headers.get("content-type", "-"))
+            except Exception:
+                logger.exception("[proxy] RPC 캡처 실패")
+
+        # 봉투 없는 application/proto 만 다룬다. connect+proto(봉투 있음)로 바뀌면
+        # 우리 코덱 가정이 깨지므로 통과가 아니라 차단으로 떨어진다.
+        ctype = flow.request.headers.get("content-type", "")
+        if "connect" in ctype.lower() or "grpc" in ctype.lower():
+            logger.warning("[proxy] Claude RPC 가 봉투 형식(%s) — 아직 못 다뤄 차단", ctype)
+            self._block(flow, "아직 지원하지 않는 메시지 형식이라 전송을 막았습니다")
+            return
+
+        try:
+            msg = pb.decode(body)
+        except pb.DecodeError:
+            # protobuf 로 안 읽힌다 = 우리가 모르는 모양이다. 통과시키면 검사 없이 나간다.
+            logger.warning("[proxy] Claude RPC 본문을 못 읽었다 — 차단")
+            self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
+            return
+
+        # 필드 2(전송 액션)가 없으면 사용자 콘텐츠가 없는 액션이다 — 그대로 통과.
+        if not any(f.number == 2 for f in msg.fields):
+            return
+
+        # 사용자 콘텐츠 필드만 고른다(2.3, 2.15.4). looks_like_text 로 한 번 더 거른다 —
+        # 파일 참조 id 등이 그 자리에 오면 텍스트가 아니므로 지나간다.
+        targets = [
+            f for path, f in msg.walk()
+            if path in CLAUDE_USER_TEXT_PATHS
+            and f.message is None and f.value is not None and pb.looks_like_text(f.value)
+        ]
+        if not targets:
+            return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
+
+        masked = await self._scan_texts_and_decide(targets, host="claude.ai")
+        if masked is None:
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        if masked is _ORIGINAL:
+            return  # 사람이 원본 전송을 택했다 — 본문 그대로 보낸다.
+        for fld, new_bytes in masked:
+            fld.set_bytes(new_bytes)
+        flow.request.content = msg.serialize()
 
     # ── Gemini 경로 (세션 시작 → 본문) ──────────────────────────────────────
 
@@ -502,6 +589,51 @@ class CampfireAddon:
         # 마크다운 바이트를 PDF 로 열려고 한다. 업로드 자체는 통과하더라도
         # 처리 단계에서 깨진다.
         flow.request.headers["content-type"] = MASKED_MIME
+
+    # ── 텍스트 여러 필드 검사 + 한 번의 판단 (Claude 메시지 RPC) ──────────────
+
+    async def _scan_texts_and_decide(self, fields, *, host):
+        """텍스트 필드 여러 개를 검사하고 **판단은 한 번만** 받는다.
+
+        메시지 하나에 프롬프트(2.3)와 인라인 파일(2.15.4)이 같이 있어도 검토 요청은
+        하나여야 한다 — 필드마다 따로 물으면 사람이 같은 전송을 여러 번 승인한다.
+        반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함).
+        """
+        from app.core.pipeline.orchestrator import run_pipeline
+
+        per_field = []          # (field, masked_text)
+        all_pii, all_inj = [], []
+        orig_parts, masked_parts = [], []
+        for fld in fields:
+            text = fld.value.decode("utf-8", "replace")
+            result = await run_pipeline(text=text)
+            if result.get("blocked"):
+                logger.info("[proxy] 정책 차단 (Claude 메시지)")
+                return None
+            masked_text = result.get("maskedText", text)
+            per_field.append((fld, masked_text))
+            all_pii += result.get("piiItems", [])
+            all_inj += result.get("injectionItems", [])
+            orig_parts.append(text)
+            masked_parts.append(masked_text)
+
+        combined = {
+            "originalText": "\n---\n".join(orig_parts),
+            "maskedText": "\n---\n".join(masked_parts),
+            "piiItems": all_pii,
+            "injectionItems": all_inj,
+            "scanStatus": "ok",
+            "stats": {"piiCount": len(all_pii), "injectionCount": len(all_inj)},
+        }
+        action = await broker.wait(
+            file_name="메시지", host=host, result=combined,
+            timeout_s=config.PROXY_DECISION_TIMEOUT_S,
+        )
+        if action == "cancel":
+            return None
+        if action == "send_original":
+            return _ORIGINAL
+        return [(fld, mt.encode("utf-8")) for fld, mt in per_field]
 
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
