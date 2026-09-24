@@ -15,7 +15,6 @@ import asyncio
 
 import pytest
 
-from app import config
 from app.core import model_status
 from app.core.detectors import registry
 
@@ -64,12 +63,36 @@ def test_injection_llm_mcp_detects():
     registry.reset_cache()
 
 
-def test_unknown_detector_name_raises(monkeypatch):
-    monkeypatch.setattr(config, "PII_DETECTOR", "no_such_detector")
-    registry.reset_cache()
-    with pytest.raises(ValueError):
-        registry.get_pii_detector()
-    registry.reset_cache()
+def test_active_detectors_never_reports_a_config_value(monkeypatch):
+    """이름 없는 detector 가 와도 **환경변수 문자열**을 활성 detector 로 보고하지 않는다.
+
+    예전 폴백은 config.PII_DETECTOR 였다. 그 값은 아무도 읽지 않는데(구현이 종류별로
+    하나씩뿐이라 이름→빌더 조회표를 없앴다) 보고에는 섞여 들어갈 수 있었다 —
+    SECUREDOC_PII_DETECTOR=아무거나 로 띄우면 /health 와 MCP get_status 가 실제로
+    도는 것과 다른 이름을 활성 detector 라고 말한다. 보안 도구가 "무엇이 검사 중인가"를
+    틀리게 말하는 건 모르는 것보다 나쁘다.
+    """
+    class Nameless:
+        pass
+
+    monkeypatch.setattr(registry, "get_pii_detector", Nameless)
+    monkeypatch.setattr(registry, "get_injection_detector", Nameless)
+
+    assert registry.active_detectors() == {"pii": "unknown", "injection": "unknown"}
+
+
+def test_detector_choice_is_not_configurable():
+    """읽지 않는 설정 키를 되살리지 않는다.
+
+    키가 남아 있으면 "고를 수 있다" 는 인상을 준다. 실제로 데스크탑이 그 값을 spawn env
+    로 실어 보내고 값이 바뀌면 엔진을 재시작까지 했는데, 엔진은 읽지 않으므로 결과는
+    언제나 같았다 — 검사 중이던 작업만 끊는 재시작이었다. 종류가 늘면 조회표를
+    되살리는 게 맞지, 읽지 않는 설정을 남겨두는 게 아니다.
+    """
+    from app import config
+
+    assert not hasattr(config, "PII_DETECTOR")
+    assert not hasattr(config, "INJECTION_DETECTOR")
 
 
 def test_core_pipeline_passes_through_when_models_not_ready(monkeypatch):
