@@ -472,3 +472,6 @@ body {
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-cancel { background: var(--bg); color: var(--text-2); border: 1px solid var(--faint); }
 .btn-send { background: var(--purple); color: #fff; border: none; }
+
+/* 오류 화면 하단 안내 — 엔진 미실행이 가장 흔한 원인이라 받을 곳을 같이 건다. */
+.err-link { display: block; margin-top: 10px; font-size: 11px; }
