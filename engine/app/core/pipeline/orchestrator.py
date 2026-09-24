@@ -254,10 +254,15 @@ async def run_pipeline(
             "scanStatus": MODELS_NOT_READY,
             "reason": "PII/인젝션 모델이 아직 준비되지 않았습니다",
         })
+        # 다만 자격증명은 여기서도 잡는다. credentials.detect 는 가중치가 필요 없는
+        # 정규식이라(모듈 docstring) 모델 상태와 무관하게 돈다. 오히려 이 창(설치
+        # 직후 다운로드 중)이 제일 위험하다 — 여기서 건너뛰면 secure_read_file(".env")
+        # 이 원문 그대로 decision:"clean" 으로 나간다(#147 이 막으려던 그 누출).
+        cred_items = credentials.detect(text)
         return _build_result(
             original_text=text,
-            masked_text=text,
-            pii_items=[],
+            masked_text=masker.apply_masking(text, list(cred_items))["masked_text"],
+            pii_items=cred_items,
             injection_items=[],
             scan_status=MODELS_NOT_READY,
             reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
