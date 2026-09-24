@@ -214,11 +214,11 @@ def _load_dotenv_value(key: str) -> str:
     return ""
 
 
-# ── 인젝션 2단계 세부 위치 특정 (Upstage Solar Pro 3) ─────────────────────────
+# ── 인젝션 2단계 세부 위치 특정 (Upstage Solar Pro 4) ─────────────────────────
 # EXAONE hybrid 분류기는 청크 전체를 misaligned/aligned/non_instruction 로만
 # 판정하고 청크 내 구체적 위치는 모르는 구조라(어텐션/hidden state 를 청크 전체에
 # 걸쳐 풀링해서 분류), misaligned 판정 시 청크 전체가 통째로 마스킹된다. Solar
-# Pro 3 에 "이 청크에서 실제 인젝션 지시문이 정확히 어느 부분이냐"를 다시 물어
+# Pro 4 에 "이 청크에서 실제 인젝션 지시문이 정확히 어느 부분이냐"를 다시 물어
 # 그 부분만 정밀하게 마스킹하기 위한 2단계 호출. 1단계(EXAONE)가 이미
 # misaligned 라고 판정한 청크에 대해서만 호출하므로 비용/지연이 항상 붙지 않는다.
 # 실패/애매하면(빈 응답, API 오류, 응답이 원문과 정확히 일치하지 않음) 기존처럼
@@ -229,9 +229,9 @@ UPSTAGE_API_KEY: str = (
     or _load_dotenv_value("upstage_key")
 )
 UPSTAGE_API_BASE: str = os.environ.get(
-    "SECUREDOC_UPSTAGE_API_BASE", "https://api.upstage.ai/v1/solar/chat/completions"
+    "SECUREDOC_UPSTAGE_API_BASE", "https://api.upstage.ai/v1/chat/completions"
 )
-UPSTAGE_MODEL: str = os.environ.get("SECUREDOC_UPSTAGE_MODEL", "solar-pro3")
+UPSTAGE_MODEL: str = os.environ.get("SECUREDOC_UPSTAGE_MODEL", "solar-pro4")
 UPSTAGE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_UPSTAGE_TIMEOUT_SEC", "20"))
 # API 키가 없으면(로컬 전용 배포 등) 자동으로 비활성화 — 2단계 없이 기존 청크
 # 전체 마스킹 동작 그대로 유지.
@@ -263,8 +263,6 @@ PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", s
 PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
-RULES_DIR: Path = APP_DIR / "rules"
-
 # store 는 "사용자 기기에 쌓이는 것" 이므로 모델 가중치와 같은 자리에 둔다 —
 # 앱 번들 안이 아니다.
 #
@@ -294,5 +292,43 @@ AUDIT_LOG_PATH: Path = STORE_DIR / "audit.log"
 # 런타임에 동적으로 unsupported 로 떨어질 수 있다(§9.2, §11) — 그래도 "시도는
 # 하는" 포맷이므로 여기서는 지원 목록에 둔다.
 # XLS/PPT(구버전 바이너리)는 이번 범위 밖이라 UNSUPPORTED 로 유지.
-SUPPORTED_EXTENSIONS: set[str] = {".txt", ".pdf", ".docx", ".hwp", ".hwpx", ".xlsx", ".pptx"}
+#
+# 추가분(의존성 없이 표준 라이브러리만): OpenDocument(odt/ods/odp), 메일(eml/mht),
+# HTML, 그리고 평문 계열(csv/tsv/md/json/xml/log). 평문 계열은 예전에도 _looks_textual
+# 폴백으로 통과하긴 했지만 목록에 없으면 **확장 프로그램이 가로채질 않아** 검사 자체가
+# 일어나지 않았다 — 이 집합은 엔진 능력이자 확장의 가로채기 목록이다.
+SUPPORTED_EXTENSIONS: set[str] = {
+    ".txt", ".pdf", ".docx", ".hwp", ".hwpx", ".xlsx", ".pptx",
+    ".odt", ".ods", ".odp",
+    ".eml", ".mht", ".mhtml",
+    ".html", ".htm",
+    ".csv", ".tsv", ".md", ".json", ".xml", ".log",
+}
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
+
+# ── 프록시 게이트웨이 (adapters/proxy) ────────────────────────────────────────
+# 확장 프로그램 대신 로컬 TLS 프록시로 업로드를 가로채는 경로. 기본은 꺼짐 —
+# 켜려면 mitmproxy 가 필요하고(`pip install -e ".[proxy]"`) 루트 CA 도 깔아야 한다.
+PROXY_ENABLED: bool = os.environ.get("SECUREDOC_PROXY_ENABLED", "0") == "1"
+PROXY_PORT: int = int(os.environ.get("SECUREDOC_PROXY_PORT", "48210"))
+
+# 사람이 검토하는 동안 요청을 붙들고 있는 최대 시간.
+#
+# 길게 잡고 싶어지는 값이지만 상한은 우리가 정하는 게 아니다 — 사이트 JS 의 abort
+# 타임아웃이 먼저 끊으면 사용자는 이유를 알 수 없는 업로드 실패를 본다. 그 값은
+# 아직 못 쟀으므로(§실측 문서) 보수적으로 잡고, 재고 나서 올린다.
+PROXY_DECISION_TIMEOUT_S: float = float(os.environ.get("SECUREDOC_PROXY_DECISION_TIMEOUT_S", "120"))
+
+# 기본 목록 밖의 호스트도 multipart 검사 대상에 넣는다(쉼표 구분).
+# 사이트가 도메인을 바꿨을 때 릴리스 없이 막기 위한 것이고, 검증용 로컬 서버를
+# 붙일 때도 쓴다.
+PROXY_EXTRA_HOSTS: set[str] = {
+    h.strip() for h in os.environ.get("SECUREDOC_PROXY_EXTRA_HOSTS", "").split(",") if h.strip()
+}
+
+# 프록시가 본 요청을 한 줄씩 남긴다. 어떤 호스트로 업로드가 가는지 특정할 때 쓴다.
+# 기본은 꺼짐 — 켜면 방문 URL 이 로그에 남는다.
+PROXY_LOG_REQUESTS: bool = os.environ.get("SECUREDOC_PROXY_LOG_REQUESTS", "0") == "1"
+
+# 프록시가 본 RPC 본문을 이 폴더에 덤프한다(필드 구조 분석용). 기본 꺼짐.
+PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")

@@ -49,6 +49,10 @@ const DEFAULTS = {
   piiDetector: 'encoder',
   injectionDetector: 'llm_mcp',
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
+  // 프록시 토글(proxy-toggle.js). proxySystemPrevious 는 우리가 시스템 프록시를 덮어쓰기
+  // **전의** 값이다 — null 이면 안 덮어썼다. 앱이 강제 종료돼도 다음 실행 때 이걸로 되돌린다.
+  proxyEnabled: false,
+  proxySystemPrevious: null,
 };
 
 class ConfigStore {

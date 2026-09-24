@@ -114,6 +114,26 @@
                 <div class="hint">설치 파일에 이미 포함되어 있습니다 — 폴더를 열어 chrome://extensions 에서 "압축해제된 확장 프로그램 로드"로 선택하세요.</div>
                 <button class="conn-link" id="conn-ext-install">확장 프로그램 폴더 열기 →</button>
               </div>
+
+              <div class="card conn-card" id="conn-proxy-card">
+                <div class="conn-head">
+                  <div class="conn-ico conn-ico-glyph" aria-hidden="true">⇄</div>
+                  <div class="ch-text">
+                    <h3>프록시 게이트웨이</h3>
+                    <p>브라우저 종류와 상관없이 AI 사이트로 가는 업로드를 검사합니다</p>
+                  </div>
+                  <label class="proxy-switch" title="프록시 켜기/끄기">
+                    <input type="checkbox" id="proxy-toggle" disabled />
+                    <span class="ps-track"><span class="ps-thumb"></span></span>
+                  </label>
+                </div>
+                <div class="proxy-lights">
+                  <div class="model-pill off" id="proxy-light-engine"><span class="mp-dot"></span><span class="mp-text">엔진 프록시</span></div>
+                  <div class="model-pill off" id="proxy-light-ca"><span class="mp-dot"></span><span class="mp-text">CA 인증서</span></div>
+                  <div class="model-pill off" id="proxy-light-system"><span class="mp-dot"></span><span class="mp-text">시스템 설정</span></div>
+                </div>
+                <div class="proxy-hint" id="proxy-hint"><div class="hint">확인 중…</div></div>
+              </div>
             </div>
             <div class="conn-divider" style="margin-top:16px"></div>
             <p class="conn-footnote">더 많은 연동 방식이 곧 추가됩니다</p>
@@ -244,7 +264,7 @@
         <!-- Upstage Solar API 키 — 인젝션 2단계 localize 용(PLAN 근본원인 대응) -->
         <div class="field">
           <label for="upstage-api-key">Upstage Solar API 키</label>
-          <div class="hint">인젝션 탐지 시 정확한 위치를 찾는 데 사용됩니다(Upstage Solar). 비워두면 전체 문단을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
+          <div class="hint">인젝션 탐지 시 정확한 위치를 찾는 데 사용됩니다(Upstage Solar Pro 4). 비워두면 전체 문단을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
           <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
         </div>
 
@@ -267,7 +287,7 @@
           <div class="setting-row">
             <div>
               <label>탐지 모델</label>
-              <div class="hint" id="detector-hint">PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar 실 모델 — 설치 후 최초 실행 시 가중치(약 600MB)가 자동으로 내려받아집니다. 다운로드가 끝나기 전에는 검사 없이 그대로 통과합니다.</div>
+              <div class="hint" id="detector-hint">PII는 A.X Encoder+CRF, 인젝션은 EXAONE 4.0 1.2B+Solar Pro 4 — 설치 후 최초 실행 시 가중치(약 600MB)가 자동으로 내려받아집니다. 다운로드가 끝나기 전에는 검사 없이 그대로 통과합니다.</div>
             </div>
           </div>
           <div class="hint" id="detector-progress" style="display:none"></div>

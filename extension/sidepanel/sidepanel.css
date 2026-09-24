@@ -216,6 +216,48 @@ body {
   border: 1px solid #eab30855; border-radius: 8px; padding: 8px 12px; margin-top: 4px;
 }
 
+/* ── 파일별 결정 바 ──────────────────────────────────────────────────────── */
+.doc-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  margin: 0 0 10px; padding: 10px 12px; font-size: 12.5px;
+  border: 1px solid var(--border); border-left: 3px solid #8a6a1c;
+  border-radius: 8px; background: var(--card);
+}
+.doc-actions .why { flex: 1 1 100%; color: var(--muted); margin-bottom: 2px; }
+.doc-actions button {
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  background: var(--bg); color: var(--text); cursor: pointer; font: inherit;
+}
+.doc-actions button:hover { border-color: var(--purple); }
+.doc-actions button.risky { color: var(--pii); }
+.doc-actions button[aria-pressed="true"] { border-color: var(--pii); font-weight: 600; }
+.doc-actions .chosen { color: var(--green); font-weight: 600; }
+
+/* ── 다중 첨부 탭 ─────────────────────────────────────────────────────────
+   탭 라벨에 탐지 건수를 띄운다 — 어느 파일이 문제인지 열어보지 않고 알 수 있어야 한다. */
+.tabs {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  padding: 8px 14px 0; font-size: 12px;
+}
+.tabs button {
+  border: 1px solid var(--border); border-bottom-color: transparent;
+  border-radius: 7px 7px 0 0; padding: 6px 10px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font: inherit; max-width: 170px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button[aria-selected="true"] {
+  background: var(--card); color: var(--text); font-weight: 600;
+  border-color: var(--border); border-bottom-color: var(--card);
+}
+.tabs button:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+/* 실패와 부분 검사는 다른 상태다 — 부분 검사는 "검사는 했지만 뒷부분을 못 봤다" 이고,
+   탐지 0건으로만 보이면 사용자가 안전하다고 읽는다. */
+.tabs button.st-error { color: var(--pii); }
+.tabs button.st-truncated { color: #8a6a1c; }
+.tabs button.st-pending, .tabs button.st-scanning { opacity: .6; }
+
 /* ── 결과: Figma #45:951 그대로 — 문서(좌, 화면 전체 높이) + 탐지 항목(우) 2컬럼.
    Figma 실측 비율(469:195 ≈ 70.6:29.4)을 그대로 따르는 비율 분할. */
 /* 스크롤은 되지만 스크롤바는 그리지 않는다.
@@ -430,3 +472,6 @@ body {
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-cancel { background: var(--bg); color: var(--text-2); border: 1px solid var(--faint); }
 .btn-send { background: var(--purple); color: #fff; border: none; }
+
+/* 오류 화면 하단 안내 — 엔진 미실행이 가장 흔한 원인이라 받을 곳을 같이 건다. */
+.err-link { display: block; margin-top: 10px; font-size: 11px; }

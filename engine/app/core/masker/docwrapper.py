@@ -55,17 +55,10 @@ def wrap_as_docx(masked_text: str, orig_file_name: str) -> dict:
     }
 
 
-def wrap_as_md(masked_text: str, orig_file_name: str) -> dict:
-    """마스킹 텍스트를 .md(text/plain) 로 래핑 (docwrapper.js wrapAsMd 이식)."""
-    return {
-        "bytes": masked_text.encode("utf-8"),
-        "mime_type": "text/plain",
-        "file_name": _masked_name(orig_file_name, "md"),
-    }
+def wrap_masked_file(masked_text: str, orig_file_name: str) -> dict:
+    """공개 API. PLAN §6 대로 DOCX 로 낸다(PDF 입력도 _masked.docx).
 
-
-def wrap_masked_file(masked_text: str, orig_file_name: str, fmt: str = "docx") -> dict:
-    """공개 API. PLAN §6 대로 기본은 DOCX(PDF 입력도 _masked.docx)."""
-    if fmt == "md":
-        return wrap_as_md(masked_text, orig_file_name)
+    fmt 인자와 wrap_as_md 분기가 있었지만 호출부는 orchestrator 한 곳이고 항상
+    "docx" 를 넘겼다 — 쓰이지 않는 갈래였다.
+    """
     return wrap_as_docx(masked_text, orig_file_name)

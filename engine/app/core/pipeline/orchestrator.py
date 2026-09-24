@@ -218,14 +218,14 @@ async def run_pipeline(
     # 청크 수가 그대로 따라 늘고 청크마다 추론이 붙는다(config.MAX_TEXT_CHARS 주석 참고).
     # 조용히 자르지 않는다: 잘랐다는 사실을 결과(truncated)와 경고로 함께 내보낸다.
     truncated = False
+    original_chars = len(text) if text else 0
     if scan_status == STATUS_OK and text and len(text) > config.MAX_TEXT_CHARS:
-        full_len = len(text)
         text = text[: config.MAX_TEXT_CHARS]
         truncated = True
         await emit({
             "type": "warning",
             "partial": True,
-            "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {full_len:,}자)",
+            "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {original_chars:,}자)",
         })
 
     # 미검사 통과 (PLAN §9.2): 파싱 실패/미지원이면 탐지 없이 통과
@@ -240,6 +240,7 @@ async def run_pipeline(
             reason=reason,
             blocked=False,
             masked_file=None,
+            original_chars=original_chars,
         )
 
     # 룰베이스 폴백을 없앴다 — pii/injection 모두 실 모델(encoder/llm_mcp)만 남아서,
@@ -263,6 +264,7 @@ async def run_pipeline(
             blocked=False,
             masked_file=None,
             truncated=truncated,
+            original_chars=original_chars,
         )
 
     # ── Step 2~3: 청크 + PII 탐지 ─────────────────────────────────────────────
@@ -305,7 +307,7 @@ async def run_pipeline(
 
     masked_file = None
     if wrap_file and not blocked:
-        wrapped = docwrapper.wrap_masked_file(masked_text, file_name, fmt="docx")
+        wrapped = docwrapper.wrap_masked_file(masked_text, file_name)
         masked_file = {
             "base64": base64.b64encode(wrapped["bytes"]).decode("ascii"),
             "mimeType": wrapped["mime_type"],
@@ -323,6 +325,7 @@ async def run_pipeline(
         blocked=blocked,
         masked_file=masked_file,
         truncated=truncated,
+        original_chars=original_chars,
         user_prompt=user_prompt,
         user_prompt_masked=user_prompt_masked,
         user_prompt_pii_items=user_prompt_pii_items,
@@ -340,6 +343,7 @@ def _build_result(
     blocked: bool,
     masked_file: dict | None,
     truncated: bool = False,
+    original_chars: int | None = None,
     user_prompt: str | None = None,
     user_prompt_masked: str | None = None,
     user_prompt_pii_items: list[Detection] | None = None,
@@ -352,7 +356,14 @@ def _build_result(
         "injectionItems": injection_items,
         # 상한(config.MAX_TEXT_CHARS)을 넘겨 앞부분만 검사했는가. 소비자는 이 값으로
         # "전부 검사했다" 와 "일부만 검사했다" 를 구분한다.
+        #
+        # truncated 만으로는 "얼마나 못 봤는지" 를 못 보여준다. 검토 UI 가
+        # "검사 200,000자 / 전체 N자" 를 띄우려면 자르기 "전" 길이가 필요해서
+        # 두 값을 함께 낸다. original_chars 를 안 넘긴 호출은 자른 적이 없다는 뜻이라
+        # 검사 길이와 같은 값으로 채운다.
         "truncated": truncated,
+        "scannedChars": len(original_text),
+        "originalChars": original_chars if original_chars is not None else len(original_text),
         "scanStatus": scan_status,
         "reason": reason,
         "blocked": blocked,

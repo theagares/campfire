@@ -73,6 +73,9 @@
     <!-- 결과 (HITL 검토) — Figma #45:951 그대로: 문서가 화면 전체 높이를 차지하는
          본문(좌) + 탐지 항목 사이드바(우) 2컬럼 -->
     <section class="view view-result" id="view-result" hidden>
+      <!-- 다중 첨부일 때만 보인다. 탭은 스테이징 순서대로 즉시 만들고 상태만 갱신한다 —
+           검사가 끝난 순서로 재정렬되면 사용자가 자기 파일을 못 찾는다. -->
+      <div class="tabs" id="tabs" role="tablist" hidden></div>
       <div class="result-layout">
         <div class="result-main">
           <div class="section-label">
@@ -83,6 +86,9 @@
             </span>
           </div>
           <p class="hint">표시된 부분을 누르면 마스킹이 풀리고, 다시 누르면 마스킹됩니다</p>
+          <!-- 검사하지 못했거나 일부만 검사된 파일은 사용자가 직접 골라야 넘어간다.
+               고를 수단이 없으면 전송 게이트가 영영 안 열려 취소밖에 길이 없다. -->
+          <div class="doc-actions" id="doc-actions" hidden></div>
           <div class="diff" id="diff"></div>
         </div>
         <div class="result-side">
@@ -98,6 +104,7 @@
       <div class="err-icon">⚠️</div>
       <p class="err-title" id="err-title">검사하지 못했습니다</p>
       <p class="err-msg" id="err-msg"></p>
+      <a class="err-link" id="err-link" href="https://github.com/theagares/campfire/releases/latest" target="_blank" rel="noreferrer noopener">Campfire 앱이 실행 중인지 확인 · 다운로드 →</a>
     </section>
 
     <footer class="footer" id="footer" hidden>
@@ -106,6 +113,6 @@
       <button class="btn btn-send" id="btn-send">전송</button>
     </footer>
   </div>
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

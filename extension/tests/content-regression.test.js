@@ -21,6 +21,57 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// ── 가상 시계 ────────────────────────────────────────────────────────────────
+// 이 테스트는 예전엔 실제 setTimeout 으로 총 245초를 그대로 기다렸다(12초 대기,
+// 8초 진단, promptApproved 3초 해제 …). content.js 는 setTimeout 과 Date.now 를
+// **함께** 시간 판단에 쓰므로(예: budgetDeadline = Date.now()+N, setTimeout(poll)),
+// 둘을 한 가상 시계로 묶어야 로직이 그대로 돌면서 실제 sleep 만 사라진다.
+//
+// 모듈 전역 setTimeout/clearTimeout 을 그림자 처리해서 스텁·샌드박스·테스트 본문이
+// 전부 이 시계를 쓴다. tick(ms) 가 그 시간 안의 타이머를 순서대로 발화하고, 발화
+// 사이마다 마이크로태스크(프로미스 연속)를 setImmediate 로 완전히 배출한다 —
+// content.js 의 await 체인이 타이머로만 풀리므로 이게 없으면 진행이 멎는다.
+function makeClock() {
+  let now = 0, seq = 0, timers = [];
+  const drain = () => new Promise((r) => setImmediate(r)); // 실제 매크로태스크 = 미결 마이크로태스크 전부 배출
+  function set(fn, delay = 0, ...args) {
+    const id = ++seq;
+    timers.push({ id, seq, at: now + Math.max(0, Math.floor(delay) || 0), fn, args });
+    return id;
+  }
+  function clr(id) { timers = timers.filter((t) => t.id !== id); }
+  async function tick(ms) {
+    const target = now + ms;
+    await drain();
+    let fired = 0;
+    for (;;) {
+      let next = null;
+      for (const t of timers) {
+        if (t.at <= target && (!next || t.at < next.at || (t.at === next.at && t.seq < next.seq))) next = t;
+      }
+      if (!next) break;
+      if (++fired > 200000) throw new Error('가상 시계: 타이머 무한 루프 의심');
+      timers = timers.filter((t) => t !== next);
+      now = next.at;
+      next.fn(...next.args);      // 콜백이 throw 하면 그대로 실패시킨다(실제 타이머와 동일)
+      await drain();
+    }
+    now = target;
+    await drain();
+  }
+  return { set, clr, tick, now: () => now };
+}
+const clock = makeClock();
+const setTimeout = clock.set;      // eslint-disable-line no-global-assign
+const clearTimeout = clock.clr;    // eslint-disable-line no-global-assign
+const RealDate = Date;
+function FakeDate(...a) { return a.length ? new RealDate(...a) : new RealDate(clock.now()); }
+FakeDate.now = () => clock.now();
+FakeDate.parse = RealDate.parse;
+FakeDate.UTC = RealDate.UTC;
+FakeDate.prototype = RealDate.prototype;
+
+
 const windowListeners = new Map();
 const documentListeners = new Map();
 const runtimeMessages = [];
@@ -50,7 +101,7 @@ class HTMLInputElementStub extends EventTargetStub {
     this.id = id;
   }
   // setFileOnInput 이 마스킹본을 넣고 input/change 를 쏘는 시점을 순서 로그에 남긴다.
-  dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id }); return true; }
+  dispatchEvent() { actionLog.push({ kind: 'inject', id: this.id, n: this.files?.length ?? 0 }); return true; }
   // 되돌려 붙인 노드를 다시 떼어내는 경로((22))가 실제로 떼어냈는지 보려면 필요하다.
   // host.appended 는 "붙인 적이 있다"는 **기록**이므로 여기서 건드리지 않는다 — (16)이
   // 그걸로 "되돌리기 전략을 시도했는지" 를 판정한다. 떼어냈는지는 isConnected 로 본다.
@@ -250,7 +301,9 @@ MutationObserverStub.instances = [];
 const actionLog = [];
 const dispatchedWindowEvents = [];
 let decisionListener = null;
-let nextDecision = null; // 설정해두면 다음 START_SCAN 에 이 결정을 즉시 회신한다
+let nextDecision = null; // 설정해두면 다음 검사 완료에 이 결정을 즉시 회신한다
+let lastMultiSession = null;
+let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 // SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
 let failNextOpenPanel = false;
 
@@ -274,8 +327,12 @@ const windowStub = {
     return true;
   },
   postMessage(data) {
-    if (data?.type === 'UPS_CONTENT_APPROVED_FILE') {
-      actionLog.push({ kind: 'approve-msg', meta: data.meta });
+    // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
+    if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
+      for (const meta of data.files || []) actionLog.push({ kind: 'approve-msg', meta });
+    }
+    if (data?.type === 'UPS_CONTENT_CLOSE_BATCH' || data?.type === 'UPS_CONTENT_ABORT_BATCH') {
+      actionLog.push({ kind: data.type === 'UPS_CONTENT_ABORT_BATCH' ? 'abort-batch' : 'close-batch' });
     }
     // MAIN world(interceptor.js)의 파일창 억제 응답을 흉내낸다. content.js 는 이 ACK 를
     // 받기 전에는 첨부 버튼을 절대 누르지 않는다 — 사용자가 누른 적 없는 OS 파일창이
@@ -394,7 +451,44 @@ const chromeStub = {
         return;
       }
       if (message.type === 'CLOSE_PANEL') { cb?.({ ok: true }); return; }
-      // 테스트 4에서만 결정을 회신한다(그 전까지는 세션 대기 = decision 미도착).
+
+      // ── 다중 첨부 프로토콜(SW 흉내) ──────────────────────────────────────
+      // content 는 lease 를 받기 전에는 인코딩조차 하지 않는다. 그래서 하네스가
+      // lease 를 내려주지 않으면 SCAN_MULTI_ITEM 이 하나도 안 나온다.
+      if (message.type === 'START_MULTI_SCAN') {
+        lastMultiSession = message.sessionId;
+        cb?.({ ok: true, queued: true });
+        queueMicrotask(() => decisionListener?.({
+          type: 'SCAN_LEASE_GRANTED', sessionId: message.sessionId, leaseId: 'lease-1',
+        }));
+        return;
+      }
+      if (message.type === 'SCAN_MULTI_PROMPT') {
+        cb?.({ ok: true, prompt: { status: 'done', counts: { pii: 0, injection: 0 } } });
+        return;
+      }
+      if (message.type === 'SCAN_MULTI_ITEM') { cb?.({ ok: true }); return; }
+      if (message.type === 'FINISH_MULTI_SCAN') {
+        cb?.({ ok: true });
+        if (nextDecision) {
+          const decision = nextDecision;
+          nextDecision = null;
+          queueMicrotask(() => decisionListener?.({
+            type: 'CONTENT_BATCH_DECISION', sessionId: message.sessionId, decision,
+          }));
+        }
+        return;
+      }
+      if (message.type === 'GET_SCAN_ARTIFACT') {
+        cb?.(nextArtifact || { ok: false });
+        return;
+      }
+      if (message.type === 'ACK_SCAN_ARTIFACT' || message.type === 'FINALIZE_MULTI_SESSION') {
+        cb?.({ ok: true });
+        return;
+      }
+
+      // 단독 프롬프트 경로는 그대로 START_SCAN 을 쓴다.
       if (message.type === 'START_SCAN' && nextDecision) {
         const decision = nextDecision;
         nextDecision = null;
@@ -414,6 +508,7 @@ const sandbox = {
   console: consoleStub,
   setTimeout,
   clearTimeout,
+  Date: FakeDate,
   crypto: { randomUUID: () => 'uuid-' + Math.random().toString(36).slice(2) },
   TextEncoder,
   TextDecoder,
@@ -448,7 +543,14 @@ function dispatchDocumentEvent(type, event) {
   // 무한 대기하므로, 여기서는 START_SCAN 이 동기+마이크로태스크로 발생하는지만 본다.
   for (const l of documentListeners.get(type) || []) l(event);
 }
-const flush = () => new Promise(r => setTimeout(r, 60));
+/** 그 세션이 배치였는지 단독 프롬프트였는지에 맞춰 취소를 회신한다. */
+const cancelScan = (scanMsg) => decisionListener?.({
+  type: scanMsg.type === 'START_MULTI_SCAN' ? 'CONTENT_BATCH_DECISION' : 'PANEL_DECISION',
+  sessionId: scanMsg.sessionId,
+  decision: { action: 'cancel' },
+});
+const isScanStart = (m) => m.type === 'START_SCAN' || m.type === 'START_MULTI_SCAN';
+const flush = () => clock.tick(60);
 
 (async () => {
   // (1) 위조 메시지: bridgeToken 불일치 → START_SCAN 없어야 함
@@ -460,7 +562,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     payload: { inputId: 'x', base64Data: btoa('malicious'), mimeType: 'application/pdf', fileName: 'attack.pdf', fileSize: 9 },
   });
   await flush();
-  if (runtimeMessages.some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.some(isScanStart)) {
     throw new Error('forged main-to-isolated file message triggered a scan');
   }
 
@@ -478,12 +580,12 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   await flush();
 
   if (!stopped) throw new Error('content-owned file change did not stop page propagation');
-  if (runtimeMessages.slice(beforeStageCount).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(beforeStageCount).some(isScanStart)) {
     throw new Error('file attach triggered an immediate scan — should be staged until prompt submit');
   }
 
-  // (3) 보류된 문서가 있는 상태에서 프롬프트를 제출(Enter)하면, 문서+프롬프트를
-  // 함께 넘기는 kind:'combined' START_SCAN 이 발생해야 한다.
+  // (3) 보류된 문서가 있는 상태에서 프롬프트를 제출(Enter)하면 배치 검사가 시작되고,
+  // 프롬프트가 **맨 먼저** 검사된 뒤 파일이 하나씩 따라가야 한다.
   promptEditorStub.value = '이 문서를 요약해줘';
   documentStub.activeElement = promptEditorStub;
   const beforeSubmitCount = runtimeMessages.length;
@@ -494,17 +596,35 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  const combinedScan = runtimeMessages.slice(beforeSubmitCount).find(m => m.type === 'START_SCAN');
-  if (!combinedScan) throw new Error('prompt submit with a pending attachment did not start a scan');
-  if (combinedScan.kind !== 'combined') {
-    throw new Error(`expected kind:'combined', got kind:'${combinedScan.kind}'`);
+  const sent = runtimeMessages.slice(beforeSubmitCount);
+  const startMulti = sent.find(m => m.type === 'START_MULTI_SCAN');
+  if (!startMulti) throw new Error('prompt submit with a pending attachment did not start a scan');
+  if (!startMulti.payload?.items?.length) {
+    throw new Error('START_MULTI_SCAN 에 파일 목록이 없다');
   }
-  if (!combinedScan.payload?.base64Data || combinedScan.payload.text !== '이 문서를 요약해줘') {
-    throw new Error('combined scan payload missing staged file data or prompt text');
+  // 시작 메시지에는 메타만 — 본문/base64 를 실으면 N개가 한 메시지에 쌓인다.
+  if (startMulti.payload.items.some(i => i.base64Data)) {
+    throw new Error('START_MULTI_SCAN 이 base64 를 실어 보냈다 — 메타만 보내야 한다');
   }
 
+  const promptIdx = sent.findIndex(m => m.type === 'SCAN_MULTI_PROMPT');
+  const itemIdx = sent.findIndex(m => m.type === 'SCAN_MULTI_ITEM');
+  if (promptIdx < 0) throw new Error('프롬프트 검사가 없었다');
+  if (itemIdx < 0) throw new Error('파일 검사가 없었다');
+  // 프롬프트가 파일보다 먼저여야 한다. 순서가 반대면 엔진이 마스킹된 프롬프트를
+  // 못 만든 채 파일 검사를 돌고, 인젝션 2차 판정이 외부 모델에 원문을 보낸다.
+  if (promptIdx > itemIdx) throw new Error('프롬프트가 파일보다 나중에 검사됐다');
+  if (sent[promptIdx].text !== '이 문서를 요약해줘') {
+    throw new Error('프롬프트 검사에 실제 프롬프트가 안 실렸다');
+  }
+  if (!sent[itemIdx].payload?.base64Data) {
+    throw new Error('파일 검사에 base64 가 없다');
+  }
+  if (!sent[itemIdx].leaseId) throw new Error('파일 검사에 leaseId 가 없다');
+  const combinedScan = startMulti;
+
   // (4) 결합 검토가 승인되면, 마스킹본을 페이지에 주입하기 "전에" MAIN world 로
-  // UPS_CONTENT_APPROVED_FILE 을 먼저 알려야 한다.
+  // UPS_CONTENT_APPROVE_BATCH 를 먼저 알려야 한다.
   //
   // 안 그러면 interceptor.js(MAIN world)의 Layer 2/3 업로드 훅이 그 마스킹본을
   // "처음 보는 원본"으로 오인해 검토 패널을 한 번 더 띄운다 — content.js 가 만든
@@ -515,7 +635,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 테스트 (3)은 결정을 회신하지 않고 끝났으므로 그 세션이 아직 대기 중이다
   // (promptInProcess=true). 취소로 정리하고, 새 문서를 다시 보류시켜 놓는다.
   decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: combinedScan.sessionId, decision: { action: 'cancel' },
+    type: 'CONTENT_BATCH_DECISION', sessionId: combinedScan.sessionId, decision: { action: 'cancel' },
   });
   await flush();
 
@@ -537,13 +657,15 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   sendButtonStub.disabled = false;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'report.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  // 산출물은 결정 메시지가 아니라 별도 요청으로 한 개씩 건네진다.
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'report.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -555,15 +677,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   const approveIdx = actionLog.findIndex(e => e.kind === 'approve-msg');
   const injectIdx = actionLog.findIndex(e => e.kind === 'inject');
   if (approveIdx < 0) {
-    throw new Error('마스킹본 주입 전 UPS_CONTENT_APPROVED_FILE 알림이 없었다');
+    throw new Error('마스킹본 주입 전 UPS_CONTENT_APPROVE_BATCH 알림이 없었다');
   }
   if (injectIdx < 0) throw new Error('승인된 마스킹본이 페이지에 주입되지 않았다');
   if (approveIdx > injectIdx) {
-    throw new Error('UPS_CONTENT_APPROVED_FILE 알림이 주입보다 늦게 나갔다 (순서 역전)');
+    throw new Error('UPS_CONTENT_APPROVE_BATCH 알림이 주입보다 늦게 나갔다 (순서 역전)');
   }
   if (actionLog[approveIdx].meta?.name !== 'report.pdf') {
     throw new Error(`알림 메타의 파일명이 다르다: ${actionLog[approveIdx].meta?.name}`);
   }
+  // 승인은 반드시 회수된다. 안 그러면 쓰이지 않은 면제가 10분간 살아남아,
+  // 다음 첨부가 우연히 같은 메타를 가질 때 검사 없이 통과한다.
+  const closeIdx = actionLog.findIndex(e => e.kind === 'close-batch' || e.kind === 'abort-batch');
+  if (closeIdx < 0) throw new Error('배치 승인을 회수하지 않았다 (close/abort 없음)');
+  if (closeIdx < injectIdx) throw new Error('주입보다 먼저 승인을 닫았다 — 업로드가 막힌다');
 
   // (5) 드롭한 문서를 가로챌 때, 사이트의 드래그 상태를 즉시 정리해줘야 한다.
   //
@@ -603,7 +730,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 첨부가 보류된 제출은 이제 waitForAttachmentReady 를 거쳐 전송하므로 테스트 4가
   // 그만큼 늦게 끝난다 — 실측으로 이 값이 필요했다(6초로는 아직 promptApproved 가
   // 살아 있어 Enter 가 통째로 무시됐다).
-  await new Promise(r => setTimeout(r, 12000));
+  await clock.tick(12000);
   // (첨부 대기 waitForAttachmentReady 가 붙어 테스트 4 가 그만큼 늦게 끝난다)
   // 2026-08-05: 신호 없음 경로가 "2.5초 관측 + 900ms 고정 대기"에서 "1.5초 관측"으로
   // 짧아져 테스트 4 가 약 1.9초 빨리 끝난다. 이 값은 하한이라 그대로 둬도 안전하고,
@@ -620,7 +747,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     stopImmediatePropagation() {},
   });
 
-  await new Promise(r => setTimeout(r, 600)); // 버튼이 비활성인 동안
+  await clock.tick(600); // 버튼이 비활성인 동안
   if (sendButtonStub.clicks !== 0) {
     throw new Error('전송 버튼이 비활성인데도 클릭했다 (업로드 완료 전 전송 시도)');
   }
@@ -628,7 +755,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   sendButtonStub.disabled = false;              // 업로드 완료 → 활성화
   // 첨부가 보류돼 있으면 전송 전에 waitForAttachmentReady 가 "버튼이 다시 열릴 때까지"
   // 기다린 뒤에야 resubmitPrompt 로 넘어간다 — 그 왕복까지 덮는 창이어야 한다.
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
   if (sendButtonStub.clicks !== 1) {
     throw new Error(`전송 버튼 활성화 후에도 눌리지 않았다 (clicks=${sendButtonStub.clicks})`);
   }
@@ -672,7 +799,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   - 결정해 줄 화면도 없이 검사만 시작하면 안 된다 — 그러면 아무도 결정을
   //     내려줄 수 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다(#135 와
   //     같은 종류의 침묵이다).
-  await new Promise(r => setTimeout(r, 3200)); // 테스트 6이 세운 promptApproved 해제 대기
+  await clock.tick(3200); // 테스트 6이 세운 promptApproved 해제 대기
 
   failNextOpenPanel = true;
   appendedToRoot.length = 0;
@@ -689,7 +816,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (injectedOverlays().length !== 0) {
     throw new Error('iframe 오버레이 폴백이 되살아났다 — 검토 UI 는 네이티브 사이드패널 하나로 통일했다');
   }
-  if (runtimeMessages.slice(beforeOpenFail).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(beforeOpenFail).some(isScanStart)) {
     throw new Error('패널을 못 열었는데 검사를 시작했다 — 결정해 줄 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 막힌다');
   }
 
@@ -704,12 +831,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   promptInProcess — 결정이 안 온 검사가 아직 진행 중일 수 있다.
   // 3초 타이머는 앞 테스트의 재전송이 끝난 뒤에야 시작되므로, 그 지연까지 넉넉히 덮는다
   // (3.2초로는 아슬아슬하게 걸려 간헐적으로 실패했다).
-  await new Promise(r => setTimeout(r, 7000));
-  const stuckScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
+  await clock.tick(7000);
+  const stuckScan = runtimeMessages.filter(isScanStart).slice(-1)[0];
   if (stuckScan) {
-    decisionListener?.({
-      type: 'PANEL_DECISION', sessionId: stuckScan.sessionId, decision: { action: 'cancel' },
-    });
+cancelScan(stuckScan);
     await flush();
   }
 
@@ -722,7 +847,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     preventDefault() {}, stopImmediatePropagation() {},
   });
   await flush();
-  if (!runtimeMessages.slice(beforeScan).some(m => m.type === 'START_SCAN')) {
+  if (!runtimeMessages.slice(beforeScan).some(isScanStart)) {
     throw new Error('첫 전송에서 검사가 시작되지 않았다 — 이 테스트의 전제가 깨졌다');
   }
   const afterFirstScan = runtimeMessages.length;
@@ -740,7 +865,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   if (leaked || propagated) {
     throw new Error('검사 중 눌린 전송이 사이트로 새어나갔다 — 마스킹 전 원본이 전송된다');
   }
-  if (runtimeMessages.slice(afterFirstScan).some(m => m.type === 'START_SCAN')) {
+  if (runtimeMessages.slice(afterFirstScan).some(isScanStart)) {
     throw new Error('검사가 이미 진행 중인데 또 다른 검사를 시작했다');
   }
 
@@ -756,10 +881,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 선택(📎) 경로만 예전 방식으로 남아 있었다.
   // 앞 테스트는 일부러 결정을 회신하지 않아 검사를 진행 중으로 남겨뒀다
   // (promptInProcess=true). 취소해서 이 테스트가 깨끗한 상태에서 시작하게 한다.
-  const pendingScan = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan = runtimeMessages.filter(
+    m => m.type === 'START_MULTI_SCAN' || m.type === 'START_SCAN',
+  ).slice(-1)[0];
+  cancelScan(pendingScan);
   await flush();
 
   const file9 = new FileStub(['pdf bytes'], 'stale.pdf', { type: 'application/pdf' });
@@ -782,13 +907,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'stale.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-stale' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'stale.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -820,12 +946,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   - Enter 로 검사가 시작되고(포커스된 편집 요소로 폴백)
   //   - 재전송이 일반 전송 버튼 후보로 폴백해 실제로 클릭되는지
   // 를 확인한다.
-  const pendingScan9 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan9.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan9 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan9);
   await flush();
-  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
+  await clock.tick(7000); // promptApproved(3초) 해제 대기
 
   // 사이트 개편 재현: 설정된 선택자가 문서에서 하나도 안 잡히게 만든다.
   domBySelector.delete('#prompt-textarea');
@@ -846,13 +970,13 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   await flush();
 
-  const scan9 = runtimeMessages.slice(before9).find(m => m.type === 'START_SCAN');
+  const scan9 = runtimeMessages.slice(before9).find(isScanStart);
   if (!scan9) {
     throw new Error('선택자가 깨지자 검사가 아예 시작되지 않았다 — 사이드바가 안 뜨는 증상 그대로다');
   }
   // resubmitPrompt 는 200ms 대기 후 폴링하므로 실제로 클릭될 때까지 기다린다.
   for (let i = 0; i < 30 && genericSendBtn.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (genericSendBtn.clicks < 1) {
     throw new Error('일반 전송 버튼 후보로 폴백하지 못했다 — 검토는 되는데 전송이 안 되는 증상 그대로다');
@@ -867,12 +991,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // Gemini 는 첨부 메뉴를 닫으면 input[type=file] 을 DOM 에서 통째로 없앤다. 그래서
   // 승인 시점엔 넣을 곳이 없는데 📎 경로에는 폴백이 없어 파일이 조용히 버려지고
   // 프롬프트만 전송됐다. drop/paste 경로에만 있던 합성 drop 폴백을 여기에도 태운다.
-  const pendingScan12 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan12.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan12 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan12);
   await flush();
-  await new Promise(r => setTimeout(r, 7000)); // promptApproved(3초) 해제 대기
+  await clock.tick(7000); // promptApproved(3초) 해제 대기
 
   // 선택자를 (11) 이 지웠으므로 되돌려 놓는다 — 이 테스트는 정상 사이트 전제다.
   domBySelector.set('#prompt-textarea', promptEditorStub);
@@ -900,13 +1022,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload',
-      maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf',
-      fileName: 'gemini.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'gemini.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -945,12 +1068,10 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 핸들러가 "this.drop is not a function" 으로 터진다(실사용자 Gemini 콘솔).
   // 리스너 안에서 난 예외라 우리 try/catch 로도 못 잡고, 사이트의 드롭 처리만
   // 조용히 중단된다. 그래서 노드를 원래 자리에 되돌려 놓는 쪽을 먼저 시도해야 한다.
-  const pendingScan13 = runtimeMessages.filter(m => m.type === 'START_SCAN').slice(-1)[0];
-  decisionListener?.({
-    type: 'PANEL_DECISION', sessionId: pendingScan13.sessionId, decision: { action: 'cancel' },
-  });
+  const pendingScan13 = runtimeMessages.filter(isScanStart).slice(-1)[0];
+  cancelScan(pendingScan13);
   await flush();
-  await new Promise(r => setTimeout(r, 7000));
+  await clock.tick(7000);
 
   // 증거 판정이 실제로 도는 환경에서 본다. 이게 없으면 맨 앞 전략이 기계적으로 성공만
   // 해도 이겨버려서 "paste 가 안 먹었을 때 되돌리기로 가는가" 를 확인할 수가 없다.
@@ -994,11 +1115,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'revive.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-1' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'revive.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1008,7 +1132,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   // paste 가 증거 없이 끝날 때까지 기다린다 — 이제 되돌리기는 그 다음 차례다.
   // (후보마다 200ms + 전략 끝에 3초 관찰)
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   if (!parent13.appended.includes(input13)) {
     throw new Error('원래 부모가 살아 있는데 input 을 되돌려 놓지 않았다');
@@ -1049,7 +1173,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 끝나면서 이 테스트의 Enter 가 promptApproved 에 통째로 먹혀 "검사가 시작되지
   // 않았다"로 엉뚱하게 실패한다 — 되돌리기 실험이 무의미해진다. 두 경우를 모두 덮도록
   // 9초로 잡는다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
 
   // (14-a) 신호를 하나도 못 본 경로에서는 진단 기록이 남아야 한다.
   //
@@ -1082,11 +1206,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'gemini-upload.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-2' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'gemini-upload.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1102,7 +1229,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   // 업로드가 5초 걸린다. 예전 코드는 2.5초 관측 + 900ms 고정 대기 후 약 3.6초에
   // 눌러버렸다 — 그 회귀를 여기서 잡는다.
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
   if (send14.clicks !== 0) {
     throw new Error(`첨부 업로드가 아직 끝나지 않았는데 전송했다 (clicks=${send14.clicks}) — 프롬프트만 먼저 나가고 첨부가 빠진다`);
   }
@@ -1116,7 +1243,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
   for (let i = 0; i < 40 && send14.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (send14.clicks !== 1) {
     throw new Error(`업로드가 끝났는데도 전송되지 않았다 (clicks=${send14.clicks})`);
@@ -1135,7 +1262,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 그래서 여기서는 기준선으로 하나를 미리 띄워두고, 그 위에 업로드용 하나를 더
   // 얹었다가 내린다.
   // (14)의 재전송 직후부터 promptApproved 3초가 흐른다 — 여유를 두고 5초 기다린다.
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   const send15 = new SendButtonStub();
   send15.disabled = false;
@@ -1155,11 +1282,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   documentStub.activeElement = promptEditorStub;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'spinner.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-3' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'spinner.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1169,7 +1299,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   // 주입 직후(= 기준선을 잡은 뒤) 첨부 칩의 진행률 표시가 하나 더 뜬다.
   domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }, { id: 'upload' }]);
-  await new Promise(r => setTimeout(r, 4500));
+  await clock.tick(4500);
   if (send15.clicks !== 0) {
     throw new Error(`진행률 표시가 떠 있는데 전송했다 (clicks=${send15.clicks}) — 업로드 도중 전송이다`);
   }
@@ -1179,7 +1309,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.textContent = '📎 spinner.pdf';
   domBySelectorAll.set('[role="progressbar"]', [{ id: 'always-there' }]);
   for (let i = 0; i < 40 && send15.clicks < 1; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
+    await clock.tick(100);
   }
   if (send15.clicks !== 1) {
     throw new Error(`진행률 표시가 사라졌는데도 전송되지 않았다 (clicks=${send15.clicks}) — 기준선 progressbar 에 걸려 계속 기다린다`);
@@ -1202,7 +1332,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 여기서는 관찰이 가능한 환경(MutationObserver 존재)을 만들어, revive 가 기계적으로
   // 성공해도 컴포저에 아무 변화가 없으면 합성 drop 까지 내려가는지 확인한다.
-  await new Promise(r => setTimeout(r, 5000)); // (15)의 promptApproved(3초) 해제 대기
+  await clock.tick(5000); // (15)의 promptApproved(3초) 해제 대기
 
   MutationObserverStub.instances.length = 0;
   sandbox.MutationObserver = MutationObserverStub;
@@ -1252,11 +1382,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'evidence.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-4' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'evidence.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1264,7 +1397,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   // 전략 체인: 살아있는input(즉시 실패) → 합성paste(증거없음) → 되돌리기(증거없음)
   //           → 합성drop(사이트가 받아들임). 앞의 두 전략이 각각 증거 창을 다 쓴다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
 
   if (!parent16.appended.includes(input16)) {
     throw new Error('되돌리기 전략을 아예 시도하지 않았다 — 체인 순서가 깨졌다');
@@ -1296,7 +1429,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // ("문서를 페이지에 다시 넣지 못했습니다 — 프롬프트만 전송됩니다"). 사용자는 문서가
   // 갔다고 믿은 채 대화를 이어간다. 보안 제품에서 가장 나쁜 실패 모드다.
   // 실사용자 Gemini 에서 실제로 이 경로가 나왔다(네 전략 모두 증거 없음).
-  await new Promise(r => setTimeout(r, 5000)); // (16)의 promptApproved 해제 대기
+  await clock.tick(5000); // (16)의 promptApproved 해제 대기
 
   const send17 = new SendButtonStub();
   send17.disabled = false;
@@ -1322,11 +1455,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'blocked.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-5' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'blocked.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1334,7 +1470,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   // 전략 체인(증거 대기 포함) 통과 시간. 증거 관찰 창이 700ms → 3000ms 로 늘고 전략이
   // 하나(합성paste) 더 붙어서, 전부 헛돌면 최악 4×3초다.
-  await new Promise(r => setTimeout(r, 13000));
+  await clock.tick(13000);
 
   if (send17.clicks !== 0) {
     throw new Error(`문서를 못 붙였는데 프롬프트를 전송했다 (clicks=${send17.clicks}) — 사용자는 문서가 갔다고 믿는다`);
@@ -1362,7 +1498,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   ① 프레임워크가 문단을 블록으로 렌더하면 Chrome innerText 가 블록 사이에 개행을
   //      "두 개" 넣는다 → 글자는 같은데 === 가 false → 성공을 실패로 오판
   //   ② 지우기(execCommand delete)가 무시되어 원문이 그대로 남는다
-  await new Promise(r => setTimeout(r, 5000)); // (17)에서 promptApproved 는 즉시 내려가지만 여유
+  await clock.tick(5000); // (17)에서 promptApproved 는 즉시 내려가지만 여유
 
   // (18-a) 지우기가 먹는 에디터: 개행 때문에 판정만 깨지던 경우 → 정확히 1벌, 전송됨.
   const ed18a = new ContentEditableStub('원래 프롬프트\n둘째 줄', { acceptDelete: true });
@@ -1376,7 +1512,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed18a.inserts !== 1) {
     throw new Error(`삽입이 ${ed18a.inserts}회 일어났다 — 판정이 깨져 전략이 연달아 덧씌운 그 회귀다`);
@@ -1394,7 +1530,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   // (18-b) 우리가 어떤 방법으로도 못 바꾸는 에디터(지우기도 선택 영역 대체도 안 먹는다):
   //        삽입은 1회로 막고, 원문이 남았으므로 전송 금지 — fail-closed 가 살아 있는지.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed18b = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
     acceptDelete: false, acceptSelectionReplace: false,
@@ -1409,7 +1545,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed18b.inserts > 1) {
     throw new Error(`지우지 못한 입력창에 ${ed18b.inserts}회 삽입했다 — 쌓임을 막지 못했다`);
@@ -1428,7 +1564,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 오판의 대가는 두 겹이다: 전송이 막히고, 그 전에 남은 전략들이 차례로 실행되어
   // 앞의 삽입 위에 덧쌓인다((18) 이 막는 그 쌓임과 같은 뿌리다).
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed18c = new ContentEditableStub('주민번호 900101-1234567 알려줘', {
     acceptDelete: true, asyncApply: true,
@@ -1443,7 +1579,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
 
   const body18c = ed18c.lines.join(' ');
   if (body18c.includes('900101-1234567')) {
@@ -1473,7 +1609,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 지우기가 안 먹는(acceptDelete:false) 에디터를 쓰는 게 핵심이다 — 지우기가 먹으면
   // 넣어도 1벌이라 이 회귀가 드러나지 않는다.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const SAME = '이 문서 요약해줘';
   const ed19 = new ContentEditableStub(SAME, { acceptDelete: false });
@@ -1487,7 +1623,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed19.inserts !== 0) {
     throw new Error(`이미 목표 상태인 입력창에 ${ed19.inserts}회 삽입했다 — 그게 2벌이 되는 경로다`);
@@ -1513,7 +1649,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 이 테스트가 성립하려면 스텁이 선택 영역을 모델링해야 한다(위 ContentEditableStub).
   // 지우기는 안 먹지만(acceptDelete:false) 선택 영역 대체는 먹는 — 실제 Lexical 이
   // 그렇다 — 에디터를 쓴다.
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ed20 = new ContentEditableStub('내 번호 010-1234-5678 로 연락해줘', { acceptDelete: false });
   domBySelector.set('#prompt-textarea', ed20);
@@ -1527,7 +1663,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   const body20 = ed20.lines.join(' ');
   if (body20.includes('010-1234-5678')) {
@@ -1554,7 +1690,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   그래서 첫 삽입 전에는 지우기를 단 한 번도 부르지 않아야 한다.
   //   (지우기는 A 가 실패한 뒤 B 단계에서만 쓰이고, 거기서는 "비었음을 확인한 뒤에만"
   //    넣으므로 조각이 남을 수 없다.)
-  await new Promise(r => setTimeout(r, 4000)); // promptApproved(3초) 해제 대기
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
 
   const ORIG21 = '홍길동이고 번호는 010-1234-5678 이야';
   const ed21 = new ContentEditableStub(ORIG21, { acceptDelete: true, partialDelete: true });
@@ -1569,7 +1705,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 1200));
+  await clock.tick(1200);
 
   if (ed21.deletesBeforeFirstInsert !== 0) {
     throw new Error(
@@ -1600,7 +1736,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // 그리고 실패한 되돌리기를 DOM 에 남겨두면 안 된다. 뒤따르는 "사이트 첨부 UI" 전략은
   // **새로 생긴 input** 으로 성공을 판정하는데, 우리가 붙여둔 노드가 기준 스냅샷에
   // 들어가면 사이트가 같은 노드를 재사용하는 구조일 때 영영 못 알아본다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   sandbox.MutationObserver = MutationObserverStub; // 관찰 가능 = 증거 판정이 실제로 돈다
   MutationObserverStub.instances.length = 0;       // 아무 변화도 안 쏜다 → 증거 없음
@@ -1634,17 +1770,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'revive22.pdf',
-    },
+    promptText: '이 문서 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-6' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'revive22.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 6000)); // 증거 대기(700ms) × 전략 + 첨부 UI 예산
+  await clock.tick(6000); // 증거 대기(700ms) × 전략 + 첨부 UI 예산
 
   if (!composer22.appended.includes(input22) && input22.parentElement !== composer22) {
     throw new Error('되돌린 input 을 컴포저에 붙이지 않았다 — body 로 떨어지면 사이트가 못 듣는다');
@@ -1673,7 +1812,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 이 오탐이 특히 나쁜 이유: 성공을 선언해 뒤 전략으로 내려가지 못하게 막고, fail-closed
   // 까지 우회해 **문서 없이 프롬프트만 전송**시킨다. 우리가 막으려던 바로 그 실패다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   sandbox.MutationObserver = MutationObserverStub;
   MutationObserverStub.instances.length = 0;
@@ -1718,17 +1857,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'secret-report.pdf',
-    },
+    promptText: '이 문서 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-7' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'secret-report.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 8000));
+  await clock.tick(8000);
   HTMLInputElementStub.prototype.dispatchEvent = origDispatch23;
 
   if (send23.clicks !== 0) {
@@ -1757,7 +1899,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 시간이 아니라 신호를 기다려야 한다 — 컴포저에 그 파일 이름이 나타나는 것.
   // 여기서는 사이트가 끝내 칩을 그리지 않는 상황을 만들고, 그때 전송하지 않는지 본다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   delete sandbox.MutationObserver;             // 증거 판정은 여기서 관심사가 아니다
   const send24 = new SendButtonStub();
@@ -1782,11 +1924,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked pdf bytes'),
-      mimeType: 'application/pdf', fileName: 'unbound-doc.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-8' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked pdf bytes'),
+    mimeType: 'application/pdf',
+    fileName: 'unbound-doc.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1799,14 +1944,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
   });
-  await new Promise(r => setTimeout(r, 300));
+  await clock.tick(300);
   await dispatchWindowMessage({
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
 
   // 첨부 반영 대기(8초)가 끝날 때까지 지켜본다.
-  await new Promise(r => setTimeout(r, 10000));
+  await clock.tick(10000);
 
   // (2026-08-08 정정) 예전엔 여기서 "전송을 막아야 한다" 를 검사했다. 실사용자가 그
   // 판단이 틀렸음을 알려줬다 — "실제로는 첨부도 됐고 메시지도 들어가서 보내기만 하면
@@ -1835,7 +1980,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 여기서는 업로드가 1.2초 뒤에야 시작되는 사이트를 만든다. 700ms 창이면 놓치고,
   // 넉넉한 창이면 잡는다. 잘못된 "증거없음" 의 대가는 크다 — 되던 주입을 버린다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   // 관찰이 가능한 환경이어야 한다. MutationObserver 가 없으면 settle() 이 "관찰 불가 —
   // 기계적 성공" 으로 즉시 통과해 창 길이가 아무 의미도 없어진다(처음에 그렇게 썼다가
@@ -1886,11 +2031,14 @@ const flush = () => new Promise(r => setTimeout(r, 60));
 
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'slow-upload.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-9' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'slow-upload.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
@@ -1898,7 +2046,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   });
   // 합성paste 가 증거 없이 끝난 뒤(≈3.2초)에야 되돌리기 차례고, 거기서 다시 1.2초 뒤에
   // 업로드가 시작된다. 그 둘을 다 덮을 만큼 기다린다.
-  await new Promise(r => setTimeout(r, 9000));
+  await clock.tick(9000);
   HTMLInputElementStub.prototype.dispatchEvent = origInject25;
 
   const chain25 = consoleLines.filter(l => l.includes('첨부 주입 시도 경로')).slice(-1)[0] || '';
@@ -1916,7 +2064,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
     __campfire_config: true, direction: 'main-to-isolated',
     type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
   });
-  await new Promise(r => setTimeout(r, 6500)); // 첨부 반영 대기(5초) + 재전송
+  await clock.tick(6500); // 첨부 반영 대기(5초) + 재전송
 
   // (26) 사이트 선택자가 깨졌고 입력창에 포커스도 없을 때 — 그래도 찾아내야 한다.
   //
@@ -1929,7 +2077,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //   · getEditorText 가 빈 문자열 → interceptPromptSubmit 이 그대로 물러나
   //     **검사 없이 원문이 나간다**(마우스로 전송 버튼을 누른 경우)
   // 후자가 특히 나쁘다 — 조용히 원문이 유출된다.
-  await new Promise(r => setTimeout(r, 9000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(9000); // 앞 테스트의 promptApproved 해제 대기
 
   // keydown 경로에는 "포커스가 입력창 안인가" 가드가 따로 있고 그건 옳다. 위험한 건
   // **마우스로 전송 버튼을 누르는 경로** 다 — 그때 activeElement 는 버튼이라 편집
@@ -1947,16 +2095,16 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   domBySelector.delete('input[type="file"]');
   domBySelectorAll.set('textarea, [contenteditable="true"]', [editor26]);
   documentStub.activeElement = send26;        // 포커스는 버튼에 있다(마우스 클릭)
-  const scansBefore26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+  const scansBefore26 = runtimeMessages.filter(isScanStart).length;
 
   nextDecision = { action: 'masked', maskedText: '내 번호 [전화번호 마스킹] 이야' };
   dispatchDocumentEvent('click', {
     target: send26,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 2000));
+  await clock.tick(2000);
 
-  const scans26 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore26;
+  const scans26 = runtimeMessages.filter(isScanStart).length - scansBefore26;
   if (scans26 !== 1) {
     throw new Error(
       `입력창을 못 찾아 검사를 아예 시작하지 않았다 (START_SCAN ${scans26}건) — 원문이 그대로 나간다`,
@@ -1978,7 +2126,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   // preventDefault + stopImmediatePropagation 으로 삼켜버린다 — 사이트는 문서를 못
   // 받고, 우리는 그걸 pendingAttachment 로 되돌려 놔서 다음 전송에 또 검사한다.
   // 전략 1·2(input 경로)는 _upsContentDone 으로 막고 있었는데 합성 이벤트만 뚫려 있었다.
-  await new Promise(r => setTimeout(r, 4000)); // 앞 테스트의 promptApproved 해제 대기
+  await clock.tick(4000); // 앞 테스트의 promptApproved 해제 대기
 
   domBySelector.set('#prompt-textarea', promptEditorStub);
   domBySelector.delete('input[type="file"]');
@@ -2022,17 +2170,17 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   swallowed27.length = 0;
   documentStub.activeElement = promptEditorStub;
   promptEditorStub.value = '이 문서를 그대로 보내줘';
-  const scansBefore27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length;
+  const scansBefore27 = runtimeMessages.filter(isScanStart).length;
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 그대로 보내줘',
-    file: { action: 'passthrough' },       // ★ 원본을 그대로 다시 쏜다
+    promptText: '이 문서를 그대로 보내줘',
+    files: [{ id: 'f0', action: 'original' }],
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 5000));
+  await clock.tick(5000);
 
   const pasted27 = promptEditorStub.dispatched.filter(e => e.type === 'paste' && e.clipboardData?.files?.length);
   if (!pasted27.length) {
@@ -2050,7 +2198,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   // 삼켰다면 stageFileAttachment 가 다시 돌아 다음 전송 때 또 검사한다. 검사가 새로
   // 시작되지 않았는지도 함께 본다.
-  const scans27 = runtimeMessages.filter(m => m.type === 'START_SCAN').length - scansBefore27;
+  const scans27 = runtimeMessages.filter(isScanStart).length - scansBefore27;
   if (scans27 !== 1) {
     throw new Error(`검사가 ${scans27}건 발생했다 — 주입한 파일이 다시 검사 흐름을 탔다`);
   }
@@ -2070,7 +2218,7 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   //
   // 그리고 예전엔 후보 **전부에게 한꺼번에** 쐈다. 핸들러를 가진 조상이 둘이면 같은
   // 파일이 두 번 첨부되거나 사이트 상태가 꼬인다 — "여러 번 하면 될 때도 있다" 의 정체.
-  await new Promise(r => setTimeout(r, 4000));
+  await clock.tick(4000);
 
   MutationObserverStub.instances.length = 0;
   sandbox.MutationObserver = MutationObserverStub;
@@ -2138,17 +2286,20 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   promptEditorStub.value = '이 문서를 요약해줘';
   nextDecision = {
     action: 'send',
-    maskedText: '이 문서를 요약해줘',
-    file: {
-      action: 'upload', maskedBase64: btoa('masked'),
-      mimeType: 'application/pdf', fileName: 'deep.pdf',
-    },
+    promptText: '이 문서를 요약해줘',
+    files: [{ id: 'f0', action: 'masked', artifactId: 'art-11' }],
+  };
+  nextArtifact = {
+    ok: true,
+    base64: btoa('masked'),
+    mimeType: 'application/pdf',
+    fileName: 'deep.pdf',
   };
   dispatchDocumentEvent('keydown', {
     key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
     preventDefault() {}, stopImmediatePropagation() {},
   });
-  await new Promise(r => setTimeout(r, 6000));
+  await clock.tick(6000);
 
   // ★ 컴포저 루트보다 위에 있어도 후보에 들어가야 한다.
   if (!deepest28.dispatched.some(e => e.type === 'paste' && e.clipboardData?.files?.length)) {
@@ -2166,6 +2317,172 @@ const flush = () => new Promise(r => setTimeout(r, 60));
   }
   delete sandbox.MutationObserver;
   documentStub.dispatchEvent = docDispatch28;
+
+  // (29) 파일 두 개는 **한 이벤트로** 들어간다.
+  //
+  //      사용자가 실제로 여러 개를 고를 때 사이트가 받는 모양이 그것(DataTransfer
+  //      하나에 N개)이다. 하나씩 N번 쏘면 사이트에 따라 마지막 것만 남거나, 중간에
+  //      컴포저를 다시 그려 앞의 것을 잃는다 — 이 프로젝트의 원래 버그가 바로 그
+  //      모양이었다. 그래서 "N개가 한 번에" 를 단언으로 박아 둔다.
+  {
+    const fileA = new FileStub(['pdf a'], 'multi-a.pdf', { type: 'application/pdf' });
+    const fileB = new FileStub(['pdf b'], 'multi-b.pdf', { type: 'application/pdf' });
+    const input29 = new HTMLInputElementStub(null, 'multi');
+    input29.files = [fileA, fileB];
+    domBySelector.set('input[type="file"]', input29);
+
+    // ★ 이 대기가 회귀 하나를 잡았다.
+    //
+    // promptApproved 를 되돌리는 타이머가 try/finally **바깥**에 있었다. 앞 시나리오의
+    // 흐름이 예외로 빠져나가면 그 줄에 도달하지 못해 플래그가 영원히 true 로 남고,
+    // 그동안 keydown/click/submit 리스너가 전부 그냥 return 한다 — 사용자의 Enter 가
+    // 검사 없이 사이트로 직행한다. 아무 로그도 안 남아서 "승인 0개" 로만 보였다.
+    // 지금은 finally 안에서 반드시 재무장하므로 이 대기면 충분하다.
+    await clock.tick(4000);
+    // 28)이 전송 버튼 선택자를 전부 지웠다 — 첨부 대기가 그걸 신호로 쓰므로 되돌린다.
+    domBySelector.set('[data-testid="send-button"]', sendButtonStub);
+
+    dispatchDocumentEvent('change', {
+      target: input29,
+      composedPath: () => [input29, documentStub],
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+    await flush();
+
+    actionLog.length = 0;
+    runtimeMessages.length = 0;
+    promptEditorStub.value = '두 개 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    sendButtonStub.disabled = false;
+    nextDecision = {
+      action: 'send',
+      promptText: '두 개 요약해줘',
+      files: [
+        { id: 'f0', action: 'masked', artifactId: 'art-a' },
+        { id: 'f1', action: 'masked', artifactId: 'art-b' },
+      ],
+    };
+    // 산출물은 한 개씩 건네진다 — 같은 응답을 두 번 주면 두 파일이 같은 내용이 되므로
+    // 요청 순서대로 다른 것을 돌려준다.
+    let artTurn = 0;
+    const arts = [
+      { ok: true, base64: btoa('masked a'), mimeType: 'text/plain', fileName: 'multi-a_masked.md' },
+      { ok: true, base64: btoa('masked b'), mimeType: 'text/plain', fileName: 'multi-b_masked.md' },
+    ];
+    Object.defineProperty(globalThis, '__artQueue', { value: true, configurable: true });
+    nextArtifact = null;
+    const origSend = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = function (message, cb) {
+      if (message.type === 'GET_SCAN_ARTIFACT') {
+        runtimeMessages.push(message);
+        cb?.(arts[artTurn++] || { ok: false });
+        return;
+      }
+      return origSend.call(this, message, cb);
+    };
+
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+    chromeStub.runtime.sendMessage = origSend;
+
+    // 승인은 두 파일을 한 메시지에 담아 나간다 — 그래야 batchId 로 수명을 묶어
+    // 끝나고 회수할 수 있다.
+    const approvals = actionLog.filter(e => e.kind === 'approve-msg');
+    if (approvals.length !== 2) {
+      throw new Error(`승인된 파일이 ${approvals.length}개다 — 두 개가 모두 승인돼야 한다`);
+    }
+
+    // ★ 핵심: 주입이 **한 번에 2개**를 실어야 한다.
+    //   한 번의 setFilesOnInput 이 input/change 두 이벤트를 쏘므로 이벤트 수가 아니라
+    //   그 이벤트가 싣고 있던 파일 수를 본다. 순차로 쐈다면 1개짜리가 섞여 나온다.
+    const injects29 = actionLog.filter(e => e.kind === 'inject');
+    if (!injects29.length) throw new Error('주입이 전혀 일어나지 않았다');
+    const singles29 = injects29.filter(e => e.n === 1);
+    if (singles29.length) {
+      throw new Error(
+        `파일 2개를 하나씩 나눠 넣었다(1개짜리 주입 ${singles29.length}건) — `
+        + 'DataTransfer 하나에 N개로 보내야 한다',
+      );
+    }
+    if (!injects29.some(e => e.n === 2)) {
+      throw new Error(`한 번에 2개를 실은 주입이 없다 (실린 개수: ${injects29.map(e => e.n).join(',')})`);
+    }
+    // 그 한 번에 두 파일이 다 실렸는가.
+    if (input29.files?.length !== 2) {
+      throw new Error(`한 이벤트에 실린 파일이 ${input29.files?.length}개다`);
+    }
+    const names29 = Array.from(input29.files).map(f => f.name).sort().join(',');
+    if (names29 !== 'multi-a_masked.md,multi-b_masked.md') {
+      throw new Error(`주입된 파일이 다르다: ${names29}`);
+    }
+
+    // 승인은 주입 뒤에 닫힌다(다단계 업로드가 끝날 때까지 남아야 한다).
+    const closeIdx29 = actionLog.findIndex(e => e.kind === 'close-batch' || e.kind === 'abort-batch');
+    if (closeIdx29 < 0) throw new Error('배치 승인을 회수하지 않았다');
+    if (closeIdx29 < actionLog.findIndex(e => e.kind === 'inject')) {
+      throw new Error('주입보다 먼저 승인을 닫았다 — 업로드가 막힌다');
+    }
+  }
+
+  // (30) 파일을 **나눠서** 붙여도 다 살아남는다.
+  //
+  //      한 번에 여러 개를 고르는 사람도 있지만, 하나 붙이고 또 하나 붙이는 사람이
+  //      더 많다(실사용 확인). 처음엔 pendingBatch 가 있기만 하면 "검토 중입니다" 로
+  //      거절했는데, 그러면 두 번째 파일이 그냥 사라진다 — 고치려던 "마지막 것만
+  //      된다" 와 사용자가 보기에 똑같은 증상이다.
+  {
+    // 앞 시나리오는 첨부 준비 대기(최대 1.5초) 뒤 promptApproved를 3초 더
+    // 유지한다. 4초는 느린 환경에서 아직 승인 창 안이라 Enter가 무시될 수 있다.
+    await clock.tick(7000);
+    domBySelector.set('[data-testid="send-button"]', sendButtonStub);
+
+    const mk = (name) => {
+      const f = new FileStub(['pdf bytes'], name, { type: 'application/pdf' });
+      const inp = new HTMLInputElementStub(f, name);
+      dispatchDocumentEvent('change', {
+        target: inp,
+        composedPath: () => [inp, documentStub],
+        preventDefault() {},
+        stopImmediatePropagation() {},
+      });
+      return inp;
+    };
+
+    mk('split-1.pdf');
+    await flush();
+    mk('split-2.pdf');
+    await flush();
+    mk('split-3.pdf');
+    await flush();
+
+    actionLog.length = 0;
+    runtimeMessages.length = 0;
+    promptEditorStub.value = '세 문서 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    nextDecision = { action: 'send', promptText: '세 문서 요약해줘', files: [] };
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+
+    const start30 = runtimeMessages.find(m => m.type === 'START_MULTI_SCAN');
+    if (!start30) throw new Error('나눠 붙인 뒤 전송했는데 검사가 시작되지 않았다');
+    const names30 = (start30.payload?.items || []).map(i => i.fileName).sort().join(',');
+    if (names30 !== 'split-1.pdf,split-2.pdf,split-3.pdf') {
+      throw new Error(`나눠 붙인 파일이 다 안 살아남았다: ${names30 || '(없음)'}`);
+    }
+    // id 는 배치 안에서 유일해야 한다 — 합칠 때 인덱스를 다시 매기면 앞 파일 id 가
+    // 바뀌어 결정이 엉뚱한 파일에 붙는다.
+    const ids30 = (start30.payload.items || []).map(i => i.id);
+    if (new Set(ids30).size !== ids30.length) {
+      throw new Error(`합치면서 파일 id 가 겹쳤다: ${ids30.join(',')}`);
+    }
+  }
 
   console.log('content regression ok');
   process.exit(0);

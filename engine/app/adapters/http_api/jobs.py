@@ -42,6 +42,20 @@ async def _fail(job_id: str, exc: Exception) -> None:
     raise HTTPException(status_code=500, detail=f"파이프라인 처리 중 오류: {exc}") from exc
 
 
+def _record(job_id: str, *, file_name: str, source: str, result: dict) -> None:
+    """탐지 통계 기록. **실패해도 응답을 깨지 않는다.**
+
+    호출 시점이 이미 emit({"type":"done"}) 뒤라, 여기서 예외가 나면 SSE 구독자는
+    done+결과를 받아 마스킹을 진행하는데 같은 요청의 HTTP 는 500 으로 끝난다 —
+    두 경로가 서로 다른 결론을 갖는다. 기록은 통계용이고 마스킹 결과와 무관하므로
+    디스크가 가득 차거나 항목 모양이 예상과 달라도 사용자 흐름을 막을 이유가 없다.
+    """
+    try:
+        db.record_job(job_id, file_name=file_name, source=source, result=result)
+    except Exception:  # noqa: BLE001 - 기록 실패로 마스킹 결과를 버리지 않는다
+        logger.exception("job 기록 실패 (job=%s) — 응답은 그대로 진행", job_id)
+
+
 @router.post("/jobs/prompt")
 async def create_prompt_job(text: str = Form(...)):
     if len(text) > config.MAX_PROMPT_CHARS:
@@ -58,7 +72,7 @@ async def create_prompt_job(text: str = Form(...)):
         await _fail(job_id, exc)
     await emit({"type": "done", "result": _public(result)})
 
-    db.record_job(job_id, file_name="prompt.txt", source="prompt", result=result)
+    _record(job_id, file_name="prompt.txt", source="prompt", result=result)
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 
@@ -68,6 +82,7 @@ async def create_job(
     mimeType: str = Form(""),
     fileName: str = Form(""),
     userPrompt: str = Form(""),
+    wrapFile: bool = Form(True),
 ):
     """userPrompt: 문서와 함께 사용자가 실제로 보내려는 프롬프트(선택).
 
@@ -75,6 +90,12 @@ async def create_job(
     때까지 보류했다가, 전송 시점에 파일과 함께 넘기는 시나리오에서 채워진다.
     주어지면 인젝션 탐지가 placeholder 대신 이 실제 프롬프트를 근거로 판단하고,
     프롬프트 자체도 PII 스캔해 결과에 포함한다(userPromptMasked/PiiItems).
+
+    wrapFile: 마스킹본 파일(maskedFile)을 만들어 응답에 실을지. 기본 True 라
+    기존 단일 첨부 경로는 그대로다. 다중 첨부는 False 로 부른다 — 검사 시점에는
+    사용자가 아직 아무 마스킹도 해제하지 않아 "최종본" 이 정해지지 않았고,
+    N개의 base64 를 세션에 쌓지 않으려는 것이다. 최종 파일은 사용자의 결정이
+    끝난 뒤 확장(SW)이 한 번만 만든다.
     """
     file_bytes = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(file_bytes) > config.MAX_UPLOAD_BYTES:
@@ -96,14 +117,14 @@ async def create_job(
             mime_type=mime,
             file_name=name,
             emit=emit,
-            wrap_file=True,
+            wrap_file=wrapFile,
             user_prompt=userPrompt or None,
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
     await emit({"type": "done", "result": _public(result)})
 
-    db.record_job(job_id, file_name=name, source="extension", result=result)
+    _record(job_id, file_name=name, source="extension", result=result)
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 
