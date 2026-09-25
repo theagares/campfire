@@ -111,6 +111,37 @@ def test_html_never_swallows_document_on_unclosed_script():
         assert "010-1234-5678" in out, broken
 
 
+def test_html_keeps_visible_text_around_literal_script_tokens():
+    """주석·속성값·textarea 안의 리터럴 <script> 는 여는 태그가 아니다.
+
+    정규식으로 script 를 걷어내던 구현은 이것들을 여는 태그로 보고 다음 진짜
+    </script> 까지 lazy 로 삼켜, 그 사이 보이는 텍스트(이름·전화)가 통째로 사라졌다.
+    스캐너는 빈 문자열을 보고 STATUS_OK·탐지 0건으로 끝난다 — 침묵 검사 우회.
+    """
+    pii = "홍길동 010-1234-5678"
+    for label, html in (
+        ("주석", f"<!-- <script> --> {pii} <script>x</script>"),
+        ("속성값", f'<div title="<script>">{pii}</div><script>x</script>'),
+        ("textarea", f"<textarea><script></textarea>{pii}<script>x</script>"),
+    ):
+        out = extract_html(html.encode())
+        assert "홍길동" in out and "010-1234-5678" in out, label
+
+
+def test_html_parse_is_linear_not_quadratic():
+    """안 닫힌 <script opener 가 많아도 O(n²) 로 안 터진다.
+
+    정규식 시절엔 opener 마다 EOF 까지 다시 훑어 ~1MB 에서 30초를 넘겼고, 그러면
+    파싱 타임아웃 → 미검사 통과가 됐다. 파서 방식은 선형이라 1초도 안 걸린다.
+    """
+    import time
+
+    blob = ("<script " * (1024 * 1024 // 8)).encode()  # ~1MB, 전부 안 닫힌 opener
+    start = time.perf_counter()
+    extract_html(blob)
+    assert time.perf_counter() - start < 5.0
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
