@@ -61,7 +61,12 @@ function harness({
     return { ok: true, json: async () => (p === '/proxy/stop' ? { ...engineStatus, running: false } : engineStatus) };
   };
 
-  const toggle = create({ config, engineManager, systemProxy, pacServer, fetchImpl });
+  const watchdog = {
+    arm: (info) => log.push(['watchdog', 'arm', info]),
+    disarm: () => log.push(['watchdog', 'disarm']),
+  };
+
+  const toggle = create({ config, engineManager, systemProxy, pacServer, fetchImpl, watchdog });
   return { toggle, log, store, getSystem: () => sys };
 }
 
@@ -98,6 +103,26 @@ test('끄기: 시스템을 먼저 돌려놓고 엔진은 마지막', async () =>
   assert.deepStrictEqual(h.getSystem(), ORIGINAL);
   assert.strictEqual(h.store.proxySystemPrevious, null);
   assert.strictEqual(h.store.proxyEnabled, false);
+});
+
+test('켜기: 강제종료 대비 워치독을 무장하고, 되돌릴 값을 함께 넘긴다', async () => {
+  const h = harness();
+  await h.toggle.set(true);
+  const arm = h.log.find((e) => e[0] === 'watchdog' && e[1] === 'arm');
+  assert.ok(arm, '켜면 워치독을 무장해야 한다(강제종료 시 복원)');
+  assert.strictEqual(arm[2].pacPrefix, PAC_PREFIX);
+  assert.deepStrictEqual(arm[2].previous, ORIGINAL); // 되돌릴 원래 값
+  assert.ok(typeof arm[2].pid === 'number');
+});
+
+test('끄기: 시스템을 되돌린 뒤 워치독을 해제한다(순서)', async () => {
+  const h = harness();
+  await h.toggle.set(true);
+  h.log.length = 0;
+  await h.toggle.set(false);
+  const seq = order(h.log);
+  assert.ok(seq.indexOf('system:restore') < seq.indexOf('watchdog:disarm'),
+    '복원보다 먼저 해제하면, 복원 도중 강제종료 시 워치독이 없다: ' + seq.join(' → '));
 });
 
 test('CA 가 신뢰되지 않으면 시스템을 건드리지 않는다', async () => {

@@ -199,6 +199,8 @@ app.whenReady().then(async () => {
     engineManager,
     systemProxy: systemProxyMod.create(),
     pacServer,
+    // 강제종료돼도 시스템 프록시를 되돌리는 감시 프로세스(cleanup 은 정상 종료만 탄다)
+    watchdog: require('./proxy-watchdog-host').create(),
   });
 
   ipc.register({

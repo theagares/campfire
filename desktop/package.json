@@ -48,7 +48,9 @@
       "!**/*.map"
     ],
     "asarUnpack": [
-      "main/system-proxy.ps1"
+      "main/system-proxy.ps1",
+      "main/system-proxy.js",
+      "main/proxy-watchdog.js"
     ],
     "extraResources": [
       {
