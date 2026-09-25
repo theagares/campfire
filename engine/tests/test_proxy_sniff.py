@@ -104,3 +104,14 @@ def test_고치기_전에는_엔진이_DOCX_를_못_읽는다():
     text, status2, _ = parse_document(data, mime, name)
     assert status2 == "ok"
     assert "홍길동" in text
+
+
+def test_한글_텍스트가_4KB_경계에서_잘려도_평문():
+    import pytest
+
+    # 각 반복이 15바이트(한글 5자×3)라 4096 경계가 한 글자 중간을 자른다.
+    data = ("가나다라마" * 2000).encode("utf-8")
+    assert len(data) > 4096
+    with pytest.raises(UnicodeDecodeError):
+        data[:4096].decode("utf-8")  # 옛 방식은 여기서 실패해 평문을 놓쳤다
+    assert sniff(data) == (".txt", "text/plain")

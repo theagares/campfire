@@ -108,11 +108,11 @@ class Message:
 
 # length-delimited 를 메시지로 볼지 결정하는 최소 판별.
 # 메시지로 못 읽히면 원시 바이트(문자열/바이트)로 둔다.
-def _try_parse_message(buf: bytes) -> "Message | None":
+def _try_parse_message(buf: bytes, depth: int) -> "Message | None":
     if not buf:
         return None
     try:
-        msg = _parse(buf, depth=0)
+        msg = _parse(buf, depth)
     except DecodeError:
         return None
     # 전부 소비하지 못했으면 메시지가 아니다.
@@ -120,6 +120,10 @@ def _try_parse_message(buf: bytes) -> "Message | None":
 
 
 def _parse(buf: bytes, depth: int) -> Message:
+    # depth 를 _try_parse_message 로 실제 물려줘야 이 가드가 먹는다. 예전엔
+    # 재귀가 depth=0 으로 다시 시작해 이 검사가 죽어 있었고, 깊게 중첩된 본문은
+    # DecodeError 가 아니라 RecursionError 로 떨어졌다. 100 을 넘으면 그 아래는
+    # 메시지로 더 안 풀고 원시 바이트로 둔다 — 안 건드리므로 raw 로 보존된다.
     if depth > 100:
         raise DecodeError("너무 깊다")
     msg = Message()
@@ -143,7 +147,7 @@ def _parse(buf: bytes, depth: int) -> Message:
             val = buf[i:i + length]
             i += length
             raw = buf[tag_start:i]
-            sub = _try_parse_message(val)
+            sub = _try_parse_message(val, depth + 1)
             msg.fields.append(Field(number, wire_type, raw, value=val, message=sub))
             continue
         elif wire_type == 5:  # 32bit
