@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { chromiumExecutable } from './browser.mjs';
+import { isHardFail, statusMark } from './status-classify.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, '..', '..', 'extension');
@@ -486,10 +487,14 @@ async function main() {
       ? `-${method}${sequential ? '-sequential' : ''}-${siteSuffix}` : '';
     const reportPath = path.join(resultsDir, `${command}${reportSuffix}.json`);
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-    console.log(JSON.stringify({ durationMs: report.durationMs, engine: health, results: results.map(({ site, status, durationMs }) => ({ site, status, durationMs })), reportPath }, null, 2));
-    const successfulRunStatuses = new Set(['upload-response-ok', 'content-response-ok']);
-    if (!health.ok || results.some(result => command === 'preflight'
-      ? result.status !== 'ready' : !successfulRunStatuses.has(result.status))) process.exitCode = 1;
+    console.log(JSON.stringify({ durationMs: report.durationMs, engine: health,
+      results: results.map(result => ({ site: result.site, status: result.status, mark: statusMark(command, result.status), durationMs: result.durationMs })),
+      reportPath }, null, 2));
+    const hardFails = results.filter(result => isHardFail(command, result.status));
+    const blocked = results.filter(result => statusMark(command, result.status) === 'blocked(manual)');
+    if (blocked.length) console.log(`WARN 자동 검증 불가(수동 확인 대상): ${blocked.map(result => `${result.site}=${result.status}`).join(', ')}`);
+    if (hardFails.length) console.error(`FAIL: ${hardFails.map(result => `${result.site}=${result.status}`).join(', ')}`);
+    if (!health.ok || hardFails.length) process.exitCode = 1;
   } finally {
     await context.close();
   }
