@@ -1106,12 +1106,13 @@
         } else if (result?.action === 'download') {
           debugLog('[SecureDoc] 💾 다운로드 선택 (원본 XHR 차단)');
         } else {
-          console.warn('[SecureDoc] ⚠️ 처리 오류 -> 원본 통과');
-          _origXHRSend.call(self, body);
+          // cancel·download 와 마찬가지로 여기도 차단이다. 예전엔 원본을 그대로
+          // 올렸다 — 형제 분기(FormData:아래 / Layer3:위)는 fail-closed 인데 이 Blob
+          // 분기만 fail-open 이라, 미지원 action 하나가 원본 유출이 됐다.
+          debugLog(`[SecureDoc] 🚫 처리 결과 불명 -> 차단(fail-closed): ${result?.action || 'unknown'}`);
         }
-      }).catch(() => {
-        console.error('[SecureDoc] requestProcessing 오류 -> 원본 통과');
-        _origXHRSend.call(self, body);
+      }).catch((e) => {
+        debugLog(`[SecureDoc] 🚫 requestProcessing 오류 -> 차단(fail-closed): ${e?.message || e}`);
       });
       return;
     }
@@ -1367,7 +1368,11 @@
   // Layer 4: File.arrayBuffer / FileReader (backup interceptors)
   // ════════════════════════════════════════════════════════════════════════════
   Blob.prototype.arrayBuffer = async function () {
-    if (this instanceof File && isSupportedFile(this) && !_approvedFiles.has(this)) {
+    // _approvedFiles 는 MAIN world File 만 안다. content.js 가 주입한 마스킹본은
+    // isolated world 소속이라 여기 없다 — _isContentApprovedBlob 로도 걸러야
+    // 이미 검토·주입된 파일을 다시 검토 패널로 띄우거나 빈 버퍼로 만들지 않는다.
+    if (this instanceof File && isSupportedFile(this)
+        && !_approvedFiles.has(this) && !_isContentApprovedBlob(this)) {
       // passthrough-fetch 드롭 대기 (Grok JSON+base64, Copilot raw binary 등)
       if (_matchesPendingDrop(this)) {
         debugLog(`[SecureDoc] [4] arrayBuffer() 드롭 대기: ${this.name}`);
@@ -1399,7 +1404,9 @@
 
   function makeHook(orig) {
     return function (blob, ...a) {
-      if (blob instanceof File && isSupportedFile(blob) && !_approvedFiles.has(blob)) {
+      // arrayBuffer 와 같은 이유로 content 주입 마스킹본(_isContentApprovedBlob)도 통과.
+      if (blob instanceof File && isSupportedFile(blob)
+          && !_approvedFiles.has(blob) && !_isContentApprovedBlob(blob)) {
         const self = this;
         // passthrough-fetch 드롭 대기 (Grok readAsDataURL 등)
         if (_matchesPendingDrop(blob)) {
