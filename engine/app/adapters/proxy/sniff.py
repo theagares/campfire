@@ -19,6 +19,7 @@ ponytail: OLE 계열(\\xd0\\xcf\\x11\\xe0)은 다루지 않는다. HWP·구버�
 
 from __future__ import annotations
 
+import codecs
 import io
 import zipfile
 
@@ -84,9 +85,15 @@ def _looks_textual(data: bytes) -> bool:
     head = data[:4096]
     if b"\x00" in head:
         return False
+    # 4096 경계에서 한글(3바이트)이 잘리면 strict decode 는 그 파일을 통째로
+    # "평문 아님" 으로 오판한다. 증분 디코더에 final=False 를 주면 끝에 걸친
+    # 잘린 문자만 버퍼에 남기고(오류 아님), 중간의 진짜 깨진 바이트는 여전히
+    # 예외로 떨어뜨린다 — 딱 경계 문제만 봐준다.
     try:
-        text = head.decode("utf-8")
+        text = codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
     except UnicodeDecodeError:
+        return False
+    if not text:
         return False
     # 탭·개행·캐리지리턴 말고 제어문자가 섞여 있으면 평문이 아니다.
     odd = sum(1 for ch in text if ord(ch) < 32 and ch not in "\t\n\r")
