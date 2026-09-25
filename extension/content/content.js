@@ -121,6 +121,10 @@
     const data = event.data;
     if (!data?.__campfire_config || data.direction !== 'main-to-isolated') return;
     if (data.type !== 'UPS_UPLOAD_ACTIVITY') return;
+    // bridgeToken 을 요구하지 않는다(interceptor.js 발신부 주석 참고): 페이지가 위조해도
+    // 이 값들은 "전송을 더 기다리게" 할 뿐 원본을 흘리지 못한다. 배치 landed 판정은
+    // 이 카운터가 아니라 파일별 이름 증거를 우선하므로(watchAttachmentEvidence.seenWhy),
+    // 위조된 start 하나로 이름 있는 마스킹본이 누락되지도 않는다.
     uploadInflight = Math.max(0, Number(data.inflight) || 0);
     if (data.phase === 'start') uploadStartCount += 1;
   });
@@ -1123,7 +1127,16 @@
       // 기계적 성공은 증거가 아니다. 프레임워크가 첫 파일만 처리했을 수 있다.
       const mechanical = input.files?.length === files.length;
       const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
-      const landed = files.filter((_, i) => results[i].ok).map(f => f.name);
+      // 전역 "업로드 시작 관측" 은 어느 파일의 업로드인지 못 가른다 — 업로드 1건이
+      // 배치의 모든 watcher 를 참으로 만들어, 사이트가 files[0] 만 읽어도 마스킹본
+      // N-1 개가 조용히 누락된 채 'all' 로 보고됐다(배치 무결성 구멍). 파일이 여럿일
+      // 때는 이 신호를 landed 로 인정하지 않고 파일별 이름 증거를 요구한다 — 이름은
+      // 파일마다 칩에 떠서 유일하게 파일을 가리는 신호다. 단일 파일 배치에서는 업로드
+      // 관측이 곧 그 파일이라 그대로 신뢰한다(늦게 시작한 업로드로도 첨부를 인정하던
+      // 기존 동작 유지).
+      const single = files.length === 1;
+      const isLanded = (r) => r.ok && !(r.why === '업로드 시작 관측' && !single);
+      const landed = files.filter((_, i) => isLanded(results[i])).map(f => f.name);
 
       if (landed.length === files.length) return { mode: 'all', landed };
       // 아무 증거도 없고 기계적으로도 안 들어갔으면 "아무것도 안 붙었다" 로 본다 —
@@ -2016,6 +2029,11 @@
     /** 지금 이 순간 증거가 있는가 — settle 과 같은 기준이되 기다리지 않는다.
      *  주입 팬아웃 도중 "이미 받았으니 그만 쏴도 된다" 를 판단하는 데 쓴다. */
     const seenWhy = () => {
+      // 전역 업로드 관측. 이름이 화면에 안 뜨는(또는 늦게 뜨는) 파일도 잡는 신호라
+      // 단일 파일 경로엔 꼭 필요하다. 다만 이 카운터는 배치 watcher 가 공유하는
+      // netBase 하나로 판정돼 **업로드 1건이 N개 watcher 를 전부 참으로 만든다** —
+      // 그 배치 무결성 구멍은 injectFilesAtOnce 가 "시작된 업로드 수 ≥ 파일 수"로
+      // 따로 보정한다(여기서 못 거른다: watcher 는 배치 크기를 모른다).
       if (uploadStartCount > netBase) return '업로드 시작 관측';
       // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
       // textContent 가 아직 비어 있는 프레임워크가 있다).
