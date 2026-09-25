@@ -18,7 +18,12 @@
  * 이 값으로 되돌린다 — 안 그러면 사용자 브라우저가 없는 PAC 서버를 계속 찾는다.
  */
 
-function create({ config, engineManager, systemProxy, pacServer, fetchImpl = fetch }) {
+function create({
+  config, engineManager, systemProxy, pacServer, fetchImpl = fetch,
+  // 강제종료(작업관리자·크래시)로 cleanup 이 못 돌 때 시스템 프록시를 되돌리는
+  // 감시 프로세스. 기본은 no-op — main.js 가 실제 host 를 주입한다(테스트는 스텁).
+  watchdog = { arm() {}, disarm() {} },
+}) {
   let lastError = null;
   let busy = null; // 켜기/끄기가 겹치지 않게 한 줄로 세운다
 
@@ -86,6 +91,13 @@ function create({ config, engineManager, systemProxy, pacServer, fetchImpl = fet
     }
     await systemProxy.setPac(pacUrl);
     config.set({ proxyEnabled: true });
+    // 강제종료 대비: 앱이 죽으면(정상이든 강제든) 프록시를 되돌릴 감시 프로세스를
+    // 띄운다. 정상 종료 땐 아래 disableNow 가 먼저 복원·disarm 하므로 겹치지 않는다.
+    watchdog.arm({
+      pid: process.pid,
+      pacPrefix: pacServer.PAC_PREFIX,
+      previous: config.get('proxySystemPrevious'),
+    });
     lastError = null;
     return { ok: true };
   }
@@ -99,6 +111,9 @@ function create({ config, engineManager, systemProxy, pacServer, fetchImpl = fet
     } catch (err) {
       restoreError = err;
     }
+    // 시스템을 되돌린 **뒤** 감시 프로세스를 내린다 — 순서를 지켜야, 복원 도중
+    // 강제종료돼도 워치독이 남아 마저 되돌린다.
+    watchdog.disarm();
     await pacServer.stop();
     await engine('POST', '/proxy/stop').catch(() => {});
     if (!keepDesired) config.set({ proxyEnabled: false });
