@@ -101,8 +101,7 @@
     "mac": {
       "target": [
         {
-          "target": "dmg",
-          "arch": ["arm64"]
+          "target": "dmg"
         }
       ],
       "icon": "build/icon.png",
