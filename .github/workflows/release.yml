@@ -350,10 +350,15 @@ jobs:
               sleep 10
             fi
           done
-          if [ "$models_ready" -ne 1 ]; then echo "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1; fi
+          # 실패하면 엔진 로그를 남긴다 — 이게 없으면 500 의 원인(트레이스백)을 볼 길이 없다.
+          engine_log="$HOME/Library/Application Support/Campfire/logs/engine.log"
+          dump_engine_log() { echo "--- engine.log (마지막 200줄) ---"; tail -200 "$engine_log" 2>/dev/null || echo "(없음)"; }
+          if [ "$models_ready" -ne 1 ]; then echo "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; dump_engine_log; exit 1; fi
 
           raw_secret='ghp_16C7e42F292c6912E7710c838347Ae178B4a'
-          result=$(curl -fsS --max-time 420 --data-urlencode "text=GITHUB_TOKEN=$raw_secret" "http://127.0.0.1:$PORT/jobs/prompt")
+          if ! result=$(curl -fsS --max-time 420 --data-urlencode "text=GITHUB_TOKEN=$raw_secret" "http://127.0.0.1:$PORT/jobs/prompt"); then
+            echo "/jobs/prompt 요청이 실패했습니다"; dump_engine_log; exit 1
+          fi
           python3 - "$result" "$raw_secret" <<'PY'
           import json
           import sys
