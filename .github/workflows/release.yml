@@ -87,12 +87,11 @@ jobs:
             script: dist:mac
             build_arg: --arm64
             app_dir: mac-arm64
-          - os: macos-15-intel
-            platform: macos
-            arch: x64
-            script: dist:mac
-            build_arg: --x64
-            app_dir: mac
+          # Intel Mac(x64) 은 빌드하지 않는다. 탐지 모델 스택이 torch>=2.4(transformers 5)를
+          # 요구하는데 PyTorch 는 2.3 부터 macOS x86_64 휠을 내지 않는다 — Intel 러너에서
+          # 엔진 런타임 설치가 "No matching distribution found for torch" 로 실패했다
+          # (v0.2.27 첫 빌드). 예전 Intel dmg 는 arm64 러너에서 같이 만들어져 arm64 엔진이
+          # 들어 있었으니 Intel 에서는 원래도 엔진이 뜨지 않았다.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -378,8 +377,8 @@ jobs:
           # 공개해선 안 된다.
           count=$(gh release view "$tag" --json assets --jq '[.assets[] | select(.name | endswith(".exe") or endswith(".dmg"))] | length')
           echo "설치 파일 에셋 수: $count"
-          if [ "$count" -lt 3 ]; then
-            echo "에셋이 부족합니다(exe 1 + dmg 2 = 3 기대) — draft 로 둡니다."
+          if [ "$count" -lt 2 ]; then
+            echo "에셋이 부족합니다(exe 1 + dmg 1 = 2 기대) — draft 로 둡니다."
             exit 1
           fi
           # draft 생성 때 넣어둔 "빌드 중입니다" placeholder 가 공개된 뒤에도 그대로

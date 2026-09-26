@@ -39,13 +39,13 @@ if (-not $asset) { throw '릴리스에서 설치 파일을 찾지 못했습니�
 irm $asset.browser_download_url -OutFile Campfire-Setup.exe
 ```
 
-**macOS** — Apple Silicon(M1/M2/M3...)이면 `-arm64.dmg`, Intel이면 확장자 앞에
-아무것도 안 붙은 `.dmg`입니다. 아래 명령은 `uname -m` 으로 알아서 골라 받습니다.
+**macOS** — Apple Silicon(M1 이후)만 지원합니다(`-arm64.dmg`). Intel Mac 은 지원하지
+않습니다 — 탐지 모델이 쓰는 PyTorch 가 Intel Mac 용 빌드를 더 이상 내지 않습니다.
 
 ```bash
-dmgs=$(curl -fsSL https://api.github.com/repos/theagares/campfire/releases/latest \
-  | grep -o '"browser_download_url": *"[^"]*\.dmg"' | cut -d'"' -f4)
-if [ "$(uname -m)" = arm64 ]; then url=$(echo "$dmgs" | grep arm64); else url=$(echo "$dmgs" | grep -v arm64); fi
+[ "$(uname -m)" = arm64 ] || { echo 'Intel Mac 은 지원하지 않습니다 (Apple Silicon 전용)'; exit 1; }
+url=$(curl -fsSL https://api.github.com/repos/theagares/campfire/releases/latest \
+  | grep -o '"browser_download_url": *"[^"]*-arm64\.dmg"' | cut -d'"' -f4)
 [ -n "$url" ] || { echo '릴리스에서 dmg 를 찾지 못했습니다 (GitHub API 요청 제한일 수 있습니다)'; exit 1; }
 curl -fL -o Campfire.dmg "$url"
 ```
