@@ -132,7 +132,18 @@ class PIIDetector:
         self.target_labels = self.label_map["target_labels"]
         self.id2label = {int(k): v for k, v in self.label_map["id2label"].items()}
 
-        self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir), trust_remote_code=True, use_fast=True)
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir), trust_remote_code=True, use_fast=True)
+        except ValueError as exc:
+            # 모델은 transformers 5 로 저장돼 tokenizer_config.json 의 tokenizer_class 가
+            # "TokenizersBackend"(5.x 전용 이름)다. Intel Mac 은 torch 2.2 때문에
+            # transformers 4.x 를 쓰는데, 4.x 의 AutoTokenizer 는 그 이름을 몰라 여기서 죽는다.
+            # 토크나이저 동작은 tokenizer.json 에 다 들어 있으므로 fast 토크나이저로 바로 연다
+            # (5.14 결과와 토큰 id·오프셋·특수토큰이 같음을 확인).
+            if "TokenizersBackend" not in str(exc):
+                raise
+            from transformers import PreTrainedTokenizerFast
+            self.tokenizer = PreTrainedTokenizerFast.from_pretrained(str(self.model_dir))
         if not self.tokenizer.is_fast:
             raise RuntimeError("Fast tokenizer is required for offset mapping.")
 
