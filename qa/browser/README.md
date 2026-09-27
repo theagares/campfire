@@ -66,3 +66,24 @@ Human-verification challenges can reappear in headless mode even after a
 headed sign-in. The runner reports these as blocked and does not bypass them.
 The fixture and engine reports go to `test-results/`; live reports and failure
 screenshots go to `live-results/`. Both directories are ignored by Git.
+
+## Pass/fail classification (`run` and `preflight`)
+
+The live run's only hard failure is a security regression: `failed-leak` (an
+original filename or byte reached an outbound request). That always sets a
+non-zero exit code. `upload-response-ok` and `content-response-ok` are the
+verified-pass states.
+
+Everything else is a **blocked / manual-verify** warning that does **not** fail
+CI, because it is not a leak and cannot be confirmed by automation: bot
+challenges (`human-verification-needed`), `region-blocked`, no upload control
+found (`upload-control-needed`), provider upload caps
+(`provider-upload-limit`), and `attachment-reinject-failed` — the last is the
+extension failing *closed* (it declined to send rather than leak). These reflect
+automation limits, not user-facing breakage: a site that blocks Chrome-for-Testing
+or renders its composer differently under automation shows here even though the
+real browser works (verified for claude.ai's attachment path). Statuses that
+usually mean *our* selectors broke (`login-or-selector-needed`, `inconclusive`,
+…) still hard-fail. The classification lives in `status-classify.mjs`
+(`status-classify.test.mjs` pins it); the summary line marks each site
+`ok` / `blocked(manual)` / `FAIL` / `LEAK-FAIL`.
