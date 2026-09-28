@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from .core import SENSITIVE_VALUE, assess
+from .core import BASE64_TOKEN, SENSITIVE_VALUE, assess
 
 _API_URL = "https://api.upstage.ai/v1/solar/chat/completions"
 _MAX_RESPONSE_BYTES = 64_000
@@ -31,11 +31,24 @@ def _redact(value: Any) -> Any:
         value = SENSITIVE_VALUE.sub("[REDACTED_SECRET]", value)
         value = re.sub(r"(?i)(?:api[_-]?key|authorization|token|password)\s*[:=]\s*\S+",
                        "[REDACTED_CREDENTIAL]", value)
+        value = BASE64_TOKEN.sub("[REDACTED_ENCODED_PAYLOAD]", value)
         return value[:4000]
     if isinstance(value, list):
         return [_redact(item) for item in value[:200]]
     if isinstance(value, dict):
-        return {str(key)[:100]: _redact(item) for key, item in islice(value.items(), 100)}
+        redacted: dict[str, Any] = {}
+        for key, item in islice(value.items(), 100):
+            base = str(_redact(str(key)))[:100] or "[EMPTY_KEY]"
+            candidate = base
+            suffix_number = 2
+            # Redaction can collapse distinct secret-bearing keys. Preserve every
+            # value without reintroducing the original key as a disambiguator.
+            while candidate in redacted:
+                suffix = f"#{suffix_number}"
+                candidate = f"{base[:100 - len(suffix)]}{suffix}"
+                suffix_number += 1
+            redacted[candidate] = _redact(item)
+        return redacted
     return value
 
 

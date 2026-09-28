@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from experiments.mcp_risk_scanner.cli import main
-from experiments.mcp_risk_scanner.core import assess, make_baseline
+from experiments.mcp_risk_scanner.core import assess, make_baseline, sign_runtime_event
 from experiments.mcp_risk_scanner.reporting import render_text
 
 
@@ -70,6 +70,30 @@ class ReportTests(unittest.TestCase):
                              "--baseline-key-file", str(key)])
             self.assertEqual(code, 2)
             self.assertIn("baseline integrity check failed", stderr.getvalue())
+
+    def test_cli_verifies_signed_runtime_audit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshot = root / "snapshot.json"
+            audit = root / "audit.jsonl"
+            key_path = root / "audit.key"
+            key = b"a" * 32
+            snapshot.write_text(json.dumps([{"name": "search"}]), encoding="utf-8")
+            event = sign_runtime_event({
+                "serverId": "demo", "tool": "search", "decision": "forwarded", "signals": [],
+            }, key)
+            audit.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            key_path.write_bytes(key)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main([
+                    "scan", str(snapshot), "--server-id", "demo",
+                    "--runtime-audit", str(audit),
+                    "--runtime-audit-key-file", str(key_path), "--json",
+                ])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["coverage"]["runtime"],
+                             "checked_mcp_messages")
 
 
 if __name__ == "__main__":

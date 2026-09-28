@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -45,6 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--baseline", type=Path, help="compare against a saved reference snapshot")
     scan.add_argument("--baseline-key-file", type=Path, help="verify or create an HMAC-signed baseline")
     scan.add_argument("--runtime-audit", type=Path, help="include redacted proxy JSONL observations")
+    scan.add_argument("--runtime-audit-key-file", type=Path,
+                      help="verify HMAC-signed proxy observations")
     scan.add_argument("--save-baseline", type=Path, help="save current fingerprints as a reference snapshot")
     scan.add_argument("--json", action="store_true", help="print machine-readable JSON instead of a text report")
     scan.add_argument("--llm", action="store_true", help="send redacted tool definitions to Upstage Solar")
@@ -57,6 +60,8 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--baseline", type=Path)
     probe.add_argument("--baseline-key-file", type=Path, help="verify or create an HMAC-signed baseline")
     probe.add_argument("--runtime-audit", type=Path)
+    probe.add_argument("--runtime-audit-key-file", type=Path,
+                       help="verify HMAC-signed proxy observations")
     probe.add_argument("--save-baseline", type=Path)
     probe.add_argument("--json", action="store_true")
     probe.add_argument("--llm", action="store_true", help="send redacted tool definitions to Upstage Solar")
@@ -68,26 +73,40 @@ def _parser() -> argparse.ArgumentParser:
     gateway.add_argument("--baseline", type=Path, help="optional saved fingerprint reference")
     gateway.add_argument("--baseline-key-file", type=Path, help="verify an HMAC-signed baseline")
     gateway.add_argument("--audit-file", type=Path, help="append redacted observations as JSONL")
+    gateway.add_argument("--audit-key-file", type=Path,
+                         help="create or read the key used to sign audit events")
+    gateway.add_argument("--call-timeout", type=float,
+                         help="optional operator-imposed target call timeout in seconds")
     gateway.add_argument("--confirm-connect", action="store_true", help="confirm target contact")
     service = commands.add_parser("serve", help="run the risk scanner itself as a local stdio MCP server")
     service.add_argument("--allow-loopback-probe", action="store_true",
                          help="allow MCP callers to contact confirmed numeric-loopback targets")
     service.add_argument("--allow-cloud-llm", action="store_true",
                          help="allow explicitly confirmed Solar cloud review calls")
+    service.add_argument("--allow-source-root", type=Path,
+                         help="allow source analysis only below this local directory")
+    service.add_argument("--baseline-key-file", type=Path,
+                         help="trusted startup key for signed baseline verification")
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
     if args.command == "serve":
         await run_scanner_stdio(allow_loopback_probe=args.allow_loopback_probe,
-                                allow_cloud_llm=args.allow_cloud_llm)
+                                allow_cloud_llm=args.allow_cloud_llm,
+                                source_root=args.allow_source_root,
+                                baseline_key_file=args.baseline_key_file)
         return 0
     if args.command in {"probe", "proxy"}:
         validate_loopback_url(args.url)
         if not args.confirm_connect:
             raise ValueError("--confirm-connect is required; MCP initialization contacts the target")
     if args.command == "proxy":
-        await run_stdio_proxy(args.url, args.baseline, args.audit_file, args.baseline_key_file)
+        if args.call_timeout is not None and args.call_timeout <= 0:
+            raise ValueError("--call-timeout must be greater than zero")
+        await run_stdio_proxy(args.url, args.baseline, args.audit_file,
+                              args.baseline_key_file, args.audit_key_file,
+                              args.call_timeout)
         return 0
     if args.command == "scan":
         tools = _read_json_file(args.snapshot, maximum=MAX_DEFINITION_BYTES, label="snapshot")
@@ -109,14 +128,18 @@ async def _run(args: argparse.Namespace) -> int:
             args.baseline_key_file,
             create=args.save_baseline is not None and args.baseline is None,
         )
+    if args.runtime_audit_key_file and not args.runtime_audit:
+        raise ValueError("--runtime-audit-key-file requires --runtime-audit")
     if args.runtime_audit:
         if args.runtime_audit.stat().st_size > MAX_AUDIT_BYTES:
             raise ValueError("runtime audit exceeds 1 MB")
         events = [json.loads(line) for line in args.runtime_audit.read_text(encoding="utf-8").splitlines() if line.strip()]
-        add_runtime_audit(report, events)
+        audit_key = (load_integrity_key(args.runtime_audit_key_file)
+                     if args.runtime_audit_key_file else None)
+        add_runtime_audit(report, events, integrity_key=audit_key)
     if args.llm:
         report.llm_suggestions = await review_with_solar(tools, consent=args.consent_cloud)
-    changes: list[dict[str, str]] = []
+    changes: list[dict[str, Any]] = []
     if args.baseline:
         baseline = _read_json_file(args.baseline, maximum=MAX_BASELINE_BYTES, label="baseline")
         changes = compare_baseline(report, baseline, integrity_key=integrity_key,

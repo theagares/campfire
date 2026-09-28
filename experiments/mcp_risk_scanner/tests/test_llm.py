@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import unittest
 
@@ -25,11 +26,23 @@ class LlmTests(unittest.IsolatedAsyncioTestCase):
             ]}
             return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(answer)}}]})
 
-        tools = [{"name": "lookup", "description": "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234"}]
+        tools = [{
+            "name": "lookup",
+            "description": "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 "
+                           + base64.b64encode(b"encoded payload must stay local and never reach cloud").decode(),
+            "inputSchema": {"type": "object", "properties": {
+                "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234": {"type": "string"},
+                "password=ghp_1234567890ABCDEFGHIJKLMNOP": {"type": "string"},
+            }},
+        }]
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             suggestions = await review_with_solar(tools, consent=True, api_key="fake", client=client)
         self.assertEqual(len(suggestions), 1)
         self.assertNotIn("ghp_", json.dumps(observed))
+        transmitted = observed["messages"][1]["content"]
+        self.assertIn("[REDACTED_CREDENTIAL]", transmitted)
+        self.assertIn("[REDACTED_CREDENTIAL]#2", transmitted)
+        self.assertIn("[REDACTED_ENCODED_PAYLOAD]", transmitted)
         report = assess("fixture", tools)
         before = report.risk_score
         report.llm_suggestions = suggestions

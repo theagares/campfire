@@ -56,3 +56,16 @@ def test_http_boundary_does_not_expose_local_source_paths():
             json={"serverId": "fixture", "tools": [], "sourcePath": "C:/private"},
         )
     assert response.status_code == 422
+
+
+def test_http_boundary_does_not_accept_untrusted_runtime_coverage():
+    with _client() as client:
+        response = client.post(
+            "/mcp-risk-scanner/v1/assess",
+            json={
+                "serverId": "fixture",
+                "tools": [],
+                "runtimeEvents": [{"decision": "forwarded", "signals": []}],
+            },
+        )
+    assert response.status_code == 422

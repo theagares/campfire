@@ -26,9 +26,6 @@ class AssessSnapshotRequest(BaseModel):
     tools: list[dict[str, Any]] = Field(max_length=200)
     scopes: list[str] | None = Field(default=None, max_length=100)
     baseline: dict[str, Any] | None = None
-    runtime_events: list[dict[str, Any]] | None = Field(
-        default=None, alias="runtimeEvents", max_length=10_000
-    )
 
 
 def _scanner(request: Request) -> McpRiskScanner:
@@ -62,7 +59,6 @@ async def assess_snapshot(body: AssessSnapshotRequest, request: Request):
             tools=body.tools,
             scopes=body.scopes,
             baseline=body.baseline,
-            runtime_events=body.runtime_events,
         )
     except RiskScannerRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

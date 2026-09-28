@@ -45,8 +45,10 @@ def _error_detail(exc: BaseException) -> str:
                    else f"\\u{ord(char):04x}" for char in raw)
 
 
-async def _run_target(awaitable, *, timeout: float, operation: str):
+async def _run_target(awaitable, *, timeout: float | None, operation: str):
     try:
+        if timeout is None:
+            return await awaitable
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except asyncio.CancelledError:
         raise
@@ -72,18 +74,20 @@ def validate_loopback_url(url: str) -> str:
     return url
 
 
-def _http_client() -> httpx.AsyncClient:
+def _http_client(request_timeout: float | None = 5) -> httpx.AsyncClient:
     # Redirects and ambient proxies could escape the loopback restriction.
-    return httpx.AsyncClient(timeout=httpx.Timeout(5), follow_redirects=False,
+    timeout = (httpx.Timeout(request_timeout) if request_timeout is not None
+               else httpx.Timeout(None, connect=5.0))
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False,
                              trust_env=False)
 
 
 @asynccontextmanager
-async def loopback_session(url: str):
+async def loopback_session(url: str, *, request_timeout: float | None = 5):
     """Keep one initialized upstream session for a probe or proxy lifetime."""
     validate_loopback_url(url)
     try:
-        async with _http_client() as http_client:
+        async with _http_client(request_timeout) as http_client:
             async with streamable_http_client(url, http_client=http_client) as (read, write, _):
                 async with read, write:
                     async with ClientSession(read, write) as session:
@@ -132,12 +136,13 @@ async def probe_loopback(url: str) -> list[dict[str, Any]]:
 async def list_observed(url: str, baseline: dict[str, Any] | None = None,
                         baseline_key: bytes | None = None,
                         session: ClientSession | None = None,
+                        *, operation_timeout: float | None = 20,
                         ) -> tuple[list[types.Tool], list[str]]:
     validate_loopback_url(url)
     if session is None:
         snapshot = await probe_loopback(url)
     else:
-        snapshot, _ = await _run_target(_catalog(session), timeout=20,
+        snapshot, _ = await _run_target(_catalog(session), timeout=operation_timeout,
                                         operation="loopback MCP catalog read")
     changes = (compare_baseline(assess(url, snapshot), baseline,
                                 integrity_key=baseline_key,
@@ -151,6 +156,7 @@ async def call_observed(url: str, tool_name: str, arguments: dict[str, Any],
                         baseline: dict[str, Any] | None = None,
                         baseline_key: bytes | None = None,
                         session: ClientSession | None = None,
+                        *, call_timeout: float | None = None,
                         ) -> tuple[types.CallToolResult, list[str]]:
     """Forward an explicitly requested call and report observed risk signals.
 
@@ -228,10 +234,11 @@ async def call_observed(url: str, tool_name: str, arguments: dict[str, Any],
 
     if session is None:
         async def run():
-            async with loopback_session(url) as active_session:
+            async with loopback_session(url, request_timeout=call_timeout) as active_session:
                 return await perform(active_session)
 
-        result = await _run_target(run(), timeout=30, operation="loopback MCP call")
+        result = await _run_target(run(), timeout=call_timeout, operation="loopback MCP call")
     else:
-        result = await _run_target(perform(session), timeout=30, operation="loopback MCP call")
+        result = await _run_target(perform(session), timeout=call_timeout,
+                                   operation="loopback MCP call")
     return result, sorted(signals)
