@@ -131,7 +131,6 @@ class StdioMcpRiskScanner:
         tools: list[dict[str, Any]],
         scopes: list[str] | None = None,
         baseline: dict[str, Any] | None = None,
-        runtime_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         session = self._session
         if self._state != "ready" or session is None:
@@ -141,8 +140,6 @@ class StdioMcpRiskScanner:
             arguments["scopes"] = scopes
         if baseline is not None:
             arguments["baseline"] = baseline
-        if runtime_events is not None:
-            arguments["runtime_events"] = runtime_events
         try:
             encoded = json.dumps(
                 arguments, ensure_ascii=False, separators=(",", ":"), allow_nan=False

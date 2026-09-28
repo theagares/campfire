@@ -25,5 +25,4 @@ class McpRiskScanner(Protocol):
         tools: list[dict[str, Any]],
         scopes: list[str] | None = None,
         baseline: dict[str, Any] | None = None,
-        runtime_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...

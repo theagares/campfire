@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .core import CAPS, Report
 
 LABELS = {
@@ -56,7 +58,7 @@ def _safe(value: object) -> str:
                    else f"\\u{ord(char):04x}" for char in str(value))
 
 
-def render_text(report: Report, changes: list[dict[str, str]] | None = None) -> str:
+def render_text(report: Report, changes: list[dict[str, Any]] | None = None) -> str:
     lines = [
         f"MCP 서버: {_safe(report.server_id)}",
         f"Security Score: {report.security_score}/100 (Risk Score: {report.risk_score}/100; 관찰된 신호 기준)",
@@ -69,6 +71,14 @@ def render_text(report: Report, changes: list[dict[str, str]] | None = None) -> 
     lines.extend(["", "검사 범위:"])
     for name, state in report.coverage.items():
         lines.append(f"  {name}: {state}")
+    completeness = report.analysis_completeness
+    counts = completeness["counts"]
+    lines.extend([
+        "",
+        "Analysis completeness (not part of the numeric score):",
+        f"  complete: {str(completeness['complete']).lower()}",
+        "  " + ", ".join(f"{name}={count}" for name, count in counts.items()),
+    ])
     lines.extend(["", "위험 근거:"])
     if report.findings:
         for finding in report.findings:
@@ -80,7 +90,8 @@ def render_text(report: Report, changes: list[dict[str, str]] | None = None) -> 
     if changes:
         lines.extend(["", "기준 지문과의 차이:"])
         for change in changes:
-            lines.append(f"  {_safe(change['tool'])}: {_safe(change['change'])}")
+            detail = f" ({_safe(change['detail'])})" if "detail" in change else ""
+            lines.append(f"  {_safe(change['tool'])}: {_safe(change['change'])}{detail}")
     if report.llm_suggestions:
         lines.extend(["", "LLM 검토 제안 (미검증, 점수 미반영):"])
         for suggestion in report.llm_suggestions:
