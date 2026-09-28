@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import socket
 import sys
@@ -15,9 +16,11 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.fastmcp import FastMCP
 
-from experiments.mcp_risk_scanner.core import assess, make_baseline, make_signed_baseline
+from experiments.mcp_risk_scanner.core import (
+    add_runtime_audit, assess, load_integrity_key, make_baseline, make_signed_baseline,
+)
 from experiments.mcp_risk_scanner.probe import (
-    call_observed, list_observed, probe_loopback,
+    UnsafeTargetError, _run_target, call_observed, list_observed, probe_loopback,
 )
 
 
@@ -107,10 +110,23 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.isError)
         self.assertIn("catalog_changed", signals)
 
+    async def test_call_timeout_is_opt_in(self):
+        self.assertIsNone(inspect.signature(call_observed).parameters["call_timeout"].default)
+        completed = await _run_target(
+            asyncio.sleep(0.001, result="complete"), timeout=None, operation="test call",
+        )
+        self.assertEqual(completed, "complete")
+        with self.assertRaises(UnsafeTargetError):
+            await _run_target(
+                asyncio.sleep(0.1), timeout=0.000001, operation="test call",
+            )
+
     async def test_real_stdio_proxy(self):
         with tempfile.TemporaryDirectory() as temp:
             baseline_path = Path(temp) / "baseline.json"
             key_path = Path(temp) / "baseline.key"
+            audit_key_path = Path(temp) / "audit.key"
+            audit_path = Path(temp) / "audit.jsonl"
             key = b"k" * 32
             signed = make_signed_baseline(assess(self.url, self.tools), key)
             baseline_path.write_text(json.dumps(signed), encoding="utf-8")
@@ -119,7 +135,8 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                 command=sys.executable,
                 args=["-m", "experiments.mcp_risk_scanner.cli", "proxy", self.url,
                       "--baseline", str(baseline_path), "--baseline-key-file", str(key_path),
-                      "--audit-file", str(Path(temp) / "audit.jsonl"),
+                      "--audit-file", str(audit_path),
+                      "--audit-key-file", str(audit_key_path),
                       "--confirm-connect"],
                 cwd=Path(__file__).resolve().parents[3],
             )
@@ -136,13 +153,18 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                     sensitive = await client.call_tool("echo", {"message": "-----BEGIN PRIVATE KEY-----"})
                     self.assertFalse(sensitive.isError)
                     self.assertIn("PRIVATE KEY", str(sensitive.content))
-            events = [json.loads(line) for line in (Path(temp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+            events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
             forwarded = [event for event in events if event["decision"] == "forwarded"]
             self.assertEqual(len(forwarded), 3)
             self.assertIn("poisoned_result", forwarded[1]["signals"])
             self.assertIn("sensitive_argument", forwarded[2]["signals"])
+            self.assertTrue(all(event["serverId"] == self.url for event in events))
+            self.assertTrue(all(event["integrity"]["algorithm"] == "hmac-sha256" for event in events))
             self.assertNotIn("id_rsa", json.dumps(events))
             self.assertNotIn("PRIVATE KEY", json.dumps(events))
+            report = assess(self.url, self.tools)
+            add_runtime_audit(report, events, integrity_key=load_integrity_key(audit_key_path))
+            self.assertEqual(report.coverage["runtime"], "checked_mcp_messages")
 
 
 if __name__ == "__main__":
