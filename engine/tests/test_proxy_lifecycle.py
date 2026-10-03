@@ -19,7 +19,13 @@ pytest.importorskip("mitmproxy")
 from app import config  # noqa: E402
 from app.adapters import proxy  # noqa: E402
 
-PORT = 48219
+PORT = 0
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def _bound(port: int) -> bool:
@@ -30,6 +36,8 @@ def _bound(port: int) -> bool:
 
 @pytest.fixture(autouse=True)
 def _port(monkeypatch):
+    global PORT
+    PORT = _free_port()
     monkeypatch.setattr(config, "PROXY_PORT", PORT)
     monkeypatch.setattr(config, "PROXY_ENABLED", False)
 
