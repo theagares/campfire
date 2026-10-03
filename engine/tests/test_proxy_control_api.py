@@ -19,7 +19,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import config  # noqa: E402
 from app.adapters.http_api import proxy_control  # noqa: E402
 
-PORT = 48218
+PORT = 0
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def _bound() -> bool:
@@ -30,6 +36,8 @@ def _bound() -> bool:
 
 @pytest.fixture
 def client(monkeypatch):
+    global PORT
+    PORT = _free_port()
     monkeypatch.setattr(config, "PROXY_PORT", PORT)
     app = FastAPI()
     app.include_router(proxy_control.router)
