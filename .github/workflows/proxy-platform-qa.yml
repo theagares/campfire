@@ -63,7 +63,7 @@ jobs:
       - name: Install proxy test runtime
         working-directory: engine
         shell: bash
-        run: python -m pip install pytest fastapi httpx python-multipart "mitmproxy>=10"
+        run: python -m pip install pytest fastapi httpx python-multipart "mcp>=1.26,<2" "mitmproxy>=10"
 
       - name: Test engine proxy lifecycle
         working-directory: engine
