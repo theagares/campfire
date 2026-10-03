@@ -28,6 +28,8 @@ function harness({
     caPath: 'C:\\ca.cer', hosts: { exact: ['claude.ai'], suffixes: [] } },
   system = { ...ORIGINAL },
   engineUp = true,
+  setPacError = null,
+  restoreError = null,
 } = {}) {
   const log = [];
   const store = { proxyEnabled: false, proxySystemPrevious: null };
@@ -40,8 +42,16 @@ function harness({
   const runner = async (cmd, arg) => {
     log.push(['system', cmd]);
     if (cmd === 'query') return { ...sys };
-    if (cmd === 'set-pac') { sys = { ...sys, flags: 5, pacUrl: arg }; return { ...sys }; }
-    if (cmd === 'restore') { sys = { ...JSON.parse(arg) }; return { ...sys }; }
+    if (cmd === 'set-pac') {
+      if (setPacError) throw new Error(setPacError);
+      sys = { ...sys, flags: 5, pacUrl: arg };
+      return { ...sys };
+    }
+    if (cmd === 'restore') {
+      if (restoreError) throw new Error(restoreError);
+      sys = { ...JSON.parse(arg) };
+      return { ...sys };
+    }
     throw new Error(cmd);
   };
   const systemProxy = systemProxyMod.create(runner);
@@ -163,6 +173,36 @@ test('다시 켜도 원래 값은 처음 것 그대로', async () => {
   assert.deepStrictEqual(h.store.proxySystemPrevious, ORIGINAL);
   await h.toggle.set(false);
   assert.deepStrictEqual(h.getSystem(), ORIGINAL);
+});
+
+test('시스템 PAC 적용이 실패하면 원래 설정을 복원하고 엔진도 내린다', async () => {
+  const h = harness({ setPacError: '관리자 승인이 취소됐습니다' });
+  const r = await h.toggle.set(true);
+
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'system');
+  assert.deepEqual(h.getSystem(), ORIGINAL);
+  assert.equal(h.store.proxySystemPrevious, null);
+  assert.ok(steps(h.log, 'engine').includes('POST /proxy/stop'));
+  const seq = order(h.log);
+  assert.ok(seq.indexOf('watchdog:arm') < seq.indexOf('system:set-pac'));
+  assert.ok(seq.indexOf('system:restore') < seq.indexOf('watchdog:disarm'));
+});
+
+test('끄는 중 시스템 복원이 실패하면 엔진·PAC·워치독을 유지한다', async () => {
+  const h = harness({ restoreError: 'macOS 관리자 승인이 취소됐습니다' });
+  assert.equal((await h.toggle.set(true)).ok, true);
+  h.log.length = 0;
+
+  const r = await h.toggle.set(false);
+
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'restore');
+  assert.equal(h.store.proxyEnabled, true);
+  assert.deepEqual(h.store.proxySystemPrevious, ORIGINAL);
+  assert.ok(!steps(h.log, 'pac').includes('stop'));
+  assert.ok(!steps(h.log, 'engine').includes('POST /proxy/stop'));
+  assert.ok(!order(h.log).includes('watchdog:disarm'));
 });
 
 test('강제 종료 뒤 다음 실행: 엔진보다 먼저 되돌린다', async () => {

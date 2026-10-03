@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from app import config
 
@@ -58,11 +59,34 @@ def ca_cert_path() -> str:
     """mitmproxy 가 만든 CA 인증서 경로. 처음 한 번 기동해야 파일이 생긴다."""
     from pathlib import Path
 
-    return str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.cer")
+    # security(1)는 PEM/DER 둘 다 받지만, macOS에서 사용자가 직접 설치할 때 형식이
+    # 드러나는 cert.pem을 보여 주는 편이 명확하다. Windows certutil에는 .cer를 쓴다.
+    name = "mitmproxy-ca-cert.pem" if sys.platform == "darwin" else "mitmproxy-ca-cert.cer"
+    return str(Path.home() / ".mitmproxy" / name)
+
+
+def _macos_ca_trusted(path, *, run=None) -> bool:
+    """macOS Keychain이 CA를 SSL 루트로 실제 신뢰하는지 확인한다."""
+    import subprocess
+
+    command = run or subprocess.run
+    try:
+        result = command(
+            [
+                "/usr/bin/security", "verify-cert", "-c", str(path),
+                "-p", "ssl", "-l", "-L", "-q",
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def ca_trusted() -> bool | None:
-    """우리 CA 가 Windows 신뢰 저장소에 있는가. 판단할 수 없으면 None.
+    """우리 CA가 OS 신뢰 저장소에 있는가. 판단할 수 없으면 None.
 
     시스템 프록시를 켜기 전 마지막 관문이다. CA 가 없는데 브라우저를 여기로 돌리면
     AI 사이트가 전부 인증서 오류로 열리지 않는다 — 켜기 전에 막아야 한다.
@@ -73,11 +97,13 @@ def ca_trusted() -> bool | None:
     import ssl
     from pathlib import Path
 
-    if not hasattr(ssl, "enum_certificates"):
-        return None  # Windows 가 아니다
     p = Path(ca_cert_path())
     if not p.exists():
         return False
+    if sys.platform == "darwin":
+        return _macos_ca_trusted(p)
+    if not hasattr(ssl, "enum_certificates"):
+        return None
     raw = p.read_bytes()
     try:
         der = ssl.PEM_cert_to_DER_cert(raw.decode("ascii")) if raw.startswith(b"-----BEGIN") else raw
@@ -98,7 +124,8 @@ def status() -> dict:
     except ImportError:  # mitmproxy 미설치
         exact, suffixes = [], []
     return {
-        "supported": sys.platform == "win32",
+        "supported": sys.platform in {"win32", "darwin"},
+        "platform": sys.platform,
         # 앱이 PAC 를 만들 때 쓴다 — 이 호스트만 프록시로, 나머지는 직접.
         "hosts": {"exact": exact, "suffixes": suffixes},
         "running": is_running(),

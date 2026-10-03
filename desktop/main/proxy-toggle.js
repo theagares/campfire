@@ -58,7 +58,7 @@ function create({
 
   async function enableNow() {
     if (!systemProxy.supported) {
-      return fail('unsupported', 'Windows 에서만 지원합니다');
+      return fail('unsupported', 'Windows와 macOS에서만 지원합니다');
     }
     let st;
     try {
@@ -89,15 +89,38 @@ function create({
     if (!config.get('proxySystemPrevious') && !systemProxy.isOurs(current, pacServer.PAC_PREFIX)) {
       config.set({ proxySystemPrevious: current });
     }
-    await systemProxy.setPac(pacUrl);
-    config.set({ proxyEnabled: true });
-    // 강제종료 대비: 앱이 죽으면(정상이든 강제든) 프록시를 되돌릴 감시 프로세스를
-    // 띄운다. 정상 종료 땐 아래 disableNow 가 먼저 복원·disarm 하므로 겹치지 않는다.
+    // 시스템 설정을 쓰기 전에 워치독을 준비한다. 쓰는 도중 앱이 죽어도 원래
+    // 설정으로 돌아가며, macOS 여러 네트워크 서비스 중 일부만 적용된 경우도 같다.
     watchdog.arm({
       pid: process.pid,
       pacPrefix: pacServer.PAC_PREFIX,
       previous: config.get('proxySystemPrevious'),
     });
+    try {
+      await systemProxy.setPac(pacUrl);
+    } catch (err) {
+      let restored = false;
+      try {
+        // 재적용 중이었다면 current는 이미 우리 PAC다. 디스크에 남아 있는 최초 원본을
+        // 우선해야 우리 PAC를 "원래 값"으로 복원하고 잃어버리는 일이 없다.
+        await systemProxy.restore(config.get('proxySystemPrevious') || current);
+        restored = true;
+        config.set({ proxySystemPrevious: null });
+      } catch { /* 워치독과 다음 실행 recoverOnLaunch가 다시 복원한다 */ }
+      if (!restored) {
+        // 일부 서비스만 바뀐 뒤 복원마저 실패했을 수 있다. 이때 엔진/PAC/워치독을
+        // 내리면 죽은 프록시만 남는다. 사용자가 다시 끄거나 앱 종료 워치독이 복원할
+        // 때까지 안전망을 살려 둔다.
+        return fail('system', `${err.message} (원래 프록시 설정 복원도 실패했습니다)`);
+      }
+      watchdog.disarm();
+      await pacServer.stop();
+      await engine('POST', '/proxy/stop').catch(() => {});
+      return fail('system', err.message);
+    }
+    config.set({ proxyEnabled: true });
+    // 강제종료 대비: 앱이 죽으면(정상이든 강제든) 프록시를 되돌릴 감시 프로세스를
+    // 띄운다. 정상 종료 땐 아래 disableNow 가 먼저 복원·disarm 하므로 겹치지 않는다.
     lastError = null;
     return { ok: true };
   }
@@ -105,11 +128,12 @@ function create({
   async function disableNow({ keepDesired }) {
     // 브라우저부터 돌려놓는다. 거꾸로 하면 엔진 프록시가 내려간 뒤 설정이 풀리기
     // 전까지 AI 사이트가 죽은 포트를 향한다.
-    let restoreError = null;
     try {
       await restoreSystem();
     } catch (err) {
-      restoreError = err;
+      // macOS 관리자 승인을 취소한 경우가 대표적이다. 복원에 실패했는데 엔진과 PAC를
+      // 먼저 내리면 시스템 설정만 죽은 주소를 가리킨다. 모두 그대로 두고 다시 시도한다.
+      return fail('restore', err.message);
     }
     // 시스템을 되돌린 **뒤** 감시 프로세스를 내린다 — 순서를 지켜야, 복원 도중
     // 강제종료돼도 워치독이 남아 마저 되돌린다.
@@ -117,7 +141,6 @@ function create({
     await pacServer.stop();
     await engine('POST', '/proxy/stop').catch(() => {});
     if (!keepDesired) config.set({ proxyEnabled: false });
-    if (restoreError) return fail('restore', restoreError.message);
     lastError = null;
     return { ok: true };
   }
@@ -165,12 +188,14 @@ function create({
       if (systemProxy.supported) {
         try {
           const q = await systemProxy.query();
-          system = { ...q, ours: systemProxy.isOurs(q, pacServer.PAC_PREFIX) };
+          const applied = systemProxy.isFullyOurs || systemProxy.isOurs;
+          system = { ...q, ours: applied.call(systemProxy, q, pacServer.PAC_PREFIX) };
         } catch (err) {
           system = { error: err.message };
         }
       }
       return {
+        platform: process.platform,
         supported: systemProxy.supported,
         desired: !!config.get('proxyEnabled'),
         engine: engineProxy,

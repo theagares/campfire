@@ -1,0 +1,70 @@
+name: Proxy platform QA
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "desktop/main/system-proxy*"
+      - "desktop/main/proxy-*"
+      - "desktop/tests/system-proxy*"
+      - "desktop/tests/proxy-*"
+      - "engine/app/adapters/proxy/**"
+      - "engine/tests/test_proxy*"
+      - "engine/pyproject.toml"
+      - ".github/workflows/proxy-platform-qa.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/main/system-proxy*"
+      - "desktop/main/proxy-*"
+      - "desktop/tests/system-proxy*"
+      - "desktop/tests/proxy-*"
+      - "engine/app/adapters/proxy/**"
+      - "engine/tests/test_proxy*"
+      - "engine/pyproject.toml"
+      - ".github/workflows/proxy-platform-qa.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  proxy:
+    name: Proxy (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            label: Windows x64
+          - os: macos-15
+            label: macOS arm64
+          - os: macos-15-intel
+            label: macOS x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test desktop proxy orchestration and read OS proxy state
+        working-directory: desktop
+        run: node --test tests/system-proxy.test.js tests/system-proxy-macos.test.js tests/proxy-toggle.test.js tests/proxy-watchdog.test.js tests/proxy-watchdog-host.test.js
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 전체 모델 스택(torch/transformers)은 이 테스트에 필요 없다. 프록시 런타임을
+      # 각 OS/아키텍처에 실제 설치해 mitmproxy wheel과 토글 수명주기를 검증한다.
+      - name: Install proxy test runtime
+        working-directory: engine
+        shell: bash
+        run: python -m pip install pytest fastapi httpx "mitmproxy>=10"
+
+      - name: Test engine proxy lifecycle
+        working-directory: engine
+        run: python -m pytest tests/test_proxy_platform.py tests/test_proxy_control_api.py tests/test_proxy_lifecycle.py
