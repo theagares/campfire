@@ -198,4 +198,57 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   );
 }
 
-console.log('panel-multi-gate.test.js: 7개 블록 통과');
+// ── 8) 검사 중엔 대기 화면(별똥별), 다 끝나야 탭으로 넘어간다 ─────────────────
+//     처음 구현은 INIT 즉시 탭을 띄워서, 첨부+엔터의 대기 화면이 '대기 중…' 탭 줄로
+//     바뀌어 버렸다. 한 번 넘어간 뒤엔 재시도가 와도 대기 화면으로 되돌아가지 않는다.
+{
+  const shown = () => ({
+    progress: !els.get('view-progress').hidden,
+    result: !els.get('view-result').hidden,
+    footer: !els.get('footer').hidden,
+  });
+  const msg = (m) => panelListener({ sessionId: 's8', tabId: 101, seq: 8, ...m });
+
+  msg({
+    type: 'PANEL_SCAN_INIT',
+    docs: [
+      { id: 'f0', fileName: 'a.pdf', status: 'pending' },
+      { id: 'f1', fileName: 'b.docx', status: 'pending' },
+    ],
+  });
+  assert.deepStrictEqual(shown(), { progress: true, result: false, footer: false },
+    '검사가 막 시작됐는데 대기 화면 대신 탭이 떴다');
+  assert.strictEqual(els.get('progress-fill').style.width, '8%');
+
+  msg({ type: 'PANEL_PROGRESS', itemId: 'f0', event: { type: 'step', step: 'pii', label: 'PII 탐지 중…' } });
+  assert.strictEqual(els.get('progress-title').textContent, 'PII 탐지 중…');
+  assert.strictEqual(els.get('progress-sub').textContent, 'a.pdf', '지금 보는 파일이 부제에 없다');
+  assert.strictEqual(els.get('progress-fill').style.width, '8%', '항목 단계가 전체 막대를 덮었다');
+
+  msg({ type: 'PANEL_SCAN_PROMPT', prompt: { status: 'done', counts: { pii: 1, injection: 0 } } });
+  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f0', fileName: 'a.pdf', status: 'done', counts: { pii: 2, injection: 1 } } });
+  assert.ok(shown().progress, '아직 b.docx 가 남았는데 대기 화면이 사라졌다');
+  assert.strictEqual(els.get('progress-fill').style.width, '67%');
+
+  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'done', counts: { pii: 0, injection: 0 } } });
+  assert.deepStrictEqual(shown(), { progress: false, result: true, footer: true }, '다 끝났는데 탭으로 안 넘어갔다');
+  assert.strictEqual(els.get('counts').textContent, 'PII 3건 | INJECTION 1건 탐지', '헤더가 검사 중에 머물렀다');
+
+  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'scanning' } });
+  assert.ok(shown().result, '재시도 한 번에 대기 화면으로 되돌아갔다');
+
+  // 루프가 끝났다고 알리면(DONE) 남은 게 있어도 탭에서 고르게 한다.
+  panelListener({
+    type: 'PANEL_SCAN_INIT', sessionId: 's9', tabId: 101, seq: 9,
+    docs: [{ id: 'f0', fileName: 'stuck.pdf', status: 'pending' }],
+  });
+  assert.ok(shown().progress);
+  panelListener({
+    type: 'PANEL_SCAN_DONE', sessionId: 's9', tabId: 101, seq: 9,
+    docs: [{ id: 'f0', fileName: 'stuck.pdf', status: 'pending' }],
+    prompt: { status: 'error', counts: null },
+  });
+  assert.ok(shown().result, 'DONE 이 왔는데 대기 화면에 갇혔다');
+}
+
+console.log('panel-multi-gate.test.js: 8개 블록 통과');

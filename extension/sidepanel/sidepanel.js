@@ -59,6 +59,7 @@ let state = {
   activeTab: null,      // docId 또는 'prompt'
   loaded: new Map(),    // itemId -> { originalText, piiItems, injectionItems }
   decisions: new Map(), // docId -> 'masked'|'original'|'exclude'
+  multiRevealed: false, // 검사가 끝나 대기 화면에서 탭으로 넘어갔는지 — syncMultiView 참고
 };
 
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
@@ -188,10 +189,51 @@ function renderMulti(session) {
   // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
   // 방금 붙인 파일이 어디 있는지 못 찾는다.
   state.activeTab = draft.activeTab ?? (state.docs[0]?.id ?? 'prompt');
-  showView('result');
+  state.multiRevealed = session.status === 'ready' || !multiBusy();
+  el.progressTitle.textContent = `문서 ${state.docs.length}개 보안 분석 중…`;
+  el.progressSub.textContent = state.docs.map(d => d.fileName).join(', ');
   renderTabs();
   showTab(state.activeTab);
   refreshSummary();
+  syncMultiView();
+}
+
+const isBusy = (status) => status === 'pending' || status === 'scanning';
+const multiBusy = () => state.docs.some(d => isBusy(d.status)) || isBusy(state.promptMeta?.status);
+
+/** 검사가 도는 동안은 단일 첨부와 같은 대기 화면(별똥별)을 띄우고, 다 끝나면 탭으로 넘긴다.
+ *  처음엔 바로 탭을 띄웠는데, 그러면 첨부+엔터의 대기 화면이 '대기 중…' 탭 줄로 바뀌어
+ *  버렸다. 한 번 넘어가면 다시 대기 화면으로 돌아가지 않는다 — 재시도는 탭 안에서 보인다. */
+function syncMultiView() {
+  if (!state.multiRevealed && !multiBusy()) state.multiRevealed = true;
+  const n = state.docs.length;
+  el.docName.textContent = 'Campfire';
+
+  if (!state.multiRevealed) {
+    showView('progress');
+    const finished = state.docs.filter(d => !isBusy(d.status)).length
+      + (isBusy(state.promptMeta?.status) ? 0 : 1);
+    el.docType.textContent = `문서 ${n}개 검사 중`;
+    el.counts.textContent = '검사 중…';
+    el.progressFill.style.width = `${Math.max(8, Math.round((finished / (n + 1)) * 100))}%`;
+    el.progressWarn.hidden = true;
+    return;
+  }
+
+  showView('result');
+  const sum = (key) => state.docs.reduce((t, d) => t + (d.counts?.[key] || 0), 0)
+    + (state.promptMeta?.counts?.[key] || 0);
+  el.docType.textContent = `문서 ${n}개 + 프롬프트 검토`;
+  el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건 탐지`;
+}
+
+/** 다중 검사 중 진행 이벤트. 막대는 끝난 항목 수로만 채운다 — 항목별 단계로 채우면
+ *  파일이 바뀔 때마다 막대가 뒤로 튄다. 제목은 지금 단계, 부제는 지금 보고 있는 파일. */
+function applyMultiProgress(event, itemId) {
+  if (state.multiRevealed || event?.type !== 'step') return;
+  if (event.label) el.progressTitle.textContent = event.label;
+  const doc = state.docs.find(d => d.id === itemId);
+  el.progressSub.textContent = doc ? doc.fileName : '프롬프트';
 }
 
 // ── 파일별 결정 ─────────────────────────────────────────────────────────────
@@ -925,6 +967,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     state.promptMeta = msg.prompt || state.promptMeta;
     renderTabs();
     if (state.activeTab === 'prompt') showTab('prompt');
+    syncMultiView();
     return;
   }
   if (msg.type === 'PANEL_SCAN_ITEM') {
@@ -933,20 +976,25 @@ chrome.runtime.onMessage.addListener((msg) => {
     renderTabs();
     if (state.activeTab === msg.doc?.id) showTab(msg.doc.id);
     refreshSummary();
+    syncMultiView();
     return;
   }
   if (msg.type === 'PANEL_SCAN_DONE') {
     state.docs = msg.docs || state.docs;
     state.promptMeta = msg.prompt || state.promptMeta;
+    state.multiRevealed = true;   // 검사 루프가 끝났다 — 남은 '대기 중' 이 있어도 탭에서 고르게 한다
     renderTabs();
     refreshSummary();
+    syncMultiView();
     return;
   }
 
   if (msg.type === 'PANEL_PROGRESS') {
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
-    applyProgress(msg.event);
+    // itemId 가 붙어 오면 다중 검사의 한 항목이다 — 막대를 항목 단계로 덮지 않는다.
+    if (msg.itemId != null) applyMultiProgress(msg.event, msg.itemId);
+    else applyProgress(msg.event);
   } else if (msg.type === 'PANEL_RESULT') {
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
