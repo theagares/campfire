@@ -39,7 +39,7 @@ Set-Location $Dest
 Write-Host "엔진(Python) 의존성 설치 중..."
 python -m venv engine\.venv
 & engine\.venv\Scripts\python.exe -m pip install --upgrade pip --quiet
-& engine\.venv\Scripts\python.exe -m pip install -e "engine[test]" --quiet
+& engine\.venv\Scripts\python.exe -m pip install -e "engine[test,proxy]" --quiet
 
 Write-Host "데스크탑 앱(Electron) 의존성 설치 중..."
 Push-Location desktop

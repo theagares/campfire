@@ -8,15 +8,17 @@
  * 버그였는데 가짜 runner 로는 절대 안 보인다.
  *
  * 여기서는 echo(받은 값을 그대로 돌려줌)와 query(읽기)만 부른다. 둘 다 사용자
- * 설정을 건드리지 않는다. Windows 가 아니면 건너뛴다.
+ * 설정을 건드리지 않는다. Windows와 macOS의 실제 읽기 경로를 각각 확인한다.
  */
 
 const test = require('node:test');
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 
-const { runScript } = require('../main/system-proxy');
+const { create, runScript } = require('../main/system-proxy');
 
 const onWindows = process.platform === 'win32';
+const onMac = process.platform === 'darwin';
 
 test('인자가 한 글자도 안 바뀌고 도착한다', { skip: !onWindows }, async () => {
   const payloads = [
@@ -36,4 +38,28 @@ test('query 는 읽기만 한다 — 모양 확인', { skip: !onWindows }, async
   const s = await runScript('query');
   assert.strictEqual(typeof s.flags, 'number');
   assert.ok('server' in s && 'bypass' in s && 'pacUrl' in s);
+});
+
+test('macOS networksetup query 는 읽기만 한다 — 서비스별 모양 확인', { skip: !onMac }, async () => {
+  const s = await create().query();
+  assert.equal(s.platform, 'darwin');
+  assert.ok(Array.isArray(s.services));
+  assert.ok(s.services.length > 0, '활성 네트워크 서비스가 하나도 없다');
+  for (const service of s.services) {
+    assert.equal(typeof service.name, 'string');
+    assert.equal(typeof service.pacEnabled, 'boolean');
+    assert.ok('pacUrl' in service && 'web' in service && 'secureWeb' in service && 'socks' in service);
+    assert.equal(typeof service.autoDiscoveryEnabled, 'boolean');
+  }
+});
+
+test('macOS osascript가 셸 명령을 안전한 argv 한 개로 받는다', { skip: !onMac }, () => {
+  const marker = 'campfire argv ; $(not-a-command)';
+  const output = execFileSync('/usr/bin/osascript', [
+    '-e', 'on run argv',
+    '-e', 'return item 1 of argv',
+    '-e', 'end run',
+    marker,
+  ], { encoding: 'utf8' }).trim();
+  assert.equal(output, marker);
 });

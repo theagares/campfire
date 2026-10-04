@@ -41,7 +41,7 @@ cd "$DEST"
 echo "엔진(Python) 의존성 설치 중..."
 python3 -m venv engine/.venv
 engine/.venv/bin/python -m pip install --upgrade pip --quiet
-engine/.venv/bin/python -m pip install -e "engine[test]" --quiet
+engine/.venv/bin/python -m pip install -e "engine[test,proxy]" --quiet
 
 echo "데스크탑 앱(Electron) 의존성 설치 중..."
 (cd desktop && npm install --no-fund --no-audit)
