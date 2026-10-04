@@ -176,7 +176,9 @@ function proxyHintHtml(st, running, applied) {
     const quotePosix = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
     const isMac = st.platform === 'darwin' || (st.engine && st.engine.platform === 'darwin');
     const cmd = isMac
-      ? `/usr/bin/security add-trusted-cert -r trustRoot -p ssl ${quotePosix(err.caPath)}`
+      // -k 로 로그인 키체인에 인증서까지 넣는다. 없으면 신뢰 설정만 생기고 인증서는
+      // 키체인에 없어, Chrome 이 발급자를 못 찾아 AI 사이트가 인증서 오류로 막힌다.
+      ? `/usr/bin/security add-trusted-cert -r trustRoot -p ssl -k "$HOME/Library/Keychains/login.keychain-db" ${quotePosix(err.caPath)}`
       : `certutil -user -addstore Root "${err.caPath}"`;
     const where = isMac
       ? '터미널에서 아래를 실행하고 macOS 인증 창을 승인한 뒤'

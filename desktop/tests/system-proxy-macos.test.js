@@ -66,6 +66,11 @@ test('macOS runner는 모든 활성 서비스에 PAC를 적용하고 원래 값�
   function fakeExec(file, args, _options, callback) {
     calls.push([file, ...args]);
     if (file === '/usr/bin/osascript') {
+      // 실제 networksetup 은 빈 URL 을 거부한다 — mock 도 같게 굴어야 그 회귀를 잡는다.
+      if (/-setautoproxyurl' '[^']*' ''/.test(args.at(-1))) {
+        callback(new Error('exit 4'), '', "execution error: ** Error: The parameters were not valid. (4)");
+        return;
+      }
       privilegedCount += 1;
       state = privilegedCount === 1
         ? { pacEnabled: true, pacUrl: 'http://127.0.0.1:48211/campfire.pac?v=1' }
@@ -100,6 +105,8 @@ test('macOS runner는 모든 활성 서비스에 PAC를 적용하고 원래 값�
   assert.match(elevated[0].at(-1), /-setautoproxystate.*Wi-Fi.*on/);
   assert.match(elevated[0].at(-1), /-setproxyautodiscovery.*Wi-Fi.*off/);
   assert.match(elevated[1].at(-1), /-setautoproxystate.*Wi-Fi.*off/);
+  assert.ok(!/-setautoproxyurl/.test(elevated[1].at(-1)), '원래 PAC 가 없었으면 URL 을 쓰지 않는다(빈 URL 은 거부된다)');
+  assert.ok(!/set -e/.test(elevated[1].at(-1)), '복원은 첫 실패에서 멈추지 않고 모든 서비스를 되돌린다');
   assert.ok(!elevated.some((c) => c.at(-1).includes('Bridge')), '비활성 서비스는 바꾸면 안 된다');
 });
 
