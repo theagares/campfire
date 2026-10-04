@@ -1086,6 +1086,10 @@
 
   // 배치 주입의 증거 대기 상한. 파일마다 따로 기다리는 게 아니라 동시에 본다.
   const INJECT_BATCH_EVIDENCE_MS = 3000;
+  // 업로드가 아직 진행 중이면 칩이 늦게 뜬다(사이트가 업로드를 마친 뒤에야 이름을 그린다).
+  // 그동안만 더 기다리는 상한. 3초에서 끊으면 큰 문서는 "안 붙음" 이 되고, 사용자가
+  // 안내대로 다시 붙이면 늦게 뜬 칩 옆에 같은 문서가 하나 더 붙는다.
+  const INJECT_BATCH_BUSY_MAX_MS = 20000;
 
   /** 결정 항목 하나를 실제로 넣을 File 로 바꾼다. 배치 경로와 순차 경로가 공유한다. */
   async function materializeDecisionFile(decision, file, item) {
@@ -1139,6 +1143,16 @@
       const mechanical = input.files?.length === files.length;
       const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
       let landedAt = results.map(r => r.ok);
+      if (landedAt.some(ok => !ok) && (uploadInflight > 0 || watchers[0].uploadsSince() > 0)) {
+        const capAt = Date.now() + INJECT_BATCH_BUSY_MAX_MS;
+        while (landedAt.some(ok => !ok) && uploadInflight > 0 && Date.now() < capAt) {
+          await new Promise(r => setTimeout(r, 150));
+          landedAt = landedAt.map((ok, i) => ok || watchers[i].seen());
+        }
+        // 업로드가 끝난 직후에 칩이 그려진다 — 남은 것만 짧게 한 번 더 본다.
+        const rest = await Promise.all(landedAt.map((ok, i) => (ok ? true : watchers[i].settle(1500).then(r => r.ok))));
+        landedAt = rest;
+      }
       // 이름을 끝내 못 본 파일이 있으면 그 사이 시작된 업로드 수로만 보완한다. 파일 수
       // 이상 올라갔으면 사이트가 전부 받아 간 것이다 — 칩을 우리가 못 읽는 위치에
       // 그리는 사이트에서 멀쩡한 배치를 막지 않기 위함. 한 건이라도 모자라면 보완하지

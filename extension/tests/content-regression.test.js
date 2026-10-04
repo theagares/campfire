@@ -2494,7 +2494,7 @@ cancelScan(stuckScan);
   //
   //      배치 전체를 띄우면 이미 붙은 파일까지 다시 첨부하게 돼 같은 문서가 두 번 붙는다.
   //      그리고 건넨 파일의 승인은 즉시 지우지 않는다(사이트가 아직 올리는 중일 수 있다).
-  const runRace = async ({ tag, chips, uploads }) => {
+  const runRace = async ({ tag, chips, uploads, endAt = 600 }) => {
     await clock.tick(9000);
     sandbox.MutationObserver = MutationObserverStub;
     MutationObserverStub.instances.length = 0;
@@ -2527,13 +2527,14 @@ cancelScan(stuckScan);
             type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: i,
           });
         }
-        setTimeout(() => {
-          for (const name of chips) MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: name });
-        }, 400);
+        for (const c of chips) {
+          const { name, at } = typeof c === 'string' ? { name: c, at: 400 } : c;
+          setTimeout(() => MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: name }), at);
+        }
         setTimeout(() => dispatchWindowMessage({
           __campfire_config: true, direction: 'main-to-isolated',
           type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
-        }), 600);
+        }), endAt);
       }
       return r;
     };
@@ -2597,6 +2598,20 @@ cancelScan(stuckScan);
       throw new Error(`이미 붙은 파일까지 다시 첨부하라고 했다 — 따르면 같은 문서가 두 번 붙는다: ${r32.badgeText}`);
     }
     if (r32.aborted) throw new Error('파일을 건넨 뒤 승인을 즉시 회수했다(ABORT) — 붙은 a 의 업로드가 막힌다');
+  }
+
+  // (33) 큰 문서: b 만 업로드되고(6초) 그 칩은 업로드가 끝난 뒤에야 뜬다. 업로드 수(1)가
+  //      파일 수(2)보다 적어 수 보완도 안 되는 경우 — 진행 중인 업로드를 기다려야만 맞힌다.
+  //      3초에서 끊으면 b 를 "안 붙음" 으로 보고 다시 첨부하게 해 같은 문서가 두 번 붙는다.
+  {
+    const r33 = await runRace({
+      tag: 'race33', uploads: 1, endAt: 6000,
+      chips: [{ name: 'race33-a_masked.md', at: 400 }, { name: 'race33-b_masked.md', at: 6100 }],
+    });
+    if (r33.blocked || r33.send.clicks !== 1) {
+      throw new Error(`업로드가 진행 중인데 3초에서 끊고 b 를 실패로 봤다 (clicks=${r33.send.clicks}): ${r33.badgeText}`);
+    }
+    if (r33.aborted) throw new Error('붙은 배치의 승인을 즉시 회수했다(ABORT)');
   }
   delete sandbox.MutationObserver;
 
