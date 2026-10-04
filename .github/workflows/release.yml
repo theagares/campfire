@@ -145,7 +145,7 @@ jobs:
           find .venv -name EXTERNALLY-MANAGED -delete
           if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
           "$PY" -m pip install --upgrade pip --break-system-packages
-          "$PY" -m pip install -e . --break-system-packages
+          "$PY" -m pip install -e ".[proxy]" --break-system-packages
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -326,6 +326,23 @@ jobs:
             if [ "$ok" -ne 1 ]; then sleep 5; fi
           done
           if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
+
+          echo "--- 번들된 macOS 프록시 런타임 기동 검증 ---"
+          proxy_status=$(curl -fsS -X POST "http://127.0.0.1:$PORT/proxy/start")
+          python3 - "$proxy_status" <<'PY'
+          import json
+          import sys
+
+          status = json.loads(sys.argv[1])
+          if status.get("platform") != "darwin" or not status.get("supported"):
+              raise SystemExit(f"macOS 프록시가 지원 상태가 아닙니다: {status}")
+          if not status.get("running"):
+              raise SystemExit(f"번들된 mitmproxy가 기동하지 못했습니다: {status}")
+          if not str(status.get("caPath", "")).endswith("mitmproxy-ca-cert.pem"):
+              raise SystemExit(f"macOS CA 경로가 PEM이 아닙니다: {status}")
+          PY
+          curl -fsS -X POST "http://127.0.0.1:$PORT/proxy/stop" >/dev/null
+          echo "macOS 프록시 기동/중지 검증 통과"
 
           # health 200은 모델이 아직 없는 무검사 통과 상태에서도 가능하다. 자동 다운로드가
           # 끝날 때까지 기다린 뒤 실제 요청을 보내 portable Python·모델·마스킹 경로를 함께

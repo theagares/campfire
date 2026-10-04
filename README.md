@@ -99,8 +99,8 @@ cd campfire
 
 cd engine
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[test]"   # Windows
-.venv/bin/python -m pip install -e ".[test]"            # macOS/Linux
+.venv\Scripts\python.exe -m pip install -e ".[test,proxy]"   # Windows
+.venv/bin/python -m pip install -e ".[test,proxy]"            # macOS/Linux
 
 cd ../desktop
 npm install

@@ -154,7 +154,7 @@ function renderProxy() {
     toggle.disabled = true;
     toggle.checked = false;
     ['#proxy-light-engine', '#proxy-light-ca', '#proxy-light-system'].forEach((s) => setLight(s, false));
-    hint.innerHTML = `<div class="hint">${st ? 'Windows 에서만 지원합니다.' : '상태를 불러오지 못했습니다.'}</div>`;
+    hint.innerHTML = `<div class="hint">${st ? 'Windows와 macOS에서만 지원합니다.' : '상태를 불러오지 못했습니다.'}</div>`;
     return;
   }
   const eng = st.engine;
@@ -173,8 +173,15 @@ function proxyHintHtml(st, running, applied) {
   if (!st.engine) return '<div class="hint">엔진이 실행 중이어야 켤 수 있습니다.</div>';
   if (err && err.code === 'ca') {
     // 신뢰 저장소를 바꾸는 일이라 앱이 대신 하지 않는다. 명령을 보여 주고 사용자가 실행한다.
-    const cmd = `certutil -user -addstore Root "${err.caPath}"`;
-    return `<div class="hint">CA 인증서를 먼저 신뢰해야 합니다. 명령 프롬프트에서 아래를 실행한 뒤(관리자 권한 불필요, 보안 경고에서 "예") 다시 켜세요.</div>
+    const quotePosix = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+    const isMac = st.platform === 'darwin' || (st.engine && st.engine.platform === 'darwin');
+    const cmd = isMac
+      ? `/usr/bin/security add-trusted-cert -r trustRoot -p ssl ${quotePosix(err.caPath)}`
+      : `certutil -user -addstore Root "${err.caPath}"`;
+    const where = isMac
+      ? '터미널에서 아래를 실행하고 macOS 인증 창을 승인한 뒤'
+      : '명령 프롬프트에서 아래를 실행한 뒤(관리자 권한 불필요, 보안 경고에서 "예")';
+    return `<div class="hint">CA 인증서를 먼저 신뢰해야 합니다. ${where} 다시 켜세요.</div>
       <div class="codeblock-row"><code>${escapeHtml(cmd)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(cmd)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>`;
   }
   if (err) return `<div class="hint warn">${escapeHtml(err.message)}</div>`;
