@@ -595,6 +595,10 @@
     // 3) 사이트가 떼어낸 input 을 되돌려 붙이기 — 컴포저 DOM 을 바꾸지만, 붙이는 건
     //    사이트가 만든 자기 노드이고 사이트 자신의 리스너를 쓴다.
     await attempt('input되돌리기', (beginWatch) => {
+      // 붙어 있는 input 은 되돌릴 게 없다 — reviveFileInput 은 그 노드를 그대로 돌려주고,
+      // 그건 1)이 이미 파일을 넣은 바로 그 input 이다. 거기에 또 넣으면 사이트가 같은
+      // 파일을 한 번 더 받는다(1)의 증거를 늦게 그리는 사이트에서 문서가 두 번 붙는 길).
+      if (preferred?.isConnected) return false;
       const revived = reviveFileInput(preferred, parentHint);
       if (!revived) return false;
       beginWatch();
@@ -1082,6 +1086,10 @@
 
   // 배치 주입의 증거 대기 상한. 파일마다 따로 기다리는 게 아니라 동시에 본다.
   const INJECT_BATCH_EVIDENCE_MS = 3000;
+  // 업로드가 아직 진행 중이면 칩이 늦게 뜬다(사이트가 업로드를 마친 뒤에야 이름을 그린다).
+  // 그동안만 더 기다리는 상한. 3초에서 끊으면 큰 문서는 "안 붙음" 이 되고, 사용자가
+  // 안내대로 다시 붙이면 늦게 뜬 칩 옆에 같은 문서가 하나 더 붙는다.
+  const INJECT_BATCH_BUSY_MAX_MS = 20000;
 
   /** 결정 항목 하나를 실제로 넣을 File 로 바꾼다. 배치 경로와 순차 경로가 공유한다. */
   async function materializeDecisionFile(decision, file, item) {
@@ -1109,40 +1117,56 @@
    *  일부만 들어갔거나 판단이 안 서면 순차 폴백으로 내려가지 않고 그대로 멈춘다
    *  (계획 §5: 부분 성공이 불명확하면 전체 재시도하지 않는다).
    *
-   *  반환: { mode, landed }  — mode 'all' | 'none' | 'partial'
+   *  반환: { mode, landed, dispatched }  — mode 'all' | 'none' | 'partial'
+   *  dispatched: 파일을 페이지에 실제로 건넸는가(승인 회수 방식을 정하는 데 쓴다).
    */
   async function injectFilesAtOnce(files, opts = {}) {
     const cfg = getPromptConfig();
     const input = liveFileInput(opts.preferred);
     // 살아 있는 input 이 없으면 배치 경로 자체가 없다. 합성 paste/drop 으로 N개를
     // 한 번에 보내는 건 사이트 핸들러가 첫 파일만 읽는 경우가 많아 더 위험하다.
-    if (!input || !files.length) return { mode: 'none', landed: [] };
+    if (!input || !files.length) return { mode: 'none', landed: [], dispatched: false };
 
     for (const f of files) contentOwnedFiles.add(f);
 
-    const watchers = files.map(f => watchAttachmentEvidence(cfg, f.name));
+    // 전역 "업로드 시작 관측" 은 어느 파일의 업로드인지 못 가른다 — 업로드 1건이
+    // 배치의 모든 watcher 를 참으로 만들어, 사이트가 files[0] 만 읽어도 마스킹본
+    // N-1 개가 조용히 누락된 채 'all' 로 보고됐다(배치 무결성 구멍). 그래서 파일별
+    // 이름 증거를 기다린다(nameOnly) — 이름은 파일마다 칩에 떠서 유일하게 파일을
+    // 가리는 신호다.
+    const batch = files.length > 1;
+    const watchers = files.map(f => watchAttachmentEvidence(cfg, f.name, { nameOnly: batch }));
     try {
       setFilesOnInput(input, files);
 
       // 기계적 성공은 증거가 아니다. 프레임워크가 첫 파일만 처리했을 수 있다.
       const mechanical = input.files?.length === files.length;
       const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
-      // 전역 "업로드 시작 관측" 은 어느 파일의 업로드인지 못 가른다 — 업로드 1건이
-      // 배치의 모든 watcher 를 참으로 만들어, 사이트가 files[0] 만 읽어도 마스킹본
-      // N-1 개가 조용히 누락된 채 'all' 로 보고됐다(배치 무결성 구멍). 파일이 여럿일
-      // 때는 이 신호를 landed 로 인정하지 않고 파일별 이름 증거를 요구한다 — 이름은
-      // 파일마다 칩에 떠서 유일하게 파일을 가리는 신호다. 단일 파일 배치에서는 업로드
-      // 관측이 곧 그 파일이라 그대로 신뢰한다(늦게 시작한 업로드로도 첨부를 인정하던
-      // 기존 동작 유지).
-      const single = files.length === 1;
-      const isLanded = (r) => r.ok && !(r.why === '업로드 시작 관측' && !single);
-      const landed = files.filter((_, i) => isLanded(results[i])).map(f => f.name);
+      let landedAt = results.map(r => r.ok);
+      if (landedAt.some(ok => !ok) && (uploadInflight > 0 || watchers[0].uploadsSince() > 0)) {
+        const capAt = Date.now() + INJECT_BATCH_BUSY_MAX_MS;
+        while (landedAt.some(ok => !ok) && uploadInflight > 0 && Date.now() < capAt) {
+          await new Promise(r => setTimeout(r, 150));
+          landedAt = landedAt.map((ok, i) => ok || watchers[i].seen());
+        }
+        // 업로드가 끝난 직후에 칩이 그려진다 — 남은 것만 짧게 한 번 더 본다.
+        const rest = await Promise.all(landedAt.map((ok, i) => (ok ? true : watchers[i].settle(1500).then(r => r.ok))));
+        landedAt = rest;
+      }
+      // 이름을 끝내 못 본 파일이 있으면 그 사이 시작된 업로드 수로만 보완한다. 파일 수
+      // 이상 올라갔으면 사이트가 전부 받아 간 것이다 — 칩을 우리가 못 읽는 위치에
+      // 그리는 사이트에서 멀쩡한 배치를 막지 않기 위함. 한 건이라도 모자라면 보완하지
+      // 않는다(업로드 1건으로 N개를 인정하던 구멍이 그대로 다시 열린다).
+      if (landedAt.some(ok => !ok) && watchers[0].uploadsSince() >= files.length) {
+        landedAt = landedAt.map(() => true);
+      }
+      const landed = files.filter((_, i) => landedAt[i]).map(f => f.name);
 
-      if (landed.length === files.length) return { mode: 'all', landed };
+      if (landed.length === files.length) return { mode: 'all', landed, dispatched: true };
       // 아무 증거도 없고 기계적으로도 안 들어갔으면 "아무것도 안 붙었다" 로 본다 —
       // 이때만 순차 폴백이 안전하다.
-      if (!landed.length && !mechanical) return { mode: 'none', landed: [] };
-      return { mode: 'partial', landed };
+      if (!landed.length && !mechanical) return { mode: 'none', landed: [], dispatched: true };
+      return { mode: 'partial', landed, dispatched: true };
     } finally {
       for (const w of watchers) w.stop();
     }
@@ -1188,6 +1212,12 @@
   async function injectBatchDecision(decision, batch) {
     const ctx = batch.injectionContext || {};
     const injected = [];
+    // 붙지 않은 파일의 **원래 이름**. 실패 안내에 이것만 띄운다 — 예전엔 배치 전체를
+    // 나열해서, 이미 컴포저에 붙어 있는 파일까지 "다시 첨부하라" 고 했고 사용자가
+    // 그대로 따르면 같은 문서가 두 번 붙었다.
+    const missing = [];
+    // 파일을 페이지에 건넸는가. 건넨 뒤에는 승인을 즉시 회수하면 안 된다(아래 finally).
+    let handedOver = false;
     let allOk = true;
 
     // 승인은 주입 직전에 파일 단위로 붙이고(아래), 이 함수를 어떻게 빠져나가든
@@ -1196,25 +1226,28 @@
     try {
     // 먼저 넣을 파일을 전부 모은다 — 한 이벤트로 보내 보기 위해서다.
     const ready = [];
+    const nameOf = new Map();   // 마스킹본 File -> 원래 파일 이름
     for (const file of decision.files || []) {
       if (file.action === 'exclude') continue;
       const item = batch.items.find(i => i.id === file.id);
       if (!item) { allOk = false; continue; }
       const f = await materializeDecisionFile(decision, file, item);
-      if (f) ready.push(f); else allOk = false;
+      if (f) { ready.push(f); nameOf.set(f, item.fileName); } else { allOk = false; missing.push(item.fileName); }
     }
 
     if (ready.length > 1) {
       await announceApprovedBatch(batch.id, ready);
       const batchRes = await injectFilesAtOnce(ready, ctx);
+      handedOver = handedOver || batchRes.dispatched;
       if (batchRes.mode === 'all') {
         injected.push(...batchRes.landed);
-        return { allOk, injected };
+        return { allOk, injected, missing };
       }
       if (batchRes.mode === 'partial') {
         // 일부만 들어갔다. 다시 쏘면 그 일부가 두 번 붙는다 — 여기서 멈춘다.
         injected.push(...batchRes.landed);
-        return { allOk: false, injected };
+        missing.push(...ready.filter(f => !batchRes.landed.includes(f.name)).map(f => nameOf.get(f)));
+        return { allOk: false, injected, missing };
       }
       // mode === 'none' — 아무것도 안 붙었다. 아래 순차 경로로 되돌아간다.
     }
@@ -1228,15 +1261,19 @@
       const ok = (await injectFileWithEvidence(toInject, {
         preferred: ctx.preferred, parentHint: ctx.parentHint, dropTarget: ctx.dropTarget,
       })) !== false;
-      if (ok) injected.push(toInject.name); else allOk = false;
+      if ((lastInjectionReport?.attempts || []).some(a => !a.includes('=주입못함'))) handedOver = true;
+      if (ok) injected.push(toInject.name); else { allOk = false; missing.push(nameOf.get(toInject)); }
     }
     } finally {
-      // 하나도 못 넣었으면 승인이 쓰일 일이 없다 — 즉시 지운다.
-      // 하나라도 넣었으면 사이트가 그 파일로 여러 번 요청할 수 있으므로 닫기만 한다.
-      finishApprovedBatch(batch.id, injected.length ? 'close' : 'abort');
+      // 아무것도 건네지 않았으면 승인이 쓰일 일이 없다 — 즉시 지운다.
+      // 건넸으면(증거를 못 봤어도) 닫기만 한다. 건넨 파일은 이미 검토를 마친 마스킹본이고
+      // 사이트는 그걸 지금 올리거나 읽는 중일 수 있다 — 여기서 승인을 지우면 그 요청이
+      // "처음 보는 원본" 으로 막혀, 화면에 붙은 첨부가 뒤늦게 깨진다(실측: grok 에서
+      // 승인 회수가 업로드 시작 45ms 뒤에 나갔다). 닫힌 승인은 조용한 기간 뒤 회수된다.
+      finishApprovedBatch(batch.id, (injected.length || handedOver) ? 'close' : 'abort');
     }
 
-    return { allOk, injected };
+    return { allOk, injected, missing };
   }
 
   // SW → content : 사이드패널의 HITL 결정 수신
@@ -1966,8 +2003,13 @@
    *  확장자를 뗀 몸통을 쓰는 이유: 사이트가 칩에 "report.pdf" 대신 "report" 만 그리거나
    *  아이콘으로 확장자를 표시하는 경우가 있다. 너무 짧으면(3자 이하) 우연히 걸릴 수
    *  있어 쓰지 않는다. */
+  // 이름 비교는 항상 NFC 로 맞춘다. macOS 는 파일명을 NFD(한글 자모 분리)로 넘기는데,
+  // 사이트가 칩 이름을 서버 응답(NFC)으로 다시 그리면 같은 글자라도 includes 가
+  // 빗나간다 — 다중 첨부는 이름 증거만으로 landed 를 판정하므로 그게 곧 오판이다.
+  const normName = (s) => String(s || '').normalize('NFC').toLowerCase();
+
   function fileNameNeedle(name) {
-    const n = String(name || '').trim();
+    const n = String(name || '').normalize('NFC').trim();
     if (!n) return null;
     const stem = n.replace(/\.[^.]+$/, '');
     const pick = (stem.length >= 4 ? stem : n).toLowerCase();
@@ -1995,7 +2037,10 @@
     return acc;
   }
 
-  function watchAttachmentEvidence(cfg, expectedName) {
+  /** nameOnly: 배치(파일 N개) 주입용. 전역 업로드 관측은 어느 파일의 업로드인지 못
+   *  가르므로 이 모드에서는 "끝" 신호로 쓰지 않고 파일 이름이 뜰 때까지 기다린다.
+   *  업로드 수는 uploadsSince() 로 따로 내준다 — 판정은 injectFilesAtOnce 가 한다. */
+  function watchAttachmentEvidence(cfg, expectedName, { nameOnly = false } = {}) {
     const editor = findEditor(cfg);
     const root = findComposerRoot(cfg);
     const netBase = uploadStartCount;
@@ -2004,11 +2049,11 @@
     let mo = null;
 
     const textOf = (n) => {
-      try { return String(n?.textContent || '').toLowerCase(); } catch (_) { return ''; }
+      try { return normName(n?.textContent); } catch (_) { return ''; }
     };
     // 기준선: 넣기 전부터 이름이 화면에 있었다면(프롬프트에 파일명을 적었다거나 이전
     // 칩이 남아 있다거나) 그건 증거가 아니다.
-    const baselineNamed = !!needle && textOutsideEditor(root, editor).toLowerCase().includes(needle);
+    const baselineNamed = !!needle && normName(textOutsideEditor(root, editor)).includes(needle);
 
     if (typeof MutationObserver !== 'undefined' && root?.nodeType === 1) {
       try {
@@ -2032,12 +2077,16 @@
       // 전역 업로드 관측. 이름이 화면에 안 뜨는(또는 늦게 뜨는) 파일도 잡는 신호라
       // 단일 파일 경로엔 꼭 필요하다. 다만 이 카운터는 배치 watcher 가 공유하는
       // netBase 하나로 판정돼 **업로드 1건이 N개 watcher 를 전부 참으로 만든다** —
-      // 그 배치 무결성 구멍은 injectFilesAtOnce 가 "시작된 업로드 수 ≥ 파일 수"로
-      // 따로 보정한다(여기서 못 거른다: watcher 는 배치 크기를 모른다).
-      if (uploadStartCount > netBase) return '업로드 시작 관측';
+      // 그래서 배치(nameOnly)에서는 여기서 끝내지 않는다.
+      //
+      // 예전엔 배치에서도 이 신호로 settle 이 끝났고, injectFilesAtOnce 는 그 사유를
+      // landed 로 인정하지 않았다. 둘이 맞물려 칩이 뜨기도 전에(업로드는 칩보다 먼저
+      // 시작된다) "0개 첨부" 로 단정했다 — 실측(grok, 2개): 주입 +45ms 업로드 시작,
+      // +90ms 실패 판정·승인 회수, +500ms 칩 2개. 멀쩡히 붙은 배치를 막고 있었다.
+      if (!nameOnly && uploadStartCount > netBase) return '업로드 시작 관측';
       // 뒤늦게 렌더되는 칩까지 잡으려고 루트 전체도 함께 본다(노드 추가 시점엔
       // textContent 가 아직 비어 있는 프레임워크가 있다).
-      if (needle && !baselineNamed && (named || textOutsideEditor(root, editor).toLowerCase().includes(needle))) {
+      if (needle && !baselineNamed && (named || normName(textOutsideEditor(root, editor)).includes(needle))) {
         return '첨부 칩에 파일 이름이 나타남';
       }
       return null;
@@ -2046,6 +2095,7 @@
     return {
       root,
       seen() { return !!seenWhy(); },
+      uploadsSince() { return uploadStartCount - netBase; },
       async settle(ms) {
         if (!mo) return { ok: true, why: '관찰 불가 — 기계적 성공으로 인정' };
         const deadline = Date.now() + ms;
@@ -2272,7 +2322,7 @@
       for (const el of labelled) {
         acc += ` ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`;
       }
-      return acc.toLowerCase();
+      return normName(acc);
     } catch (_) { return ''; }
   }
 
@@ -2569,7 +2619,7 @@
           // Enter 가 검사 없이 사이트로 그대로 나간다(우리 재전송을 통과시키려는 장치).
           // 전송을 안 할 거면 그 구멍을 열어둘 이유가 없다.
           promptApproved = false;
-          showAttachFailedBadge(stagedName);
+          showAttachFailedBadge(batchResult.missing.join(', ') || stagedName);
           console.error(
             '[SecureDoc] 문서를 첨부하지 못해 전송을 중단했습니다 — 입력창 내용은 그대로 두었습니다. '
             + '문서를 다시 첨부한 뒤 보내주세요.',

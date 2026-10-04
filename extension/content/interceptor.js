@@ -223,6 +223,11 @@
     debugLog('[SecureDoc] 배치 승인 닫힘 — 조용한 기간 뒤 회수');
   }
 
+  // 이름은 NFC 로 맞춰 대조한다. macOS 는 파일명을 NFD 로 넘기는데 사이트는 그걸 NFC 로
+  // 바꿔 다루기도 한다(실측: claude 는 NFD 파일명을 칩에 NFC 로 그린다). 등록 요청 JSON 의
+  // 이름이 NFC 로 오면 승인본을 "처음 보는 원본" 으로 오인한다.
+  const _nfc = (s) => String(s ?? '').normalize('NFC');
+
   function _rememberContentApproved(meta, batchId = null) {
     if (!meta?.name) return;
     _pruneContentApproved();
@@ -232,7 +237,7 @@
     while (_contentApproved.length >= _CONTENT_APPROVED_MAX) _contentApproved.shift();
     const now = Date.now();
     _contentApproved.push({
-      name: String(meta.name),
+      name: _nfc(meta.name),
       size: Number(meta.size),
       type: meta.type || 'application/octet-stream',
       batchId,
@@ -252,7 +257,8 @@
   function _isContentApprovedName(name) {
     if (!name) return false;
     _pruneContentApproved();
-    const hit = _contentApproved.find(e => e.name === name);
+    const want = _nfc(name);
+    const hit = _contentApproved.find(e => e.name === want);
     if (!hit) return false;
     _touchApproved(hit);
     return true;
@@ -265,7 +271,7 @@
     _pruneContentApproved();
     const type = blob.type || 'application/octet-stream';
     const hit = blob.name
-      ? _contentApproved.find(e => e.name === blob.name && e.size === blob.size && e.type === type)
+      ? _contentApproved.find(e => e.name === _nfc(blob.name) && e.size === blob.size && e.type === type)
       : _contentApproved.find(e => e.size === blob.size && e.type === type);
     if (!hit) return false;
     _touchApproved(hit);
