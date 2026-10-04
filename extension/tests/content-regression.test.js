@@ -2484,6 +2484,122 @@ cancelScan(stuckScan);
     }
   }
 
+  // (31) 업로드가 칩보다 먼저 시작돼도 다중 배치를 "첨부 실패" 로 막지 않는다.
+  //
+  //      실측(grok, 파일 2개): 주입 +45ms 에 업로드 2건 시작 → 증거 대기가 "업로드
+  //      시작 관측" 으로 즉시 끝남 → 배치에서는 그 사유를 landed 로 안 쳐서 0개 →
+  //      +90ms 승인 회수(ABORT) + "첨부하지 못해 전송을 멈췄습니다" → +500ms 에야
+  //      칩 2개가 떴다. 멀쩡히 붙은 배치를 막고, 사이트가 아직 쓰는 승인까지 지웠다.
+  // (32) 진짜로 일부만 붙었으면 막되, 안내에는 **안 붙은 파일만** 띄운다.
+  //
+  //      배치 전체를 띄우면 이미 붙은 파일까지 다시 첨부하게 돼 같은 문서가 두 번 붙는다.
+  //      그리고 건넨 파일의 승인은 즉시 지우지 않는다(사이트가 아직 올리는 중일 수 있다).
+  const runRace = async ({ tag, chips, uploads }) => {
+    await clock.tick(9000);
+    sandbox.MutationObserver = MutationObserverStub;
+    MutationObserverStub.instances.length = 0;
+    appendedToRoot.length = 0;
+    const send = new SendButtonStub();
+    send.disabled = false;
+    domBySelector.set('[data-testid="send-button"]', send);
+
+    const fA = new FileStub(['pdf a'], `${tag}-a.pdf`, { type: 'application/pdf' });
+    const fB = new FileStub(['pdf b'], `${tag}-b.pdf`, { type: 'application/pdf' });
+    const input = new HTMLInputElementStub(null, tag);
+    input.files = [fA, fB];
+    domBySelector.set('input[type="file"]', input);
+    dispatchDocumentEvent('change', {
+      target: input, composedPath: () => [input, documentStub],
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+
+    // 사이트 흉내: 마스킹본 2개가 들어오면 업로드부터 시작하고, 칩은 400ms 뒤에 그린다.
+    const base = input.dispatchEvent.bind(input);
+    let fired = false;
+    input.dispatchEvent = (ev) => {
+      const r = base(ev);
+      if (!fired && input.files?.length === 2 && String(input.files[0]?.name).includes('_masked')) {
+        fired = true;
+        for (let i = 1; i <= uploads; i++) {
+          dispatchWindowMessage({
+            __campfire_config: true, direction: 'main-to-isolated',
+            type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: i,
+          });
+        }
+        setTimeout(() => {
+          for (const name of chips) MutationObserverStub.emitAdded({ nodeType: 1, tagName: 'DIV', textContent: name });
+        }, 400);
+        setTimeout(() => dispatchWindowMessage({
+          __campfire_config: true, direction: 'main-to-isolated',
+          type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+        }), 600);
+      }
+      return r;
+    };
+
+    actionLog.length = 0;
+    const lines = consoleLines.length;
+    promptEditorStub.value = '두 개 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    nextDecision = {
+      action: 'send', promptText: '두 개 요약해줘',
+      files: [
+        { id: 'f0', action: 'masked', artifactId: `${tag}-art-a` },
+        { id: 'f1', action: 'masked', artifactId: `${tag}-art-b` },
+      ],
+    };
+    let turn = 0;
+    const arts = [
+      { ok: true, base64: btoa('masked a'), mimeType: 'text/markdown', fileName: `${tag}-a_masked.md` },
+      { ok: true, base64: btoa('masked b'), mimeType: 'text/markdown', fileName: `${tag}-b_masked.md` },
+    ];
+    const origSend = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = function (message, cb) {
+      if (message.type === 'GET_SCAN_ARTIFACT') { cb?.(arts[turn++] || { ok: false }); return; }
+      return origSend.call(this, message, cb);
+    };
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(20000);
+    chromeStub.runtime.sendMessage = origSend;
+    input.dispatchEvent = base;
+    const badge = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
+    return {
+      send,
+      blocked: consoleLines.slice(lines).some(l => l.includes('문서를 첨부하지 못해 전송을 중단했습니다')),
+      aborted: actionLog.some(e => e.kind === 'abort-batch'),
+      closed: actionLog.some(e => e.kind === 'close-batch'),
+      badgeText: badge ? (badge.children || []).map(c => String(c?.textContent || '')).join(' ') : '',
+    };
+  };
+
+  {
+    const r31 = await runRace({ tag: 'race31', chips: ['race31-a_masked.md', 'race31-b_masked.md'], uploads: 2 });
+    if (r31.blocked) {
+      throw new Error('업로드가 칩보다 먼저 시작됐다고 멀쩡히 붙은 2개를 "첨부 실패" 로 막았다');
+    }
+    if (r31.aborted) throw new Error('붙은 배치의 승인을 즉시 회수했다(ABORT) — 사이트의 업로드가 막힌다');
+    if (!r31.closed) throw new Error('배치 승인을 닫지 않았다');
+    if (r31.send.clicks !== 1) throw new Error(`두 파일이 다 붙었는데 전송하지 않았다 (clicks=${r31.send.clicks})`);
+  }
+
+  {
+    // 업로드 한도 등으로 사이트가 b 를 거절했다 — 업로드 1건, 칩은 a 만.
+    const r32 = await runRace({ tag: 'race32', chips: ['race32-a_masked.md'], uploads: 1 });
+    if (!r32.blocked || r32.send.clicks !== 0) {
+      throw new Error('b 가 안 붙었는데 그대로 전송했다 — 업로드 1건으로 2개를 인정하는 구멍이 다시 열렸다');
+    }
+    if (!r32.badgeText.includes('race32-b.pdf')) throw new Error(`안 붙은 파일을 안내하지 않았다: ${r32.badgeText}`);
+    if (r32.badgeText.includes('race32-a.pdf')) {
+      throw new Error(`이미 붙은 파일까지 다시 첨부하라고 했다 — 따르면 같은 문서가 두 번 붙는다: ${r32.badgeText}`);
+    }
+    if (r32.aborted) throw new Error('파일을 건넨 뒤 승인을 즉시 회수했다(ABORT) — 붙은 a 의 업로드가 막힌다');
+  }
+  delete sandbox.MutationObserver;
+
   console.log('content regression ok');
   process.exit(0);
 })();
