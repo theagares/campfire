@@ -2494,7 +2494,7 @@ cancelScan(stuckScan);
   //
   //      배치 전체를 띄우면 이미 붙은 파일까지 다시 첨부하게 돼 같은 문서가 두 번 붙는다.
   //      그리고 건넨 파일의 승인은 즉시 지우지 않는다(사이트가 아직 올리는 중일 수 있다).
-  const runRace = async ({ tag, chips, uploads, endAt = 600 }) => {
+  const runRace = async ({ tag, chips, uploads, endAt = 600, artNames = null }) => {
     await clock.tick(9000);
     sandbox.MutationObserver = MutationObserverStub;
     MutationObserverStub.instances.length = 0;
@@ -2519,7 +2519,7 @@ cancelScan(stuckScan);
     let fired = false;
     input.dispatchEvent = (ev) => {
       const r = base(ev);
-      if (!fired && input.files?.length === 2 && String(input.files[0]?.name).includes('_masked')) {
+      if (!fired && input.files?.length === 2 && String(input.files[0]?.name).normalize('NFC').includes('_masked')) {
         fired = true;
         for (let i = 1; i <= uploads; i++) {
           dispatchWindowMessage({
@@ -2551,9 +2551,10 @@ cancelScan(stuckScan);
       ],
     };
     let turn = 0;
+    const [artA, artB] = artNames || [`${tag}-a_masked.md`, `${tag}-b_masked.md`];
     const arts = [
-      { ok: true, base64: btoa('masked a'), mimeType: 'text/markdown', fileName: `${tag}-a_masked.md` },
-      { ok: true, base64: btoa('masked b'), mimeType: 'text/markdown', fileName: `${tag}-b_masked.md` },
+      { ok: true, base64: btoa('masked a'), mimeType: 'text/markdown', fileName: artA },
+      { ok: true, base64: btoa('masked b'), mimeType: 'text/markdown', fileName: artB },
     ];
     const origSend = chromeStub.runtime.sendMessage;
     chromeStub.runtime.sendMessage = function (message, cb) {
@@ -2612,6 +2613,22 @@ cancelScan(stuckScan);
       throw new Error(`업로드가 진행 중인데 3초에서 끊고 b 를 실패로 봤다 (clicks=${r33.send.clicks}): ${r33.badgeText}`);
     }
     if (r33.aborted) throw new Error('붙은 배치의 승인을 즉시 회수했다(ABORT)');
+  }
+
+  // (34) macOS 한글 파일명: 마스킹본 이름은 NFD 로 오는데 사이트는 칩을 NFC 로 그린다
+  //      (실측: claude). 업로드도 없다. 이름 비교가 정규화를 안 맞추면 증거가 영영 안 잡혀
+  //      맥에서만 "첨부 실패" 로 막히고, 승인 회수로 두 번째 파일 처리가 멈췄다.
+  {
+    const nfc = ['2026년 채용 공고_masked.md', '2026 학회 논문집_masked.md'];
+    const r34 = await runRace({
+      tag: 'race34', uploads: 0,
+      artNames: nfc.map(n => n.normalize('NFD')),
+      chips: nfc,
+    });
+    if (r34.blocked || r34.send.clicks !== 1) {
+      throw new Error(`NFD 이름의 마스킹본을 NFC 칩에서 못 알아보고 막았다 (clicks=${r34.send.clicks}): ${r34.badgeText}`);
+    }
+    if (r34.aborted) throw new Error('붙은 배치의 승인을 즉시 회수했다(ABORT)');
   }
   delete sandbox.MutationObserver;
 
