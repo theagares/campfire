@@ -255,6 +255,22 @@ async function main() {
     );
   }
 
+  // (11) macOS 파일명(NFD)으로 승인했어도, 사이트가 NFC 로 바꿔 다루면 같은 파일로 본다.
+  //      실측: claude 는 NFD 파일명을 NFC 로 그린다. 이름이 어긋나면 검토를 마친 마스킹본이
+  //      "처음 보는 원본" 으로 다시 붙들려 첨부가 멈춘다.
+  {
+    const nfc = '채용공고_masked.md';
+    const t = withToken();
+    t.config({
+      type: 'UPS_CONTENT_APPROVE_BATCH', bridgeToken: TOKEN, batchId: 'b6',
+      files: [{ ...APPROVED, name: nfc.normalize('NFD') }],
+    });
+    assert.strictEqual(
+      await t.passedThrough(nfc), true,
+      'NFD 로 승인한 마스킹본이 NFC 이름으로 오자 다시 인터셉트됐다',
+    );
+  }
+
   console.log('interceptor-bridge ok');
   process.exit(0); // interceptor 가 건 타이머 때문에 이벤트 루프가 안 비운다
 }
