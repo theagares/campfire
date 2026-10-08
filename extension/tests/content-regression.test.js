@@ -2494,7 +2494,7 @@ cancelScan(stuckScan);
   //
   //      배치 전체를 띄우면 이미 붙은 파일까지 다시 첨부하게 돼 같은 문서가 두 번 붙는다.
   //      그리고 건넨 파일의 승인은 즉시 지우지 않는다(사이트가 아직 올리는 중일 수 있다).
-  const runRace = async ({ tag, chips, uploads, endAt = 600, artNames = null }) => {
+  const runRace = async ({ tag, chips, uploads, endAt = 600, artNames = null, consume = false }) => {
     await clock.tick(9000);
     sandbox.MutationObserver = MutationObserverStub;
     MutationObserverStub.instances.length = 0;
@@ -2536,6 +2536,8 @@ cancelScan(stuckScan);
           type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
         }), endAt);
       }
+      // 받자마자 input 을 비우는 사이트(맥 ChatGPT 실측).
+      if (consume && ev?.type === 'change' && input.files?.length) input.files = [];
       return r;
     };
 
@@ -2630,6 +2632,81 @@ cancelScan(stuckScan);
     }
     if (r34.aborted) throw new Error('붙은 배치의 승인을 즉시 회수했다(ABORT)');
   }
+  // (35) 단일 파일: 사이트가 change 를 받자마자 input 을 비운다(맥 ChatGPT 실측).
+  //      주입 뒤 files.length 로 "넣었는가" 를 보면 받아 간 것을 "못 넣었다" 로 읽고,
+  //      20ms 만에 붙여넣기로 같은 파일을 또 넣는다 — 업로드 2건, 문서 두 번 첨부.
+  {
+    await clock.tick(9000);
+    sandbox.MutationObserver = MutationObserverStub;
+    MutationObserverStub.instances.length = 0;
+    appendedToRoot.length = 0;
+    const send = new SendButtonStub();
+    send.disabled = false;
+    domBySelector.set('[data-testid="send-button"]', send);
+    const f35 = new FileStub(['pdf'], 'consume35.pdf', { type: 'application/pdf' });
+    const input35 = new HTMLInputElementStub(f35, 'consume35');
+    domBySelector.set('input[type="file"]', input35);
+    dispatchDocumentEvent('change', {
+      target: input35, composedPath: () => [input35, documentStub],
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+
+    const base35 = input35.dispatchEvent.bind(input35);
+    input35.dispatchEvent = (ev) => {
+      const r = base35(ev);
+      if (ev?.type === 'change' && input35.files?.length && String(input35.files[0]?.name).includes('_masked')) {
+        input35.files = [];   // 읽고 바로 비운다
+        setTimeout(() => dispatchWindowMessage({
+          __campfire_config: true, direction: 'main-to-isolated',
+          type: 'UPS_UPLOAD_ACTIVITY', phase: 'start', inflight: 1,
+        }), 30);
+        setTimeout(() => dispatchWindowMessage({
+          __campfire_config: true, direction: 'main-to-isolated',
+          type: 'UPS_UPLOAD_ACTIVITY', phase: 'end', inflight: 0,
+        }), 300);
+      }
+      return r;
+    };
+    const fallbacks35 = [];
+    const edBase35 = promptEditorStub.dispatchEvent.bind(promptEditorStub);
+    promptEditorStub.dispatchEvent = (ev) => {
+      if (ev?.type === 'paste' || ev?.type === 'drop') fallbacks35.push(ev.type);
+      return edBase35(ev);
+    };
+
+    promptEditorStub.value = '이 문서 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    nextDecision = {
+      action: 'send', promptText: '이 문서 요약해줘',
+      files: [{ id: 'f0', action: 'masked', artifactId: 'art-35' }],
+    };
+    nextArtifact = { ok: true, base64: btoa('masked'), mimeType: 'text/markdown', fileName: 'consume35_masked.md' };
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(20000);
+    input35.dispatchEvent = base35;
+    promptEditorStub.dispatchEvent = edBase35;
+
+    if (fallbacks35.length) {
+      throw new Error(`사이트가 받아 가며 input 을 비웠는데 "못 넣었다" 로 보고 ${fallbacks35.join(',')} 로 또 넣었다 — 같은 문서가 두 번 올라간다`);
+    }
+    if (send.clicks !== 1) throw new Error(`받아 간 문서를 전송하지 않았다 (clicks=${send.clicks})`);
+  }
+
+  // (36) 다중 배치도 같다: 비워졌다고 "아무것도 안 들어갔다(none)" 로 보면 파일을 하나씩
+  //      다시 넣는 순차 경로로 내려가 전부 두 번 붙는다. 증거가 없으면 거기서 멈춰야 한다.
+  {
+    const r36 = await runRace({ tag: 'race36', chips: [], uploads: 0, consume: true });
+    const singles36 = actionLog.filter(e => e.kind === 'inject' && e.id === 'race36' && e.n === 1);
+    if (singles36.length) {
+      throw new Error(`받아 간 배치를 "안 들어갔다" 로 보고 하나씩 다시 넣었다(${singles36.length}건) — 전부 두 번 붙는다`);
+    }
+    if (!r36.blocked) throw new Error('증거가 없는데 전송했다');
+  }
+
   delete sandbox.MutationObserver;
 
   console.log('content regression ok');
