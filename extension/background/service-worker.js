@@ -1077,6 +1077,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 프록시 응답 표식을 본 content script가 OFF 전환을 빠르게 확인하는 용도다.
+  // running:true만으로 확장을 끄지는 않는다(브라우저가 PAC를 따르는지는 표식만이
+  // 증명한다). running:false를 받았을 때 기존 표식을 즉시 폐기하는 데만 쓴다.
+  if (type === 'GET_PROXY_STATUS') {
+    fetchServer('/proxy/status', { method: 'GET', cache: 'no-store' })
+      .then(async ({ res }) => {
+        const data = res.ok ? await res.json().catch(() => null) : null;
+        sendResponse({ ok: res.ok, running: data?.running === true });
+      })
+      // 엔진에 닿지 않는다면 살아 있는 로컬 프록시도 없다고 보고 확장 보호를 복구한다.
+      .catch(() => sendResponse({ ok: false, running: false }));
+    return true;
+  }
+
   // 설정 popup: 강제 재스캔
   if (type === 'RESCAN_SERVER') {
     discoverServer().then(() => checkEngineHealth()).then((info) => sendResponse(info));

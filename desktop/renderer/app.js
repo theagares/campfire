@@ -73,10 +73,18 @@ $('#conn-ext-install').addEventListener('click', async (e) => {
 });
 
 // ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
+let mcpRefreshPromise = null;
 async function refreshMcpClients() {
-  const info = await api.detectMcpClients().catch(() => ({ mcpUrl: null, clients: [] }));
-  state.mcpInfo = info;
-  renderMcpClients();
+  if (mcpRefreshPromise) return mcpRefreshPromise;
+  mcpRefreshPromise = api.detectMcpClients()
+    .catch(() => ({ mcpUrl: null, clients: [] }))
+    .then((info) => {
+      state.mcpInfo = info;
+      renderMcpClients();
+      return info;
+    })
+    .finally(() => { mcpRefreshPromise = null; });
+  return mcpRefreshPromise;
 }
 function renderMcpClients() {
   const list = $('#mcp-client-list');
@@ -895,9 +903,12 @@ async function init() {
   // 구버전 preload 와 섞여 실행될 수 있어 옵셔널 호출 — 없으면 처리현황은 idle 로 남는다.
   api.onPipelineActivity?.((ev) => applyPipelineActivity(ev));
 
-  // MCP 클라이언트 목록은 주기적으로 갱신(사용자가 앱 밖에서 설정을 바꿀 수 있다)
+  // MCP 클라이언트 목록은 연결 화면에서만 주기적으로 갱신한다. Claude CLI 조회가
+  // 수 초 걸리는 환경에서 5초마다 전역 실행하면 자식 프로세스가 거의 계속 떠 있었다.
   refreshMcpClients();
-  setInterval(refreshMcpClients, 5000);
+  setInterval(() => {
+    if ($('#view-connect').classList.contains('active')) refreshMcpClients();
+  }, 30000);
 }
 
 init().catch((err) => console.error('[renderer] init 실패:', err));
