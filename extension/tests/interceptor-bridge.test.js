@@ -38,7 +38,6 @@ function load() {
   const win = new Map();
   const doc = new Map();
   const origFetchCalls = [];
-  let proxyHeader = false;
   const store = Object.create(null);
 
   Object.assign(store, {
@@ -84,12 +83,7 @@ function load() {
   // 훅이 원본으로 붙들어 두는 fetch. 여기 도착했다 = 인터셉트 없이 통과했다.
   store.fetch = function (...args) {
     origFetchCalls.push(args);
-    return Promise.resolve({
-      ok: true,
-      headers: {
-        get: (name) => proxyHeader && String(name).toLowerCase() === 'x-campfire-proxy' ? '1' : null,
-      },
-    });
+    return Promise.resolve({ ok: true });
   };
 
   // 미정의 전역은 생성자 모양(대문자 시작)만 자동 스텁한다. 소문자까지 스텁하면
@@ -137,14 +131,7 @@ function load() {
     return origFetchCalls.length > 0;
   }
 
-  async function markProxy() {
-    proxyHeader = true;
-    await sandbox.fetch('https://chatgpt.com/ping');
-    await settle();
-    proxyHeader = false;
-  }
-
-  return { config, passedThrough, markProxy };
+  return { config, passedThrough };
 }
 
 const withToken = () => {
@@ -281,18 +268,6 @@ async function main() {
     assert.strictEqual(
       await t.passedThrough(nfc), true,
       'NFD 로 승인한 마스킹본이 NFC 이름으로 오자 다시 인터셉트됐다',
-    );
-  }
-
-  // (12) 프록시를 끈 것이 확인되면 15초 TTL을 기다리지 않고 확장 보호가 돌아온다.
-  {
-    const t = withToken();
-    await t.markProxy();
-    assert.strictEqual(await t.passedThrough(), true, '프록시 표식을 본 뒤 확장이 양보하지 않았다');
-    t.config({ type: 'SECUREDOC_PROXY_OUT_OF_PATH', bridgeToken: TOKEN });
-    assert.strictEqual(
-      await t.passedThrough(), false,
-      '프록시 OFF 확인 뒤에도 확장이 원본을 통과시켰다',
     );
   }
 

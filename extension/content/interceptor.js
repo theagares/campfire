@@ -107,14 +107,6 @@
       _bridgeToken = String(event.data.token || '');
       return;
     }
-    // 데스크탑에서 프록시를 끄면 마지막 표식의 TTL을 기다리지 않고 즉시 확장 보호를
-    // 복구한다. isolated world가 엔진 /proxy/status를 확인한 뒤 보내는 안전한 방향
-    // (보호를 켜는 방향)의 신호다. 토큰도 확인해 페이지의 불필요한 이중 검사를 막는다.
-    if (event.data.type === 'SECUREDOC_PROXY_OUT_OF_PATH') {
-      if (!fromIsolated(event.data)) return;
-      _proxyMarkAt = 0;
-      return;
-    }
     // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
     //
     // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅

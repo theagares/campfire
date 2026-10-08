@@ -31,56 +31,6 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_정상검사_탐지0건은_사람판단없이_즉시_원본통과(monkeypatch):
-    """깨끗한 파일도 broker에서 120초를 기다리던 실제 회귀를 막는다."""
-    import app.core.pipeline.orchestrator as orch
-
-    async def clean(**_kwargs):
-        return {
-            "originalText": "hello", "maskedText": "hello",
-            "piiItems": [], "injectionItems": [], "blocked": False,
-            "scanStatus": "ok", "truncated": False,
-            "stats": {"piiCount": 0, "injectionCount": 0},
-        }
-
-    async def must_not_wait(**_kwargs):
-        raise AssertionError("탐지 0건인데 사람 판단을 기다렸다")
-
-    monkeypatch.setattr(orch, "run_pipeline", clean)
-    monkeypatch.setattr(addon_mod.broker, "wait", must_not_wait)
-    got = _run(CampfireAddon()._scan_and_decide(
-        data=b"hello", file_name="clean.txt", mime="text/plain", host="claude.ai"
-    ))
-    assert got is _ORIGINAL
-
-
-def test_미검사0건은_자동통과하지_않는다(monkeypatch):
-    """파싱 실패/모델 미준비의 0건은 clean이 아니라 판단 불가다."""
-    import app.core.pipeline.orchestrator as orch
-
-    async def unscanned(**_kwargs):
-        return {
-            "originalText": "hello", "maskedText": "hello",
-            "piiItems": [], "injectionItems": [], "blocked": False,
-            "scanStatus": "models_not_ready", "reason": "모델 준비 중",
-            "stats": {"piiCount": 0, "injectionCount": 0},
-        }
-
-    waited = []
-
-    async def decide(**kwargs):
-        waited.append(kwargs)
-        return "cancel"
-
-    monkeypatch.setattr(orch, "run_pipeline", unscanned)
-    monkeypatch.setattr(addon_mod.broker, "wait", decide)
-    got = _run(CampfireAddon()._scan_and_decide(
-        data=b"hello", file_name="clean.txt", mime="text/plain", host="claude.ai"
-    ))
-    assert got is None
-    assert len(waited) == 1
-
-
 # ── Grok: 다룰 수 없는 형식은 통과가 아니라 차단 ────────────────────────────
 
 

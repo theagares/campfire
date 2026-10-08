@@ -12,7 +12,7 @@
  */
 
 const path = require('path');
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 
 const { ConfigStore } = require('./config-store');
 const { EngineManager } = require('./engine-manager');
@@ -24,7 +24,6 @@ const models = require('./models');
 const proxyToggleMod = require('./proxy-toggle');
 const systemProxyMod = require('./system-proxy');
 const pacServer = require('./pac-server');
-const { ProxyDecisionController } = require('./proxy-decision-ui');
 
 // 단일 인스턴스 (중복 실행 방지)
 const gotLock = app.requestSingleInstanceLock();
@@ -51,7 +50,6 @@ let engineManager = null, proxyToggle = null;
 let config = null;
 let metricsTimer = null;
 let statsTimer = null;
-let proxyDecisionUi = null;
 let isQuitting = false;
 
 function createMainWindow() {
@@ -107,7 +105,6 @@ async function cleanup() {
   if (metricsTimer) clearInterval(metricsTimer);
   if (statsTimer) clearInterval(statsTimer);
   if (tray) tray.destroy();
-  if (proxyDecisionUi) proxyDecisionUi.stop();
   // 엔진보다 먼저 시스템 프록시를 돌려놓는다. 거꾸로 하면 앱이 꺼진 뒤에도
   // 브라우저가 죽은 PAC·프록시를 찾는다.
   if (proxyToggle) await proxyToggle.suspend().catch((err) => console.error('[main] 프록시 해제 실패:', err.message));
@@ -222,11 +219,6 @@ app.whenReady().then(async () => {
     onQuit: quitApp,
   });
   tray.create();
-
-  // 탐지가 있는 프록시 요청은 엔진에서 사람 판단을 기다린다. 대시보드가 트레이에
-  // 숨어 있어도 응답할 수 있도록 메인 프로세스의 네이티브 확인창으로 연결한다.
-  proxyDecisionUi = new ProxyDecisionController({ engineManager, dialog });
-  proxyDecisionUi.start();
 
   // 검사 중이면 트레이 불꽃이 세게 탄다. register() 가 트레이보다 먼저 불리므로
   // 여기서 붙인다(ipc.onPipelineBusy 주석 참고).

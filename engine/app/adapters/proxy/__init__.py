@@ -65,8 +65,29 @@ def ca_cert_path() -> str:
     return str(Path.home() / ".mitmproxy" / name)
 
 
+def _cert_sha1(path) -> str | None:
+    """인증서 파일(PEM/DER)의 SHA-1 지문(대문자 hex). 읽지 못하면 None."""
+    import hashlib
+    import ssl
+    from pathlib import Path
+
+    try:
+        raw = Path(path).read_bytes()
+        der = (ssl.PEM_cert_to_DER_cert(raw.decode("ascii"))
+               if raw.lstrip().startswith(b"-----BEGIN") else raw)
+    except Exception:
+        return None
+    return hashlib.sha1(der).hexdigest().upper()
+
+
 def _macos_ca_trusted(path, *, run=None) -> bool:
-    """macOS Keychain이 CA를 SSL 루트로 실제 신뢰하는지 확인한다."""
+    """macOS가 CA를 SSL 루트로 신뢰하고, 그 인증서가 키체인에도 들어 있는가.
+
+    둘 다 봐야 한다. verify-cert 는 -c 로 CA 파일을 직접 받으므로, 신뢰 설정만 남고
+    인증서는 키체인에 없는 상태에서도 통과한다. 그런데 Chrome 은 발급자 인증서를
+    키체인에서 찾아야 해서 그 상태면 모든 AI 사이트가 ERR_CERT_AUTHORITY_INVALID 로
+    막힌다(실사용 맥: verify-cert 0, find-certificate 0건 → 프록시 켜자 claude.ai 차단).
+    """
     import subprocess
 
     command = run or subprocess.run
@@ -80,7 +101,21 @@ def _macos_ca_trusted(path, *, run=None) -> bool:
             timeout=10,
             check=False,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        fingerprint = _cert_sha1(path)
+        if not fingerprint:
+            return False
+        found = command(
+            ["/usr/bin/security", "find-certificate", "-a", "-Z"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        out = getattr(found, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        return found.returncode == 0 and fingerprint in out.upper()
     except (OSError, subprocess.SubprocessError):
         return False
 
