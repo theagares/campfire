@@ -26,6 +26,9 @@ const RISK_SCANNER_SERVER_NAME = 'campfire-mcp-risk-scanner';
 // 새 키만 보면 "연결 안 됨" 으로 보이고 해제해도 옛 항목이 계속 남는다. 조회·해제 때
 // 둘 다 취급하고, 연결할 때는 옛 항목을 지우고 새 키로 바꿔 쓴다.
 const LEGACY_SERVER_NAMES = ['securedoc-gateway'];
+const DETECT_CACHE_MS = 30000;
+let _detectPromise = null;
+let _detectCache = null;
 const mainServerKeysIn = (servers) =>
   [SERVER_NAME, ...LEGACY_SERVER_NAMES].filter(k => servers && servers[k]);
 const managedServerKeysIn = (servers) =>
@@ -326,19 +329,56 @@ function manualClients(app, mcpUrl) {
 }
 
 async function detectClients(app, mcpUrl) {
-  const [cc, cd] = await Promise.all([claudeCodeInfo(), Promise.resolve(claudeDesktopInfo(app))]);
-  return [cc, cd, ...manualClients(app, mcpUrl)];
+  const now = Date.now();
+  if (_detectCache && _detectCache.mcpUrl === mcpUrl && now < _detectCache.expiresAt) {
+    return _detectCache.clients;
+  }
+  // claude mcp list는 실제 환경에서 수 초가 걸린다. 렌더러의 갱신 요청이 겹쳐도
+  // 같은 CLI를 여러 개 띄우지 않고 하나의 결과를 함께 기다린다.
+  if (_detectPromise && _detectPromise.mcpUrl === mcpUrl) return _detectPromise.promise;
+
+  const promise = Promise.all([claudeCodeInfo(), Promise.resolve(claudeDesktopInfo(app))])
+    .then(([cc, cd]) => {
+      const clients = [cc, cd, ...manualClients(app, mcpUrl)];
+      _detectCache = { mcpUrl, clients, expiresAt: Date.now() + DETECT_CACHE_MS };
+      return clients;
+    })
+    .finally(() => {
+      if (_detectPromise?.promise === promise) _detectPromise = null;
+    });
+  _detectPromise = { mcpUrl, promise };
+  return promise;
+}
+
+function invalidateDetectionCache() {
+  _detectCache = null;
 }
 
 async function connect(app, clientId, mcpUrl) {
-  if (clientId === 'claude_code') return claudeCodeConnect(app, mcpUrl);
-  if (clientId === 'claude_desktop') return claudeDesktopConnect(app, mcpUrl);
+  if (clientId === 'claude_code') {
+    const result = await claudeCodeConnect(app, mcpUrl);
+    invalidateDetectionCache();
+    return result;
+  }
+  if (clientId === 'claude_desktop') {
+    const result = claudeDesktopConnect(app, mcpUrl);
+    invalidateDetectionCache();
+    return result;
+  }
   throw new Error('이 클라이언트는 자동 연결을 지원하지 않습니다 — 스니펫을 복사해 수동으로 설정하세요');
 }
 
 async function disconnect(app, clientId) {
-  if (clientId === 'claude_code') return claudeCodeDisconnect();
-  if (clientId === 'claude_desktop') return claudeDesktopDisconnect(app);
+  if (clientId === 'claude_code') {
+    const result = await claudeCodeDisconnect();
+    invalidateDetectionCache();
+    return result;
+  }
+  if (clientId === 'claude_desktop') {
+    const result = claudeDesktopDisconnect(app);
+    invalidateDetectionCache();
+    return result;
+  }
   throw new Error('이 클라이언트는 자동 연결 해제를 지원하지 않습니다');
 }
 
@@ -362,4 +402,6 @@ module.exports = {
     resolveClaudeLauncherInPath,
     runClaude,
   },
+  // 테스트에서 프로세스 전역 캐시를 격리한다.
+  _resetDetectionCache: invalidateDetectionCache,
 };
