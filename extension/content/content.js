@@ -173,48 +173,10 @@
   // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
   let proxyMarkAt = 0;
   let proxyTtlMs = 15000;
-  let proxyStatusTimer = null;
-  let proxyStatusChecking = false;
   function proxyInPath() {
     // proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 이 명시 검사가 없으면
     // Date.now() 가 작을 때(테스트의 가상 시계 등) 0-0<TTL 이 참이 돼 오판한다.
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
-  }
-
-  function clearProxyInPath() {
-    proxyMarkAt = 0;
-    clearTimeout(proxyStatusTimer);
-    proxyStatusTimer = null;
-    window.postMessage({
-      __campfire_config: true,
-      direction: 'isolated-to-main',
-      type: 'SECUREDOC_PROXY_OUT_OF_PATH',
-      bridgeToken,
-    }, '*');
-  }
-
-  // 응답 표식은 "이 브라우저가 실제 프록시를 지났다"는 강한 증거라 켜는 판단에는
-  // 그대로 쓴다. 다만 데스크탑에서 프록시를 끈 직후에는 마지막 표식이 15초 남아
-  // 확장까지 손을 놓는 틈이 생겼다. 표식을 본 동안만 실제 엔진 상태를 짧게 확인하고,
-  // running:false가 확인되면 TTL을 기다리지 않고 보호를 되살린다.
-  function scheduleProxyStatusCheck(delay = 0) {
-    clearTimeout(proxyStatusTimer);
-    if (!proxyInPath()) return;
-    proxyStatusTimer = setTimeout(async () => {
-      if (proxyStatusChecking || !proxyInPath()) return;
-      proxyStatusChecking = true;
-      let status = null;
-      try {
-        status = await sendToSW({ type: 'GET_PROXY_STATUS' });
-      } finally {
-        proxyStatusChecking = false;
-      }
-      if (status && status.running === false) {
-        clearProxyInPath();
-        return;
-      }
-      if (proxyInPath()) scheduleProxyStatusCheck(250);
-    }, delay);
   }
 
   function isSupportedFile(file) {
@@ -2766,7 +2728,6 @@
       if (event.data.bridgeToken !== bridgeToken) return;
       proxyMarkAt = Date.now();
       proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
-      scheduleProxyStatusCheck();
       return;
     }
 

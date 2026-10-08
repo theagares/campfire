@@ -73,18 +73,10 @@ $('#conn-ext-install').addEventListener('click', async (e) => {
 });
 
 // ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
-let mcpRefreshPromise = null;
 async function refreshMcpClients() {
-  if (mcpRefreshPromise) return mcpRefreshPromise;
-  mcpRefreshPromise = api.detectMcpClients()
-    .catch(() => ({ mcpUrl: null, clients: [] }))
-    .then((info) => {
-      state.mcpInfo = info;
-      renderMcpClients();
-      return info;
-    })
-    .finally(() => { mcpRefreshPromise = null; });
-  return mcpRefreshPromise;
+  const info = await api.detectMcpClients().catch(() => ({ mcpUrl: null, clients: [] }));
+  state.mcpInfo = info;
+  renderMcpClients();
 }
 function renderMcpClients() {
   const list = $('#mcp-client-list');
@@ -184,7 +176,9 @@ function proxyHintHtml(st, running, applied) {
     const quotePosix = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
     const isMac = st.platform === 'darwin' || (st.engine && st.engine.platform === 'darwin');
     const cmd = isMac
-      ? `/usr/bin/security add-trusted-cert -r trustRoot -p ssl ${quotePosix(err.caPath)}`
+      // -k 로 로그인 키체인에 인증서까지 넣는다. 없으면 신뢰 설정만 생기고 인증서는
+      // 키체인에 없어, Chrome 이 발급자를 못 찾아 AI 사이트가 인증서 오류로 막힌다.
+      ? `/usr/bin/security add-trusted-cert -r trustRoot -p ssl -k "$HOME/Library/Keychains/login.keychain-db" ${quotePosix(err.caPath)}`
       : `certutil -user -addstore Root "${err.caPath}"`;
     const where = isMac
       ? '터미널에서 아래를 실행하고 macOS 인증 창을 승인한 뒤'
@@ -903,12 +897,9 @@ async function init() {
   // 구버전 preload 와 섞여 실행될 수 있어 옵셔널 호출 — 없으면 처리현황은 idle 로 남는다.
   api.onPipelineActivity?.((ev) => applyPipelineActivity(ev));
 
-  // MCP 클라이언트 목록은 연결 화면에서만 주기적으로 갱신한다. Claude CLI 조회가
-  // 수 초 걸리는 환경에서 5초마다 전역 실행하면 자식 프로세스가 거의 계속 떠 있었다.
+  // MCP 클라이언트 목록은 주기적으로 갱신(사용자가 앱 밖에서 설정을 바꿀 수 있다)
   refreshMcpClients();
-  setInterval(() => {
-    if ($('#view-connect').classList.contains('active')) refreshMcpClients();
-  }, 30000);
+  setInterval(refreshMcpClients, 5000);
 }
 
 init().catch((err) => console.error('[renderer] init 실패:', err));

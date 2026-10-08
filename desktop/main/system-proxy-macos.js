@@ -106,9 +106,13 @@ function createRunner({ execFileImpl = execFile } = {}) {
     return { platform: 'darwin', services: states };
   }
 
-  async function runPrivileged(calls) {
+  // keepGoing: 하나가 실패해도 나머지를 끝까지 실행하고 마지막에 실패로 끝낸다. 복원에
+  // 쓴다 — set -e 로 첫 실패에서 멈추면 뒤의 서비스가 죽은 PAC 에 묶인 채 남는다.
+  async function runPrivileged(calls, { keepGoing = false } = {}) {
     if (!calls.length) throw new Error('설정할 macOS 네트워크 서비스가 없습니다');
-    const command = ['set -e', ...calls.map(networkSetupCommand)].join('; ');
+    const command = keepGoing
+      ? ['rc=0', ...calls.map((c) => `${networkSetupCommand(c)} || rc=1`), 'exit $rc'].join('; ')
+      : ['set -e', ...calls.map(networkSetupCommand)].join('; ');
     // argv 로 넘겨 AppleScript 문자열에 값을 삽입하지 않는다. macOS가 관리자 암호나
     // Touch ID 창을 직접 띄우며, 취소하면 이 Promise가 실패한다.
     await run(OSASCRIPT, [
@@ -155,12 +159,17 @@ function createRunner({ execFileImpl = execFile } = {}) {
       : current.services.map((s) => ({ name: s.name, pacUrl: null, pacEnabled: false }));
     const calls = [];
     for (const service of targets) {
-      calls.push(['-setautoproxyurl', service.name, service.pacUrl || '']);
-      calls.push(['-setautoproxystate', service.name, service.pacEnabled ? 'on' : 'off']);
+      // networksetup 은 빈 URL 을 받지 않는다("** Error: The parameters were not valid.",
+      // 종료 코드 4). 원래 PAC 가 없던 서비스에 '' 를 넘기면 복원 전체가 실패해, 토글을
+      // 꺼도 안 꺼지고 워치독·다음 실행 복원까지 같은 이유로 실패했다(실사용 맥).
+      // URL 이 없었으면 URL 은 건드리지 않고 상태만 끈다 — 꺼진 PAC URL 은 쓰이지 않는다.
+      if (service.pacUrl) calls.push(['-setautoproxyurl', service.name, service.pacUrl]);
+      calls.push(['-setautoproxystate', service.name,
+        service.pacUrl && service.pacEnabled ? 'on' : 'off']);
       calls.push(['-setproxyautodiscovery', service.name,
         service.autoDiscoveryEnabled ? 'on' : 'off']);
     }
-    await runPrivileged(calls);
+    await runPrivileged(calls, { keepGoing: true });
     return query();
   }
 
