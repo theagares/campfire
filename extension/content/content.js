@@ -173,48 +173,10 @@
   // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
   let proxyMarkAt = 0;
   let proxyTtlMs = 15000;
-  let proxyStatusTimer = null;
-  let proxyStatusChecking = false;
   function proxyInPath() {
     // proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 이 명시 검사가 없으면
     // Date.now() 가 작을 때(테스트의 가상 시계 등) 0-0<TTL 이 참이 돼 오판한다.
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
-  }
-
-  function clearProxyInPath() {
-    proxyMarkAt = 0;
-    clearTimeout(proxyStatusTimer);
-    proxyStatusTimer = null;
-    window.postMessage({
-      __campfire_config: true,
-      direction: 'isolated-to-main',
-      type: 'SECUREDOC_PROXY_OUT_OF_PATH',
-      bridgeToken,
-    }, '*');
-  }
-
-  // 응답 표식은 "이 브라우저가 실제 프록시를 지났다"는 강한 증거라 켜는 판단에는
-  // 그대로 쓴다. 다만 데스크탑에서 프록시를 끈 직후에는 마지막 표식이 15초 남아
-  // 확장까지 손을 놓는 틈이 생겼다. 표식을 본 동안만 실제 엔진 상태를 짧게 확인하고,
-  // running:false가 확인되면 TTL을 기다리지 않고 보호를 되살린다.
-  function scheduleProxyStatusCheck(delay = 0) {
-    clearTimeout(proxyStatusTimer);
-    if (!proxyInPath()) return;
-    proxyStatusTimer = setTimeout(async () => {
-      if (proxyStatusChecking || !proxyInPath()) return;
-      proxyStatusChecking = true;
-      let status = null;
-      try {
-        status = await sendToSW({ type: 'GET_PROXY_STATUS' });
-      } finally {
-        proxyStatusChecking = false;
-      }
-      if (status && status.running === false) {
-        clearProxyInPath();
-        return;
-      }
-      if (proxyInPath()) scheduleProxyStatusCheck(250);
-    }, delay);
   }
 
   function isSupportedFile(file) {
@@ -240,15 +202,23 @@
     return file;
   }
 
+  /** 파일을 input 에 넣고 input/change 를 쏜다. 반환: 파일이 실제로 들어갔는가.
+   *
+   *  이벤트를 쏘기 **전**에 판단한다. 사이트는 change 를 받자마자 파일을 읽고 input 을
+   *  비우기도 한다(실측: 맥 ChatGPT). 쏜 뒤에 files.length 를 보면 "받아 간" 것을
+   *  "못 넣었다" 로 읽고 다음 전략(붙여넣기)으로 같은 파일을 또 넣는다 — 같은 문서가
+   *  두 번 올라가던 원인이다(change +0ms → paste +20ms → 업로드 2건). */
   function setFilesOnInput(input, files) {
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
     if (setter) setter.call(input, dt.files);
     else input.files = dt.files;
+    const placed = input.files?.length === files.length;
     input._upsContentDone = true;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+    return placed;
   }
 
   const setFileOnInput = (input, file) => setFilesOnInput(input, [file]);
@@ -603,9 +573,9 @@
       const input = liveFileInput(preferred);
       if (!input?.isConnected) return false;
       beginWatch();
-      setFileOnInput(input, finalFile);
+      const placed = setFileOnInput(input, finalFile);
       target = describeInjectionTarget('살아있는input', input);
-      return input.files?.length === 1;
+      return placed;
     });
 
     // ── 순서 = "침습도 낮은 순" (2026-08-12 재정정) ──────────────────────────────
@@ -640,9 +610,9 @@
       const revived = reviveFileInput(preferred, parentHint);
       if (!revived) return false;
       beginWatch();
-      setFileOnInput(revived, finalFile);
+      const placed = setFileOnInput(revived, finalFile);
       target = describeInjectionTarget('input되돌리기', revived);
-      return revived.files?.length === 1;
+      return placed;
     });
     // (2026-08-07 철회) 여기서 "증거를 못 얻었으면 되돌린 input 을 다시 떼어낸다" 를
     // 하고 있었다. 위험했다 — 되돌린 input 은 Gemini 가 실제로 업로드를 시작하는 바로
@@ -1175,10 +1145,9 @@
     const batch = files.length > 1;
     const watchers = files.map(f => watchAttachmentEvidence(cfg, f.name, { nameOnly: batch }));
     try {
-      setFilesOnInput(input, files);
-
       // 기계적 성공은 증거가 아니다. 프레임워크가 첫 파일만 처리했을 수 있다.
-      const mechanical = input.files?.length === files.length;
+      // 판단은 쏘기 전 값으로 한다 — 쏜 뒤엔 사이트가 이미 비웠을 수 있다(setFilesOnInput).
+      const mechanical = setFilesOnInput(input, files);
       const results = await Promise.all(watchers.map(w => w.settle(INJECT_BATCH_EVIDENCE_MS)));
       let landedAt = results.map(r => r.ok);
       if (landedAt.some(ok => !ok) && (uploadInflight > 0 || watchers[0].uploadsSince() > 0)) {
@@ -2766,7 +2735,6 @@
       if (event.data.bridgeToken !== bridgeToken) return;
       proxyMarkAt = Date.now();
       proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
-      scheduleProxyStatusCheck();
       return;
     }
 

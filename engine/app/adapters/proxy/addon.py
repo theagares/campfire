@@ -623,8 +623,6 @@ class CampfireAddon:
         per_field = []          # (field, masked_text)
         all_pii, all_inj = [], []
         orig_parts, masked_parts = [], []
-        scan_statuses, reasons = [], []
-        truncated = False
         for fld in fields:
             text = fld.value.decode("utf-8", "replace")
             result = await run_pipeline(text=text)
@@ -637,29 +635,15 @@ class CampfireAddon:
             all_inj += result.get("injectionItems", [])
             orig_parts.append(text)
             masked_parts.append(masked_text)
-            scan_statuses.append(result.get("scanStatus"))
-            if result.get("reason"):
-                reasons.append(str(result["reason"]))
-            truncated = truncated or bool(result.get("truncated"))
 
-        scan_status = "ok" if scan_statuses and all(s == "ok" for s in scan_statuses) else (
-            next((s for s in scan_statuses if s and s != "ok"), "failed")
-        )
         combined = {
             "originalText": "\n---\n".join(orig_parts),
             "maskedText": "\n---\n".join(masked_parts),
             "piiItems": all_pii,
             "injectionItems": all_inj,
-            "scanStatus": scan_status,
-            "reason": " / ".join(dict.fromkeys(reasons)) or None,
-            "truncated": truncated,
+            "scanStatus": "ok",
             "stats": {"piiCount": len(all_pii), "injectionCount": len(all_inj)},
         }
-        # 정상적으로 전부 검사했고 탐지가 없으면 사람이 결정할 것이 없다. 예전에는
-        # 이 경우도 broker.wait() 로 들어가 데스크탑에 응답 UI가 없을 때마다 요청이
-        # 120초 동안 멈췄다. 원본 protobuf 를 그대로 돌려 바이트 단위 변형도 피한다.
-        if _is_clean_result(combined):
-            return _ORIGINAL
         action = await broker.wait(
             file_name="메시지", host=host, result=combined,
             timeout_s=config.PROXY_DECISION_TIMEOUT_S,
@@ -695,12 +679,6 @@ class CampfireAddon:
             logger.info("[proxy] 정책 차단 file=%s", file_name)
             return None
 
-        # 탐지가 0건인 정상 완료 결과는 확인창 없이 즉시 통과한다. 파싱 실패,
-        # 모델 미준비, 일부만 검사(truncated)는 "0건"이 아니라 "판단 불가"이므로
-        # 아래 HITL 경로에 남긴다.
-        if _is_clean_result(result):
-            return _ORIGINAL
-
         action = await broker.wait(
             file_name=file_name,
             host=host,
@@ -731,23 +709,3 @@ class CampfireAddon:
 # "원본을 그대로 보낸다" 를 나타내는 표식. None(보내지 않음)과 구분해야 해서
 # bytes 도 None 도 아닌 고유 객체를 쓴다.
 _ORIGINAL = object()
-
-
-def _is_clean_result(result: dict) -> bool:
-    """전부 검사했고 탐지가 하나도 없는 결과인가.
-
-    stats 만 믿지 않고 실제 항목도 함께 본다. 검출기 응답 스키마가 일시적으로
-    어긋나더라도 항목이 있는데 자동 통과시키는 쪽으로 실패하지 않게 하기 위함이다.
-    """
-    stats = result.get("stats") or {}
-    pii_count = max(int(stats.get("piiCount") or 0), len(result.get("piiItems") or []))
-    injection_count = max(
-        int(stats.get("injectionCount") or 0), len(result.get("injectionItems") or [])
-    )
-    return (
-        result.get("scanStatus") == "ok"
-        and not result.get("blocked")
-        and not result.get("truncated")
-        and pii_count == 0
-        and injection_count == 0
-    )
