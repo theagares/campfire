@@ -15,7 +15,7 @@ import base64
 from typing import Any, Awaitable, Callable
 
 from app import config
-from app.core import model_status
+from app.core import forced_mask, model_status
 from app.core.detectors import registry
 from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
@@ -207,6 +207,7 @@ async def run_pipeline(
     emit = emit or _noop_emit
     scan_status = STATUS_OK
     reason: str | None = None
+    forced_snapshot = forced_mask.registry.snapshot()
 
     # ── Step 1: 파싱 ──────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 1, "label": "입력 파싱 중..."})
@@ -228,7 +229,46 @@ async def run_pipeline(
             "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {original_chars:,}자)",
         })
 
-    # 미검사 통과 (PLAN §9.2): 파싱 실패/미지원이면 탐지 없이 통과
+    # Mandatory literal rules do not depend on either ML model.  Capture one
+    # immutable snapshot per request so a settings update cannot mix old and
+    # new rules inside the same document.
+    forced_items = forced_snapshot.find(text or "") if forced_snapshot.ready else []
+    user_prompt_forced_items = (
+        forced_snapshot.find(user_prompt or "") if forced_snapshot.ready and user_prompt else []
+    )
+    forced_complete = scan_status == STATUS_OK and not truncated
+    forced_policy = {
+        "managed": forced_snapshot.managed,
+        "ready": forced_snapshot.ready,
+        "active": forced_snapshot.active,
+        "count": len(forced_snapshot.terms),
+        "revision": forced_snapshot.revision,
+        "complete": forced_complete,
+    }
+
+    # A desktop-managed engine must not scan with an empty rule set before the
+    # app has delivered the encrypted configuration.  That transient state is
+    # fail-closed rather than silently treating it as "no rules".
+    if not forced_snapshot.ready:
+        policy_reason = "강제 마스킹 규칙을 아직 불러오지 못했습니다"
+        await emit({"type": "warning", "scanStatus": "policy_not_ready", "reason": policy_reason})
+        return _build_result(
+            original_text=text or "",
+            masked_text=text or "",
+            pii_items=[],
+            injection_items=[],
+            forced_mask_items=[],
+            scan_status="policy_not_ready",
+            reason=policy_reason,
+            blocked=True,
+            masked_file=None,
+            truncated=truncated,
+            original_chars=original_chars,
+            forced_policy=forced_policy,
+        )
+
+    # 파싱 실패/미지원은 기존에는 미검사 통과였다. 강제 규칙이 하나라도 켜져 있으면
+    # 내용을 확인할 수 없는 원본을 내보내는 순간 "항상 마스킹" 보장이 깨지므로 차단한다.
     if scan_status != STATUS_OK:
         await emit({"type": "warning", "scanStatus": scan_status, "reason": reason})
         return _build_result(
@@ -236,11 +276,13 @@ async def run_pipeline(
             masked_text=text or "",
             pii_items=[],
             injection_items=[],
+            forced_mask_items=forced_items,
             scan_status=scan_status,
             reason=reason,
-            blocked=False,
+            blocked=forced_snapshot.active,
             masked_file=None,
             original_chars=original_chars,
+            forced_policy=forced_policy,
         )
 
     # 룰베이스 폴백을 없앴다 — pii/injection 모두 실 모델(encoder/llm_mcp)만 남아서,
@@ -259,17 +301,30 @@ async def run_pipeline(
         # 직후 다운로드 중)이 제일 위험하다 — 여기서 건너뛰면 secure_read_file(".env")
         # 이 원문 그대로 decision:"clean" 으로 나간다(#147 이 막으려던 그 누출).
         cred_items = credentials.detect(text)
+        user_prompt_masked = None
+        if user_prompt is not None:
+            user_prompt_masked = masker.apply_masking(
+                user_prompt, list(user_prompt_forced_items)
+            )["masked_text"]
         return _build_result(
             original_text=text,
-            masked_text=masker.apply_masking(text, list(cred_items))["masked_text"],
+            masked_text=masker.apply_masking(
+                text, list(cred_items) + list(forced_items)
+            )["masked_text"],
             pii_items=cred_items,
             injection_items=[],
+            forced_mask_items=forced_items,
             scan_status=MODELS_NOT_READY,
             reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
-            blocked=False,
+            blocked=forced_snapshot.active and truncated,
             masked_file=None,
             truncated=truncated,
             original_chars=original_chars,
+            user_prompt=user_prompt,
+            user_prompt_masked=user_prompt_masked,
+            user_prompt_pii_items=[],
+            user_prompt_forced_mask_items=user_prompt_forced_items,
+            forced_policy=forced_policy,
         )
 
     # ── Step 2~3: 청크 + PII 탐지 ─────────────────────────────────────────────
@@ -286,7 +341,9 @@ async def run_pipeline(
     if user_prompt:
         prompt_chunks = _split_chunks(user_prompt, config.CHUNK_SIZE)
         user_prompt_pii_items = await _detect_pii(user_prompt, prompt_chunks)
-        user_prompt_masked = masker.apply_masking(user_prompt, list(user_prompt_pii_items))["masked_text"]
+        user_prompt_masked = masker.apply_masking(
+            user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
+        )["masked_text"]
 
     # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
     # pii_items/user_prompt_masked 를 함께 넘긴다 — 로컬 모델(EXAONE)은 원문을 보되,
@@ -298,16 +355,20 @@ async def run_pipeline(
         chunks,
         user_prompt=user_prompt,
         user_prompt_masked=user_prompt_masked,
-        pii_items=pii_items,
+        pii_items=list(pii_items) + list(forced_items),
     )
     await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
     # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
-    blocked = bool(injection_items) and config.INJECTION_POLICY == "block"
+    blocked = (
+        bool(injection_items) and config.INJECTION_POLICY == "block"
+    ) or (forced_snapshot.active and truncated)
 
     # ── Step 5: 마스킹 ────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 5, "label": "마스킹 적용 중..."})
-    masked = masker.apply_masking(text, list(pii_items) + list(injection_items))
+    masked = masker.apply_masking(
+        text, list(pii_items) + list(injection_items) + list(forced_items)
+    )
     masked_text = masked["masked_text"]
 
     masked_file = None
@@ -325,6 +386,7 @@ async def run_pipeline(
         masked_text=masked_text,
         pii_items=pii_items,
         injection_items=injection_items,
+        forced_mask_items=forced_items,
         scan_status=scan_status,
         reason=reason,
         blocked=blocked,
@@ -334,6 +396,8 @@ async def run_pipeline(
         user_prompt=user_prompt,
         user_prompt_masked=user_prompt_masked,
         user_prompt_pii_items=user_prompt_pii_items,
+        user_prompt_forced_mask_items=user_prompt_forced_items,
+        forced_policy=forced_policy,
     )
 
 
@@ -343,6 +407,7 @@ def _build_result(
     masked_text: str,
     pii_items: list[Detection],
     injection_items: list[Detection],
+    forced_mask_items: list[Detection],
     scan_status: str,
     reason: str | None,
     blocked: bool,
@@ -352,6 +417,8 @@ def _build_result(
     user_prompt: str | None = None,
     user_prompt_masked: str | None = None,
     user_prompt_pii_items: list[Detection] | None = None,
+    user_prompt_forced_mask_items: list[Detection] | None = None,
+    forced_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
@@ -359,6 +426,7 @@ def _build_result(
         "maskedText": masked_text,
         "piiItems": pii_items,
         "injectionItems": injection_items,
+        "forcedMaskItems": forced_mask_items,
         # 상한(config.MAX_TEXT_CHARS)을 넘겨 앞부분만 검사했는가. 소비자는 이 값으로
         # "전부 검사했다" 와 "일부만 검사했다" 를 구분한다.
         #
@@ -372,10 +440,17 @@ def _build_result(
         "scanStatus": scan_status,
         "reason": reason,
         "blocked": blocked,
-        "policy": {"injection": config.INJECTION_POLICY},
+        "policy": {
+            "injection": config.INJECTION_POLICY,
+            "forcedMask": forced_policy or {
+                "managed": False, "ready": True, "active": False,
+                "count": 0, "revision": "", "complete": True,
+            },
+        },
         "stats": {
             "piiCount": len(pii_items),
             "injectionCount": len(injection_items),
+            "forcedMaskCount": len(forced_mask_items),
             "originalLength": len(original_text),
         },
     }
@@ -387,4 +462,5 @@ def _build_result(
         result["userPromptOriginal"] = user_prompt
         result["userPromptMasked"] = user_prompt_masked
         result["userPromptPiiItems"] = user_prompt_pii_items or []
+        result["userPromptForcedMaskItems"] = user_prompt_forced_mask_items or []
     return result

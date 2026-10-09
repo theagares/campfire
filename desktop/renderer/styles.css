@@ -396,6 +396,16 @@ img { display:block; }
 .field .hint { color:var(--ink-500); font-size:11px; }
 .field input[type=text], .field input[type=url] {
   padding:10px 12px; border-radius:10px; border:1px solid var(--line-10); background:#fafafa; color:var(--ink-900); font-size:13px; font-family:inherit; }
+.forced-mask-entry { display:flex; align-items:center; gap:8px; }
+.forced-mask-entry input { flex:1; min-width:0; }
+.forced-mask-list { display:flex; flex-wrap:wrap; gap:6px; max-height:130px; overflow-y:auto; }
+.forced-mask-list:empty { display:none; }
+.forced-mask-chip { display:inline-flex; align-items:center; gap:5px; max-width:100%; padding:5px 8px 5px 10px; border:1px solid var(--line-08); border-radius:9999px; background:var(--purple-soft); color:var(--ink-900); font-size:12px; }
+.forced-mask-chip-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.forced-mask-remove { flex:0 0 auto; border:0; padding:0; width:18px; height:18px; border-radius:50%; background:transparent; color:var(--ink-500); font-size:15px; line-height:17px; }
+.forced-mask-remove:hover { background:rgba(0,0,0,.08); color:var(--ink-900); }
+.forced-mask-foot { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; min-height:16px; }
+.field-error { color:var(--danger); font-size:11px; text-align:right; }
 .field.disabled { opacity:.55; }
 .setting-row { display:flex; justify-content:space-between; align-items:center; gap:14px; }
 .setting-row input[type=checkbox] { width:18px; height:18px; flex:0 0 auto; accent-color:var(--purple); }

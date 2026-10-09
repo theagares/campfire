@@ -142,4 +142,37 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
   assert.ok(wholeBatch >= 0, '요약 건수는 음수가 될 수 없다');
 }
 
-console.log('mask-segments.test.js: 9개 블록 통과');
+// ── 10) 사용자 지정 규칙은 해제 키를 위조해도 절대 원문으로 돌아가지 않는다 ──────
+{
+  const text = '프로젝트 암호는 Purple Potassium 입니다';
+  const forced = [{ start: 9, end: 25, type: 'USER_DEFINED_TERM', mandatory: true }];
+  const segs = buildSegments(text, [], [], 'doc', forced);
+  const item = segs.find(s => s.type === 'item');
+  assert.strictEqual(item.locked, true);
+  assert.strictEqual(item.cat, 'forced');
+  assert.strictEqual(item.label, '사용자 지정');
+  assert.strictEqual(
+    buildFinalText(segs, new Set([item.key])),
+    '프로젝트 암호는 [사용자 지정 마스킹] 입니다',
+    '필수 항목은 unmaskedKeys 로 우회할 수 없어야 한다',
+  );
+  assert.strictEqual(
+    finalTextFrom(text, [], [], 'doc', [item.key], forced),
+    '프로젝트 암호는 [사용자 지정 마스킹] 입니다',
+    'SW 한 줄 경로도 필수 마스킹을 보존해야 한다',
+  );
+}
+
+// ── 11) 일반 탐지가 사용자 지정 구간을 감싸도 필수 속성이 살아남는다 ──────────
+{
+  const text = 'ABCDEFGHIJ';
+  const regular = [pii(0, 10, 'OTHER_PII')];
+  const forced = [{ start: 3, end: 6, type: 'USER_DEFINED_TERM', mandatory: true }];
+  const segs = buildSegments(text, regular, [], 'd', forced);
+  const item = segs.find(s => s.type === 'item');
+  assert.strictEqual(item.locked, true);
+  assert.strictEqual(item.label, '사용자 지정');
+  assert.strictEqual(buildFinalText(segs, [item.key]), '[사용자 지정 마스킹]');
+}
+
+console.log('mask-segments.test.js: 11개 블록 통과');

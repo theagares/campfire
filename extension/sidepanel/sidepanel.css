@@ -332,6 +332,8 @@ body {
 .mark:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--purple); }
 .mark.pii { background: var(--pii); color: #fff; }
 .mark.inj { background: var(--inj); color: var(--text); }
+.mark.forced { background: #5c3fbf; color: #fff; cursor: not-allowed; }
+.mark.forced:hover { box-shadow: none; }
 /* 마스킹을 해제한 구간 — 원문이 그대로 보이는 상태다.
    취소선은 쓰지 않는다: "지워졌다" 로 읽혀서, 해제가 아니라 삭제를 누른 것처럼 보인다.
    흐리게 두지도 않는다 — 이 상태의 목적이 원문을 확인하는 것이라 오히려 잘 보여야 한다.
@@ -378,6 +380,7 @@ body {
 .group .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; }
 .group .cat.pii { background: var(--pii); }
 .group .cat.inj { background: var(--inj); }
+.group .cat.forced { background: #5c3fbf; }
 
 .g-text { flex: 1; min-width: 0; }
 .g-label {
@@ -415,6 +418,7 @@ body {
 .solo .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 1px; }
 .solo .cat.pii { background: var(--pii); }
 .solo .cat.inj { background: var(--inj); }
+.solo .cat.forced { background: #5c3fbf; }
 .s-text { flex: 1; min-width: 0; }
 .s-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
 .s-snip {
@@ -441,6 +445,7 @@ body {
 }
 .switch input:checked + .track { background: var(--green); border-color: rgba(255, 255, 255, .6); }
 .switch input:checked + .track .thumb { transform: translateX(15px); }
+.switch input:disabled + .track { opacity: .55; cursor: not-allowed; }
 /* 그룹 안에서 일부만 마스킹된 상태 — 노브를 가운데 두어 "섞여 있음"을 보여준다.
    (전부 켬/전부 끔과 시각적으로 구분되지 않으면 그룹 토글을 신뢰할 수 없다.) */
 .switch input:indeterminate + .track { background: var(--muted-2); border-color: rgba(255, 255, 255, .5); }

@@ -2,8 +2,8 @@
  * background/service-worker.js  ─  campfire 백그라운드 (MV3, module)
  *
  * 역할 (PLAN §3 · §변경1 · §변경2):
- *   1) 서버 선택: 48200~48209 병렬 /health 스캔 → 시그니처 일치 포트 채택(캐싱),
- *      실패 시 원격 폴백. (PLAN §3/§11)
+ *   1) 서버 선택: 48200~48209 병렬 /health 스캔 → 정책 동기화된 로컬 엔진 채택(캐싱).
+ *      실패 시 전송 차단. (PLAN §3/§11)
  *   2) 검사 오케스트레이션: content.js 의 START_SCAN 요청을 받아 엔진 REST(/jobs,
  *      /jobs/prompt, /jobs/{id}/events)로 검사하고, 진행/결과를 검토 패널에 push.
  *   3) HITL 결정 라우팅: 검토 패널의 PANEL_DECISION 을 원본 탭의 content.js 로 중계
@@ -45,7 +45,10 @@ async function probePort(port) {
     });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
-    if (data && isOurEngine(data.service)) {
+    // 사용자 지정 규칙은 데스크톱의 암호화 저장소에서 매 실행마다 주입된다.
+    // 예전/독립 엔진에 붙으면 규칙이 조용히 사라지므로 관리·동기화 상태도 확인한다.
+    if (data && isOurEngine(data.service)
+        && data.forcedMask?.managed === true && data.forcedMask?.ready === true) {
       return { port, health: data };
     }
     return null;
@@ -89,7 +92,12 @@ async function getServer(forceRescan = false) {
   if (!forceRescan) {
     const cached = (await chrome.storage.session.get(CACHE_KEY))[CACHE_KEY];
     // 로컬만 받는다 — 원격 폴백을 쓰던 시절의 캐시가 세션에 남아 있을 수 있다.
-    if (cached && cached.target === 'local' && cached.baseUrl) return cached;
+    // 이 기능 도입 전 캐시는 forcedMask 상태가 없으므로 그대로 재사용하면 관리되지
+    // 않은 예전 엔진으로 원문을 보낼 수 있다. 정책 동기화 메타까지 있는 캐시만 쓴다.
+    if (cached && cached.target === 'local' && cached.baseUrl
+        && cached.health?.forcedMask?.managed === true
+        && cached.health?.forcedMask?.ready === true) return cached;
+    if (cached) await chrome.storage.session.remove(CACHE_KEY);
   }
   return discoverServer();
 }
@@ -382,7 +390,9 @@ function pushToPanel(message) {
 function recordSecurityBadge(result) {
   const pii = result?.stats?.piiCount ?? 0;
   const inj = result?.stats?.injectionCount ?? 0;
-  const total = pii + inj;
+  const forced = (result?.stats?.forcedMaskCount ?? result?.forcedMaskItems?.length ?? 0)
+    + (result?.userPromptForcedMaskItems?.length ?? 0);
+  const total = pii + inj + forced;
   if (total > 0) setActionBadge(total > 99 ? '99+' : String(total), BADGE_WARN);
   else setActionBadge('', BADGE_OK);
 }
@@ -554,14 +564,22 @@ async function scanMultiPrompt(sessionId, session, text) {
     const result = await scanPrompt({ text }, (event) => {
       pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: 'prompt' });
     });
+    if (result.blocked || (result.scanStatus && result.scanStatus !== 'ok')) {
+      throw new Error(result.reason || '보안 정책에 따라 프롬프트를 전송할 수 없습니다');
+    }
     session.results.prompt = {
       originalText: result.originalText || text,
       piiItems: result.piiItems || [],
       injectionItems: result.injectionItems || [],
+      forcedMaskItems: result.forcedMaskItems || [],
     };
     session.prompt = {
       status: 'done',
-      counts: { pii: (result.piiItems || []).length, injection: (result.injectionItems || []).length },
+      counts: {
+        pii: (result.piiItems || []).length,
+        injection: (result.injectionItems || []).length,
+        forced: (result.forcedMaskItems || []).length,
+      },
     };
   } catch (err) {
     // 프롬프트 검사 실패는 배치 전체 fail-closed. 프롬프트는 모든 파일 검사에
@@ -601,9 +619,10 @@ async function scanMultiItem(sessionId, session, payload) {
       }),
     );
 
-    if (result.scanStatus && result.scanStatus !== 'ok') {
+    doc.forcedMaskActive = !!result.policy?.forcedMask?.active;
+    if (result.blocked || (result.scanStatus && result.scanStatus !== 'ok')) {
       doc.status = 'error';
-      doc.error = result.reason || '검사하지 못했습니다';
+      doc.error = result.reason || '보안 정책에 따라 전송할 수 없습니다';
     } else {
       // 텍스트와 탐지 항목만 세션에 남긴다. maskedText/maskedFile 은 저장하지 않는다 —
       // 최종본은 사용자가 결정한 뒤 이 자리에서 한 번 만든다.
@@ -611,6 +630,7 @@ async function scanMultiItem(sessionId, session, payload) {
         originalText: result.originalText || '',
         piiItems: result.piiItems || [],
         injectionItems: result.injectionItems || [],
+        forcedMaskItems: result.forcedMaskItems || [],
       };
       doc.truncated = !!result.truncated;
       doc.scannedChars = result.scannedChars ?? 0;
@@ -621,6 +641,7 @@ async function scanMultiItem(sessionId, session, payload) {
       doc.counts = {
         pii: (result.piiItems || []).length,
         injection: (result.injectionItems || []).length,
+        forced: (result.forcedMaskItems || []).length,
       };
     }
   } catch (err) {
@@ -639,6 +660,7 @@ function buildArtifact(session, sessionId, file) {
 
   const text = finalTextFrom(
     src.originalText, src.piiItems, src.injectionItems, file.id, file.unmaskedKeys || [],
+    src.forcedMaskItems,
   );
   const wrapped = wrapMaskedFile(text, doc.mimeType, doc.fileName);
   const artifactId = `art_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
@@ -827,6 +849,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      // UI가 잘못된 결정을 만들거나 오래된 패널 코드가 붙어도 사용자 지정 항목이
+      // 원본 경로로 나가면 안 된다. 실제 마스킹 문자열 생성에서도 locked 를 지키지만,
+      // 여기서는 전송 형태 자체를 다시 검증한다.
+      const docForced = (session.result?.forcedMaskItems || []).length > 0;
+      const promptForced = (session.result?.userPromptForcedMaskItems || []).length > 0;
+      const bypassesMandatory = session.kind === 'combined'
+        ? (docForced && decision?.file?.action === 'passthrough')
+          || (promptForced && decision?.action !== 'send')
+        : ((docForced || promptForced) && decision?.action === 'passthrough');
+      if (bypassesMandatory) {
+        sendResponse({ ok: false, reason: 'mandatory-mask' });
+        return;
+      }
+
       if (session.tabId != null) {
         chrome.tabs.sendMessage(session.tabId, {
           type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
@@ -1001,7 +1037,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const files = [];
       for (const file of decision?.files || []) {
         if (file.action === 'exclude') { files.push({ id: file.id, action: 'exclude' }); continue; }
-        if (file.action === 'original') { files.push({ id: file.id, action: 'original' }); continue; }
+        if (file.action === 'original') {
+          const src = session.results?.[file.id];
+          const doc = session.docs.find(d => d.id === file.id);
+          if (doc?.forcedMaskActive || (src?.forcedMaskItems || []).length > 0) {
+            sendResponse({ ok: false, reason: 'mandatory-mask', id: file.id });
+            return;
+          }
+          files.push({ id: file.id, action: 'original' });
+          continue;
+        }
         const artifactId = buildArtifact(session, sessionId, file);
         if (!artifactId) {
           // 산출물을 못 만들면 그 파일만 조용히 빼지 않는다 — 배치 전체를 멈춘다.
@@ -1016,7 +1061,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const src = session.results?.prompt;
       const promptText = src
         ? finalTextFrom(src.originalText, src.piiItems, src.injectionItems, 'prompt',
-                        decision?.prompt?.unmaskedKeys || [])
+                        decision?.prompt?.unmaskedKeys || [], src.forcedMaskItems)
         : null;
 
       // 결정은 종료가 아니다. content 가 산출물을 받아 실제로 주입한 뒤

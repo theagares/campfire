@@ -31,6 +31,51 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_정상검사_탐지0건은_사람판단없이_즉시_원본통과(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+
+    async def clean(**_kwargs):
+        return {
+            "originalText": "hello", "maskedText": "hello",
+            "piiItems": [], "injectionItems": [], "forcedMaskItems": [], "blocked": False,
+            "scanStatus": "ok", "truncated": False,
+            "stats": {"piiCount": 0, "injectionCount": 0, "forcedMaskCount": 0},
+        }
+
+    async def must_not_wait(**_kwargs):
+        raise AssertionError("탐지 0건인데 사람 판단을 기다렸다")
+
+    monkeypatch.setattr(orch, "run_pipeline", clean)
+    monkeypatch.setattr(addon_mod.broker, "wait", must_not_wait)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"hello", file_name="clean.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert got is _ORIGINAL
+
+
+def test_사용자지정_마스킹은_원본판단으로_우회할수없다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+
+    async def forced(**_kwargs):
+        return {
+            "originalText": "secret", "maskedText": "[사용자 지정 마스킹]",
+            "piiItems": [], "injectionItems": [],
+            "forcedMaskItems": [{"start": 0, "end": 6, "type": "USER_DEFINED_TERM", "mandatory": True}],
+            "blocked": False, "scanStatus": "ok", "truncated": False,
+            "stats": {"piiCount": 0, "injectionCount": 0, "forcedMaskCount": 1},
+        }
+
+    async def choose_original(**_kwargs):
+        return "send_original"
+
+    monkeypatch.setattr(orch, "run_pipeline", forced)
+    monkeypatch.setattr(addon_mod.broker, "wait", choose_original)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"secret", file_name="secret.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert got == "[사용자 지정 마스킹]".encode()
+
+
 # ── Grok: 다룰 수 없는 형식은 통과가 아니라 차단 ────────────────────────────
 
 

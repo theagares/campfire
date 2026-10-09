@@ -46,3 +46,16 @@ def test_validate_and_fix_offset_recovery():
     out = masker.apply_masking(text, items)
     assert "[이름 마스킹]" in out["masked_text"]
     assert "홍길동" not in out["masked_text"]
+
+
+def test_forced_term_overlap_stays_mandatory():
+    text = "Project Aurora"
+    items = [
+        {"type": "ORGANIZATION", "start": 0, "end": 7, "confidence": 0.99},
+        {"type": "USER_DEFINED_TERM", "start": 0, "end": len(text), "confidence": 1.0,
+         "mandatory": True, "source": "user_dictionary"},
+    ]
+    merged = masker.merge_overlapping(items)
+    assert merged[0]["mandatory"] is True
+    assert merged[0]["type"] == "USER_DEFINED_TERM"
+    assert masker.apply_masking(text, items)["masked_text"] == "[사용자 지정 마스킹]"

@@ -20,6 +20,7 @@ export const TYPE_LABELS = {
   ID_NUMBER: '신분증번호', CREDIT_CARD: '카드번호', DATE_OF_BIRTH: '생년월일',
   ORGANIZATION: '조직기밀', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
   CREDENTIAL: '자격증명',
+  USER_DEFINED_TERM: '사용자 지정',
   INSTRUCTION_OVERRIDE: '명령 재정의', ROLE_MANIPULATION: '역할 조작',
   SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',
   HIDDEN_COMMAND: '숨겨진 명령', DATA_EXFILTRATION: '데이터 유출 시도',
@@ -35,12 +36,32 @@ export const maskTokenFor = (label) => `[${label} 마스킹]`;
  * 원문을 text/item 세그먼트 배열로 쪼갠다.
  * keyPrefix 는 항목 키의 소유자(문서 id 또는 'prompt').
  */
-export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc') {
+export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc', forcedMaskItems = []) {
   const src = typeof text === 'string' ? text : '';
-  const all = [
+  const detected = [
     ...(piiItems || []).map(i => ({ ...i, cat: 'pii' })),
     ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
-  ].sort((a, b) => a.start - b.start);
+    ...(forcedMaskItems || []).map(i => ({ ...i, cat: 'forced', mandatory: true })),
+  ].filter(i => Number.isInteger(i.start) && Number.isInteger(i.end) && i.start >= 0 && i.end > i.start)
+    .sort((a, b) => a.start - b.start || Number(!!b.mandatory) - Number(!!a.mandatory) || b.end - a.end);
+
+  // 겹친 탐지는 하나의 구간으로 합친다. 그중 하나라도 사용자 지정 규칙이면 합쳐진
+  // 전체 구간이 필수 마스킹이다. 일반 탐지가 바깥을 감싼다는 이유로 내부의 필수
+  // 규칙이 사라지면 해제 토글로 원문을 보낼 수 있기 때문이다.
+  const all = [];
+  for (const item of detected) {
+    const prev = all[all.length - 1];
+    if (!prev || item.start >= prev.end) {
+      all.push({ ...item });
+      continue;
+    }
+    prev.end = Math.max(prev.end, item.end);
+    if (item.mandatory) {
+      prev.mandatory = true;
+      prev.cat = 'forced';
+      prev.type = 'USER_DEFINED_TERM';
+    }
+  }
 
   const segs = [];
   let cursor = 0, n = 0;
@@ -59,6 +80,7 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc')
         dtype: it.type,
         label: labelOf(it.type),
         original,
+        locked: !!it.mandatory,
       });
     }
     cursor = it.end;
@@ -76,11 +98,11 @@ export function buildFinalText(segments, unmaskedKeys) {
   const keep = unmaskedKeys instanceof Set ? unmaskedKeys : new Set(unmaskedKeys || []);
   return (segments || []).map(seg => {
     if (seg.type === 'text') return seg.text;
-    return keep.has(seg.key) ? seg.original : maskTokenFor(seg.label);
+    return !seg.locked && keep.has(seg.key) ? seg.original : maskTokenFor(seg.label);
   }).join('');
 }
 
 /** 원문 + 탐지 결과 + 해제 키 → 최종 문자열. SW 가 결정 시점에 쓰는 한 줄 경로. */
-export function finalTextFrom(text, piiItems, injectionItems, keyPrefix, unmaskedKeys) {
-  return buildFinalText(buildSegments(text, piiItems, injectionItems, keyPrefix), unmaskedKeys);
+export function finalTextFrom(text, piiItems, injectionItems, keyPrefix, unmaskedKeys, forcedMaskItems = []) {
+  return buildFinalText(buildSegments(text, piiItems, injectionItems, keyPrefix, forcedMaskItems), unmaskedKeys);
 }

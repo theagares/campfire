@@ -16,6 +16,7 @@
 
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -49,10 +50,14 @@ const ENGINE_LOG_MAX_BYTES = 2 * 1024 * 1024;
  */
 
 class EngineManager extends EventEmitter {
-  constructor(app, configStore) {
+  constructor(app, configStore, forcedMaskStore = null) {
     super();
     this.app = app;
     this.config = configStore;
+    this.forcedMaskStore = forcedMaskStore;
+    this.internalControlToken = forcedMaskStore ? crypto.randomBytes(32).toString('hex') : '';
+    this.forcedMaskSyncedPort = null;
+    this.forcedMaskSyncPromise = null;
     this.child = null;
     this.boundPort = null;
     this.pollTimer = null;
@@ -152,6 +157,8 @@ class EngineManager extends EventEmitter {
       // 프록시를 켜 둔 상태로 엔진이 재시작되면 엔진이 스스로 프록시를 다시 띄운다.
       // 그 사이 PAC 는 그대로라 AI 사이트는 죽은 포트로 가서 막힌다(fail-closed).
       SECUREDOC_PROXY_ENABLED: this.config.get('proxyEnabled') ? '1' : '0',
+      SECUREDOC_DESKTOP_MANAGED: this.forcedMaskStore ? '1' : '0',
+      SECUREDOC_INTERNAL_CONTROL_TOKEN: this.internalControlToken,
     };
 
     try {
@@ -278,6 +285,17 @@ class EngineManager extends EventEmitter {
         this.restartAttempts = 0; // 정상 응답 확인 → 재시작 카운터 리셋
         this.boundPort = found.port;
         this.lastHealth = found.health;
+        if (this.forcedMaskStore && (
+          this.forcedMaskSyncedPort !== found.port || !found.health?.forcedMask?.ready
+        )) {
+          try {
+            const synced = await this.syncForcedMaskTerms(undefined, found.port);
+            this.lastHealth = { ...found.health, forcedMask: synced };
+          } catch (err) {
+            this._setState('error', `강제 마스킹 단어 동기화 실패: ${err.message}`);
+            return;
+          }
+        }
         if (this.state !== 'running') {
           this._setState('running', null);
         } else {
@@ -363,6 +381,86 @@ class EngineManager extends EventEmitter {
     });
   }
 
+  _putJson(port, requestPath, body) {
+    return new Promise((resolve, reject) => {
+      const payload = Buffer.from(JSON.stringify(body));
+      const req = http.request({
+        host: constants.HOST,
+        port,
+        path: requestPath,
+        method: 'PUT',
+        timeout: 3000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(payload.length),
+          Authorization: `Bearer ${this.internalControlToken}`,
+        },
+      }, (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => {
+          let parsed = null;
+          try { parsed = raw ? JSON.parse(raw) : null; } catch { /* handled below */ }
+          if (res.statusCode < 200 || res.statusCode >= 300 || !parsed) {
+            reject(new Error(parsed?.detail || `엔진 응답 ${res.statusCode}`));
+            return;
+          }
+          resolve(parsed);
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('엔진 동기화 시간 초과')));
+      req.on('error', reject);
+      req.end(payload);
+    });
+  }
+
+  async syncForcedMaskTerms(terms, port = this.boundPort) {
+    if (!this.forcedMaskStore) return { managed: false, ready: true, active: false, count: 0 };
+    if (!port) throw new Error('엔진이 실행 중이 아닙니다');
+    const values = terms === undefined ? this.forcedMaskStore.list() : terms;
+    if (this.forcedMaskSyncPromise) await this.forcedMaskSyncPromise;
+    const promise = this._putJson(port, '/internal/forced-mask-rules', { terms: values });
+    this.forcedMaskSyncPromise = promise;
+    try {
+      const status = await promise;
+      this.forcedMaskSyncedPort = port;
+      if (this.lastHealth && this.boundPort === port) {
+        this.lastHealth = { ...this.lastHealth, forcedMask: status };
+      }
+      return status;
+    } finally {
+      if (this.forcedMaskSyncPromise === promise) this.forcedMaskSyncPromise = null;
+    }
+  }
+
+  getForcedMaskTerms() {
+    if (!this.forcedMaskStore) return { terms: [], limits: {} };
+    return { terms: this.forcedMaskStore.list(), limits: this.forcedMaskStore.limits() };
+  }
+
+  async replaceForcedMaskTerms(values) {
+    if (!this.forcedMaskStore) throw new Error('강제 마스킹 저장소가 준비되지 않았습니다');
+    // normalize without touching disk first.  The engine acknowledges the new
+    // policy before the settings UI reports success; a failed sync never leaves
+    // a newly registered secret persisted but inactive.
+    const { normalizeTerms } = require('./forced-mask-store');
+    const normalized = normalizeTerms(values);
+    const previous = this.forcedMaskStore.list();
+    let synced = false;
+    if (this.state === 'running' && this.boundPort) {
+      await this.syncForcedMaskTerms(normalized);
+      synced = true;
+    }
+    try {
+      this.forcedMaskStore.replace(normalized);
+    } catch (err) {
+      if (synced) await this.syncForcedMaskTerms(previous).catch(() => {});
+      throw err;
+    }
+    return { terms: normalized, limits: this.forcedMaskStore.limits() };
+  }
+
   // ── 제어 ────────────────────────────────────────────────────────────────────
   /** 정책 변경 등으로 엔진 재시작 (env 를 다시 적용). */
   async restart() {
@@ -388,6 +486,7 @@ class EngineManager extends EventEmitter {
       const done = () => {
         this.boundPort = null;
         this.lastHealth = null;
+        this.forcedMaskSyncedPort = null;
         resolve();
       };
       child.once('exit', done);

@@ -99,7 +99,8 @@ def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, An
         init_db()
     pii = result.get("piiItems", [])
     inj = result.get("injectionItems", [])
-    all_items = list(pii) + list(inj)
+    forced = result.get("forcedMaskItems", [])
+    all_items = list(pii) + list(inj) + list(forced)
     # 탐지 위치/유형/소스만 저장 (원문 스니펫 text 필드 제거)
     detections = [
         {"type": it["type"], "start": it["start"], "end": it["end"], "source": it.get("source")}
@@ -136,6 +137,7 @@ def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, An
             "blocked": bool(result.get("blocked")),
             "piiCount": len(pii),
             "injectionCount": len(inj),
+            "forcedMaskCount": len(forced),
         }
     )
 

@@ -104,6 +104,11 @@ function register(ctx) {
 
   ipcMain.handle('settings:get', () => config.get());
 
+  ipcMain.handle('forcedMask:get', () => engineManager.getForcedMaskTerms());
+  ipcMain.handle('forcedMask:replace', async (_e, terms) => (
+    engineManager.replaceForcedMaskTerms(terms)
+  ));
+
   ipcMain.handle('settings:set', async (_e, patch) => {
     const prev = config.get();
     const next = config.set(patch || {});

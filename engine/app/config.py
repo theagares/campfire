@@ -51,6 +51,14 @@ BASE_PORT: int = int(os.environ.get("SECUREDOC_BASE_PORT", "48200"))
 PORT_SCAN_COUNT: int = int(os.environ.get("SECUREDOC_PORT_SCAN_COUNT", "10"))  # 48200~48209
 HOST: str = os.environ.get("SECUREDOC_HOST", "127.0.0.1")
 
+# The packaged desktop app owns user-defined mandatory mask terms.  It sends
+# the decrypted rules over an authenticated localhost-only control endpoint
+# after every engine start; scans fail closed until that first sync arrives.
+DESKTOP_MANAGED: bool = os.environ.get("SECUREDOC_DESKTOP_MANAGED", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+INTERNAL_CONTROL_TOKEN: str = os.environ.get("SECUREDOC_INTERNAL_CONTROL_TOKEN", "")
+
 # 실제 바인딩된 포트. main.py 가 기동 시점에 채운다. /health 가 이 값을 반환.
 BOUND_PORT: int | None = None
 
