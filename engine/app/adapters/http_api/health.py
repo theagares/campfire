@@ -18,7 +18,7 @@ from fastapi import APIRouter, Request
 
 from app import config
 from app.adapters import proxy
-from app.core import model_status
+from app.core import forced_mask, model_status
 from app.core.detectors import registry
 
 router = APIRouter()
@@ -63,6 +63,8 @@ async def health(request: Request):
         "maxPromptChars": config.MAX_PROMPT_CHARS,
         "extensionLastSeenSecondsAgo": extension_last_seen_seconds_ago,
         "mcpRiskScanner": risk_scanner_status,
+        # 단어 원문은 절대 반환하지 않는다. 데스크탑은 count/revision 으로 동기화만 확인한다.
+        "forcedMask": forced_mask.registry.status(),
         # 앱은 이 값으로 시스템 프록시를 걸지 말지 정한다. 저장된 설정이 아니라
         # **지금 실제로 듣고 있는지**를 봐야 죽은 포트로 브라우저를 돌리지 않는다.
         "proxy": proxy.status(),

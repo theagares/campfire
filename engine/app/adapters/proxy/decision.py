@@ -50,6 +50,7 @@ class PendingDecision:
             "host": self.host,
             "piiCount": stats.get("piiCount", 0),
             "injectionCount": stats.get("injectionCount", 0),
+            "forcedMaskCount": stats.get("forcedMaskCount", len(self.result.get("forcedMaskItems") or [])),
             "blocked": bool(self.result.get("blocked")),
             "scanStatus": self.result.get("scanStatus"),
         }
@@ -104,12 +105,12 @@ class DecisionBroker:
         )
         self._pending[decision_id] = pending
         logger.info(
-            "[proxy] 판단 대기 id=%s file=%s host=%s pii=%d injection=%d",
+            "[proxy] 판단 대기 id=%s host=%s pii=%d injection=%d forced=%d",
             decision_id,
-            file_name,
             host,
             (result.get("stats") or {}).get("piiCount", 0),
             (result.get("stats") or {}).get("injectionCount", 0),
+            (result.get("stats") or {}).get("forcedMaskCount", len(result.get("forcedMaskItems") or [])),
         )
         try:
             return await asyncio.wait_for(pending.future, timeout=timeout_s)

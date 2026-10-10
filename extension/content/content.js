@@ -129,11 +129,15 @@
     if (data.phase === 'start') uploadStartCount += 1;
   });
 
+  // 사용자 지정 마스킹이 켜져 있는가 — SW 가 엔진 상태를 보고 적어 둔다(noteForcedMask).
+  let forcedMaskActive = false;
+
   chrome.storage?.local?.get?.(
-    { protectionEnabled: true, fileInterceptEnabled: true },
-    ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled }) => {
+    { protectionEnabled: true, fileInterceptEnabled: true, forcedMaskActive: false },
+    ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled, forcedMaskActive: forced }) => {
       protectionEnabled = Boolean(enabled);
       fileInterceptEnabled = Boolean(fileEnabled);
+      forcedMaskActive = Boolean(forced);
       sendBridgeTokenToMain();
       sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
     },
@@ -141,6 +145,7 @@
 
   chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
     if (areaName !== 'local') return;
+    if (changes.forcedMaskActive) forcedMaskActive = Boolean(changes.forcedMaskActive.newValue);
     if (!changes.protectionEnabled && !changes.fileInterceptEnabled) return;
     if (changes.protectionEnabled) protectionEnabled = Boolean(changes.protectionEnabled.newValue);
     if (changes.fileInterceptEnabled) fileInterceptEnabled = Boolean(changes.fileInterceptEnabled.newValue);
@@ -897,7 +902,11 @@
     // 다시 보류 상태로 돌아간다 — 마스킹할 게 없는 깨끗한 문서가 오히려 차단되던
     // 그 실패와 같은 모양이다.
     const fresh = files.filter(f => !contentOwnedFiles.has(f) && !contentProcessingFiles.has(f));
-    if (!fresh.some(isSupportedFile)) return false;   // 검사할 게 없으면 개입하지 않는다
+    // 검사할 게 없으면 개입하지 않는다 — 단 사용자 지정 마스킹이 켜져 있으면 미지원 형식도
+    // 그냥 보내지 않는다. 안을 볼 수 없으니 등록어가 들었는지도 모른다(프록시도 같은 이유로
+    // 막는다). 검토로 보내면 미지원 문서는 "제거" 만 고를 수 있다.
+    const holdUnsupported = forcedMaskActive && protectionEnabled && fileInterceptEnabled && !proxyInPath();
+    if (!fresh.some(isSupportedFile) && !(holdUnsupported && fresh.length)) return false;
 
     // **검사가 시작된 뒤**에만 새 첨부를 거절한다.
     //
@@ -959,7 +968,8 @@
       };
     }
 
-    const names = supportedItems(pendingBatch).map(i => i.fileName);
+    const shown = supportedItems(pendingBatch);
+    const names = (shown.length ? shown : pendingBatch.items).map(i => i.fileName);
     showPendingBadge(names.length === 1 ? names[0] : `${names.length}개 파일`);
     return true;
   }

@@ -36,6 +36,12 @@ const engineResults = {
   'b.pdf': { scanStatus: 'ok', originalText: '박영희 계약서', piiItems: [{ start: 0, end: 3, type: 'PERSON_NAME' }], injectionItems: [], truncated: false, scannedChars: 7, originalChars: 7 },
   // 잘린 파일: 뒷부분을 안 봤다는 사실이 상태로 드러나야 한다
   'long.pdf': { scanStatus: 'ok', originalText: '앞부분만', piiItems: [], injectionItems: [], truncated: true, scannedChars: 4, originalChars: 900 },
+  'forced.pdf': {
+    scanStatus: 'ok', originalText: 'secret 공개', piiItems: [], injectionItems: [],
+    forcedMaskItems: [{ start: 0, end: 6, type: 'USER_DEFINED_TERM', mandatory: true }],
+    policy: { forcedMask: { active: true } },
+    truncated: false, scannedChars: 9, originalChars: 9,
+  },
 };
 
 const sandbox = {
@@ -449,5 +455,83 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await settle();
   }
 
-  console.log('multi-attach.test.js: 12개 블록 통과');
+  // ── 13) 사용자 지정 마스킹은 해제 키·원본 action 으로 우회할 수 없다 ──────
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    await send({
+      type: 'START_MULTI_SCAN', sessionId: 'forced-1',
+      payload: { items: [{ id: 'f0', fileName: 'forced.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }] },
+    });
+    await settle();
+    const lf = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'forced-1', leaseId: lf, text: '요약해줘' });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'forced-1', leaseId: lf,
+      payload: { docId: 'f0', fileName: 'forced.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+    });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'forced-1', leaseId: lf });
+    await settle();
+
+    const original = await send({
+      type: 'PANEL_MULTI_DECISION', sessionId: 'forced-1',
+      decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'original' }] },
+    });
+    assert.strictEqual(original.ok, false, '필수 규칙이 있는데 원본 action 을 받아들였다');
+    assert.strictEqual(original.reason, 'mandatory-mask');
+
+    const masked = await send({
+      type: 'PANEL_MULTI_DECISION', sessionId: 'forced-1',
+      decision: {
+        action: 'send', prompt: { unmaskedKeys: [] },
+        files: [{ id: 'f0', action: 'masked', unmaskedKeys: ['f0:0'] }],
+      },
+    });
+    assert.strictEqual(masked.ok, true);
+    const decision = tabMessages.filter(m => m.type === 'CONTENT_BATCH_DECISION').slice(-1)[0];
+    const descriptor = decision.decision.files[0];
+    const artifact = await send({
+      type: 'GET_SCAN_ARTIFACT', sessionId: 'forced-1', docId: 'f0', artifactId: descriptor.artifactId,
+    });
+    assert.strictEqual(Buffer.from(artifact.base64, 'base64').toString('utf8'), '[사용자 지정 마스킹] 공개');
+
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'forced-1' });
+    await settle();
+  }
+
+  // ── 14) 미지원 문서도 강제 마스킹이 켜져 있으면(또는 알 수 없으면) "검사 없이 원본" 을 막는다 ──
+  //     미지원 문서는 엔진에 안 가서 문서별 표시가 켜지지 않았다 → 패널·SW 가드가 둘 다
+  //     통과시켜 .hwp 같은 파일이 원본으로 나갔다. 세션 시작 때 엔진 상태를 직접 묻는다.
+  {
+    // 하니스는 SW 의 import 를 걷어내므로 엔진 탐지에 쓰는 상수를 이 블록에서만 넣는다.
+    vm.runInContext("var isOurEngine = (s) => s === 'campfire'; var LOCAL_HOST = '127.0.0.1';"
+      + " var BASE_PORT = 48200; var PORT_SCAN_COUNT = 1; var HEALTH_TIMEOUT_MS = 500; var CACHE_KEY = 'srv';"
+      + " var AbortController = class { constructor() { this.signal = {}; } abort() {} };", ctx);
+    const unsupported = [{ id: 'f0', fileName: 'x.hwp', fileSize: 10, mimeType: 'application/x-hwp', supported: false }];
+    for (const [active, allowed] of [[true, false], [false, true], [null, false]]) {
+      sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(active === null ? {}
+        : { service: 'campfire', forcedMask: { managed: true, ready: true, active } }) });
+      delete sessionStore.srv;
+      panelMessages.length = 0;
+      tabMessages.length = 0;
+      const sid = `unsup-${active}`;
+      await send({ type: 'START_MULTI_SCAN', sessionId: sid, payload: { items: unsupported } });
+      await settle();
+      const init = panelOf('PANEL_SCAN_INIT').find(m => m.sessionId === sid);
+      assert.strictEqual(init.docs[0].forcedMaskActive, !allowed, `엔진 상태(${active})가 미지원 문서에 안 찍혔다`);
+      const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+      await send({ type: 'SCAN_MULTI_PROMPT', sessionId: sid, leaseId: lease, text: '요약해줘' });
+      await send({ type: 'FINISH_MULTI_SCAN', sessionId: sid, leaseId: lease });
+      await settle();
+      const res = await send({
+        type: 'PANEL_MULTI_DECISION', sessionId: sid,
+        decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'original' }] },
+      });
+      assert.strictEqual(res.ok, allowed, `강제 마스킹 상태 ${active} 인데 미지원 문서 원본 전송 판정이 틀렸다`);
+      await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: sid });
+      await settle();
+    }
+  }
+
+  console.log('multi-attach.test.js: 14개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

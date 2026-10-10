@@ -142,4 +142,51 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
   assert.ok(wholeBatch >= 0, '요약 건수는 음수가 될 수 없다');
 }
 
-console.log('mask-segments.test.js: 9개 블록 통과');
+// ── 10) 사용자 지정 규칙은 해제 키를 위조해도 절대 원문으로 돌아가지 않는다 ──────
+{
+  const text = '프로젝트 암호는 Purple Potassium 입니다';
+  const forced = [{ start: 9, end: 25, type: 'USER_DEFINED_TERM', mandatory: true }];
+  const segs = buildSegments(text, [], [], 'doc', forced);
+  const item = segs.find(s => s.type === 'item');
+  assert.strictEqual(item.locked, true);
+  assert.strictEqual(item.cat, 'forced');
+  assert.strictEqual(item.label, '사용자 지정');
+  assert.strictEqual(
+    buildFinalText(segs, new Set([item.key])),
+    '프로젝트 암호는 [사용자 지정 마스킹] 입니다',
+    '필수 항목은 unmaskedKeys 로 우회할 수 없어야 한다',
+  );
+  assert.strictEqual(
+    finalTextFrom(text, [], [], 'doc', [item.key], forced),
+    '프로젝트 암호는 [사용자 지정 마스킹] 입니다',
+    'SW 한 줄 경로도 필수 마스킹을 보존해야 한다',
+  );
+}
+
+// ── 11) 일반 탐지가 사용자 지정 구간을 감싸도 필수 속성이 살아남는다 ──────────
+{
+  const text = 'ABCDEFGHIJ';
+  const regular = [pii(0, 10, 'OTHER_PII')];
+  const forced = [{ start: 3, end: 6, type: 'USER_DEFINED_TERM', mandatory: true }];
+  const segs = buildSegments(text, regular, [], 'd', forced);
+  const item = segs.find(s => s.type === 'item');
+  assert.strictEqual(item.locked, true);
+  assert.strictEqual(item.label, '사용자 지정');
+  assert.strictEqual(buildFinalText(segs, [item.key]), '[사용자 지정 마스킹]');
+}
+
+// ── 12) 엔진 위치는 코드포인트다 — 이모지가 앞에 있어도 정확히 그 단어를 가린다 ──
+//     JS 는 UTF-16 이라 이모지 1개가 2칸이다. 바꾸지 않으면 그만큼 밀려 원문이 남는다
+//     (실측: '🔥🔥🔥 Project Aurora' → '🔥🔥[사용자 지정 마스킹]ora').
+{
+  const text = '🔥🔥🔥 Project Aurora 일정 010-1234-5678';
+  const forced = [{ start: 4, end: 18, type: 'USER_DEFINED_TERM', mandatory: true }];   // 파이썬 기준
+  const phone = [pii(22, 35, 'PHONE')];
+  const out = finalTextFrom(text, phone, [], 'p', [], forced);
+  assert.strictEqual(out, '🔥🔥🔥 [사용자 지정 마스킹] 일정 [전화번호 마스킹]');
+  // BMP 만 있는 문자열은 그대로 — 바꾸는 비용도 들지 않는다.
+  assert.strictEqual(finalTextFrom('Project Aurora', [], [], 'p', [], [{ start: 0, end: 7, type: 'USER_DEFINED_TERM' }]),
+    '[사용자 지정 마스킹] Aurora');
+}
+
+console.log('mask-segments.test.js: 12개 블록 통과');

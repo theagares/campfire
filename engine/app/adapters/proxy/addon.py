@@ -34,6 +34,7 @@ from app import config
 from app.adapters.proxy.decision import DecisionTimeout, broker
 from app.adapters.proxy.multipart import MultipartError, decode, encode
 from app.adapters.proxy.sniff import refine
+from app.core import forced_mask
 
 logger = logging.getLogger("securedoc.proxy")
 
@@ -51,6 +52,9 @@ PROXY_MARK_HEADER = "X-Campfire-Proxy"
 
 def masked_name_for(original: str) -> str:
     stem = original.rsplit(".", 1)[0] if "." in original else original
+    # 이름에 사용자 지정 단어가 있으면 이름을 쓰지 않는다 — 내용을 가려도 이름으로 샌다.
+    if forced_mask.registry.snapshot().find(stem):
+        stem = "document"
     return f"{stem}_masked.md"
 
 
@@ -621,8 +625,10 @@ class CampfireAddon:
         from app.core.pipeline.orchestrator import run_pipeline
 
         per_field = []          # (field, masked_text)
-        all_pii, all_inj = [], []
+        all_pii, all_inj, all_forced = [], [], []
         orig_parts, masked_parts = [], []
+        scan_statuses, reasons = [], []
+        truncated = False
         for fld in fields:
             text = fld.value.decode("utf-8", "replace")
             result = await run_pipeline(text=text)
@@ -633,24 +639,41 @@ class CampfireAddon:
             per_field.append((fld, masked_text))
             all_pii += result.get("piiItems", [])
             all_inj += result.get("injectionItems", [])
+            all_forced += result.get("forcedMaskItems", [])
             orig_parts.append(text)
             masked_parts.append(masked_text)
+            scan_statuses.append(result.get("scanStatus"))
+            if result.get("reason"):
+                reasons.append(str(result["reason"]))
+            truncated = truncated or bool(result.get("truncated"))
 
+        scan_status = "ok" if scan_statuses and all(s == "ok" for s in scan_statuses) else (
+            next((s for s in scan_statuses if s and s != "ok"), "failed")
+        )
         combined = {
             "originalText": "\n---\n".join(orig_parts),
             "maskedText": "\n---\n".join(masked_parts),
             "piiItems": all_pii,
             "injectionItems": all_inj,
-            "scanStatus": "ok",
-            "stats": {"piiCount": len(all_pii), "injectionCount": len(all_inj)},
+            "forcedMaskItems": all_forced,
+            "scanStatus": scan_status,
+            "reason": " / ".join(dict.fromkeys(reasons)) or None,
+            "truncated": truncated,
+            "stats": {
+                "piiCount": len(all_pii),
+                "injectionCount": len(all_inj),
+                "forcedMaskCount": len(all_forced),
+            },
         }
+        if _is_clean_result(combined):
+            return _ORIGINAL
         action = await broker.wait(
             file_name="메시지", host=host, result=combined,
             timeout_s=config.PROXY_DECISION_TIMEOUT_S,
         )
         if action == "cancel":
             return None
-        if action == "send_original":
+        if action == "send_original" and not all_forced:
             return _ORIGINAL
         return [(fld, mt.encode("utf-8")) for fld, mt in per_field]
 
@@ -676,8 +699,13 @@ class CampfireAddon:
             file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False
         )
         if result.get("blocked"):
-            logger.info("[proxy] 정책 차단 file=%s", file_name)
+            logger.info("[proxy] 정책 차단 host=%s", host)  # 파일명엔 등록어가 있을 수 있다
             return None
+
+        # 이름에 등록어가 있으면 내용이 깨끗해도 원본(=원래 이름)을 보내면 안 된다.
+        name_forced = bool(forced_mask.registry.snapshot().find(file_name))
+        if _is_clean_result(result) and not name_forced:
+            return _ORIGINAL
 
         action = await broker.wait(
             file_name=file_name,
@@ -687,7 +715,7 @@ class CampfireAddon:
         )
         if action == "cancel":
             return None
-        if action == "send_original":
+        if action == "send_original" and not result.get("forcedMaskItems") and not name_forced:
             return _ORIGINAL
         return (result.get("maskedText") or "").encode("utf-8")
 
@@ -709,3 +737,23 @@ class CampfireAddon:
 # "원본을 그대로 보낸다" 를 나타내는 표식. None(보내지 않음)과 구분해야 해서
 # bytes 도 None 도 아닌 고유 객체를 쓴다.
 _ORIGINAL = object()
+
+
+def _is_clean_result(result: dict) -> bool:
+    """완전히 검사했고 탐지나 사용자 지정 마스킹이 하나도 없는 결과인가."""
+    stats = result.get("stats") or {}
+    pii_count = max(int(stats.get("piiCount") or 0), len(result.get("piiItems") or []))
+    injection_count = max(
+        int(stats.get("injectionCount") or 0), len(result.get("injectionItems") or [])
+    )
+    forced_count = max(
+        int(stats.get("forcedMaskCount") or 0), len(result.get("forcedMaskItems") or [])
+    )
+    return (
+        result.get("scanStatus") == "ok"
+        and not result.get("blocked")
+        and not result.get("truncated")
+        and pii_count == 0
+        and injection_count == 0
+        and forced_count == 0
+    )

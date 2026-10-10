@@ -13,12 +13,14 @@ const api = {
   getStats: () => ipcRenderer.invoke('stats:get'),
   getMetrics: () => ipcRenderer.invoke('metrics:get'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  getForcedMaskTerms: () => ipcRenderer.invoke('forcedMask:get'),
   getModelsStatus: () => ipcRenderer.invoke('models:status'),
   scanCleanup: () => ipcRenderer.invoke('cleanup:scan'),
   getProxyStatus: () => ipcRenderer.invoke('proxy:status'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  replaceForcedMaskTerms: (terms) => ipcRenderer.invoke('forcedMask:replace', terms),
   savePipelineLayout: (layout) => ipcRenderer.invoke('settings:setPipelineLayout', layout),
   restartEngine: () => ipcRenderer.invoke('engine:restart'),
   setSecurityEnabled: (enabled) => ipcRenderer.invoke('engine:setSecurity', enabled),

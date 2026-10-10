@@ -86,17 +86,22 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-const tipFor = (label, masked) => `${label} — ${masked ? '눌러서 마스킹 해제' : '눌러서 다시 마스킹'}`;
+const tipFor = (label, masked, locked = false) => locked
+  ? `${label} — 사용자 지정 규칙으로 항상 마스킹`
+  : `${label} — ${masked ? '눌러서 마스킹 해제' : '눌러서 다시 마스킹'}`;
 
 // 마킹된 구간은 그 자체가 버튼이다 — 문서에서 바로 눌러 마스킹을 풀거나 다시 건다.
 // (우측 목록의 토글과 같은 상태를 공유하며, 어느 쪽을 바꿔도 양쪽이 함께 갱신된다.)
 function segmentsToHtml(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
-    const masked = !state.unmasked.has(seg.key);
-    const cls = seg.cat === 'inj' ? 'inj' : 'pii';
+    const masked = seg.locked || !state.unmasked.has(seg.key);
+    const cls = seg.cat === 'inj' ? 'inj' : (seg.cat === 'forced' ? 'forced' : 'pii');
     return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
-      + ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}">${esc(seg.original)}</span>`;
+      + (seg.locked
+        ? ` aria-disabled="true" title="${esc(tipFor(seg.label, true, true))}"`
+        : ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}"`)
+      + `>${esc(seg.original)}</span>`;
   }).join('');
 }
 
@@ -108,7 +113,7 @@ const STATUS_LABEL = {
 
 function tabLabel(doc) {
   if (doc.status === 'done') {
-    const n = (doc.counts?.pii || 0) + (doc.counts?.injection || 0);
+    const n = (doc.counts?.pii || 0) + (doc.counts?.injection || 0) + (doc.counts?.forced || 0);
     return `${doc.fileName} · ${n}건`;
   }
   return `${doc.fileName} · ${STATUS_LABEL[doc.status] || doc.status}`;
@@ -134,7 +139,7 @@ function promptCountLabel() {
   const p = state.promptMeta;
   if (!p || p.status === 'pending') return '대기 중…';
   if (p.status === 'error') return '실패';
-  return `${(p.counts?.pii || 0) + (p.counts?.injection || 0)}건`;
+  return `${(p.counts?.pii || 0) + (p.counts?.injection || 0) + (p.counts?.forced || 0)}건`;
 }
 
 /** 활성 탭의 본문을 SW 에서 끌어온다. 이미 받은 항목은 다시 요청하지 않는다. */
@@ -150,6 +155,7 @@ function pullItem(itemId) {
         originalText: res.originalText || '',
         piiItems: res.piiItems || [],
         injectionItems: res.injectionItems || [],
+        forcedMaskItems: res.forcedMaskItems || [],
       };
       state.loaded.set(itemId, item);
       resolve(item);
@@ -224,7 +230,9 @@ function syncMultiView() {
   const sum = (key) => state.docs.reduce((t, d) => t + (d.counts?.[key] || 0), 0)
     + (state.promptMeta?.counts?.[key] || 0);
   el.docType.textContent = `문서 ${n}개 + 프롬프트 검토`;
-  el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건 탐지`;
+  const forced = sum('forced');
+  el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건`
+    + (forced ? ` | 필수 ${forced}건` : ' 탐지');
 }
 
 /** 다중 검사 중 진행 이벤트. 막대는 끝난 항목 수로만 채운다 — 항목별 단계로 채우면
@@ -280,7 +288,7 @@ function renderDocActions(doc) {
     o.risky && armedRisky === `${doc.id}:${o.action}` ? `${o.label} — 한 번 더` : o.label
   );
   el.docActions.innerHTML = `<div class="why">${esc(set.why(doc))}</div>`
-    + set.options.map(o => (
+    + set.options.filter(o => !(o.action === 'original' && doc.forcedMaskActive)).map(o => (
       `<button data-doc="${esc(doc.id)}" data-action="${esc(o.action)}"`
       + `${o.risky ? ' class="risky"' : ''}`
       + ` aria-pressed="${armedRisky === `${doc.id}:${o.action}`}">${esc(label(o))}</button>`
@@ -357,7 +365,10 @@ async function showTab(itemId) {
   if (state.activeTab !== itemId) return;   // 그 사이 사용자가 다른 탭으로 갔다
   if (!item) { el.diff.innerHTML = '<div class="empty">결과를 불러오지 못했습니다</div>'; return; }
 
-  state.segments = buildSegments(item.originalText, item.piiItems, item.injectionItems, itemId);
+  state.segments = buildSegments(
+    item.originalText, item.piiItems, item.injectionItems, itemId, item.forcedMaskItems,
+  );
+  for (const seg of state.segments) if (seg.locked) state.unmasked.delete(seg.key);
   renderDiff();
   renderItems();
   refreshSummary();
@@ -420,7 +431,7 @@ function groupItems() {
 /** 묶지 않고 하나씩 보여줄 항목(= 인젝션). 문서에 나온 순서 그대로. */
 const soloItems = () => allItemSegments().filter(s => s.cat !== 'pii');
 
-const maskedCountOf = (g) => g.segs.filter(s => !state.unmasked.has(s.key)).length;
+const maskedCountOf = (g) => g.segs.filter(s => s.locked || !state.unmasked.has(s.key)).length;
 const trunc = (s, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
 
 function renderItems() {
@@ -453,7 +464,7 @@ function renderItems() {
             <div class="item" data-key="${esc(s.key)}">
               <div class="snip">${esc(trunc(s.original))}</div>
               <label class="switch">
-                <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'}>
+                <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'} ${s.locked ? 'disabled' : ''}>
                 <span class="track"><span class="thumb"></span></span>
               </label>
             </div>`).join('')}
@@ -466,11 +477,11 @@ function renderItems() {
     <div class="solo" data-key="${esc(s.key)}">
       <span class="cat ${s.cat}"></span>
       <div class="s-text">
-        <div class="s-label">${esc(s.label)}</div>
+        <div class="s-label">${esc(s.label)}${s.locked ? ' · 필수' : ''}</div>
         <div class="s-snip">${esc(trunc(s.original, 90))}</div>
       </div>
       <label class="switch">
-        <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'}>
+        <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'} ${s.locked ? 'disabled' : ''}>
         <span class="track"><span class="thumb"></span></span>
       </label>
     </div>`).join('');
@@ -489,11 +500,12 @@ function groupElOf(dtype) {
 }
 
 function syncMark(key) {
-  const masked = !state.unmasked.has(key);
+  const segment = allItemSegments().find(s => s.key === key);
+  const masked = !!segment?.locked || !state.unmasked.has(key);
   el.diff.querySelectorAll(`.mark[data-key="${CSS.escape(key)}"]`).forEach(m => {
     m.classList.toggle('kept', !masked);
     m.setAttribute('aria-pressed', String(masked));
-    m.title = tipFor(m.dataset.label || '', masked);
+    m.title = tipFor(m.dataset.label || '', masked, !!segment?.locked);
   });
 }
 
@@ -519,6 +531,7 @@ function groupOfKey(key) {
 
 /** 항목 하나의 마스킹 여부를 바꾸고, 문서·목록·요약을 모두 맞춘다. */
 function setMasked(key, masked) {
+  if (allItemSegments().some(s => s.key === key && s.locked)) return;
   if (masked) state.unmasked.delete(key); else state.unmasked.add(key);
   syncMark(key);
   syncItemRow(key);
@@ -533,6 +546,7 @@ function setGroupMasked(dtype, masked) {
   const g = state.groups.find(x => x.dtype === dtype);
   if (!g) return;
   for (const s of g.segs) {
+    if (s.locked) continue;
     if (masked) state.unmasked.delete(s.key); else state.unmasked.add(s.key);
     syncMark(s.key);
     syncItemRow(s.key);
@@ -607,19 +621,22 @@ el.items.addEventListener('keydown', (e) => {
 function refreshCounts() {
   const pii = state.result?.stats?.piiCount ?? 0;
   const inj = state.result?.stats?.injectionCount ?? 0;
-  el.counts.textContent = `PII ${pii}건 | INJECTION ${inj}건 탐지`;
+  const forced = (state.result?.stats?.forcedMaskCount ?? state.result?.forcedMaskItems?.length ?? 0)
+    + (state.result?.userPromptForcedMaskItems?.length ?? 0);
+  el.counts.textContent = `PII ${pii}건 | INJECTION ${inj}건`
+    + (forced ? ` | 필수 ${forced}건` : ' 탐지');
 }
 
 /** 배치 전체 기준 요약. 활성 탭만 세면 안 된다 — 아래 주석 참고. */
 function multiSummary() {
-  const counted = (c) => (c ? (c.pii || 0) + (c.injection || 0) : 0);
+  const counted = (c) => (c ? (c.pii || 0) + (c.injection || 0) + (c.forced || 0) : 0);
   const total = state.docs.reduce((n, d) => n + counted(d.counts), 0)
     + counted(state.promptMeta?.counts);
   const excluded = state.docs.filter(d => (
     state.decisions.get(d.id) === 'exclude'
     || (!state.decisions.has(d.id) && d.status !== 'done' && d.status !== 'truncated')
   )).length;
-  return { total, maskCount: total - state.unmasked.size, sending: state.docs.length - excluded, excluded };
+  return { total, maskCount: Math.max(0, total - state.unmasked.size), sending: state.docs.length - excluded, excluded };
 }
 
 function refreshSummary() {
@@ -636,7 +653,7 @@ function refreshSummary() {
   }
 
   const total = allItemSegments().length;
-  const maskCount = total - state.unmasked.size;
+  const maskCount = allItemSegments().filter(s => s.locked || !state.unmasked.has(s.key)).length;
   if (maskCount > 0) {
     el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송`;
     el.maskSummary.classList.remove('clear');
@@ -720,23 +737,34 @@ function renderResult(kind, result, meta) {
     // 예전엔 문서 세그먼트 길이를 숫자 offset 으로 밀어 겹침을 피했는데, 그러면
     // 문서 쪽 항목 수가 바뀔 때마다 프롬프트 항목 번호가 통째로 밀린다.
     // 접두사로 나누면 서로의 변화에 영향을 받지 않는다.
-    state.docSegments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
+    state.docSegments = buildSegments(
+      result.originalText || '', result.piiItems, result.injectionItems, 'doc', result.forcedMaskItems,
+    );
     state.promptSegments = buildSegments(
       result.userPromptOriginal || '', result.userPromptPiiItems, [], 'prompt',
+      result.userPromptForcedMaskItems,
     );
   } else if (meta?.fileName) {
     el.docName.textContent = meta.fileName;
     el.docType.textContent = meta.mimeType?.includes('pdf') ? 'PDF · 문서 검토' : '문서 검토';
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
+    state.segments = buildSegments(
+      result.originalText || '', result.piiItems, result.injectionItems, 'doc', result.forcedMaskItems,
+    );
   } else if (result.originalLength || result.stats?.originalLength) {
     el.docName.textContent = 'Campfire';
     el.docType.textContent = `프롬프트 (${result.stats?.originalLength ?? 0}자)`;
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
+    state.segments = buildSegments(
+      result.originalText || '', result.piiItems, result.injectionItems, 'doc', result.forcedMaskItems,
+    );
   } else {
     el.docName.textContent = 'Campfire';
     el.docType.textContent = '프롬프트 검토';
-    state.segments = buildSegments(result.originalText || '', result.piiItems, result.injectionItems, 'doc');
+    state.segments = buildSegments(
+      result.originalText || '', result.piiItems, result.injectionItems, 'doc', result.forcedMaskItems,
+    );
   }
+
+  for (const seg of allItemSegments()) if (seg.locked) state.unmasked.delete(seg.key);
 
   renderDiff();
   renderItems();
@@ -873,7 +901,8 @@ el.btnSend.addEventListener('click', async () => {
 
   if (state.kind === 'combined') {
     const docItems = state.docSegments.filter(s => s.type === 'item');
-    const docUnmaskedCount = docItems.filter(s => state.unmasked.has(s.key)).length;
+    const docUnmaskedCount = docItems.filter(s => !s.locked && state.unmasked.has(s.key)).length;
+    const docHasLocked = docItems.some(s => s.locked);
     const finalPromptText = buildFinalText(state.promptSegments, state.unmasked);
 
     let file;
@@ -883,7 +912,7 @@ el.btnSend.addEventListener('click', async () => {
       // 문서 쪽 토글 변경이 전혀 없고(모두 마스킹 유지) 엔진이 만든 완전 마스킹본이 있으면 그대로 사용
       const mf = state.result.maskedFile;
       file = { action: 'upload', maskedBase64: mf.base64, mimeType: mf.mimeType, fileName: mf.fileName };
-    } else if (docUnmaskedCount === docItems.length) {
+    } else if (!docHasLocked && docUnmaskedCount === docItems.length) {
       // 문서 쪽 항목을 전부 마스킹 해제(원본 그대로) 했으면 파일도 원본 그대로 전달
       file = { action: 'passthrough' };
     } else {
@@ -901,7 +930,7 @@ el.btnSend.addEventListener('click', async () => {
   }
 
   const total = allItemSegments().length;
-  const maskCount = total - state.unmasked.size;
+  const maskCount = allItemSegments().filter(s => s.locked || !state.unmasked.has(s.key)).length;
 
   if (state.kind === 'prompt') {
     if (maskCount <= 0) { sendDecision({ action: 'passthrough' }); return; }
@@ -913,7 +942,7 @@ el.btnSend.addEventListener('click', async () => {
   if (maskCount <= 0) { sendDecision({ action: 'passthrough' }); return; }
 
   // 토글 변경이 없고 엔진이 만든 완전 마스킹본이 있으면 그대로 사용
-  if (state.unmasked.size === 0 && state.result.maskedFile) {
+  if (allItemSegments().every(s => !state.unmasked.has(s.key)) && state.result.maskedFile) {
     const mf = state.result.maskedFile;
     sendDecision({ action: 'upload', maskedBase64: mf.base64, mimeType: mf.mimeType, fileName: mf.fileName });
     return;

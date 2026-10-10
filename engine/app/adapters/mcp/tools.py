@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from app import config
 from app.core import activity as activity_bus
 from app.core.detectors import registry
+from app.core import forced_mask
 from app.core.masker import masker
 from app.core.pipeline.orchestrator import run_pipeline
 from app.store import db
@@ -154,6 +155,17 @@ def _redact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in item.items() if k != "text"} for item in items]
 
 
+def _shown(value: Any) -> str:
+    """경로·파일명에 든 사용자 지정 단어를 가린 문자열.
+
+    파일 내용만 마스킹하면 "Aurora_계획.pdf" 같은 이름으로 등록어가 AI 에게 그대로 간다.
+    가린 경로로는 다시 열 수 없다 — 등록어를 내보내지 않는 쪽을 택했다.
+    """
+    text = str(value)
+    items = forced_mask.registry.snapshot().find(text)
+    return masker.apply_masking(text, items)["masked_text"] if items else text
+
+
 def _public(result: dict[str, Any]) -> dict[str, Any]:
     """MCP 응답용 뷰. 파이프라인 결과에 요약 플래그를 덧붙인다.
 
@@ -166,19 +178,27 @@ def _public(result: dict[str, Any]) -> dict[str, Any]:
     """
     pii = result.get("piiItems", [])
     inj = result.get("injectionItems", [])
-    detection_count = len(pii) + len(inj)
+    forced = result.get("forcedMaskItems", [])
+    detection_count = len(pii) + len(inj) + len(forced)
+    blocked = bool(result.get("blocked", False))
     return {
-        "maskedText": result.get("maskedText", ""),
+        # 차단 결과는 파싱 불가/부분 검사일 수 있다. 그때 maskedText 가 원문 또는
+        # 일부 원문이면 MCP 소비자(AI)에게 그대로 새므로 내용 자체를 비운다.
+        "maskedText": "" if blocked else result.get("maskedText", ""),
         "piiItems": _redact_items(pii),
         "injectionItems": _redact_items(inj),
+        "forcedMaskItems": _redact_items(forced),
         "stats": result.get("stats", {}),
         "scanStatus": result.get("scanStatus", "ok"),
         "reason": result.get("reason"),
-        "blocked": result.get("blocked", False),
+        "blocked": blocked,
         "hasPii": len(pii) > 0,
         "hasInjection": len(inj) > 0,
+        "hasForcedMask": len(forced) > 0,
         "detectionCount": detection_count,
-        "recommendedAction": "mask_before_upload" if detection_count else "allow",
+        "recommendedAction": "block" if blocked else (
+            "mask_before_upload" if detection_count else "allow"
+        ),
         "policy": result.get("policy", {"injection": config.INJECTION_POLICY}),
     }
 
@@ -284,7 +304,7 @@ async def scan_file(file_path: str, mime_type: str = "", user_prompt: str = "") 
     file_bytes = path.read_bytes()
     result = await _scan_bytes(file_bytes, mime_type, path.name, user_prompt=user_prompt)
     out = _public(result)
-    out["path"] = str(path)
+    out["path"] = _shown(path)
     return out
 
 
@@ -308,34 +328,41 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
         if not path.is_file():
             continue
         if _file_kind(path) == "binary":
-            skipped.append({"path": str(path), "reason": "unsupported-binary"})
+            skipped.append({"path": _shown(path), "reason": "unsupported-binary"})
             continue
         try:
             scanned = await scan_file(str(path))
             items.append(
                 {
-                    "path": str(path),
+                    "path": _shown(path),
                     "detectionCount": scanned["detectionCount"],
                     "piiCount": scanned["stats"].get("piiCount", 0),
                     "injectionCount": scanned["stats"].get("injectionCount", 0),
+                    "forcedMaskCount": scanned["stats"].get("forcedMaskCount", 0),
                     "hasPii": scanned["hasPii"],
                     "hasInjection": scanned["hasInjection"],
+                    "hasForcedMask": scanned["hasForcedMask"],
+                    "blocked": scanned["blocked"],
+                    "reason": scanned["reason"],
                     "scanStatus": scanned["scanStatus"],
                     "recommendedAction": scanned["recommendedAction"],
                     "maskedText": scanned["maskedText"],
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 사이트별 독립 에러 처리(PLAN §11)
-            skipped.append({"path": str(path), "reason": str(exc)})
+            skipped.append({"path": _shown(path), "reason": str(exc)})
 
     total = sum(it["detectionCount"] for it in items)
+    any_blocked = any(it["blocked"] for it in items)
     return {
         "root": str(root_path),
         "pattern": pattern,
         "fileCount": len(items),
         "skippedCount": len(skipped),
         "detectionCount": total,
-        "recommendedAction": "mask_before_upload" if total else "allow",
+        "recommendedAction": "block" if any_blocked else (
+            "mask_before_upload" if total else "allow"
+        ),
         "items": items,
         "skipped": skipped,
     }
@@ -354,8 +381,18 @@ async def mask_text(
     PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다. 반환: {maskedText, applied}.
     """
     items = list(pii_items) + list(injection_items or [])
+    snapshot = forced_mask.registry.snapshot()
+    if not snapshot.ready:
+        raise RuntimeError("강제 마스킹 규칙을 아직 불러오지 못했습니다")
+    forced_items = snapshot.find(text)
+    items += forced_items
     out = masker.apply_masking(text, items)
-    return {"maskedText": out["masked_text"], "applied": out["applied"]}
+    return {
+        "maskedText": out["masked_text"],
+        "applied": out["applied"],
+        "forcedMaskItems": _redact_items(forced_items),
+        "forcedMaskCount": len(forced_items),
+    }
 
 
 # ── 도구 5: secure_read_file (§4.2 게이트) ────────────────────────────────────
@@ -376,7 +413,7 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
     kind = _file_kind(path)
     if kind == "binary":
         return {
-            "path": str(path),
+            "path": _shown(path),
             "decision": "blocked",
             "reason": "바이너리 파일은 보안 게이트에서 원본을 반환하지 않습니다.",
             "content": "",
@@ -390,16 +427,19 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
 
     result = await _scan_bytes(path.read_bytes(), mime, path.name, user_prompt=user_prompt)
     pub = _public(result)
-    decision = "masked" if (pub["hasPii"] or pub["hasInjection"]) else "clean"
+    decision = "blocked" if pub["blocked"] else (
+        "masked" if (pub["hasPii"] or pub["hasInjection"] or pub["hasForcedMask"]) else "clean"
+    )
     return {
-        "path": str(path),
+        "path": _shown(path),
         "decision": decision,
-        "content": pub["maskedText"],
+        "content": "" if pub["blocked"] else pub["maskedText"],
         "scanStatus": pub["scanStatus"],
         "reason": pub["reason"],
         "stats": pub["stats"],
         "piiItems": pub["piiItems"],
         "injectionItems": pub["injectionItems"],
+        "forcedMaskItems": pub["forcedMaskItems"],
         "policy": pub["policy"],
     }
 
@@ -417,7 +457,7 @@ async def secure_list_files(root: str = ".", pattern: str = "*", max_results: in
         if len(files) >= max_results:
             break
         if path.is_file():
-            files.append({"path": str(path), "name": path.name, "kind": _file_kind(path)})
+            files.append({"path": _shown(path), "name": _shown(path.name), "kind": _file_kind(path)})
     return {"root": str(root_path), "count": len(files), "files": files}
 
 
@@ -430,6 +470,10 @@ async def secure_search_files(
 
     검색 결과 스니펫도 원본이 새어나가지 않도록 core 마스커를 통과시킨다(PLAN §4.2).
     """
+    # 검색어에 등록어가 들어 있으면 거절한다. 원문 줄에서 찾으므로, 결과 유무만으로
+    # "그 단어가 어느 파일에 있는가" 를 캐물을 수 있다(스니펫은 가려도 위치가 샌다).
+    if forced_mask.registry.snapshot().find(query):
+        raise ValueError("사용자 지정 마스킹 단어는 검색어로 쓸 수 없습니다")
     root_path = _resolve(root)
     if not root_path.is_dir():
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
@@ -455,7 +499,13 @@ async def secure_search_files(
                 # 처리 중인가" 로 보여줄 단위가 아니다.
                 line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
                 results.append(
-                    {"path": str(path), "line": line_no, "lineText": line_res["maskedText"]}
+                    {
+                        "path": _shown(path),
+                        "line": line_no,
+                        "lineText": "" if line_res.get("blocked") else line_res["maskedText"],
+                        "blocked": bool(line_res.get("blocked")),
+                        "reason": line_res.get("reason") if line_res.get("blocked") else None,
+                    }
                 )
                 if len(results) >= max_results:
                     break
@@ -481,7 +531,10 @@ async def get_status() -> dict[str, Any]:
         "port": config.BOUND_PORT,
         "transport": "streamable-http",
         "detectors": registry.active_detectors(),
-        "policy": {"injection": config.INJECTION_POLICY},
+        "policy": {
+            "injection": config.INJECTION_POLICY,
+            "forcedMask": forced_mask.registry.status(),
+        },
         "supportedExtensions": sorted(config.SUPPORTED_EXTENSIONS),
         "unsupportedExtensions": sorted(config.UNSUPPORTED_EXTENSIONS),
         "stats": stats,

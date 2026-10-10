@@ -10,9 +10,11 @@ MCP 의 소비자는 사람이 아니라 AI 다. 원문(originalText)이나 항�
 원문을 그대로 유지한다 — 이 제약은 MCP 경로에만 해당한다.)
 """
 
+import asyncio
 import json
 
 from app.adapters.mcp import tools
+from app.core import forced_mask
 from app.core.masker import masker
 
 _RAW_ID = "900312-1047815"
@@ -72,3 +74,34 @@ def test_out_of_range_redacted_item_is_dropped():
     """좌표를 신뢰하되, 범위를 벗어난 항목까지 받아들이면 안 된다."""
     out = masker.apply_masking("짧은 텍스트", [{"type": "ID_NUMBER", "start": 100, "end": 200}])
     assert out["applied"] == []
+
+
+def test_mask_text_cannot_bypass_forced_terms():
+    forced_mask.registry.configure(["Project Aurora"])
+    out = asyncio.run(tools.mask_text("send Project Aurora", [], []))
+    assert out["maskedText"] == "send [사용자 지정 마스킹]"
+    assert out["forcedMaskCount"] == 1
+    assert out["forcedMaskItems"][0]["mandatory"] is True
+
+
+def test_blocked_public_result_never_returns_uninspected_text():
+    result = {
+        "originalText": "uninspected secret",
+        "maskedText": "uninspected secret",
+        "piiItems": [], "injectionItems": [], "forcedMaskItems": [],
+        "blocked": True, "scanStatus": "unsupported", "reason": "parse failed",
+    }
+    pub = tools._public(result)
+    assert pub["maskedText"] == ""
+    assert pub["recommendedAction"] == "block"
+
+
+def test_paths_and_search_queries_do_not_carry_forced_terms():
+    import pytest
+    forced_mask.registry.configure(["Aurora"])
+    shown = tools._shown("C:/docs/Aurora_plan.pdf")
+    assert "Aurora" not in shown and shown.endswith("_plan.pdf")
+    assert tools._shown("C:/docs/plain.pdf") == "C:/docs/plain.pdf"
+    # 검색 결과 유무로 등록어가 어느 파일에 있는지 캐물을 수 없어야 한다.
+    with pytest.raises(ValueError):
+        asyncio.run(tools.secure_search_files(".", "aurora"))

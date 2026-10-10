@@ -15,7 +15,10 @@ REST 어댑터 (PLAN §2). 기존 EC2 API 계약 호환:
 
 from fastapi import APIRouter
 
-from . import activity, decisions, events, health, jobs, mcp_risk_scanner, models, proxy_control
+from . import (
+    activity, decisions, events, forced_mask_rules, health, jobs,
+    mcp_risk_scanner, models, proxy_control,
+)
 
 router = APIRouter()
 router.include_router(health.router)
@@ -26,3 +29,4 @@ router.include_router(activity.router)
 router.include_router(mcp_risk_scanner.router)
 router.include_router(decisions.router)
 router.include_router(proxy_control.router)
+router.include_router(forced_mask_rules.router)

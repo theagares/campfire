@@ -254,6 +254,20 @@
           </div>
         </div>
 
+        <div class="field">
+          <label for="forced-mask-input">강제 마스킹 단어</label>
+          <div class="hint">여기에 등록한 단어나 문구는 탐지 결과와 관계없이 항상 마스킹됩니다. 줄바꿈으로 여러 항목을 한 번에 붙여넣을 수 있습니다.</div>
+          <div class="forced-mask-entry">
+            <input type="text" id="forced-mask-input" maxlength="200" placeholder="단어 또는 문구 입력" autocomplete="off" />
+            <button type="button" class="btn ghost" id="forced-mask-add">추가</button>
+          </div>
+          <div id="forced-mask-list" class="forced-mask-list" aria-live="polite"></div>
+          <div class="forced-mask-foot">
+            <span class="hint" id="forced-mask-count">0/500개</span>
+            <span class="field-error" id="forced-mask-error" role="alert"></span>
+          </div>
+        </div>
+
         <!-- 원격 URL (앱에만 존재, PLAN §3) -->
         <div class="field">
           <label for="remote-url">원격 엔진 URL</label>

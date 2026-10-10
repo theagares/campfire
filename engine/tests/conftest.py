@@ -43,4 +43,6 @@ def _reset_detector_cache():
     """
     yield
     from app.core.detectors import registry
+    from app.core import forced_mask
     registry.reset_cache()
+    forced_mask.registry.reset(managed=False)

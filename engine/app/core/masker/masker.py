@@ -26,6 +26,7 @@ TYPE_LABELS: dict[str, str] = {
     "ORGANIZATION": "기관명",
     "BANK_ACCOUNT": "계좌번호",
     "CREDENTIAL": "자격증명",
+    "USER_DEFINED_TERM": "사용자 지정",
     "OTHER_PII": "개인정보",
 }
 
@@ -117,12 +118,20 @@ def merge_overlapping(items: list[Item]) -> list[Item]:
     for cur in ordered[1:]:
         last = merged[-1]
         if cur["start"] < last["end"]:
+            mandatory = bool(last.get("mandatory") or cur.get("mandatory"))
             # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택
             cur_score = (cur.get("confidence", 0.0), cur["end"] - cur["start"])
             last_score = (last.get("confidence", 0.0), last["end"] - last["start"])
             if cur_score > last_score:
                 last["type"] = cur["type"]
                 last["confidence"] = cur.get("confidence", last.get("confidence", 0.0))
+                last["source"] = cur.get("source", last.get("source"))
+            # 강제 단어와 다른 탐지가 겹쳐도 사용자가 풀 수 없는 속성을 잃으면 안 된다.
+            # 자리표시자도 일반 PII가 아니라 강제 정책임을 분명히 보여준다.
+            if mandatory:
+                last["mandatory"] = True
+                last["type"] = "USER_DEFINED_TERM"
+                last["source"] = "user_dictionary"
             new_end = max(last["end"], cur["end"])
             last["end"] = new_end
             last["text"] = None  # 병합 후 대표 text 는 apply 시 재산출

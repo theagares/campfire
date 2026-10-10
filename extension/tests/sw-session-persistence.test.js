@@ -190,5 +190,44 @@ const pendingState = () => ({
     );
   }
 
+  // ── 강제 마스킹: 패널이 보낸 최종본을 그대로 믿지 않는다 ─────────────────────
+  //     action 은 'masked' 인데 원문을 실어 보내는 결정(낡은 패널 코드 등)이 모양 검사만
+  //     통과해 그대로 나갔다. 파일명에 등록어가 있으면 나가는 이름도 바꾼다.
+  {
+    const forcedState = (session) => ({
+      [SESSION_KEY]: { sessions: { F1: session }, activeSessionId: 'F1', sessionSeq: 4 },
+    });
+    const promptSession = {
+      tabId: 7, kind: 'prompt', status: 'ready', progress: [], error: null, meta: {}, seq: 4,
+      result: {
+        originalText: '🔥 share Project Aurora now',
+        forcedMaskItems: [{ start: 8, end: 22, type: 'USER_DEFINED_TERM', mandatory: true }],
+      },
+    };
+    let w = bootWorker(forcedState(promptSession));
+    const leaked = await w.send({ type: 'PANEL_DECISION', sessionId: 'F1', tabId: 7,
+      decision: { action: 'masked', maskedText: '🔥 share Project Aurora now' } }, {});
+    assert.strictEqual(leaked?.reason, 'mandatory-mask', '강제 항목 원문이 실린 결정을 그대로 중계했다');
+    w = bootWorker(forcedState(promptSession));
+    const ok = await w.send({ type: 'PANEL_DECISION', sessionId: 'F1', tabId: 7,
+      decision: { action: 'masked', maskedText: '🔥 share [사용자 지정 마스킹] now' } }, {});
+    assert.strictEqual(ok?.ok, true, '제대로 가린 결정을 막았다');
+
+    const fileSession = {
+      tabId: 7, kind: 'file', status: 'ready', progress: [], error: null, meta: {}, seq: 4,
+      result: { originalText: 'plain', forcedMaskItems: [], piiItems: [{ start: 0, end: 5, type: 'OTHER_PII' }],
+                policy: { forcedMask: { fileNameForced: true } } },
+    };
+    w = bootWorker(forcedState(fileSession));
+    const pass = await w.send({ type: 'PANEL_DECISION', sessionId: 'F1', tabId: 7,
+      decision: { action: 'passthrough' } }, {});
+    assert.strictEqual(pass?.reason, 'mandatory-mask', '이름에 등록어가 있는데 원본(원래 이름) 전송을 받아들였다');
+    w = bootWorker(forcedState(fileSession));
+    await w.send({ type: 'PANEL_DECISION', sessionId: 'F1', tabId: 7,
+      decision: { action: 'upload', maskedBase64: 'eA==', fileName: 'Aurora_plan_masked.md' } }, {});
+    const routed = w.tabsSent.find(t => t.msg?.type === 'PANEL_DECISION');
+    assert.strictEqual(routed?.msg.decision.fileName, 'document_masked.md', '나가는 파일 이름에 등록어가 남았다');
+  }
+
   console.log('sw-session-persistence ok');
 })().catch((e) => { console.error(e); process.exit(1); });

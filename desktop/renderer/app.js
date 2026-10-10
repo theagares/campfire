@@ -712,6 +712,122 @@ function renderPipeline() {
 // ── 설정 모달 (PLAN §8) ───────────────────────────────────────────────────────
 const modal = $('#settings-modal');
 let draftPolicy = 'mask';
+let draftForcedTerms = [];
+let forcedMaskLimits = { maxTerms: 500, maxTermChars: 200, maxTotalChars: 50000 };
+let forcedMaskLoaded = false;
+let forcedMaskUnreadable = false; // 저장된 단어를 못 읽었다 — 빈 목록으로 덮어쓰지 않는다
+
+function forcedMaskKey(term) {
+  return term.normalize('NFD').toLowerCase();
+}
+
+function setForcedMaskError(message = '') {
+  $('#forced-mask-error').textContent = message;
+}
+
+function renderForcedMaskTerms() {
+  const list = $('#forced-mask-list');
+  list.replaceChildren();
+  draftForcedTerms.forEach((term, index) => {
+    const chip = document.createElement('span');
+    chip.className = 'forced-mask-chip';
+    const text = document.createElement('span');
+    text.className = 'forced-mask-chip-text';
+    text.textContent = term;
+    text.title = term;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'forced-mask-remove';
+    remove.textContent = '×';
+    remove.title = `${term} 삭제`;
+    remove.setAttribute('aria-label', `${term} 삭제`);
+    remove.addEventListener('click', () => {
+      draftForcedTerms.splice(index, 1);
+      setForcedMaskError();
+      renderForcedMaskTerms();
+    });
+    chip.append(text, remove);
+    list.append(chip);
+  });
+  const total = draftForcedTerms.reduce((sum, term) => sum + [...term].length, 0);
+  $('#forced-mask-count').textContent = `${draftForcedTerms.length}/${forcedMaskLimits.maxTerms}개 · ${total.toLocaleString()}/${forcedMaskLimits.maxTotalChars.toLocaleString()}자`;
+}
+
+function addForcedMaskTerms(values) {
+  if (!forcedMaskLoaded) {
+    setForcedMaskError('단어 목록을 먼저 불러와야 합니다.');
+    return false;
+  }
+  const next = [...draftForcedTerms];
+  const existing = new Set(next.map(forcedMaskKey));
+  let total = next.reduce((sum, term) => sum + [...term].length, 0);
+  for (const raw of values) {
+    const term = String(raw ?? '').trim().normalize('NFC');
+    if (!term) continue;
+    if (/\r|\n|\0/.test(term)) {
+      setForcedMaskError('각 항목에는 줄바꿈이나 NUL 문자를 넣을 수 없습니다.');
+      return false;
+    }
+    const length = [...term].length;
+    if (length > forcedMaskLimits.maxTermChars) {
+      setForcedMaskError(`항목 하나는 ${forcedMaskLimits.maxTermChars}자 이하여야 합니다.`);
+      return false;
+    }
+    const key = forcedMaskKey(term);
+    if (existing.has(key)) continue;
+    if (next.length >= forcedMaskLimits.maxTerms) {
+      setForcedMaskError(`최대 ${forcedMaskLimits.maxTerms}개까지 등록할 수 있습니다.`);
+      return false;
+    }
+    if (total + length > forcedMaskLimits.maxTotalChars) {
+      setForcedMaskError(`전체 길이는 ${forcedMaskLimits.maxTotalChars.toLocaleString()}자를 넘을 수 없습니다.`);
+      return false;
+    }
+    next.push(term);
+    existing.add(key);
+    total += length;
+  }
+  draftForcedTerms = next;
+  setForcedMaskError();
+  renderForcedMaskTerms();
+  return true;
+}
+
+function addForcedMaskInput() {
+  const input = $('#forced-mask-input');
+  if (addForcedMaskTerms([input.value])) input.value = '';
+  input.focus();
+}
+
+async function loadForcedMaskTerms() {
+  forcedMaskLoaded = false;
+  $('#forced-mask-input').disabled = true;
+  $('#forced-mask-add').disabled = true;
+  draftForcedTerms = [];
+  renderForcedMaskTerms();
+  setForcedMaskError('불러오는 중…');
+  try {
+    if (!api.getForcedMaskTerms) throw new Error('현재 앱 버전에서 지원하지 않습니다.');
+    const data = await api.getForcedMaskTerms();
+    draftForcedTerms = Array.isArray(data?.terms) ? [...data.terms] : [];
+    forcedMaskLimits = { ...forcedMaskLimits, ...(data?.limits || {}) };
+    forcedMaskLoaded = true;
+    forcedMaskUnreadable = false;
+    $('#forced-mask-input').disabled = false;
+    $('#forced-mask-add').disabled = false;
+    setForcedMaskError();
+    renderForcedMaskTerms();
+  } catch (err) {
+    // 저장된 단어를 못 읽어도(키체인 변경·파일 손상) 막다른 길로 두지 않는다. 그동안 엔진은
+    // 규칙을 못 받아 검사를 막고(fail-closed) 있고, 다른 설정 저장까지 같이 막혔었다.
+    // 지금 목록으로 저장하면 새로 덮어써 복구된다 — 이전 단어는 되살릴 수 없다고 알린다.
+    forcedMaskLoaded = true;
+    forcedMaskUnreadable = true;
+    $('#forced-mask-input').disabled = false;
+    $('#forced-mask-add').disabled = false;
+    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 그동안 검사는 막혀 있습니다. 단어를 하나 이상 다시 입력해 저장하면 새 목록으로 복구됩니다 — 이전 단어는 되살릴 수 없습니다.`);
+  }
+}
 
 function openSettings() {
   const s = state.settings || {};
@@ -723,6 +839,7 @@ function openSettings() {
   $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
+  loadForcedMaskTerms();
   refreshCleanup();
 }
 function closeSettings() { modal.classList.remove('open'); }
@@ -736,6 +853,20 @@ $$('#policy-seg button').forEach((b) =>
     $$('#policy-seg button').forEach((x) => x.classList.toggle('active', x === b));
   })
 );
+$('#forced-mask-add').addEventListener('click', addForcedMaskInput);
+$('#forced-mask-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addForcedMaskInput();
+  }
+});
+$('#forced-mask-input').addEventListener('paste', (event) => {
+  const text = event.clipboardData?.getData('text') || '';
+  if (!/[\r\n]/.test(text)) return;
+  event.preventDefault();
+  const input = $('#forced-mask-input');
+  if (addForcedMaskTerms(text.split(/\r\n?|\n/))) input.value = '';
+});
 
 // ── 데이터 삭제 ──────────────────────────────────────────────────────────────
 //
@@ -842,6 +973,15 @@ api.onModelsFetchProgress?.((ev) => {
 });
 
 $('#settings-save').addEventListener('click', async () => {
+  if (!forcedMaskLoaded) {
+    setForcedMaskError('단어 목록을 불러오지 못해 저장할 수 없습니다.');
+    return;
+  }
+  const saveButton = $('#settings-save');
+  const previousLabel = saveButton.textContent;
+  saveButton.disabled = true;
+  saveButton.textContent = '저장 중…';
+  setForcedMaskError();
   const remoteUrl = $('#remote-url').value.trim() || undefined;
   const patch = { injectionPolicy: draftPolicy };
   if (remoteUrl) patch.remoteUrl = remoteUrl;
@@ -852,10 +992,25 @@ $('#settings-save').addEventListener('click', async () => {
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.
-  state.settings = await api.setSettings(patch);
-  setDetectorProgress(null);
-  closeSettings();
-  // 정책 변경 시 엔진 재시작이 트리거됨 → 상태는 push 로 갱신됨
+  try {
+    if (!api.replaceForcedMaskTerms) throw new Error('현재 앱 버전에서 강제 마스킹을 지원하지 않습니다.');
+    // 못 읽은 상태에서 빈 목록으로 저장하면 보호가 조용히 꺼진다(다른 설정만 바꿔도) — 그때는
+    // 단어 저장을 건너뛰고 막힌 상태를 유지한다. 복구는 단어를 다시 넣어 저장할 때만.
+    if (!(forcedMaskUnreadable && draftForcedTerms.length === 0)) {
+      const saved = await api.replaceForcedMaskTerms(draftForcedTerms);
+      draftForcedTerms = Array.isArray(saved?.terms) ? [...saved.terms] : draftForcedTerms;
+      forcedMaskUnreadable = false;
+    }
+    state.settings = await api.setSettings(patch);
+    setDetectorProgress(null);
+    closeSettings();
+    // 정책 변경 시 엔진 재시작이 트리거됨 → 강제 마스킹 규칙도 시작 직후 다시 동기화된다.
+  } catch (err) {
+    setForcedMaskError(`저장하지 못했습니다: ${err.message}`);
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = previousLabel;
+  }
 });
 
 // ── 사이드바 접기 토글 (Figma 30:487 상단 버튼 — 인터랙션 미확정, 시각 요소만 반영) ──

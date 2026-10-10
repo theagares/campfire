@@ -31,6 +31,51 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_정상검사_탐지0건은_사람판단없이_즉시_원본통과(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+
+    async def clean(**_kwargs):
+        return {
+            "originalText": "hello", "maskedText": "hello",
+            "piiItems": [], "injectionItems": [], "forcedMaskItems": [], "blocked": False,
+            "scanStatus": "ok", "truncated": False,
+            "stats": {"piiCount": 0, "injectionCount": 0, "forcedMaskCount": 0},
+        }
+
+    async def must_not_wait(**_kwargs):
+        raise AssertionError("탐지 0건인데 사람 판단을 기다렸다")
+
+    monkeypatch.setattr(orch, "run_pipeline", clean)
+    monkeypatch.setattr(addon_mod.broker, "wait", must_not_wait)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"hello", file_name="clean.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert got is _ORIGINAL
+
+
+def test_사용자지정_마스킹은_원본판단으로_우회할수없다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+
+    async def forced(**_kwargs):
+        return {
+            "originalText": "secret", "maskedText": "[사용자 지정 마스킹]",
+            "piiItems": [], "injectionItems": [],
+            "forcedMaskItems": [{"start": 0, "end": 6, "type": "USER_DEFINED_TERM", "mandatory": True}],
+            "blocked": False, "scanStatus": "ok", "truncated": False,
+            "stats": {"piiCount": 0, "injectionCount": 0, "forcedMaskCount": 1},
+        }
+
+    async def choose_original(**_kwargs):
+        return "send_original"
+
+    monkeypatch.setattr(orch, "run_pipeline", forced)
+    monkeypatch.setattr(addon_mod.broker, "wait", choose_original)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"secret", file_name="secret.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert got == "[사용자 지정 마스킹]".encode()
+
+
 # ── Grok: 다룰 수 없는 형식은 통과가 아니라 차단 ────────────────────────────
 
 
@@ -372,3 +417,55 @@ def test_추적_목록은_무한히_자라지_않는다():
         )
         a.response(f)
     assert len(a._chatgpt) == addon_mod._MAX_TRACKED_UPLOADS
+
+
+def test_Claude_메시지도_사용자지정_마스킹은_원본판단으로_우회할수없다(monkeypatch):
+    from types import SimpleNamespace
+    import app.core.pipeline.orchestrator as orch
+
+    async def forced(**_kwargs):
+        return {
+            "originalText": "secret", "maskedText": "[사용자 지정 마스킹]",
+            "piiItems": [], "injectionItems": [],
+            "forcedMaskItems": [{"start": 0, "end": 6, "type": "USER_DEFINED_TERM", "mandatory": True}],
+            "blocked": False, "scanStatus": "ok", "truncated": False,
+        }
+
+    async def choose_original(**_kwargs):
+        return "send_original"
+
+    monkeypatch.setattr(orch, "run_pipeline", forced)
+    monkeypatch.setattr(addon_mod.broker, "wait", choose_original)
+    fld = SimpleNamespace(value=b"secret")
+    got = _run(CampfireAddon()._scan_texts_and_decide([fld], host="claude.ai"))
+    assert got == [(fld, "[사용자 지정 마스킹]".encode())]
+
+
+def test_파일명에_등록어가_있으면_깨끗해도_원본도_원래이름도_안나간다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    from app.core import forced_mask
+
+    forced_mask.registry.configure(["Aurora"])
+
+    async def clean(**_kwargs):
+        return {
+            "originalText": "hello", "maskedText": "hello",
+            "piiItems": [], "injectionItems": [], "forcedMaskItems": [], "blocked": False,
+            "scanStatus": "ok", "truncated": False,
+        }
+
+    asked = []
+
+    async def choose_original(**_kwargs):
+        asked.append(True)
+        return "send_original"
+
+    monkeypatch.setattr(orch, "run_pipeline", clean)
+    monkeypatch.setattr(addon_mod.broker, "wait", choose_original)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"hello", file_name="Aurora_plan.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert asked, "이름에 등록어가 있는데 깨끗하다고 바로 원본을 보냈다"
+    assert got == b"hello"
+    assert addon_mod.masked_name_for("Aurora_plan.pdf") == "document_masked.md"
+    assert addon_mod.masked_name_for("plain.pdf") == "plain_masked.md"
