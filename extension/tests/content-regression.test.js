@@ -428,11 +428,12 @@ const documentStub = {
   createRange: () => ({ node: null, selectNodeContents(n) { this.node = n; } }),
 };
 
+const storageListeners = [];
 const chromeStub = {
   tabs: { sendMessage: () => Promise.resolve(), create() {} },
   storage: {
     local: { get(defaults, cb) { cb({ ...defaults, protectionEnabled: true }); }, set(_v, cb) { cb?.(); } },
-    onChanged: { addListener() {} },
+    onChanged: { addListener(fn) { storageListeners.push(fn); } },
   },
   runtime: {
     lastError: null,
@@ -2708,6 +2709,29 @@ cancelScan(stuckScan);
   }
 
   delete sandbox.MutationObserver;
+
+  // (37) 사용자 지정 마스킹이 켜져 있으면 미지원 형식만 붙인 첨부도 그냥 보내지 않는다.
+  //      안을 볼 수 없으니 등록어가 들었는지도 모른다(프록시도 같은 이유로 막는다). 예전엔
+  //      "검사할 게 없다" 며 손을 떼 이미지·압축 파일이 그대로 사이트로 갔다.
+  {
+    await clock.tick(9000);
+    const attachPng = () => {
+      const f = new FileStub(['img'], 'shot.png', { type: 'image/png' });
+      const inp = new HTMLInputElementStub(f, 'png37');
+      let prevented = false;
+      dispatchDocumentEvent('change', {
+        target: inp, composedPath: () => [inp, documentStub],
+        preventDefault() { prevented = true; }, stopImmediatePropagation() {},
+      });
+      return prevented;
+    };
+    const setForced = (v) => storageListeners.forEach(l => l({ forcedMaskActive: { newValue: v } }, 'local'));
+    if (attachPng()) throw new Error('강제 마스킹이 꺼져 있는데 미지원 형식을 가로챘다 — 평소 이미지 첨부가 막힌다');
+    setForced(true);
+    const held = attachPng();
+    setForced(false);
+    if (!held) throw new Error('강제 마스킹이 켜져 있는데 미지원 형식(이미지)이 검토 없이 그대로 나갔다');
+  }
 
   console.log('content regression ok');
   process.exit(0);

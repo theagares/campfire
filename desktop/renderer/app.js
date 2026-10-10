@@ -715,6 +715,7 @@ let draftPolicy = 'mask';
 let draftForcedTerms = [];
 let forcedMaskLimits = { maxTerms: 500, maxTermChars: 200, maxTotalChars: 50000 };
 let forcedMaskLoaded = false;
+let forcedMaskUnreadable = false; // 저장된 단어를 못 읽었다 — 빈 목록으로 덮어쓰지 않는다
 
 function forcedMaskKey(term) {
   return term.normalize('NFD').toLowerCase();
@@ -811,6 +812,7 @@ async function loadForcedMaskTerms() {
     draftForcedTerms = Array.isArray(data?.terms) ? [...data.terms] : [];
     forcedMaskLimits = { ...forcedMaskLimits, ...(data?.limits || {}) };
     forcedMaskLoaded = true;
+    forcedMaskUnreadable = false;
     $('#forced-mask-input').disabled = false;
     $('#forced-mask-add').disabled = false;
     setForcedMaskError();
@@ -820,9 +822,10 @@ async function loadForcedMaskTerms() {
     // 규칙을 못 받아 검사를 막고(fail-closed) 있고, 다른 설정 저장까지 같이 막혔었다.
     // 지금 목록으로 저장하면 새로 덮어써 복구된다 — 이전 단어는 되살릴 수 없다고 알린다.
     forcedMaskLoaded = true;
+    forcedMaskUnreadable = true;
     $('#forced-mask-input').disabled = false;
     $('#forced-mask-add').disabled = false;
-    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 단어를 다시 입력해 저장하면 새 목록으로 저장됩니다 — 이전 단어는 복구할 수 없습니다.`);
+    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 그동안 검사는 막혀 있습니다. 단어를 하나 이상 다시 입력해 저장하면 새 목록으로 복구됩니다 — 이전 단어는 되살릴 수 없습니다.`);
   }
 }
 
@@ -991,8 +994,13 @@ $('#settings-save').addEventListener('click', async () => {
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.
   try {
     if (!api.replaceForcedMaskTerms) throw new Error('현재 앱 버전에서 강제 마스킹을 지원하지 않습니다.');
-    const saved = await api.replaceForcedMaskTerms(draftForcedTerms);
-    draftForcedTerms = Array.isArray(saved?.terms) ? [...saved.terms] : draftForcedTerms;
+    // 못 읽은 상태에서 빈 목록으로 저장하면 보호가 조용히 꺼진다(다른 설정만 바꿔도) — 그때는
+    // 단어 저장을 건너뛰고 막힌 상태를 유지한다. 복구는 단어를 다시 넣어 저장할 때만.
+    if (!(forcedMaskUnreadable && draftForcedTerms.length === 0)) {
+      const saved = await api.replaceForcedMaskTerms(draftForcedTerms);
+      draftForcedTerms = Array.isArray(saved?.terms) ? [...saved.terms] : draftForcedTerms;
+      forcedMaskUnreadable = false;
+    }
     state.settings = await api.setSettings(patch);
     setDetectorProgress(null);
     closeSettings();
