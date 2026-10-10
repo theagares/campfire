@@ -175,4 +175,18 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
   assert.strictEqual(buildFinalText(segs, [item.key]), '[사용자 지정 마스킹]');
 }
 
-console.log('mask-segments.test.js: 11개 블록 통과');
+// ── 12) 엔진 위치는 코드포인트다 — 이모지가 앞에 있어도 정확히 그 단어를 가린다 ──
+//     JS 는 UTF-16 이라 이모지 1개가 2칸이다. 바꾸지 않으면 그만큼 밀려 원문이 남는다
+//     (실측: '🔥🔥🔥 Project Aurora' → '🔥🔥[사용자 지정 마스킹]ora').
+{
+  const text = '🔥🔥🔥 Project Aurora 일정 010-1234-5678';
+  const forced = [{ start: 4, end: 18, type: 'USER_DEFINED_TERM', mandatory: true }];   // 파이썬 기준
+  const phone = [pii(22, 35, 'PHONE')];
+  const out = finalTextFrom(text, phone, [], 'p', [], forced);
+  assert.strictEqual(out, '🔥🔥🔥 [사용자 지정 마스킹] 일정 [전화번호 마스킹]');
+  // BMP 만 있는 문자열은 그대로 — 바꾸는 비용도 들지 않는다.
+  assert.strictEqual(finalTextFrom('Project Aurora', [], [], 'p', [], [{ start: 0, end: 7, type: 'USER_DEFINED_TERM' }]),
+    '[사용자 지정 마스킹] Aurora');
+}
+
+console.log('mask-segments.test.js: 12개 블록 통과');

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from typing import Any, Awaitable, Callable
 
 from app import config
@@ -237,7 +238,13 @@ async def run_pipeline(
         forced_snapshot.find(user_prompt or "") if forced_snapshot.ready and user_prompt else []
     )
     forced_complete = scan_status == STATUS_OK and not truncated
+    # 파일명에도 등록어가 있을 수 있다 — 내용을 가려도 "Aurora_계획_masked.md" 로 샌다.
+    # 단어는 내보내지 않고 사실만 알린다. 소비자는 원본 전송을 막고 일반 이름을 쓴다.
+    name_forced = bool(
+        forced_snapshot.ready and file_bytes is not None and forced_snapshot.find(file_name or "")
+    )
     forced_policy = {
+        "fileNameForced": name_forced,
         "managed": forced_snapshot.managed,
         "ready": forced_snapshot.ready,
         "active": forced_snapshot.active,
@@ -373,7 +380,8 @@ async def run_pipeline(
 
     masked_file = None
     if wrap_file and not blocked:
-        wrapped = docwrapper.wrap_masked_file(masked_text, file_name)
+        wrap_name = "document" + os.path.splitext(file_name)[1] if name_forced else file_name
+        wrapped = docwrapper.wrap_masked_file(masked_text, wrap_name)
         masked_file = {
             "base64": base64.b64encode(wrapped["bytes"]).decode("ascii"),
             "mimeType": wrapped["mime_type"],

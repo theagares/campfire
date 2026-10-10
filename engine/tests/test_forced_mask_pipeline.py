@@ -54,3 +54,17 @@ def test_desktop_managed_policy_fails_closed_before_sync():
     assert result["scanStatus"] == "policy_not_ready"
     assert result["blocked"] is True
     assert result["policy"]["forcedMask"]["ready"] is False
+
+
+def test_file_name_with_forced_term_is_flagged_and_not_reused(monkeypatch):
+    # 내용을 가려도 "Aurora_계획_masked.md" 처럼 이름으로 샌다 — 사실만 알리고 이름은 안 쓴다.
+    forced_mask.registry.configure(["Aurora"])
+    monkeypatch.setattr(model_status, "all_ready", lambda: False)
+    result = asyncio.run(run_pipeline(
+        file_bytes="plain body".encode(), mime_type="text/plain", file_name="Aurora_plan.txt"
+    ))
+    assert result["policy"]["forcedMask"]["fileNameForced"] is True
+    plain = asyncio.run(run_pipeline(
+        file_bytes="plain body".encode(), mime_type="text/plain", file_name="plain.txt"
+    ))
+    assert plain["policy"]["forcedMask"]["fileNameForced"] is False

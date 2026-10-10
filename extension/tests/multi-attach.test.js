@@ -499,5 +499,39 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await settle();
   }
 
-  console.log('multi-attach.test.js: 13개 블록 통과');
+  // ── 14) 미지원 문서도 강제 마스킹이 켜져 있으면(또는 알 수 없으면) "검사 없이 원본" 을 막는다 ──
+  //     미지원 문서는 엔진에 안 가서 문서별 표시가 켜지지 않았다 → 패널·SW 가드가 둘 다
+  //     통과시켜 .hwp 같은 파일이 원본으로 나갔다. 세션 시작 때 엔진 상태를 직접 묻는다.
+  {
+    // 하니스는 SW 의 import 를 걷어내므로 엔진 탐지에 쓰는 상수를 이 블록에서만 넣는다.
+    vm.runInContext("var isOurEngine = (s) => s === 'campfire'; var LOCAL_HOST = '127.0.0.1';"
+      + " var BASE_PORT = 48200; var PORT_SCAN_COUNT = 1; var HEALTH_TIMEOUT_MS = 500; var CACHE_KEY = 'srv';"
+      + " var AbortController = class { constructor() { this.signal = {}; } abort() {} };", ctx);
+    const unsupported = [{ id: 'f0', fileName: 'x.hwp', fileSize: 10, mimeType: 'application/x-hwp', supported: false }];
+    for (const [active, allowed] of [[true, false], [false, true], [null, false]]) {
+      sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(active === null ? {}
+        : { service: 'campfire', forcedMask: { managed: true, ready: true, active } }) });
+      delete sessionStore.srv;
+      panelMessages.length = 0;
+      tabMessages.length = 0;
+      const sid = `unsup-${active}`;
+      await send({ type: 'START_MULTI_SCAN', sessionId: sid, payload: { items: unsupported } });
+      await settle();
+      const init = panelOf('PANEL_SCAN_INIT').find(m => m.sessionId === sid);
+      assert.strictEqual(init.docs[0].forcedMaskActive, !allowed, `엔진 상태(${active})가 미지원 문서에 안 찍혔다`);
+      const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+      await send({ type: 'SCAN_MULTI_PROMPT', sessionId: sid, leaseId: lease, text: '요약해줘' });
+      await send({ type: 'FINISH_MULTI_SCAN', sessionId: sid, leaseId: lease });
+      await settle();
+      const res = await send({
+        type: 'PANEL_MULTI_DECISION', sessionId: sid,
+        decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'original' }] },
+      });
+      assert.strictEqual(res.ok, allowed, `강제 마스킹 상태 ${active} 인데 미지원 문서 원본 전송 판정이 틀렸다`);
+      await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: sid });
+      await settle();
+    }
+  }
+
+  console.log('multi-attach.test.js: 14개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -38,11 +38,22 @@ export const maskTokenFor = (label) => `[${label} 마스킹]`;
  */
 export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc', forcedMaskItems = []) {
   const src = typeof text === 'string' ? text : '';
+  // 엔진(파이썬)의 start/end 는 코드포인트 기준이고 JS 문자열은 UTF-16 이다. 이모지처럼
+  // BMP 밖 글자가 앞에 있으면 그 수만큼 밀려 엉뚱한 곳을 가리고 원문이 그대로 남았다
+  // ("🔥🔥🔥 Project Aurora" → "🔥🔥[마스킹]ora"). 여기 한 곳에서 바꾼다 — 패널 미리보기와
+  // SW 최종본이 모두 이 함수를 지난다.
+  let unit = null;
+  if (/[\uD800-\uDBFF]/.test(src)) {
+    unit = [0];
+    for (const ch of src) unit.push(unit[unit.length - 1] + ch.length);
+  }
+  const at = (cp) => (unit && Number.isInteger(cp) ? unit[Math.min(Math.max(cp, 0), unit.length - 1)] : cp);
   const detected = [
     ...(piiItems || []).map(i => ({ ...i, cat: 'pii' })),
     ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
     ...(forcedMaskItems || []).map(i => ({ ...i, cat: 'forced', mandatory: true })),
-  ].filter(i => Number.isInteger(i.start) && Number.isInteger(i.end) && i.start >= 0 && i.end > i.start)
+  ].map(i => ({ ...i, start: at(i.start), end: at(i.end) }))
+    .filter(i => Number.isInteger(i.start) && Number.isInteger(i.end) && i.start >= 0 && i.end > i.start)
     .sort((a, b) => a.start - b.start || Number(!!b.mandatory) - Number(!!a.mandatory) || b.end - a.end);
 
   // 겹친 탐지는 하나의 구간으로 합친다. 그중 하나라도 사용자 지정 규칙이면 합쳐진

@@ -82,6 +82,7 @@ async function discoverServer() {
     );
   }
   const { port, health } = hits[0];
+  noteForcedMask(health?.forcedMask?.active);
   const server = { target: 'local', baseUrl: `http://${LOCAL_HOST}:${port}`, port, health };
   await chrome.storage.session.set({ [CACHE_KEY]: server });
   return server;
@@ -171,7 +172,28 @@ async function errorDetail(res) {
   return `HTTP ${res.status}`;
 }
 
+/** 사용자 지정 마스킹이 켜져 있는지 콘텐츠 스크립트와 나눈다 — 미지원 형식만 붙인 첨부도
+ *  붙들지 정하는 데 쓴다(content.js stageBatch). 검사 결과·엔진 탐지 때마다 갱신한다. */
+function noteForcedMask(active) {
+  if (typeof active !== 'boolean') return;
+  chrome.storage.local.set({ forcedMaskActive: active }).catch(() => {});
+}
+
+/** 강제 항목의 원문(엔진 위치 = 코드포인트)이 나가는 텍스트에 남았는가. 자리표시자
+ *  "[… 마스킹]" 은 빼고 본다 — 등록어가 "마스킹" 같은 말이면 자리표시자에 걸려 영영 못 보낸다. */
+function leaksForced(out, original, items) {
+  if (!out || !original || !(items || []).length) return false;
+  const cps = Array.from(original);
+  const body = out.replace(/\[[^\[\]]{1,40} 마스킹\]/g, '');
+  return items.some(i => { const s = cps.slice(i.start, i.end).join(''); return s && body.includes(s); });
+}
+
+function utf8FromBase64(b64) {
+  try { return new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))); } catch (_) { return ''; }
+}
+
 async function pollJobEvents(jobId, onProgress) {
+  const done = (result) => { noteForcedMask(result?.policy?.forcedMask?.active); return result; };
   let after = 0;
   while (true) {
     const { res } = await fetchServer(`/jobs/${jobId}/events?after=${after}`, {
@@ -182,7 +204,7 @@ async function pollJobEvents(jobId, onProgress) {
     const events = payload.events ?? [];
     for (const event of events) {
       after = Math.max(after, event.seq ?? after);
-      if (event.type === 'done') return event.result;
+      if (event.type === 'done') return done(event.result);
       if (event.type === 'error') throw new Error(event.message ?? '엔진 처리 오류');
       onProgress?.(event);
     }
@@ -191,7 +213,7 @@ async function pollJobEvents(jobId, onProgress) {
       const { res: r2 } = await fetchServer(`/jobs/${jobId}/events?after=${after}`, { method: 'GET', cache: 'no-store' });
       const p2 = await r2.json();
       for (const ev of (p2.events ?? [])) {
-        if (ev.type === 'done') return ev.result;
+        if (ev.type === 'done') return done(ev.result);
         if (ev.type === 'error') throw new Error(ev.message ?? '엔진 처리 오류');
       }
       return null;
@@ -535,6 +557,16 @@ async function startMultiScan(sessionId, payload, tabId) {
     return;
   }
 
+  // 미지원 문서는 엔진에 가지 않아 doc.forcedMaskActive 가 영영 켜지지 않았다 — 그래서
+  // 패널과 SW 의 "검사 없이 원본 포함" 가드가 둘 다 통과시켰다(.hwp 등이 원본으로 나감).
+  // 지금 엔진 상태를 직접 물어 모든 문서에 미리 찍는다. 알 수 없으면 켜진 것으로 본다.
+  let forcedActive = true;
+  try {
+    const fresh = await probePort((await getServer()).port);
+    if (fresh) forcedActive = fresh.health?.forcedMask?.active !== false;
+  } catch (_) { /* 엔진을 못 찾으면 켜진 것으로 */ }
+  noteForcedMask(forcedActive);
+
   const session = {
     tabId, kind: 'multi', status: 'queued', progress: [], error: null,
     // 패널이 탭을 즉시 그릴 수 있게 메타를 먼저 채운다. 검사가 끝난 순서로 탭이
@@ -543,6 +575,7 @@ async function startMultiScan(sessionId, payload, tabId) {
       id: it.id, fileName: it.fileName, fileSize: it.fileSize, mimeType: it.mimeType,
       supported: it.supported, status: it.supported ? 'pending' : 'unsupported',
       counts: null, truncated: false, scannedChars: 0, originalChars: 0, error: null,
+      forcedMaskActive: forcedActive,
     })),
     prompt: { status: 'pending', counts: null },
     results: {},   // docId -> { originalText, piiItems, injectionItems }  (+ 'prompt')
@@ -620,6 +653,7 @@ async function scanMultiItem(sessionId, session, payload) {
     );
 
     doc.forcedMaskActive = !!result.policy?.forcedMask?.active;
+    doc.fileNameForced = !!result.policy?.forcedMask?.fileNameForced;
     if (result.blocked || (result.scanStatus && result.scanStatus !== 'ok')) {
       doc.status = 'error';
       doc.error = result.reason || '보안 정책에 따라 전송할 수 없습니다';
@@ -662,7 +696,8 @@ function buildArtifact(session, sessionId, file) {
     src.originalText, src.piiItems, src.injectionItems, file.id, file.unmaskedKeys || [],
     src.forcedMaskItems,
   );
-  const wrapped = wrapMaskedFile(text, doc.mimeType, doc.fileName);
+  // 이름에 등록어가 있으면 이름을 쓰지 않는다 — 내용을 가려도 이름으로 샌다.
+  const wrapped = wrapMaskedFile(text, doc.mimeType, doc.fileNameForced ? 'document' : doc.fileName);
   const artifactId = `art_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
   scanArtifacts.set(artifactId, {
     sessionId, docId: file.id, tabId: session.tabId,
@@ -852,8 +887,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // UI가 잘못된 결정을 만들거나 오래된 패널 코드가 붙어도 사용자 지정 항목이
       // 원본 경로로 나가면 안 된다. 실제 마스킹 문자열 생성에서도 locked 를 지키지만,
       // 여기서는 전송 형태 자체를 다시 검증한다.
-      const docForced = (session.result?.forcedMaskItems || []).length > 0;
-      const promptForced = (session.result?.userPromptForcedMaskItems || []).length > 0;
+      const res0 = session.result || {};
+      // 파일명에 등록어가 있으면 원본(원래 이름) 전송도 우회다.
+      const nameForced = !!res0.policy?.forcedMask?.fileNameForced;
+      const docForced = (res0.forcedMaskItems || []).length > 0 || nameForced;
+      const promptForced = (res0.userPromptForcedMaskItems || []).length > 0;
       const bypassesMandatory = session.kind === 'combined'
         ? (docForced && decision?.file?.action === 'passthrough')
           || (promptForced && decision?.action !== 'send')
@@ -862,6 +900,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, reason: 'mandatory-mask' });
         return;
       }
+      // 모양만 보면 action 은 'masked' 인데 원문을 실어 보내는 결정도 통과했다(낡은 패널
+      // 코드·잘못 만든 결정). 나가는 텍스트·파일에 강제 항목 원문이 남았는지 직접 본다.
+      // 엔진이 만든 마스킹 파일을 그대로 쓰면 볼 필요가 없다.
+      const outFile = session.kind === 'combined' ? decision?.file : (session.kind === 'file' ? decision : null);
+      const docOut = outFile?.maskedBase64 && outFile.maskedBase64 !== res0.maskedFile?.base64
+        ? utf8FromBase64(outFile.maskedBase64) : '';
+      const promptOut = typeof decision?.maskedText === 'string' ? decision.maskedText : '';
+      const promptSrc = session.kind === 'prompt'
+        ? [res0.originalText, res0.forcedMaskItems] : [res0.userPromptOriginal, res0.userPromptForcedMaskItems];
+      if (leaksForced(docOut, res0.originalText, res0.forcedMaskItems) || leaksForced(promptOut, ...promptSrc)) {
+        sendResponse({ ok: false, reason: 'mandatory-mask' });
+        return;
+      }
+      if (nameForced && outFile?.fileName) outFile.fileName = 'document_masked.md';
 
       if (session.tabId != null) {
         chrome.tabs.sendMessage(session.tabId, {
@@ -1034,13 +1086,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      // 프롬프트를 검사하지 못했으면 보내지 않는다 — promptText 가 null 이면 content 가
+      // 원문으로 폴백한다. 그동안은 패널의 blockingReason 만 막고 있었다.
+      if (!session.results?.prompt) {
+        sendResponse({ ok: false, reason: 'prompt-not-scanned' });
+        return;
+      }
       const files = [];
       for (const file of decision?.files || []) {
         if (file.action === 'exclude') { files.push({ id: file.id, action: 'exclude' }); continue; }
         if (file.action === 'original') {
           const src = session.results?.[file.id];
           const doc = session.docs.find(d => d.id === file.id);
-          if (doc?.forcedMaskActive || (src?.forcedMaskItems || []).length > 0) {
+          if (doc?.forcedMaskActive || doc?.fileNameForced || (src?.forcedMaskItems || []).length > 0) {
             sendResponse({ ok: false, reason: 'mandatory-mask', id: file.id });
             return;
           }
