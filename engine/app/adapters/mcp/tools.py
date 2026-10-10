@@ -155,6 +155,17 @@ def _redact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in item.items() if k != "text"} for item in items]
 
 
+def _shown(value: Any) -> str:
+    """경로·파일명에 든 사용자 지정 단어를 가린 문자열.
+
+    파일 내용만 마스킹하면 "Aurora_계획.pdf" 같은 이름으로 등록어가 AI 에게 그대로 간다.
+    가린 경로로는 다시 열 수 없다 — 등록어를 내보내지 않는 쪽을 택했다.
+    """
+    text = str(value)
+    items = forced_mask.registry.snapshot().find(text)
+    return masker.apply_masking(text, items)["masked_text"] if items else text
+
+
 def _public(result: dict[str, Any]) -> dict[str, Any]:
     """MCP 응답용 뷰. 파이프라인 결과에 요약 플래그를 덧붙인다.
 
@@ -293,7 +304,7 @@ async def scan_file(file_path: str, mime_type: str = "", user_prompt: str = "") 
     file_bytes = path.read_bytes()
     result = await _scan_bytes(file_bytes, mime_type, path.name, user_prompt=user_prompt)
     out = _public(result)
-    out["path"] = str(path)
+    out["path"] = _shown(path)
     return out
 
 
@@ -317,13 +328,13 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
         if not path.is_file():
             continue
         if _file_kind(path) == "binary":
-            skipped.append({"path": str(path), "reason": "unsupported-binary"})
+            skipped.append({"path": _shown(path), "reason": "unsupported-binary"})
             continue
         try:
             scanned = await scan_file(str(path))
             items.append(
                 {
-                    "path": str(path),
+                    "path": _shown(path),
                     "detectionCount": scanned["detectionCount"],
                     "piiCount": scanned["stats"].get("piiCount", 0),
                     "injectionCount": scanned["stats"].get("injectionCount", 0),
@@ -339,7 +350,7 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 사이트별 독립 에러 처리(PLAN §11)
-            skipped.append({"path": str(path), "reason": str(exc)})
+            skipped.append({"path": _shown(path), "reason": str(exc)})
 
     total = sum(it["detectionCount"] for it in items)
     any_blocked = any(it["blocked"] for it in items)
@@ -402,7 +413,7 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
     kind = _file_kind(path)
     if kind == "binary":
         return {
-            "path": str(path),
+            "path": _shown(path),
             "decision": "blocked",
             "reason": "바이너리 파일은 보안 게이트에서 원본을 반환하지 않습니다.",
             "content": "",
@@ -420,7 +431,7 @@ async def secure_read_file(file_path: str, user_prompt: str = "") -> dict[str, A
         "masked" if (pub["hasPii"] or pub["hasInjection"] or pub["hasForcedMask"]) else "clean"
     )
     return {
-        "path": str(path),
+        "path": _shown(path),
         "decision": decision,
         "content": "" if pub["blocked"] else pub["maskedText"],
         "scanStatus": pub["scanStatus"],
@@ -446,7 +457,7 @@ async def secure_list_files(root: str = ".", pattern: str = "*", max_results: in
         if len(files) >= max_results:
             break
         if path.is_file():
-            files.append({"path": str(path), "name": path.name, "kind": _file_kind(path)})
+            files.append({"path": _shown(path), "name": _shown(path.name), "kind": _file_kind(path)})
     return {"root": str(root_path), "count": len(files), "files": files}
 
 
@@ -459,6 +470,10 @@ async def secure_search_files(
 
     검색 결과 스니펫도 원본이 새어나가지 않도록 core 마스커를 통과시킨다(PLAN §4.2).
     """
+    # 검색어에 등록어가 들어 있으면 거절한다. 원문 줄에서 찾으므로, 결과 유무만으로
+    # "그 단어가 어느 파일에 있는가" 를 캐물을 수 있다(스니펫은 가려도 위치가 샌다).
+    if forced_mask.registry.snapshot().find(query):
+        raise ValueError("사용자 지정 마스킹 단어는 검색어로 쓸 수 없습니다")
     root_path = _resolve(root)
     if not root_path.is_dir():
         raise NotADirectoryError(f"디렉터리가 아닙니다: {root_path}")
@@ -485,7 +500,7 @@ async def secure_search_files(
                 line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
                 results.append(
                     {
-                        "path": str(path),
+                        "path": _shown(path),
                         "line": line_no,
                         "lineText": "" if line_res.get("blocked") else line_res["maskedText"],
                         "blocked": bool(line_res.get("blocked")),

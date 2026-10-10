@@ -2,8 +2,10 @@
 
 The rules are kept in memory and replaced atomically by the desktop app.  No
 registered term is returned in status, logs, or scan results.  Matching is
-Unicode canonical-equivalent (NFC/NFD) and case-insensitive, while reported
-offsets always refer to the original input string.
+compatibility-equivalent (NFKC, so NFC/NFD and full-width forms agree),
+case-insensitive (casefold), ignores zero-width format characters and treats any
+whitespace run as one space; reported offsets always refer to the original input
+string and never split an original character.
 """
 
 from __future__ import annotations
@@ -44,7 +46,9 @@ def normalize_terms(values: Iterable[str]) -> tuple[str, ...]:
             raise ForcedMaskRuleError("terms cannot contain line breaks or NUL")
         if len(term) > MAX_TERM_CHARS:
             raise ForcedMaskRuleError(f"a term exceeds {MAX_TERM_CHARS} characters")
-        key = unicodedata.normalize("NFD", term).lower()
+        key = _fold(term)
+        if not key.strip():
+            continue
         if key in seen:
             continue
         seen.add(key)
@@ -57,17 +61,43 @@ def normalize_terms(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(terms)
 
 
-def _normalized_with_offsets(text: str) -> tuple[str, list[int]]:
-    """Return NFD text plus a normalized-index -> original-index map."""
+def _continues(char: str) -> bool:
+    """Combining marks and Hangul medial/final jamo compose with the character before."""
+    return bool(unicodedata.combining(char)) or "ᅠ" <= char <= "ᇿ" or "ힰ" <= char <= "퟿"
+
+
+def _normalized_with_offsets(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Folded text plus, per folded character, the original (start, end) it came from.
+
+    Folding works on whole clusters (a base character and what composes onto it), so
+    NFD Hangul composes back into its syllable and a match can never end inside an
+    original character -- per-character NFD used to let "김민수" match "김민숙" (ㅅㅜ is
+    a prefix of ㅅㅜㄱ).  Whitespace runs (newline, NBSP, tabs) fold to one space so a
+    phrase broken across lines in a PDF still matches; Cf characters (ZWSP, soft
+    hyphen, BOM) disappear.
+    """
     parts: list[str] = []
-    offsets: list[int] = []
-    for index, char in enumerate(text):
-        normalized = unicodedata.normalize(
-            "NFD", unicodedata.normalize("NFD", char).lower()
-        )
-        parts.append(normalized)
-        offsets.extend([index] * len(normalized))
-    return "".join(parts), offsets
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        j = i + 1
+        while j < n and _continues(text[j]):
+            j += 1
+        for char in unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text[i:j]).casefold()):
+            if unicodedata.category(char) == "Cf":
+                continue
+            if char.isspace():
+                if parts and parts[-1] == " ":
+                    continue
+                char = " "
+            parts.append(char)
+            spans.append((i, j))
+        i = j
+    return "".join(parts), spans
+
+
+def _fold(term: str) -> str:
+    return _normalized_with_offsets(term)[0].strip()
 
 
 def _revision() -> str:
@@ -90,8 +120,8 @@ class ForcedMaskSnapshot:
     def find(self, text: str) -> list[dict[str, Any]]:
         if not text or self.pattern is None:
             return []
-        normalized, offsets = _normalized_with_offsets(text)
-        if not normalized or not offsets:
+        normalized, spans = _normalized_with_offsets(text)
+        if not normalized:
             return []
 
         found: list[dict[str, Any]] = []
@@ -100,8 +130,8 @@ class ForcedMaskSnapshot:
             start_n, end_n = match.span(1)
             if start_n >= end_n:
                 continue
-            start = offsets[start_n]
-            end = offsets[end_n - 1] + 1
+            start = spans[start_n][0]
+            end = spans[end_n - 1][1]
             span = (start, end)
             if span in seen:
                 continue
@@ -126,14 +156,7 @@ class ForcedMaskRegistry:
 
     def configure(self, values: Iterable[str]) -> ForcedMaskSnapshot:
         terms = normalize_terms(values)
-        normalized = sorted(
-            (
-                unicodedata.normalize("NFD", unicodedata.normalize("NFD", term).lower())
-                for term in terms
-            ),
-            key=len,
-            reverse=True,
-        )
+        normalized = sorted((_fold(term) for term in terms), key=len, reverse=True)
         # Lookahead keeps overlapping starts.  Longest-first makes the match at
         # one start deterministic; masker.merge_overlapping combines the rest.
         pattern = re.compile(

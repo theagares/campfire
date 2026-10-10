@@ -94,3 +94,14 @@ def test_blocked_public_result_never_returns_uninspected_text():
     pub = tools._public(result)
     assert pub["maskedText"] == ""
     assert pub["recommendedAction"] == "block"
+
+
+def test_paths_and_search_queries_do_not_carry_forced_terms():
+    import pytest
+    forced_mask.registry.configure(["Aurora"])
+    shown = tools._shown("C:/docs/Aurora_plan.pdf")
+    assert "Aurora" not in shown and shown.endswith("_plan.pdf")
+    assert tools._shown("C:/docs/plain.pdf") == "C:/docs/plain.pdf"
+    # 검색 결과 유무로 등록어가 어느 파일에 있는지 캐물을 수 없어야 한다.
+    with pytest.raises(ValueError):
+        asyncio.run(tools.secure_search_files(".", "aurora"))

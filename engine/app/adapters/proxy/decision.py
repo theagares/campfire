@@ -105,9 +105,8 @@ class DecisionBroker:
         )
         self._pending[decision_id] = pending
         logger.info(
-            "[proxy] 판단 대기 id=%s file=%s host=%s pii=%d injection=%d forced=%d",
+            "[proxy] 판단 대기 id=%s host=%s pii=%d injection=%d forced=%d",
             decision_id,
-            file_name,
             host,
             (result.get("stats") or {}).get("piiCount", 0),
             (result.get("stats") or {}).get("injectionCount", 0),

@@ -45,3 +45,16 @@ def test_internal_rule_update_rejects_invalid_terms(monkeypatch):
         json={"terms": ["line\nbreak"]},
     )
     assert response.status_code == 422
+
+
+def test_unauthenticated_requests_never_reveal_the_endpoint(monkeypatch):
+    monkeypatch.setattr(config, "INTERNAL_CONTROL_TOKEN", "test-token")
+    client = _client()
+    url = "/internal/forced-mask-rules"
+    # 본문이 틀려도 인증이 먼저다 — 422 가 나오면 엔드포인트가 있다는 게 드러난다.
+    assert client.put(url, json={"terms": "x"}).status_code == 404
+    assert client.put(url, content=b"{not json").status_code == 404
+    # Bearer 접두사 없이 토큰만 보내도, 비ASCII 헤더를 보내도 404(500 아님).
+    assert client.put(url, headers={"Authorization": "test-token"}, json={"terms": []}).status_code == 404
+    assert client.put(url, headers={"Authorization": "Bearer tést".encode("latin-1")},
+                      json={"terms": []}).status_code == 404
