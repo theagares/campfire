@@ -816,7 +816,13 @@ async function loadForcedMaskTerms() {
     setForcedMaskError();
     renderForcedMaskTerms();
   } catch (err) {
-    setForcedMaskError(`불러오지 못했습니다: ${err.message}`);
+    // 저장된 단어를 못 읽어도(키체인 변경·파일 손상) 막다른 길로 두지 않는다. 그동안 엔진은
+    // 규칙을 못 받아 검사를 막고(fail-closed) 있고, 다른 설정 저장까지 같이 막혔었다.
+    // 지금 목록으로 저장하면 새로 덮어써 복구된다 — 이전 단어는 되살릴 수 없다고 알린다.
+    forcedMaskLoaded = true;
+    $('#forced-mask-input').disabled = false;
+    $('#forced-mask-add').disabled = false;
+    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 단어를 다시 입력해 저장하면 새 목록으로 저장됩니다 — 이전 단어는 복구할 수 없습니다.`);
   }
 }
 

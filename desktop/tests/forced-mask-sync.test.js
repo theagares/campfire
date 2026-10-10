@@ -67,3 +67,27 @@ test('암호화 저장 실패 시 실행 중 엔진 정책도 이전 값으로 �
   await assert.rejects(() => manager.replaceForcedMaskTerms(['new']), /disk failed/);
   assert.deepEqual(calls, [['new'], ['old']]);
 });
+
+test('저장된 단어를 못 읽어도 새 목록 저장으로 복구되고, 미동기화 저장은 다음 tick 에 다시 보낸다', async () => {
+  let written = null;
+  const store = {
+    list: () => { throw new Error('키체인 키가 바뀜'); },
+    replace: (terms) => { written = terms; },
+    limits: () => ({}),
+  };
+  const manager = bareManager(store);
+  manager.state = 'error';            // 엔진이 잠깐 오류 상태 — 지금은 동기화하지 않는다
+  manager.forcedMaskSyncedPort = 48200;
+  const saved = await manager.replaceForcedMaskTerms(['new']);
+  assert.deepEqual(saved.terms, ['new']);
+  assert.deepEqual(written, ['new'], '읽을 수 없는 저장소를 덮어쓰지 못했다 — 빠져나갈 길이 없다');
+  assert.equal(manager.forcedMaskSyncedPort, null, '동기화 표시가 남아 다음 tick 이 새 단어를 안 보낸다');
+});
+
+test('토큰을 모르는(404) 엔진 포트는 더 낮아도 고르지 않는다', async () => {
+  const manager = bareManager(null);
+  manager.foreignPorts = new Set([48200]);
+  manager._probe = async () => ({ service: 'campfire' });
+  const found = await manager._scanForEngine();
+  assert.equal(found.port, 48201);
+});

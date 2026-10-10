@@ -58,6 +58,9 @@ class EngineManager extends EventEmitter {
     this.internalControlToken = forcedMaskStore ? crypto.randomBytes(32).toString('hex') : '';
     this.forcedMaskSyncedPort = null;
     this.forcedMaskSyncPromise = null;
+    // 우리 토큰을 모르는(404) 엔진 — 이전 실행에서 남은 좀비 등. 더 낮은 포트에 있어도
+    // 고르지 않는다. 우리 엔진을 다시 띄울 때(start) 비운다.
+    this.foreignPorts = new Set();
     this.child = null;
     this.boundPort = null;
     this.pollTimer = null;
@@ -99,6 +102,7 @@ class EngineManager extends EventEmitter {
     if (this.child) {
       return; // 이미 실행 중
     }
+    this.foreignPorts.clear(); // 새로 띄우는 우리 엔진이 예전 좀비 포트를 받을 수도 있다
     this.intentionalStop = false;
 
     const diag = paths.diagnose(this.engineDir, this.pythonExe);
@@ -292,6 +296,11 @@ class EngineManager extends EventEmitter {
             const synced = await this.syncForcedMaskTerms(undefined, found.port);
             this.lastHealth = { ...found.health, forcedMask: synced };
           } catch (err) {
+            if (err.status === 404) {
+              // 우리 엔진이 아니다(토큰을 모름). 다음 tick 에 다른 포트를 고르게 한다.
+              this.foreignPorts.add(found.port);
+              this.boundPort = null;
+            }
             this._setState('error', `강제 마스킹 단어 동기화 실패: ${err.message}`);
             return;
           }
@@ -326,7 +335,7 @@ class EngineManager extends EventEmitter {
    */
   async _scanForEngine() {
     // 1) 캐시된 포트 우선 확인 (있고 여전히 우리 엔진이면 즉시 채택)
-    if (this.boundPort) {
+    if (this.boundPort && !this.foreignPorts.has(this.boundPort)) {
       const h = await this._probe(this.boundPort);
       if (h) return { port: this.boundPort, health: h };
       // 실패 → 포트가 바뀌었을 수 있으니 전체 재스캔 (PLAN §11)
@@ -339,7 +348,7 @@ class EngineManager extends EventEmitter {
     const results = await Promise.all(
       ports.map(async (p) => ({ port: p, health: await this._probe(p) }))
     );
-    const matches = results.filter((r) => r.health);
+    const matches = results.filter((r) => r.health && !this.foreignPorts.has(r.port));
     if (matches.length === 0) return null;
     matches.sort((a, b) => a.port - b.port); // 방어적으로 가장 낮은 포트 우선
     return matches[0];
@@ -403,7 +412,9 @@ class EngineManager extends EventEmitter {
           let parsed = null;
           try { parsed = raw ? JSON.parse(raw) : null; } catch { /* handled below */ }
           if (res.statusCode < 200 || res.statusCode >= 300 || !parsed) {
-            reject(new Error(parsed?.detail || `엔진 응답 ${res.statusCode}`));
+            const err = new Error(parsed?.detail || `엔진 응답 ${res.statusCode}`);
+            err.status = res.statusCode;
+            reject(err);
             return;
           }
           resolve(parsed);
@@ -446,7 +457,10 @@ class EngineManager extends EventEmitter {
     // a newly registered secret persisted but inactive.
     const { normalizeTerms } = require('./forced-mask-store');
     const normalized = normalizeTerms(values);
-    const previous = this.forcedMaskStore.list();
+    // 저장된 단어를 읽을 수 없으면(키체인 변경·파일 손상) 새 목록으로 덮어써 복구한다 —
+    // 예전엔 여기서 throw 해 저장 자체가 막혀 빠져나갈 길이 없었다.
+    let previous = null;
+    try { previous = this.forcedMaskStore.list(); } catch { previous = null; }
     let synced = false;
     if (this.state === 'running' && this.boundPort) {
       await this.syncForcedMaskTerms(normalized);
@@ -455,9 +469,12 @@ class EngineManager extends EventEmitter {
     try {
       this.forcedMaskStore.replace(normalized);
     } catch (err) {
-      if (synced) await this.syncForcedMaskTerms(previous).catch(() => {});
+      if (synced && previous) await this.syncForcedMaskTerms(previous).catch(() => {});
       throw err;
     }
+    // 엔진이 running 이 아닐 때 저장했으면 디스크에만 있다. 표시를 지워 다음 tick 이
+    // 다시 보내게 한다 — 안 그러면 재시작 전까지 새 단어가 꺼져 있었다.
+    if (!synced) this.forcedMaskSyncedPort = null;
     return { terms: normalized, limits: this.forcedMaskStore.limits() };
   }
 
