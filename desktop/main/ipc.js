@@ -126,7 +126,11 @@ function register(ctx) {
       patch &&
       patch.mcpRiskScannerEnabled !== undefined &&
       !!patch.mcpRiskScannerEnabled !== !!prev.mcpRiskScannerEnabled;
-    if (policyChanged || apiKeyChanged || riskScannerChanged) {
+    const confidentialChanged =
+      patch &&
+      ((patch.confidentialEnabled !== undefined && !!patch.confidentialEnabled !== !!prev.confidentialEnabled) ||
+        (patch.kgPath !== undefined && patch.kgPath !== prev.kgPath));
+    if (policyChanged || apiKeyChanged || riskScannerChanged || confidentialChanged) {
       if (config.get('securityEnabled')) {
         engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
       }

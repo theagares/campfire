@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from app import config
 from app.core import forced_mask, model_status
-from app.core.detectors import registry
+from app.core.detectors import confidential, registry
 from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
@@ -351,6 +351,13 @@ async def run_pipeline(
         user_prompt_masked = masker.apply_masking(
             user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
         )["masked_text"]
+
+    # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
+    # PII 다음이어야 한다 — 근거 문장을 Solar 로 보내기 전에 PII·사용자 지정 단어를 가린다.
+    # 결과는 piiItems 에 실린다(CONFIDENTIAL). 인젝션의 Solar 호출도 이 문장을 가리고 보내게 된다.
+    confidential_items = await confidential.detect(text, list(pii_items) + list(forced_items), emit)
+    if confidential_items:
+        pii_items = _dedupe(list(pii_items) + confidential_items)
 
     # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
     # pii_items/user_prompt_masked 를 함께 넘긴다 — 로컬 모델(EXAONE)은 원문을 보되,

@@ -293,6 +293,19 @@
           </div>
         </div>
 
+        <!-- 기밀 탐지 — 회사 KG + 리트리버 + Solar Pro 4 (engine/app/core/detectors/confidential). 기본 OFF. -->
+        <div class="field">
+          <div class="setting-row">
+            <div>
+              <label for="confidential-enabled">기밀 탐지 (회사 지식그래프)</label>
+              <div class="hint">문서가 회사 KG 의 사실을 말하는 문장을 찾아 기밀이면 마스킹합니다. 켜면 개인정보를 가린 근거 문장과 해당 KG 사실이 기밀 판단을 위해 Upstage Solar 로 전송됩니다. 변경 시 엔진이 재시작됩니다.</div>
+            </div>
+            <input type="checkbox" id="confidential-enabled" />
+          </div>
+          <label for="kg-path">KG 파일 경로 (JSONL)</label>
+          <input type="text" id="kg-path" placeholder="C:\company\kg.jsonl" autocomplete="off" />
+        </div>
+
         <div class="divider"></div>
 
         <!-- 탐지 모델(encoder/llm_mcp) — 유일한 모드라 고를 게 없다(룰베이스 폴백 제거).

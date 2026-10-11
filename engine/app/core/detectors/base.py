@@ -68,6 +68,9 @@ BANK_ACCOUNT = "BANK_ACCOUNT"
 # API 키/토큰/개인키/비밀번호. 정규식 전용이라 모델 없이도 탐지된다
 # (detectors/pii/credentials.py).
 CREDENTIAL = "CREDENTIAL"
+# 회사 KG 사실을 진술하는 기밀 문장 (detectors/confidential). 개인정보는 아니지만
+# piiItems 에 같이 실어 기존 마스킹·검토 UI 를 그대로 탄다 (온톨로지 v3 설계).
+CONFIDENTIAL = "CONFIDENTIAL"
 OTHER_PII = "OTHER_PII"
 
 PII_TYPES: frozenset[str] = frozenset(
@@ -82,6 +85,7 @@ PII_TYPES: frozenset[str] = frozenset(
         ORGANIZATION,
         BANK_ACCOUNT,
         CREDENTIAL,
+        CONFIDENTIAL,
         OTHER_PII,
     }
 )

@@ -138,6 +138,9 @@ class EngineManager extends EventEmitter {
       // 설정 화면에서 키를 지워도 엔진이 그 키로 Solar 를 계속 부른다. 넘기지 않는다
       // (spawn 은 undefined 값을 환경변수로 넘기지 않는다).
       UPSTAGE_API_KEY: undefined,
+      // 기밀 탐지 (engine/app/core/detectors/confidential). 동의 토글이 꺼져 있으면 엔진이 아무것도 안 한다.
+      SECUREDOC_CONFIDENTIAL_ENABLED: this.config.get('confidentialEnabled') ? '1' : '0',
+      SECUREDOC_KG_PATH: this.config.get('kgPath') || '',
       // MCP 파일 도구(secure_read_file 등)의 작업 루트. 비워 두면 엔진이 홈 디렉터리를
       // 기본값으로 쓴다 — cwd 를 쓰면 안 된다. 아래 cwd 주석대로 우리는 cwd 를 사용자
       // 데이터 폴더로 옮겼고, 엔진이 그걸 경계로 삼으면 사용자 파일을 하나도 못 읽는다

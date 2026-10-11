@@ -19,7 +19,7 @@ export const TYPE_LABELS = {
   PERSON_NAME: '이름', EMAIL: '이메일', PHONE: '전화번호', ADDRESS: '주소',
   ID_NUMBER: '신분증번호', CREDIT_CARD: '카드번호', DATE_OF_BIRTH: '생년월일',
   ORGANIZATION: '조직기밀', BANK_ACCOUNT: '계좌번호', OTHER_PII: '개인정보',
-  CREDENTIAL: '자격증명',
+  CREDENTIAL: '자격증명', CONFIDENTIAL: '기밀',
   USER_DEFINED_TERM: '사용자 지정',
   INSTRUCTION_OVERRIDE: '명령 재정의', ROLE_MANIPULATION: '역할 조작',
   SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',

@@ -845,6 +845,8 @@ function openSettings() {
   $('#remote-url').value = s.remoteUrl || '';
   $('#upstage-api-key').value = s.upstageApiKey || '';
   $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
+  $('#confidential-enabled').checked = !!s.confidentialEnabled;
+  $('#kg-path').value = s.kgPath || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
   loadForcedMaskTerms();
@@ -997,6 +999,8 @@ $('#settings-save').addEventListener('click', async () => {
   // 빈 문자열도 patch 에 포함시킨다(trim() 만 하고 빈 값이어도 그대로 실어보냄).
   patch.upstageApiKey = $('#upstage-api-key').value.trim();
   patch.mcpRiskScannerEnabled = $('#mcp-risk-scanner-enabled').checked;
+  patch.confidentialEnabled = $('#confidential-enabled').checked;
+  patch.kgPath = $('#kg-path').value.trim();
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.

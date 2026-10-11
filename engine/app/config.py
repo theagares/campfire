@@ -247,6 +247,21 @@ UPSTAGE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_UPSTAGE_TIMEOUT_SEC
 # 전체 마스킹 동작 그대로 유지.
 INJECTION_LOCALIZE_ENABLED: bool = bool(UPSTAGE_API_KEY)
 
+# ── 기밀 탐지 (회사 KG + 리트리버 + Solar Pro 4) ─────────────────────────────
+# 문서에서 KG 엔티티 이름을 찾아(사전 매칭) 주어·목적어가 둘 다 나온 트리플만 리트리버가
+# 채점하고, 문서가 말하는 것으로 보이는 트리플과 근거 문장을 Solar 가 "진술됐고 기밀인가"
+# 판단한다. 근거 문장이 외부(Solar)로 나가므로 데스크톱 설정의 동의 토글로만 켠다.
+CONFIDENTIAL_ENABLED: bool = os.environ.get("SECUREDOC_CONFIDENTIAL_ENABLED", "0") == "1"
+KG_PATH: str = os.environ.get("SECUREDOC_KG_PATH", "")
+CONFIDENTIAL_ENGINE_DIR: Path = MODELS_ROOT / "confidential_engine"
+CONFIDENTIAL_DEVICE: str = os.environ.get("SECUREDOC_CONFIDENTIAL_DEVICE", "auto")
+CONFIDENTIAL_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_CONFIDENTIAL_MAX_LENGTH", "1024"))  # 토큰 (학습 때와 같음)
+# 리트리버가 한 번에 읽는 글자 수. 문장 단위로 묶고, 주어·목적어가 같은 창에 있어야 채점된다.
+CONFIDENTIAL_WINDOW_CHARS: int = int(os.environ.get("SECUREDOC_CONFIDENTIAL_WINDOW_CHARS", "1200"))
+# 여유값(s − s_TH) 이 이보다 크면 Solar 에게 넘긴다. 검증셋 최적값은 −0.5 — 정밀도는 Solar 가
+# 맡으므로 재현율 쪽으로 조금 낮췄다.
+CONFIDENTIAL_DELTA: float = float(os.environ.get("SECUREDOC_CONFIDENTIAL_DELTA", "-1.0"))
+
 # ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer 단일 모델,
 #   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들의 seed42 를 로컬
 #   서브프로세스 sidecar 로 실행) ─────────────────────────────────────────────
