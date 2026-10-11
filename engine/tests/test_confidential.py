@@ -142,7 +142,7 @@ def test_솔라로_PII_가_나가지_않고_결과에서_PII_구간을_뺀다(se
 
 
 def test_리트리버가_거른_사실은_솔라로_가지_않는다(setup):
-    fake = _FakeRetriever({"설립자": -5.0, "출시 시기": -5.0, "본사 위치": -5.0})
+    fake = _FakeRetriever({"설립자": -10.0, "출시 시기": -10.0, "본사 위치": -10.0})
     spy = _SpySolar({"설립자"})
     setup(fake, spy)
     items = asyncio.run(confidential.detect(DOC, PII))
@@ -150,7 +150,7 @@ def test_리트리버가_거른_사실은_솔라로_가지_않는다(setup):
 
 
 def test_솔라를_못_쓰면_근거_문장을_낮은_신뢰도로_가린다(setup):
-    fake, spy = _FakeRetriever({"설립자": -5.0, "본사 위치": -5.0}), _SpySolar(set(), fail=True)
+    fake, spy = _FakeRetriever({"설립자": -10.0, "본사 위치": -10.0}), _SpySolar(set(), fail=True)
     setup(fake, spy)
     items = asyncio.run(confidential.detect(DOC, PII))
     assert items and all(it["confidence"] == 0.5 and it["source"] == "encoder" for it in items)
