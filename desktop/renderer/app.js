@@ -97,12 +97,14 @@ function renderMcpClients() {
     }
     const statusText = !c.available ? '미설치' : c.connected ? '연결됨' : '미연결';
     const actionLabel = c.connected ? '연결 해제' : '연결하기';
+    const errorHint = c.error ? `<div class="hint error">${escapeHtml(c.error)}</div>` : '';
     return `
       <div class="mcp-client-row" data-id="${c.id}">
         <div class="mcp-client-head">
           <span class="mcp-client-name">${c.name}</span>
           <span class="badge-plain">${statusText}</span>
         </div>
+        ${errorHint}
         <button class="conn-link mcp-action-btn" data-id="${c.id}" data-connected="${!!c.connected}" ${c.available ? '' : 'disabled'}>${actionLabel}</button>
       </div>`;
   }).join('');
