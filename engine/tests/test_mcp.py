@@ -111,8 +111,14 @@ def test_mcp_tools(server, tmp_path):
     assert gs["policy"]["injection"] in ("mask", "block")
 
 
-def test_mcp_scan_file(server, tmp_path):
+def test_mcp_scan_file(server, tmp_path, monkeypatch):
+    from app.adapters.mcp import tools as mcp_tools
     from app.core import model_status
+
+    # pytest temp directories live outside the user's home on macOS. Make the
+    # test's intended workspace boundary explicit so scan_file exercises a
+    # permitted path consistently on every platform.
+    monkeypatch.setattr(mcp_tools, "_PROJECT_ROOT", tmp_path.resolve())
 
     f = tmp_path / "sample.txt"
     f.write_text("연락처 010-1234-5678 / 이메일 a@b.com", encoding="utf-8")
