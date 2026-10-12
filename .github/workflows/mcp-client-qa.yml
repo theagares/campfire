@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 45
     env:
       # 실제 Claude Code CLI를 사용하되 runner마다 격리된 설정만 건드린다.
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/campfire-claude-code
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.ci/claude-code
       CAMPFIRE_REAL_CLAUDE_CLI: "1"
       DISABLE_AUTOUPDATER: "1"
       # MCP 프로토콜 검증에는 모델 가중치가 필요 없다. 네트워크 상태에 따라 모델을
