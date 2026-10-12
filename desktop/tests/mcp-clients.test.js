@@ -377,3 +377,33 @@ test('수동 연결 스니펫에도 두 MCP가 함께 들어간다', () => {
     assert.ok(servers[RISK_SCANNER_SERVER_NAME], client.name);
   }
 });
+
+test('실제 Claude Code CLI의 MCP 출력 계약을 해석한다', {
+  skip: process.env.CAMPFIRE_REAL_CLAUDE_CLI !== '1',
+}, async (t) => {
+  const name = `campfire-ci-contract-${process.pid}`;
+  const url = 'http://127.0.0.1:9/mcp';
+  const version = await _test.runClaude(['--version']);
+  assert.equal(version.ok, true, version.stderr);
+
+  const added = await _test.runClaude([
+    'mcp', 'add', '--transport', 'http', '--scope', 'user', name, url,
+  ]);
+  assert.equal(added.ok, true, added.stderr);
+  let cleanupNeeded = true;
+  t.after(async () => {
+    if (cleanupNeeded) await _test.runClaude(['mcp', 'remove', '--scope', 'user', name]);
+  });
+
+  const state = await _test.inspectClaudeServer(name);
+  assert.equal(state.exists, true);
+  assert.equal(state.userScope, true);
+  assert.equal(state.type, 'http');
+  assert.equal(state.url, url);
+  assert.match(state.status, /Connected|Failed|Disconnected/i);
+
+  const removed = await _test.runClaude(['mcp', 'remove', '--scope', 'user', name]);
+  assert.equal(removed.ok, true, removed.stderr);
+  cleanupNeeded = false;
+  assert.deepEqual(await _test.inspectClaudeServer(name), { name, exists: false });
+});

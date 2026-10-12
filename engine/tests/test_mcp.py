@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -156,3 +157,30 @@ def test_stdio_shim_relays_to_http_mcp(server):
 
     names = anyio.run(_drive_shim)
     assert {"scan_text", "scan_file", "get_status"}.issubset(names)
+
+
+def test_packaged_stdio_smoke_script(server):
+    """릴리스 검증에 쓰는 Node 스모크도 실제 stdio shim과 HTTP MCP를 왕복한다."""
+    engine_root = Path(__file__).resolve().parents[1]
+    repo_root = engine_root.parent
+    script = repo_root / "desktop" / "scripts" / "smoke-mcp-stdio.js"
+    completed = subprocess.run(
+        [
+            "node",
+            str(script),
+            "--python",
+            sys.executable,
+            "--engine-dir",
+            str(engine_root),
+            "--url",
+            server,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=45,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "stdio -> HTTP MCP 정상" in completed.stdout
