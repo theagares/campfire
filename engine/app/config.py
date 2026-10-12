@@ -249,8 +249,8 @@ INJECTION_LOCALIZE_ENABLED: bool = bool(UPSTAGE_API_KEY)
 
 # ── 기밀 탐지 (회사 KG + 리트리버 + Solar Pro 4) ─────────────────────────────
 # 문서에서 KG 엔티티 이름을 찾아(사전 매칭) 주어·목적어가 둘 다 나온 트리플만 리트리버가
-# 채점하고, 문서가 말하는 것으로 보이는 트리플과 근거 문장을 Solar 가 "진술됐고 기밀인가"
-# 판단한다. 근거 문장이 외부(Solar)로 나가므로 데스크톱 설정의 동의 토글로만 켠다.
+# 채점하고, 문서가 말하는 것으로 보이는 트리플 전부와 PII 를 가린 문서 전체를 Solar 가 한 번에
+# "어느 문장이 진술했고 기밀인가" 판단한다. 문서가 외부(Solar)로 나가므로 데스크톱 설정의 동의 토글로만 켠다.
 CONFIDENTIAL_ENABLED: bool = os.environ.get("SECUREDOC_CONFIDENTIAL_ENABLED", "0") == "1"
 KG_PATH: str = os.environ.get("SECUREDOC_KG_PATH", "")
 CONFIDENTIAL_ENGINE_DIR: Path = MODELS_ROOT / "confidential_engine"

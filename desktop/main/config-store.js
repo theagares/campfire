@@ -40,7 +40,7 @@ const DEFAULTS = {
   // 대상 MCP 동작을 차단하지 않는 선택형 검사기. 아직 설정 UI에는 노출하지 않고,
   // 저장 설정/환경 경계만 둔다. false 면 검사기 프로세스 자체를 띄우지 않는다.
   mcpRiskScannerEnabled: false,
-  // 기밀 탐지(회사 KG + Solar). 켜면 근거 문장이 Solar 로 나가므로 기본 OFF — 사용자 동의 토글.
+  // 기밀 탐지(회사 KG + Solar). 켜면 PII 를 가린 문서가 Solar 로 나가므로 기본 OFF — 사용자 동의 토글.
   confidentialEnabled: false,
   kgPath: '', // 회사 KG JSONL 경로. 엔진이 스캔마다 수정 시각을 보고 바뀌면 다시 읽는다.
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)

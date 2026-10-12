@@ -3,12 +3,13 @@ app/core/detectors/confidential/__init__.py
 기밀 탐지 — 회사 KG 사전 매칭 → 리트리버 → Solar Pro 4 판정 → 문장 단위 CONFIDENTIAL 구간.
 
   1. kg.py       KG 엔티티 이름이 나오는 위치 → 주어·목적어가 둘 다 나온 트리플(후보)
-  2. retriever   문장 단위 창마다 후보 쌍·술어의 여유값(s − s_TH)과 문장별 주의
-  3. judge       여유값이 CONFIDENTIAL_DELTA 를 넘은 사실 + 근거 문장 → "진술됐고 기밀인가"
+  2. retriever   문장 단위 창마다(인코더 길이 제한) 후보 쌍·술어의 여유값(s − s_TH)과 문장별 주의
+  3. judge       모든 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 전부 + PII 를 가린 문서 전체 →
+                 Solar 1회로 "어느 문장이 진술했고 기밀인가"
   4. 고른 문장에서 PII·사용자 지정 구간을 뺀 나머지를 CONFIDENTIAL 로 (PII 는 자기 토글 유지)
 
 실패 처리: 리트리버를 못 쓰면(가중치 없음·오류) 후보를 전부 Solar 에 넘기고, Solar 를 못
-쓰면(키 없음·오류·해석 불가) 근거 문장을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽.
+쓰면(키 없음·오류·해석 불가) 근거 문장(리트리버 주의 기준)을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽.
 계획: 문서/리트리버/기밀탐지_계획.md
 """
 
@@ -28,8 +29,7 @@ from . import judge, kg, retriever
 
 Emit = Callable[[dict], Awaitable[None]]
 
-MAX_EVIDENCE = 3   # 사실 하나에 Solar 로 보내는 근거 문장 수
-MAX_FACTS = 30     # Solar 한 번에 묻는 사실 수
+MAX_EVIDENCE = 3   # Solar 를 못 쓸 때 사실 하나에 가리는 근거 문장 수
 _SENT_END = re.compile(r"[.!?。！？](?=\s|$)|\n+")
 
 
@@ -173,33 +173,22 @@ async def detect(text: str, masked_items: list[Detection], emit: Emit | None = N
         await emit({"type": "step", "step": 3, "label": f"기밀 탐지 중 (KG 후보 {len(cands)}개)..."})
 
     sents = split_sentences(text)
-    positives: list[list[tuple[kg.Triple, list[int]]]] = []
+    hits: dict[kg.Triple, set[int]] = {}  # 통과한 사실 → 근거 문장 (Solar 를 못 쓸 때만 쓴다)
     for idxs in _windows(sents, config.CONFIDENTIAL_WINDOW_CHARS):  # 리트리버는 요청을 어차피 하나씩 처리
-        hits = await _score_window(text, sents, idxs, mentions, cands)
-        for k in range(0, len(hits), MAX_FACTS):
-            positives.append(hits[k : k + MAX_FACTS])
-
-    async def _judge(group: list[tuple[kg.Triple, list[int]]]) -> dict[int, tuple[float, str]]:
-        sent_ids = sorted({i for _, ev in group for i in ev})
-        verdict = await judge.judge(
-            [_redacted(text, sents[i], masked_items) for i in sent_ids],
-            [(_display(t.s, mentions, masked_items), t.p, _display(t.o, mentions, masked_items)) for t, _ in group],
-        )
-        if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
-            return {i: (0.5, "encoder") for i in sent_ids}
-        return {sent_ids[s]: (0.95, "llm") for s, _ in verdict}
-
-    sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
-
-    async def _limited(group):
-        async with sem:
-            return await _judge(group)
+        for t, ev in await _score_window(text, sents, idxs, mentions, cands):
+            hits.setdefault(t, set()).update(ev)
 
     flagged: dict[int, tuple[float, str]] = {}
-    for part in await asyncio.gather(*(_limited(g) for g in positives if g)):
-        for i, v in part.items():
-            if i not in flagged or v[0] > flagged[i][0]:
-                flagged[i] = v
+    if hits:
+        # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
+        verdict = await judge.judge(
+            [_redacted(text, sp, masked_items) for sp in sents],
+            [(_display(t.s, mentions, masked_items), t.p, _display(t.o, mentions, masked_items)) for t in hits],
+        )
+        if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
+            flagged = {i: (0.5, "encoder") for ev in hits.values() for i in ev}
+        else:
+            flagged = {s: (0.95, "llm") for s, _ in verdict}
 
     covers = [(int(it["start"]), int(it["end"])) for it in masked_items]
     out: list[Detection] = []

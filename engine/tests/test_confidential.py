@@ -3,6 +3,7 @@
 지키는 것:
   - 사전 매칭: 단어 중간 매칭 버림, 겹치면 긴 것, 주어·목적어 둘 다 나온 트리플만 후보
   - Solar 로 원문 PII 가 나가지 않는다 (문장과 사실 문장 모두)
+  - 리트리버는 창마다 여러 번, Solar 는 문서당 1회 (문서 전체 문장 + 모든 창의 통과 사실)
   - 결과 문장에서 PII 구간을 빼서 내보낸다 (PII 는 자기 토글 유지)
   - 리트리버가 거른 사실은 Solar 로 가지 않는다
   - Solar 를 못 쓰면 근거 문장을 낮은 신뢰도로 가린다 (막는 쪽)
@@ -139,6 +140,22 @@ def test_솔라로_PII_가_나가지_않고_결과에서_PII_구간을_뺀다(se
     assert not any(NAME in s for s in found)    # 첫 문장은 이름을 빼고 조각으로
     assert "가온연구소는" in found and "이 세운 연구소다." in found
     assert not any("서울" in s for s in found)   # 공개 사실(본사 위치) 은 Solar 가 기밀 아니라고 함
+
+
+def test_창이_여러_개여도_솔라는_문서_전체로_한_번(setup, monkeypatch):
+    monkeypatch.setattr(config, "CONFIDENTIAL_WINDOW_CHARS", 25)  # 문장마다 창 하나
+    fake, spy = _FakeRetriever(), _SpySolar({"설립자", "출시 시기"})
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(DOC, PII))
+
+    assert len(fake.requests) == 2              # 설립자 창 · 출시 시기 창 (본사 위치는 주어·목적어가 다른 창)
+    assert len(spy.sent) == 1
+    msg = spy.sent[0]
+    assert sum(ln.startswith("[S") for ln in msg.splitlines()) == len(confidential.split_sentences(DOC))
+    assert "본사는 서울에 있다." in msg            # 사실이 안 걸린 문장도 문맥으로 간다
+    assert {"(오로라, 출시 시기, 2027년 3월)", "(가온연구소, 설립자, [이름 마스킹])"} <= {
+        ln.split("] ", 1)[1] for ln in msg.splitlines() if ln.startswith("[T")}
+    assert "오로라 출시는 2027년 3월로 정했다." in {DOC[it["start"]:it["end"]] for it in items}
 
 
 def test_리트리버가_거른_사실은_솔라로_가지_않는다(setup):

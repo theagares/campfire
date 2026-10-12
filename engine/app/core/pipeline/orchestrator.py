@@ -353,7 +353,7 @@ async def run_pipeline(
         )["masked_text"]
 
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
-    # PII 다음이어야 한다 — 근거 문장을 Solar 로 보내기 전에 PII·사용자 지정 단어를 가린다.
+    # PII 다음이어야 한다 — 문서를 Solar 로 보내기 전에 PII·사용자 지정 단어를 가린다.
     # 결과는 piiItems 에 실린다(CONFIDENTIAL). 인젝션의 Solar 호출도 이 문장을 가리고 보내게 된다.
     confidential_items = await confidential.detect(text, list(pii_items) + list(forced_items), emit)
     if confidential_items:
