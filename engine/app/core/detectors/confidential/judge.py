@@ -14,6 +14,7 @@ KG 에는 공개 사실도 섞여 있어(기밀 표시 없음) 기밀 여부는 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -36,9 +37,13 @@ SYSTEM_PROMPT = (
     "   기밀 아님 예: 회사 소재지·설립 연도처럼 이미 공개되어 누구나 아는 사실.\n"
     "   애매하면 기밀로 본다.\n"
     '진술되었고 기밀인 경우만 골라 JSON 하나로만 답하라: {"기밀": [{"s": 문장번호, "t": 사실번호}]}\n'
+    "s 는 [S숫자] 의 숫자, t 는 [T숫자] 의 숫자다. 한 문장이 사실 여러 개를 진술하면 항목을 여러 개 쓴다.\n"
     '없으면 {"기밀": []}'
 )
-_PROMPT_CACHE_KEY = "campfire-confidential-judge-v2"  # 시스템 프롬프트 개정 시 올린다
+# 사실이 많으면 Solar 가 [[2, 4], ...] 처럼 순서쌍으로 답하는 일이 있었다(실측, 앞뒤 순서도 제각각) — 다시 요구한다
+FIX_FORMAT = ('형식이 틀렸다. 항목마다 {"s": 문장번호, "t": 사실번호} 객체로 써라. '
+              'JSON 하나로만 다시 답하라: {"기밀": [{"s": 1, "t": 2}]}')
+_PROMPT_CACHE_KEY = "campfire-confidential-judge-v3"  # 시스템 프롬프트 개정 시 올린다
 _CACHE_MAX = 256
 _cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 _client: httpx.AsyncClient | None = None
@@ -86,24 +91,28 @@ async def judge(sentences: list[str], facts: list[tuple[str, str, str]]) -> list
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
-    try:
-        if _client is None:
-            _client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
-        resp = await _client.post(
-            config.UPSTAGE_API_BASE,
-            headers={"Authorization": f"Bearer {config.UPSTAGE_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": config.UPSTAGE_MODEL,
-                "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": message}],
-                "temperature": 0,
-                "prompt_cache_key": _PROMPT_CACHE_KEY,
-            },
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-    except Exception:  # noqa: BLE001 - 네트워크/API 오류 → 판단 불가
-        return None
-    result = parse(content, len(sentences), len(facts))
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": message}]
+    result = None
+    for attempt in range(2):  # 호출 오류·형식 오류면 한 번 더 — 실패하면 호출부가 근거 문장을 넓게 가린다
+        try:
+            resp = await _client.post(
+                config.UPSTAGE_API_BASE,
+                headers={"Authorization": f"Bearer {config.UPSTAGE_API_KEY}", "Content-Type": "application/json"},
+                json={"model": config.UPSTAGE_MODEL, "messages": messages, "temperature": 0,
+                      "prompt_cache_key": _PROMPT_CACHE_KEY},
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+        except Exception:  # noqa: BLE001 - 네트워크·429·5xx
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+            continue
+        result = parse(content, len(sentences), len(facts))
+        if result is not None:
+            break
+        messages = messages[:2] + [{"role": "assistant", "content": content}, {"role": "user", "content": FIX_FORMAT}]
     if result is not None:
         _cache[key] = result
         if len(_cache) > _CACHE_MAX:

@@ -24,7 +24,7 @@ from app.core import model_status
 from app.core.masker.masker import placeholder_for
 from app.core.masker.redact_map import build_redaction
 
-from ..base import CONFIDENTIAL, Detection
+from ..base import CONFIDENTIAL, ORGANIZATION, Detection
 from . import judge, kg, retriever
 
 Emit = Callable[[dict], Awaitable[None]]
@@ -180,10 +180,15 @@ async def detect(text: str, masked_items: list[Detection], emit: Emit | None = N
 
     flagged: dict[int, tuple[float, str]] = {}
     if hits:
+        # KG 에 있는 회사·기관 이름은 Solar 에 그대로 — 기관명(ORGANIZATION)까지 가리면 사실이 "([기관명 마스킹], 협력사,
+        # [기관명 마스킹])" 이 되어 판단할 수 없었다(실측). 개인정보(이름·연락처 등)는 그대로 가린다
+        kg_spans = [sp for sps in mentions.values() for sp in sps]
+        for_solar = [it for it in masked_items if not (it.get("type") == ORGANIZATION and any(
+            _overlaps((int(it["start"]), int(it["end"])), sp) for sp in kg_spans))]
         # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
         verdict = await judge.judge(
-            [_redacted(text, sp, masked_items) for sp in sents],
-            [(_display(t.s, mentions, masked_items), t.p, _display(t.o, mentions, masked_items)) for t in hits],
+            [_redacted(text, sp, for_solar) for sp in sents],
+            [(_display(t.s, mentions, for_solar), t.p, _display(t.o, mentions, for_solar)) for t in hits],
         )
         if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
             flagged = {i: (0.5, "encoder") for ev in hits.values() for i in ev}

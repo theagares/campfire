@@ -40,7 +40,8 @@ perplexity.ai)에서만 동작하며, 그 사이트에서 다음을 읽습니다
   지정한 경우에만 동작합니다(기본 꺼짐). 문서가 KG 의 사실을 말하는 것으로 보이면, 그
   **문서 본문 전체와 해당 KG 사실**이 기밀 여부 판단을 위해 Upstage(`api.upstage.ai`)로
   전송됩니다(문서당 한 번). 보내기 전에 이미 찾은 개인정보와 사용자 지정 단어는 자리표시자로
-  가립니다. KG 이름이 나오지 않는 문서는 전송하지 않습니다.
+  가립니다(KG 에 있는 회사·기관 이름은 판단에 필요해 그대로 보냅니다). KG 이름이 나오지 않는
+  문서는 전송하지 않습니다.
 
 ## 3. 남는 것 (보관)
 
@@ -89,9 +90,10 @@ The desktop app reaches the internet only to download detection models (no user 
 uploaded), and — **only if the user supplies their own Upstage API key, which shipped
 builds do not contain** — to ask an external LLM to pinpoint an already-flagged injection
 span. If the user turns on the optional, off-by-default company knowledge-graph
-confidentiality check, the document text (with detected personal data already masked)
-and the matching knowledge-graph facts are sent to Upstage, once per document, to judge
-whether they are confidential. Local scan history is stored in SQLite as metadata only (job id, file name, source,
+confidentiality check, the document text (with detected personal data already masked;
+company names that appear in the knowledge graph are kept) and the matching
+knowledge-graph facts are sent to Upstage, once per document, to judge whether they are
+confidential. Local scan history is stored in SQLite as metadata only (job id, file name, source,
 timestamp, counts, offsets); **no raw text or text snippets are stored.**
 
 Contact: please open an issue at https://github.com/theagares/campfire/issues

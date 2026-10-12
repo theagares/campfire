@@ -158,6 +158,47 @@ def test_창이_여러_개여도_솔라는_문서_전체로_한_번(setup, monke
     assert "오로라 출시는 2027년 3월로 정했다." in {DOC[it["start"]:it["end"]] for it in items}
 
 
+class _FlakySolar(_SpySolar):
+    """첫 호출은 실패(예외) 또는 순서쌍 형식([[s, t]]) — 두 번째부터 정상."""
+
+    def __init__(self, secret_predicates: set[str], first: str) -> None:
+        super().__init__(secret_predicates)
+        self.first = first
+
+    async def post(self, _url, headers=None, json=None):  # noqa: A002
+        if not self.sent and self.first == "error":
+            self.sent.append(json["messages"][1]["content"])
+            raise RuntimeError("429")
+        if not self.sent and self.first == "pairs":
+            self.sent.append(json["messages"][1]["content"])
+            return _FakeResponse('{"기밀": [[2, 1]]}')
+        return await super().post(_url, headers=headers, json=json)
+
+
+@pytest.mark.parametrize("first", ["error", "pairs"])
+def test_솔라_호출_실패나_형식_오류는_한_번_더_묻는다(setup, monkeypatch, first):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(judge.asyncio, "sleep", lambda _s: real_sleep(0))
+    fake, spy = _FakeRetriever(), _FlakySolar({"출시 시기"}, first)
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(DOC, PII))
+    assert len(spy.sent) == 2
+    assert items and all(it["source"] == "llm" for it in items)     # 비상 경로(0.5)로 빠지지 않음
+    assert "오로라 출시는 2027년 3월로 정했다." in {DOC[it["start"]:it["end"]] for it in items}
+
+
+def test_KG_회사명은_솔라에_보이고_사람_이름은_가린다(setup):
+    org = "가온연구소"
+    pii = PII + [{"type": "ORGANIZATION", "start": DOC.index(org), "end": DOC.index(org) + len(org), "text": org,
+                  "confidence": 0.9, "source": "encoder"}]
+    fake, spy = _FakeRetriever(), _SpySolar({"설립자"})
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(DOC, pii))
+    body = spy.sent[0]
+    assert "(가온연구소, 설립자, [이름 마스킹])" in body and NAME not in body
+    assert items and not any(it["start"] <= DOC.index(org) < it["end"] for it in items)  # 결과에선 기관명 구간을 뺀다
+
+
 def test_리트리버가_거른_사실은_솔라로_가지_않는다(setup):
     fake = _FakeRetriever({"설립자": -10.0, "출시 시기": -10.0, "본사 위치": -10.0})
     spy = _SpySolar({"설립자"})
