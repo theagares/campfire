@@ -53,6 +53,33 @@ def test_정상검사_탐지0건은_사람판단없이_즉시_원본통과(monke
     assert got is _ORIGINAL
 
 
+def test_미검사0건은_자동통과하지_않는다(monkeypatch):
+    """파싱 실패/모델 미준비의 0건은 clean이 아니라 판단 불가다."""
+    import app.core.pipeline.orchestrator as orch
+
+    async def unscanned(**_kwargs):
+        return {
+            "originalText": "hello", "maskedText": "hello",
+            "piiItems": [], "injectionItems": [], "blocked": False,
+            "scanStatus": "models_not_ready", "reason": "모델 준비 중",
+            "stats": {"piiCount": 0, "injectionCount": 0},
+        }
+
+    waited = []
+
+    async def decide(**kwargs):
+        waited.append(kwargs)
+        return "cancel"
+
+    monkeypatch.setattr(orch, "run_pipeline", unscanned)
+    monkeypatch.setattr(addon_mod.broker, "wait", decide)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"hello", file_name="clean.txt", mime="text/plain", host="claude.ai"
+    ))
+    assert got is None
+    assert len(waited) == 1
+
+
 def test_사용자지정_마스킹은_원본판단으로_우회할수없다(monkeypatch):
     import app.core.pipeline.orchestrator as orch
 
