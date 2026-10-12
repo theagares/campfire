@@ -51,6 +51,7 @@ def _fake_pipeline(mask_map):
         m = mask_map.get(text, text)
         pii = [{"type": "ID", "start": 0, "end": 1}] if m != text else []
         return {"maskedText": m, "piiItems": pii, "injectionItems": [], "blocked": False,
+                "scanStatus": "ok", "truncated": False,
                 "stats": {"piiCount": len(pii), "injectionCount": 0}}
     return fake
 
@@ -95,6 +96,21 @@ def test_손으로_친_텍스트를_마스킹한다(monkeypatch):
     assert "900101" not in f.request.content.decode("utf-8", "replace")
     # 메타데이터는 그대로
     assert got[(2, 7, 2)].value.decode() == "claude-opus-5-5"
+
+
+def test_탐지없는_메시지는_판단대기없이_바이트그대로_통과한다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline({}))
+    original = _send_with(typed="평범한 질문입니다")
+
+    async def go():
+        f = _flow(original)
+        await asyncio.wait_for(CampfireAddon().request(f), timeout=0.2)
+        return f
+
+    f = _run(go())
+    assert f.response is None
+    assert f.request.content == original
 
 
 def test_인라인_파일_내용도_마스킹한다(monkeypatch):
