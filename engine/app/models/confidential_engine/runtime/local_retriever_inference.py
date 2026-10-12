@@ -62,7 +62,8 @@ class DocPair(nn.Module):
         k = self.emb // self.block
         bl = (zh.view(-1, k, self.block, 1) * zt.view(-1, k, 1, self.block)).reshape(-1, self.emb * self.block)
         with torch.autocast(H.device.type, enabled=False):  # 마지막 점수는 fp32 (반올림되면 임계 조정이 안 됨)
-            sc = self.bil(bl.float()) @ R.float().T
+            # GPU 에선 모델이 fp16 이라 가중치도 올려야 한다 (self.bil(bl.float()) 는 dtype 불일치로 실패)
+            sc = torch.nn.functional.linear(bl.float(), self.bil.weight.float(), self.bil.bias.float()) @ R.float().T
         return sc, a
 
 
