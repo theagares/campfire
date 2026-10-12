@@ -95,6 +95,7 @@ function register(ctx) {
   ipcMain.handle('stats:get', () => buildStats(engineManager));
 
   ipcMain.handle('proxy:status', () => proxyToggle.status());
+  ipcMain.handle('proxy:routeStatus', () => proxyToggle.routeStatus());
   ipcMain.handle('proxy:set', async (_e, enabled) => {
     const result = await proxyToggle.set(!!enabled);
     return { result, status: await proxyToggle.status() };

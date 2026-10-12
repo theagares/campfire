@@ -123,11 +123,13 @@ function createRunner({ execFileImpl = execFile } = {}) {
     ], { timeout: 120000 });
   }
 
-  async function setPac(url) {
+  async function setPac(input) {
+    const url = typeof input === 'object' && input ? input.url : input;
     if (!/^http:\/\/127\.0\.0\.1(?::\d+)?\//.test(String(url))) {
       throw new Error('로컬 PAC URL만 설정할 수 있습니다');
     }
-    const before = await query();
+    const supplied = typeof input === 'object' && input ? input.before : null;
+    const before = supplied && Array.isArray(supplied.services) ? supplied : await query();
     const calls = [];
     for (const service of before.services) {
       calls.push(['-setproxyautodiscovery', service.name, 'off']);
@@ -135,12 +137,24 @@ function createRunner({ execFileImpl = execFile } = {}) {
       calls.push(['-setautoproxystate', service.name, 'on']);
     }
     await runPrivileged(calls);
-    const after = await query();
-    if (!after.services.length
-        || after.services.some((s) => !s.pacEnabled || s.pacUrl !== String(url))) {
+    // 전체 query는 서비스마다 5개 명령을 실행한다. 적용 확인에는 PAC 두 필드만
+    // 필요하므로 서비스별 -getautoproxyurl 하나만 병렬 실행한다.
+    const verified = await Promise.all(before.services.map(async (service) => ({
+      service,
+      actual: parseAutoProxy(await run(NETWORK_SETUP, ['-getautoproxyurl', service.name])),
+    })));
+    if (!verified.length
+        || verified.some(({ actual }) => !actual.pacEnabled || actual.pacUrl !== String(url))) {
       throw new Error('macOS가 일부 네트워크 서비스에 PAC 설정을 적용하지 않았습니다');
     }
-    return after;
+    return {
+      platform: 'darwin',
+      services: verified.map(({ service, actual }) => ({
+        ...service,
+        ...actual,
+        autoDiscoveryEnabled: false,
+      })),
+    };
   }
 
   async function restore(serialized) {

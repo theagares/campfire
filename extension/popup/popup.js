@@ -21,6 +21,9 @@ function render(info) {
   const pill = $('engine-pill');
   const engineText = $('engine-text');
   const detail = $('engine-detail');
+  const routePill = $('route-pill');
+  const routeText = $('route-text');
+  const routeDetail = $('route-detail');
   const dashBtn = $('open-dashboard');
 
   const isLocal = info?.target === 'local';
@@ -38,10 +41,42 @@ function render(info) {
   if (ok && info?.health) {
     const h = info.health;
     detail.textContent = `버전 ${h.version || '?'} · 정책 ${h.injectionPolicy || '?'} · detector ${(h.detectors ? Object.values(h.detectors).join('/') : '?')}`;
+    const route = h.extensionRoute || { mode: 'unknown', activeTabs: 0 };
+    const routeLabels = {
+      proxy: '프록시 확인됨',
+      extension: '확장 보호 중',
+      fallback: '확장으로 복구',
+      off: '보호 꺼짐',
+      mixed: '탭별 경로 다름',
+      unknown: 'AI 탭 확인 대기',
+    };
+    routePill.classList.remove('ok', 'off', 'warn');
+    routePill.classList.add(
+      route.mode === 'proxy' || route.mode === 'extension' ? 'ok'
+        : route.mode === 'fallback' || route.mode === 'mixed' || route.mode === 'off' ? 'warn' : 'off',
+    );
+    routeText.textContent = routeLabels[route.mode] || routeLabels.unknown;
+    if (route.mode === 'fallback') {
+      routeDetail.textContent = '프록시 표식이 없어 확장 보호를 유지합니다.';
+    } else if (route.mode === 'mixed') {
+      routeDetail.textContent = '열린 AI 탭마다 경로가 달라 새로고침이 필요합니다.';
+    } else if (route.mode === 'off') {
+      routeDetail.textContent = '확장 보호가 꺼져 있고 프록시 경로도 확인되지 않았습니다.';
+    } else if (route.mode === 'unknown') {
+      routeDetail.textContent = 'AI 사이트를 열면 실제 경로를 자동 확인합니다.';
+    } else {
+      routeDetail.textContent = `열린 AI 탭 ${route.activeTabs || 1}개에서 확인됨`;
+    }
   } else if (info?.baseUrl) {
     detail.textContent = info.baseUrl;
+    routePill.className = 'status-pill off';
+    routeText.textContent = '확인 불가';
+    routeDetail.textContent = '';
   } else {
     detail.textContent = '';
+    routePill.className = 'status-pill off';
+    routeText.textContent = '확인 불가';
+    routeDetail.textContent = '';
   }
 
   // 로컬 앱이 연결됐을 때만 대시보드 열기 가능
@@ -103,4 +138,6 @@ chrome.storage?.local?.get?.(
   },
 );
 
-(async () => { render(await requestInfo('GET_CONNECTION_INFO')); })();
+async function refresh() { render(await requestInfo('GET_CONNECTION_INFO')); }
+refresh();
+setInterval(refresh, 2000);

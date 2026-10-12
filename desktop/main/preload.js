@@ -17,6 +17,7 @@ const api = {
   getModelsStatus: () => ipcRenderer.invoke('models:status'),
   scanCleanup: () => ipcRenderer.invoke('cleanup:scan'),
   getProxyStatus: () => ipcRenderer.invoke('proxy:status'),
+  getProxyRouteStatus: () => ipcRenderer.invoke('proxy:routeStatus'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),

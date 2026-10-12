@@ -25,6 +25,10 @@ import {
 const BADGE_OK = '#1fa36d';
 const BADGE_WARN = '#d88a16';
 const BADGE_ERROR = '#d84a4a';
+const HEALTH_CACHE_MS = 1000;
+let healthCache = null;
+let healthCacheAt = 0;
+let healthCheckInFlight = null;
 
 function setActionBadge(text, color) {
   chrome.action?.setBadgeText({ text });
@@ -135,7 +139,7 @@ async function fetchServer(path, options = {}, _retried = false) {
   }
 }
 
-async function checkEngineHealth() {
+async function checkEngineHealthNow() {
   try {
     const { res, server } = await fetchServer('/health', { method: 'GET', cache: 'no-store' });
     if (!res.ok) return { ok: false, target: server.target, baseUrl: server.baseUrl, port: server.port };
@@ -150,6 +154,48 @@ async function checkEngineHealth() {
     };
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+}
+
+/** 여러 AI 탭이 동시에 2초 폴링해도 /health 한 번만 보낸다. 짧은 캐시는 전환
+ * 지연을 체감시키지 않으면서 포트 스캔과 서비스 워커 기동 경쟁을 크게 줄인다. */
+async function checkEngineHealth(force = false) {
+  const now = Date.now();
+  if (!force && healthCache && now - healthCacheAt < HEALTH_CACHE_MS) return healthCache;
+  // 강제 재탐지도 이미 진행 중인 같은 /health 요청과 합친다. 두 Promise가 전역
+  // in-flight 슬롯을 서로 지우면 탭 수만큼 다시 요청하는 경쟁이 생긴다.
+  if (healthCheckInFlight) return healthCheckInFlight;
+  healthCheckInFlight = checkEngineHealthNow().then((result) => {
+    healthCache = result;
+    healthCacheAt = Date.now();
+    return result;
+  }).finally(() => { healthCheckInFlight = null; });
+  return healthCheckInFlight;
+}
+
+async function reportProxyRoute(message, sender) {
+  const tabId = sender?.tab?.id;
+  const allowedModes = new Set(['proxy', 'extension', 'fallback', 'off']);
+  if (!Number.isInteger(tabId) || !allowedModes.has(message.mode) || !message.host) {
+    return { ok: false };
+  }
+  try {
+    const { res } = await fetchServer('/proxy/extension-route', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: message.mode,
+        host: String(message.host),
+        tabId,
+        expectedProxy: Boolean(message.expectedProxy),
+      }),
+    });
+    return { ok: res.ok };
+  } catch {
+    // 상태 보고 실패는 보호 판단에 관여하지 않는다. MAIN world는 실제 응답 표식만
+    // 보고 프록시에 양보하며, 보고가 끊기면 데스크톱 표시는 자동으로 만료된다.
+    return { ok: false };
   }
 }
 
@@ -1180,9 +1226,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (type === 'GET_PROXY_EXPECTATION') {
+    checkEngineHealth().then((info) => sendResponse({
+      expected: Boolean(info?.ok && info?.health?.proxy?.running),
+    }));
+    return true;
+  }
+
+  if (type === 'REPORT_PROXY_ROUTE') {
+    reportProxyRoute(message, sender).then((result) => sendResponse(result));
+    return true;
+  }
+
   // 설정 popup: 강제 재스캔
   if (type === 'RESCAN_SERVER') {
-    discoverServer().then(() => checkEngineHealth()).then((info) => sendResponse(info));
+    discoverServer().then(() => checkEngineHealth(true)).then((info) => sendResponse(info));
     return true;
   }
 

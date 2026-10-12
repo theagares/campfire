@@ -34,11 +34,13 @@ const noop = function () {};
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 /** interceptor.js 를 새 샌드박스에 올리고 조작 손잡이를 돌려준다. */
-function load() {
+function load({ proxyMarked = false } = {}) {
   const win = new Map();
   const doc = new Map();
   const origFetchCalls = [];
+  const posted = [];
   const store = Object.create(null);
+  let hasProxyMark = proxyMarked;
 
   Object.assign(store, {
     console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
@@ -83,7 +85,12 @@ function load() {
   // 훅이 원본으로 붙들어 두는 fetch. 여기 도착했다 = 인터셉트 없이 통과했다.
   store.fetch = function (...args) {
     origFetchCalls.push(args);
-    return Promise.resolve({ ok: true });
+    return Promise.resolve({
+      ok: true,
+      headers: { get: (name) => (
+        hasProxyMark && String(name).toLowerCase() === 'x-campfire-proxy' ? '1' : null
+      ) },
+    });
   };
 
   // 미정의 전역은 생성자 모양(대문자 시작)만 자동 스텁한다. 소문자까지 스텁하면
@@ -103,7 +110,7 @@ function load() {
   store.self = sandbox;
   store.top = sandbox;
   store.addEventListener = (t, f) => { const a = win.get(t) || []; a.push(f); win.set(t, a); };
-  store.postMessage = noop;
+  store.postMessage = (message) => { posted.push(message); };
 
   const ctx = vm.createContext(sandbox);
   vm.runInContext(SRC, ctx, { filename: 'interceptor.js' });
@@ -131,7 +138,12 @@ function load() {
     return origFetchCalls.length > 0;
   }
 
-  return { config, passedThrough };
+  return {
+    config,
+    passedThrough,
+    posted,
+    setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
+  };
 }
 
 const withToken = () => {
@@ -268,6 +280,52 @@ async function main() {
     assert.strictEqual(
       await t.passedThrough(nfc), true,
       'NFD 로 승인한 마스킹본이 NFC 이름으로 오자 다시 인터셉트됐다',
+    );
+  }
+
+  // (12) 엔진이 프록시를 기대해도 실제 HEAD 응답에 표식이 있을 때만 확장이 양보한다.
+  {
+    const t = load({ proxyMarked: true });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'proxy'));
+    assert.strictEqual(
+      await t.passedThrough(), true,
+      '실제 프록시 표식을 확인했는데 확장이 계속 이중 인터셉트한다',
+    );
+  }
+
+  // (13) 설정은 켜졌지만 표식이 없으면 fallback을 보고하고 확장 보호를 유지한다.
+  {
+    const t = withToken();
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'fallback'));
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      '프록시 표식 없이 확장이 손을 뗐다 — 보호 공백이 생긴다',
+    );
+  }
+
+  // (14) 프록시를 끄면 TTL을 기다리지 않고 즉시 확장 보호로 돌아온다.
+  {
+    const t = load({ proxyMarked: true });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: false,
+    });
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      '프록시 해제 뒤에도 TTL 동안 확장 보호가 비었다',
     );
   }
 

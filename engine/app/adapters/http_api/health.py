@@ -18,6 +18,7 @@ from fastapi import APIRouter, Request
 
 from app import config
 from app.adapters import proxy
+from app.adapters.http_api.proxy_control import extension_route_status
 from app.core import forced_mask, model_status
 from app.core.detectors import registry
 
@@ -62,6 +63,9 @@ async def health(request: Request):
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,
         "maxPromptChars": config.MAX_PROMPT_CHARS,
         "extensionLastSeenSecondsAgo": extension_last_seen_seconds_ago,
+        # 브라우저가 실제 응답 표식을 능동 확인해 보고한 보호 경로다. 엔진 프로세스나
+        # 설정값이 아니라 실제 탭 기준이라 프록시/확장 전환 완료 여부를 확인할 수 있다.
+        "extensionRoute": extension_route_status(),
         "mcpRiskScanner": risk_scanner_status,
         # 단어 원문은 절대 반환하지 않는다. 데스크탑은 count/revision 으로 동기화만 확인한다.
         "forcedMask": forced_mask.registry.status(),

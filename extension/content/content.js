@@ -53,6 +53,29 @@
     }, '*');
   }
 
+  function sendProxyExpectationToMain(expected) {
+    window.postMessage({
+      __campfire_config: true,
+      direction: 'isolated-to-main',
+      type: 'SECUREDOC_PROXY_EXPECTATION',
+      bridgeToken,
+      enabled: Boolean(expected),
+    }, '*');
+  }
+
+  function refreshProxyExpectation() {
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_PROXY_EXPECTATION' }, (result) => {
+        // 서비스 워커/엔진을 못 물으면 프록시를 기대하지 않는다. MAIN world는 즉시
+        // 확장 보호로 복귀하므로 확인 실패가 보호 공백으로 이어지지 않는다.
+        void chrome.runtime.lastError;
+        sendProxyExpectationToMain(Boolean(result?.expected));
+      });
+    } catch {
+      sendProxyExpectationToMain(false);
+    }
+  }
+
   /** MAIN world(interceptor.js)에 "이 파일은 content.js가 사용자 검토까지 이미
    *  마쳤다"고 알린다.
    *
@@ -104,6 +127,12 @@
   }
 
   sendBridgeTokenToMain();
+  // 하위 frame마다 확인 요청을 보내면 같은 탭이 여러 상태로 집계된다. 보호 경로는
+  // top frame 하나가 능동 확인하고, MAIN world의 게이트도 그 결과로 즉시 전환한다.
+  if (window.top === window) {
+    refreshProxyExpectation();
+    setInterval(refreshProxyExpectation, 2000);
+  }
 
   // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
   //
@@ -2739,12 +2768,22 @@
     if (event.source !== window) return;
     if (!event.data?.__securedoc || event.data.direction !== 'main-to-isolated') return;
 
-    // MAIN world(interceptor)가 "프록시가 실제 경로에 있다"를 알린다. 그 동안 확장은
-    // 파일 staging·프롬프트 게이트를 멈춘다 — 프록시가 단독으로 맡는다(위조는 bridgeToken 검증).
-    if (event.data.type === 'SECUREDOC_PROXY_IN_PATH') {
+    // MAIN world가 능동 HEAD 요청에서 본 실제 보호 경로를 알린다. 표식이 확인된
+    // proxy 모드에서만 확장이 손을 떼고, 나머지는 즉시 확장 보호를 유지한다.
+    if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
-      proxyMarkAt = Date.now();
+      proxyMarkAt = event.data.mode === 'proxy' ? Date.now() : 0;
       proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
+      if (window.top === window) {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'REPORT_PROXY_ROUTE',
+            mode: event.data.mode,
+            host: location.hostname,
+            expectedProxy: Boolean(event.data.expectedProxy),
+          }, () => { void chrome.runtime.lastError; });
+        } catch { /* extension context invalidated */ }
+      }
       return;
     }
 

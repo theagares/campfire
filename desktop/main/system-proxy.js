@@ -69,7 +69,12 @@ function create(runner = null, platform = null) {
     /** Windows는 단일 상태, macOS는 services 배열을 반환한다. */
     query: () => selectedRunner('query'),
 
-    setPac: (url) => selectedRunner('set-pac', url),
+    // macOS는 enableNow가 이미 읽은 전체 상태를 재사용한다. 관리자 창 전후로 같은
+    // networksetup 조회를 반복하던 비용을 없애되 Windows 계약은 그대로 유지한다.
+    setPac: (url, before = null) => selectedRunner(
+      'set-pac',
+      selectedPlatform === 'darwin' ? { url, before } : url,
+    ),
 
     restore: (previous) => selectedRunner('restore', JSON.stringify(previous)),
 
