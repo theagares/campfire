@@ -579,23 +579,58 @@ function manualClients(app, mcpUrl) {
   ];
 }
 
-async function detectClients(app, mcpUrl) {
-  const [cc, cd] = await Promise.all([
-    claudeCodeInfo(app, mcpUrl),
+// claude mcp get 은 실제 환경에서 수 초가 걸린다. 렌더러의 갱신 요청이 겹쳐도 같은
+// CLI 를 여러 개 띄우지 않고 하나의 결과를 함께 기다리며, 잠시 재사용한다.
+const DETECT_CACHE_MS = 30000;
+let _detectPromise = null;
+let _detectCache = null;
+
+async function detectClients(app, mcpUrl, invoke = runClaude) {
+  if (_detectCache && _detectCache.mcpUrl === mcpUrl && Date.now() < _detectCache.expiresAt) {
+    return _detectCache.clients;
+  }
+  if (_detectPromise && _detectPromise.mcpUrl === mcpUrl) return _detectPromise.promise;
+
+  const promise = Promise.all([
+    claudeCodeInfo(app, mcpUrl, invoke),
     Promise.resolve(claudeDesktopInfo(app, mcpUrl)),
-  ]);
-  return [cc, cd, ...manualClients(app, mcpUrl)];
+  ]).then(([cc, cd]) => {
+    const clients = [cc, cd, ...manualClients(app, mcpUrl)];
+    // 조회 도중 연결·해제가 있었으면 이 결과는 이미 낡았다 — 캐시에 넣지 않는다.
+    if (_detectPromise?.promise === promise) {
+      _detectCache = { mcpUrl, clients, expiresAt: Date.now() + DETECT_CACHE_MS };
+    }
+    return clients;
+  }).finally(() => {
+    if (_detectPromise?.promise === promise) _detectPromise = null;
+  });
+  _detectPromise = { mcpUrl, promise };
+  return promise;
 }
 
-async function connect(app, clientId, mcpUrl) {
-  if (clientId === 'claude_code') return claudeCodeConnect(app, mcpUrl);
-  if (clientId === 'claude_desktop') return claudeDesktopConnect(app, mcpUrl);
+// 연결·해제 뒤에는 진행 중이던 조회까지 버리고 새로 본다. 실패해도 일부는 바뀌었을 수 있다.
+function invalidateDetectionCache() {
+  _detectCache = null;
+  _detectPromise = null;
+}
+
+async function connect(app, clientId, mcpUrl, invoke = runClaude) {
+  try {
+    if (clientId === 'claude_code') return await claudeCodeConnect(app, mcpUrl, invoke);
+    if (clientId === 'claude_desktop') return claudeDesktopConnect(app, mcpUrl);
+  } finally {
+    invalidateDetectionCache();
+  }
   throw new Error('이 클라이언트는 자동 연결을 지원하지 않습니다 — 스니펫을 복사해 수동으로 설정하세요');
 }
 
-async function disconnect(app, clientId) {
-  if (clientId === 'claude_code') return claudeCodeDisconnect();
-  if (clientId === 'claude_desktop') return claudeDesktopDisconnect(app);
+async function disconnect(app, clientId, invoke = runClaude) {
+  try {
+    if (clientId === 'claude_code') return await claudeCodeDisconnect(invoke);
+    if (clientId === 'claude_desktop') return claudeDesktopDisconnect(app);
+  } finally {
+    invalidateDetectionCache();
+  }
   throw new Error('이 클라이언트는 자동 연결 해제를 지원하지 않습니다');
 }
 

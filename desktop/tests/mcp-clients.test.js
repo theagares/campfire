@@ -9,6 +9,8 @@ const path = require('path');
 const {
   SERVER_NAME,
   RISK_SCANNER_SERVER_NAME,
+  detectClients,
+  connect,
   _test,
 } = require('../main/mcp-clients');
 
@@ -367,6 +369,29 @@ test('Claude Desktop 저장 직전 외부 변경을 감지하면 원본을 보�
 
   assert.throws(() => _test.writeJsonAtomic(configPath, data, raw), /다른 프로세스/);
   assert.equal(fs.readFileSync(configPath, 'utf8'), '{"version":3}');
+});
+
+test('겹치는 목록 조회는 Claude CLI를 한 번만 돌리고, 연결 뒤에는 새로 조회한다', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'campfire-mcp-detect-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = fakeApp(root);
+  const harness = claudeHarness(app);
+  const versionCalls = () => harness.calls.filter(args => args[0] === '--version').length;
+
+  const [first, second] = await Promise.all([
+    detectClients(app, MCP_URL, harness.invoke),
+    detectClients(app, MCP_URL, harness.invoke),
+  ]);
+  assert.strictEqual(first, second, '겹친 조회는 같은 결과를 함께 기다린다');
+  assert.equal(versionCalls(), 1);
+  assert.equal(first[0].connected, false);
+
+  await detectClients(app, MCP_URL, harness.invoke);
+  assert.equal(versionCalls(), 1, '캐시 시간 안에는 CLI를 다시 띄우지 않는다');
+
+  await connect(app, 'claude_code', MCP_URL, harness.invoke);
+  const after = await detectClients(app, MCP_URL, harness.invoke);
+  assert.equal(after[0].connected, true, '연결 뒤에는 캐시를 버리고 새로 본다');
 });
 
 test('수동 연결 스니펫에도 두 MCP가 함께 들어간다', () => {
