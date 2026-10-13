@@ -87,6 +87,7 @@ function load({ proxyMarked = false } = {}) {
     origFetchCalls.push(args);
     return Promise.resolve({
       ok: true,
+      url: String(args[0]),
       headers: { get: (name) => (
         hasProxyMark && String(name).toLowerCase() === 'x-campfire-proxy' ? '1' : null
       ) },
@@ -142,6 +143,7 @@ function load({ proxyMarked = false } = {}) {
     config,
     passedThrough,
     posted,
+    sandbox,
     setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
   };
 }
@@ -326,6 +328,22 @@ async function main() {
     assert.strictEqual(
       await t.passedThrough(), false,
       '프록시 해제 뒤에도 TTL 동안 확장 보호가 비었다',
+    );
+  }
+
+  // (15) 다른 호스트 응답의 표식(예: Gemini 업로드 호스트)으로는 이 탭의 보호를 내려놓지 않는다.
+  {
+    const t = withToken();
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    t.setProxyMarked(true);
+    await t.sandbox.fetch('https://push.clients6.google.com/upload/status');
+    await settle();
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      '다른 호스트 응답의 표식만 보고 확장이 손을 뗐다',
     );
   }
 

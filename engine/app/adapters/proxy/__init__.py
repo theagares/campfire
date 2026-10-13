@@ -22,10 +22,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 
 from app import config
 
 logger = logging.getLogger("securedoc.proxy")
+
+# macOS 신뢰 확인은 security 프로세스 두 개를 동기로 띄운다. /health·/proxy/status 를 1~2초마다
+# 부르는데 그때마다 띄우면 프록시와 같은 이벤트 루프가 멎는다.
+# ponytail: 5초 캐시 — CA 를 막 설치했으면 최대 5초 늦게 보인다. 더 빨라야 하면 설치 직후 무효화.
+_CA_TRUST_TTL_SEC = 5.0
+_ca_trust_cache: tuple[str, float, bool] | None = None
 
 _task: asyncio.Task | None = None
 _master = None
@@ -136,7 +143,13 @@ def ca_trusted() -> bool | None:
     if not p.exists():
         return False
     if sys.platform == "darwin":
-        return _macos_ca_trusted(p)
+        global _ca_trust_cache
+        now = time.monotonic()
+        if _ca_trust_cache and _ca_trust_cache[0] == str(p) and now - _ca_trust_cache[1] < _CA_TRUST_TTL_SEC:
+            return _ca_trust_cache[2]
+        trusted = _macos_ca_trusted(p)
+        _ca_trust_cache = (str(p), now, trusted)
+        return trusted
     if not hasattr(ssl, "enum_certificates"):
         return None
     raw = p.read_bytes()

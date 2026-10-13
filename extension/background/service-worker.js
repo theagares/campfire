@@ -141,7 +141,10 @@ async function fetchServer(path, options = {}, _retried = false) {
 
 async function checkEngineHealthNow() {
   try {
-    const { res, server } = await fetchServer('/health', { method: 'GET', cache: 'no-store' });
+    // 멎은 엔진의 /health 가 in-flight 슬롯을 붙잡으면 모든 탭의 프록시 기대값 확인이 같이 멎는다.
+    const { res, server } = await fetchServer('/health', {
+      method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(3000),
+    });
     if (!res.ok) return { ok: false, target: server.target, baseUrl: server.baseUrl, port: server.port };
     const data = await res.json().catch(() => null);
     setActionBadge('', BADGE_OK);

@@ -74,7 +74,9 @@ $('#conn-ext-install').addEventListener('click', async (e) => {
 
 // ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
 let mcpRefreshPromise = null;
-async function refreshMcpClients() {
+async function refreshMcpClients({ force = false } = {}) {
+  // 연결·해제 직후(force)에는 그 전에 시작된 조회를 기다린 뒤 새로 본다 — 진행 중이던 결과는 낡았다.
+  if (force && mcpRefreshPromise) await mcpRefreshPromise;
   if (mcpRefreshPromise) return mcpRefreshPromise;
   mcpRefreshPromise = api.detectMcpClients()
     .catch(() => ({ mcpUrl: null, clients: [] }))
@@ -138,7 +140,7 @@ $('#mcp-client-list').addEventListener('click', async (e) => {
     showGlobalBanner(`MCP 연결 실패(${id}): ${err.message || err}`);
   }
   actionBtn.textContent = originalLabel;
-  await refreshMcpClients();
+  await refreshMcpClients({ force: true });
 });
 
 // ── 프록시 게이트웨이 ─────────────────────────────────────────────────────────

@@ -323,6 +323,25 @@ test('Claude Desktop 한 번의 연결/해제가 두 MCP를 함께 관리하고 
   assert.equal(disconnected.mcpServers[SERVER_NAME], undefined);
   assert.equal(disconnected.mcpServers[RISK_SCANNER_SERVER_NAME], undefined);
   assert.equal(disconnected.mcpServers.existing.command, 'existing-server');
+  assert.equal(
+    fs.readFileSync(`${configPath}.campfire-backup`, 'utf8'),
+    original,
+    '여러 번 저장해도 백업은 처음 원본 그대로다',
+  );
+});
+
+test('BOM 이 붙은 Claude Desktop 설정도 손상으로 보지 않고 연결한다', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'campfire-mcp-bom-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = fakeApp(root);
+  const configPath = path.join(root, 'Claude', 'claude_desktop_config.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, '﻿' + JSON.stringify({ mcpServers: { existing: { command: 'x' } } }));
+
+  _test.claudeDesktopConnect(app, MCP_URL);
+  const connected = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert.ok(connected.mcpServers[SERVER_NAME]);
+  assert.equal(connected.mcpServers.existing.command, 'x');
 });
 
 test('손상된 Claude Desktop JSON은 오류로 남기고 원본을 절대 덮어쓰지 않는다', (t) => {

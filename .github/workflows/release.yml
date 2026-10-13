@@ -145,7 +145,7 @@ jobs:
           find .venv -name EXTERNALLY-MANAGED -delete
           if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
           "$PY" -m pip install --upgrade pip --break-system-packages
-          "$PY" -m pip install -e ".[proxy,test]" --break-system-packages
+          "$PY" -m pip install -e ".[proxy]" --break-system-packages
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -162,7 +162,12 @@ jobs:
         shell: bash
         run: |
           if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
-          "$PY" -m pytest tests/test_mcp.py -q
+          # pytest 는 사용자에게 배포되는 .venv 밖에 둔다. 모델 폴더도 임시 폴더로 —
+          # 앱 lifespan 이 러너의 실제 MODELS_ROOT 에 런타임 파일을 복사해 두면, 뒤의 설치본
+          # 모델 검증이 패키징에서 빠진 파일을 그 사본으로 메워 놓쳐 버린다.
+          "$PY" -m pip install --target "$RUNNER_TEMP/pytest-lib" "pytest>=8.0"
+          PYTHONPATH="$RUNNER_TEMP/pytest-lib" SECUREDOC_MODELS_DIR="$RUNNER_TEMP/campfire-test-models" \
+            "$PY" -m pytest tests/test_mcp.py -q
 
       - name: Build & upload as draft release asset
         working-directory: desktop

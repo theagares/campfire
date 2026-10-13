@@ -429,7 +429,8 @@ function readJsonDocument(p) {
   }
   let data;
   try {
-    data = JSON.parse(raw);
+    // PowerShell 5.1 등으로 편집하면 UTF-8 BOM 이 붙는다 — 손상이 아니다.
+    data = JSON.parse(raw.replace(/^﻿/, ''));
   } catch (err) {
     throw new Error(`Claude Desktop 설정 JSON이 손상되어 변경하지 않았습니다: ${err.message}`);
   }
@@ -439,7 +440,9 @@ function readJsonDocument(p) {
   return { data, raw };
 }
 
-function writeJsonAtomic(p, data, expectedRaw) {
+function writeJsonAtomic(configPath, data, expectedRaw) {
+  // 설정 파일이 심볼릭 링크(dotfiles 관리 등)면 링크를 일반 파일로 바꾸지 않게 실제 파일에 쓴다.
+  const p = fs.existsSync(configPath) ? fs.realpathSync(configPath) : configPath;
   const dir = path.dirname(p);
   fs.mkdirSync(dir, { recursive: true });
   const currentRaw = fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
@@ -465,7 +468,8 @@ function writeJsonAtomic(p, data, expectedRaw) {
     if (latestRaw !== expectedRaw) {
       throw new Error('Claude Desktop 설정이 저장 도중 변경되어 덮어쓰지 않았습니다. 다시 시도하세요.');
     }
-    if (latestRaw !== null) fs.copyFileSync(p, backup);
+    // 백업은 Campfire 가 처음 손대기 전의 원본 하나만 남긴다 — 매번 덮어쓰면 두 번째 저장에서 원본이 사라진다.
+    if (latestRaw !== null && !fs.existsSync(backup)) fs.copyFileSync(p, backup);
     fs.renameSync(temp, p);
   } catch (err) {
     if (fd !== null) {
@@ -597,7 +601,8 @@ async function detectClients(app, mcpUrl, invoke = runClaude) {
   ]).then(([cc, cd]) => {
     const clients = [cc, cd, ...manualClients(app, mcpUrl)];
     // 조회 도중 연결·해제가 있었으면 이 결과는 이미 낡았다 — 캐시에 넣지 않는다.
-    if (_detectPromise?.promise === promise) {
+    // 오류가 섞인 결과(일시적인 CLI 실패 등)도 30초 동안 버튼을 막지 않게 넣지 않는다.
+    if (_detectPromise?.promise === promise && !clients.some(client => client && client.error)) {
       _detectCache = { mcpUrl, clients, expiresAt: Date.now() + DETECT_CACHE_MS };
     }
     return clients;

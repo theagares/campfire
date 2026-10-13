@@ -120,11 +120,20 @@
     return _proxyProbe;
   }
 
+  // 표식은 이 탭과 같은 호스트의 응답일 때만 증거로 본다. Gemini 처럼 업로드만 다른 호스트
+  // (push.clients6.google.com)로 프록시를 지나는 사이트에서, 그 응답 표식으로 본 사이트
+  // 프롬프트 보호까지 내려놓으면 안 된다. URL 을 모르면 증거가 아니다(보호 유지).
+  function _sameHostResponse(url) {
+    try { return !!url && new URL(url, location.href).hostname === location.hostname; } catch { return false; }
+  }
+
   // 모든 실제 네트워크 fetch 는 이걸 지난다. 응답에 프록시 표식이 있으면 기록한다.
   const _origFetch = function (input, init) {
     const p = _rawFetch(input, init);
     p.then((r) => {
-      try { if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER)) _noteProxyMark(); } catch { /* noop */ }
+      try {
+        if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER) && _sameHostResponse(r.url)) _noteProxyMark();
+      } catch { /* noop */ }
     }, () => {});
     return p;
   };
@@ -1082,7 +1091,8 @@
     try {
       this.addEventListener('loadend', function () {
         try {
-          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)) _noteProxyMark();
+          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)
+            && _sameHostResponse(this.responseURL)) _noteProxyMark();
         } catch { /* noop */ }
       }, { once: true });
     } catch { /* noop */ }
