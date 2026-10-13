@@ -160,17 +160,19 @@ class EncoderPiiDetector:
     def _model_dir(self) -> Path:
         return config.PII_ENGINE_DIR / "models" / config.PII_MODEL_SEED
 
-    async def _spawn_process(self) -> None:
-        script = self._runtime_script()
-        args = [
+    def _spawn_args(self) -> list[str]:
+        return [
             config.PII_PYTHON_EXECUTABLE,
-            str(script),
+            str(self._runtime_script()),
             "--model-dir", str(self._model_dir()),
             "--device", config.PII_DEVICE,
             "--batch-size", str(config.PII_BATCH_SIZE),
             "--max-length", str(config.PII_MAX_LENGTH),
             "--stdio",
         ]
+
+    async def _spawn_process(self) -> None:
+        args = self._spawn_args()
         # Windows(특히 한국어 로케일)에서 자식 프로세스의 sys.stdin/stdout 이 기본
         # 콘솔 코드페이지(cp949)로 열려, UTF-8 JSONL 요청의 한글이 깨져 tokenizers
         # 가 "TextEncodeInput must be Union[...]" 로 실패하는 경우가 있다(로컬 실측).
@@ -193,9 +195,9 @@ class EncoderPiiDetector:
             env=env,
         )
         assert self._process.stdout is not None
-        payload = await self._read_ready_line(config.PII_LOAD_TIMEOUT_SEC, "pii_encoder")
+        payload = await self._read_ready_line(config.PII_LOAD_TIMEOUT_SEC, self.name)
         if not payload.get("ready"):
-            raise RuntimeError(f"pii_encoder: 예상치 못한 준비 응답: {payload!r}")
+            raise RuntimeError(f"{self.name}: 예상치 못한 준비 응답: {payload!r}")
         self.residency.device = payload.get("device")
 
     async def _read_ready_line(self, timeout_sec: float, tag: str) -> dict[str, Any]:
@@ -263,7 +265,11 @@ class EncoderPiiDetector:
             await self._infer_batch([_WARMUP_TEXT])
 
     async def _infer_batch(self, texts: list[str]) -> list[list[dict[str, Any]]]:
-        request = {"id": str(self._next_id), "texts": texts}
+        return (await self._rpc({"texts": texts}))["entities"]
+
+    async def _rpc(self, request: dict[str, Any]) -> dict[str, Any]:
+        """요청 하나를 보내고 응답 하나를 받는다 (기밀 탐지 리트리버도 같은 프로토콜로 쓴다)."""
+        request = {"id": str(self._next_id), **request}
         self._next_id += 1
         async with self._request_lock:
             proc = self._process
@@ -281,7 +287,7 @@ class EncoderPiiDetector:
                 if remaining <= 0:
                     await self._kill_process()  # 멎은 프로세스는 버린다 — 다음 요청이 새로 띄운다
                     raise RuntimeError(
-                        f"pii_encoder: 서브프로세스가 {config.DETECT_INFER_TIMEOUT_SEC}초 안에 "
+                        f"{self.name}: 서브프로세스가 {config.DETECT_INFER_TIMEOUT_SEC}초 안에 "
                         "응답하지 않음 — 프로세스를 재시작합니다"
                     )
                 try:
@@ -293,15 +299,15 @@ class EncoderPiiDetector:
                     if proc.stderr is not None:
                         stderr = await proc.stderr.read()
                     raise RuntimeError(
-                        f"pii_encoder: 서브프로세스가 응답 없이 종료됨: {stderr.decode(errors='replace')[-2000:]}"
+                        f"{self.name}: 서브프로세스가 응답 없이 종료됨: {stderr.decode(errors='replace')[-2000:]}"
                     )
                 try:
                     result = json.loads(out_line.decode())
                 except json.JSONDecodeError:
                     continue  # 진단 잡음 라인 — 무시하고 다음 줄 대기
         if "error" in result:
-            raise RuntimeError(f"pii_encoder: 추론 오류: {result['error']}")
-        return result["entities"]
+            raise RuntimeError(f"{self.name}: 추론 오류: {result['error']}")
+        return result
 
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
         if not text.strip():

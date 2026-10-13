@@ -43,6 +43,14 @@ function renderHome() {
   const models = (state.stats && state.stats.models) || null;
   setModelPill('#home-pii', models && models.pii);
   setModelPill('#home-inj', models && models.injection);
+  // 기밀 탐지는 선택 기능 — 엔진이 켜고 떴을 때만 줄을 보인다
+  const conf = models && models.confidential;
+  $('#home-conf-row').style.display = conf && conf.enabled ? '' : 'none';
+  setModelPill('#home-conf', conf);
+}
+
+function confidentialOn() {
+  return !!(state.stats && state.stats.models && state.stats.models.confidential && state.stats.models.confidential.enabled);
 }
 
 function setModelPill(sel, model) {
@@ -259,6 +267,19 @@ function renderDashboard() {
   setModelDot('#dash-pii-dot', '#dash-pii-label', m.pii, 'A.X Encoder base 0.1B');
   setModelDot('#dash-inj-dot', '#dash-inj-label', m.injection, 'EXAONE 4.0 1.2B');
 
+  // 기밀 탐지(선택 기능) — 켜져 있을 때만. 건수는 PII 와 따로 센다(engine-stats.js)
+  const confShown = confidentialOn();
+  $('#dash-conf-row').style.display = confShown ? '' : 'none';
+  if (confShown) {
+    const conf = s.confidential || {};
+    $('#tile-conf-today').textContent = fmt(conf.today);
+    $('#tile-conf-week').textContent = fmt(conf.week);
+    $('#tile-conf-month').textContent = fmt(conf.month);
+    $('#tile-conf-total').textContent = fmt(conf.total);
+    setModelDot('#dash-conf-dot', '#dash-conf-label', m.confidential, 'A.X 리트리버 · Solar Pro 4 판정');
+    renderTrendChart('#dc-chart-conf', s.trend, 'confidential', '#E8890C');
+  }
+
   // 최근 14일 탐지 추이(engine store 실측, main/engine-stats.js trend) — 오늘 버킷은
   // 새 탐지가 기록될 때마다 값이 올라가므로, 5초 폴링(onStats)만으로도 실시간처럼
   // 그래프가 갱신된다. 예전엔 데이터와 무관한 장식용 고정 이미지였다.
@@ -372,25 +393,33 @@ function subRow(items) {
 // 디자인 표현이 아니라 실제 구현할 기능) ─────────────────────────────────────
 // 좌표는 Figma 노드(120:481 그룹, 카드 원점 기준 66,94)를 460×220 캔버스로 환산하고,
 // "탐지 종류 부분이 힌트 문구에 붙어 보인다"는 피드백을 반영해 y를 전체적으로 +15 내렸다.
+// 기밀 탐지 노드(opt:'confidential')는 기밀 탐지가 켜져 있을 때만 그린다. 그때는 세 줄이 들어가야 해서
+// PII·INJECTION 줄을 위로 당긴 기본 위치(top3)를 쓴다(사용자가 끌어 놓은 위치가 있으면 그게 우선).
 const PIPE_NODES = [
   { id:'receive', src:'receive', label:null, left:0,      top:25.45, w:9.53, h:19.93 },
   { id:'parse',   src:'parse', ext:'svg', label:null, left:34.13, top:25, w:18.91, h:20 },
-  { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:62.77, top:6.82, w:9.53, h:19.93 },
-  { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:62.77, top:44.88, w:9.53, h:19.93 },
-  { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:88.81, top:6.82, w:9.53, h:19.93 },
-  { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:88.77, top:45.64, w:9.53, h:19.93 },
+  { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:62.77, top:6.82, top3:1, w:9.53, h:19.93 },
+  { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:62.77, top:44.88, top3:30, w:9.53, h:19.93 },
+  { id:'conf-detect', src:'conf-detect', ext:'svg', label:'기밀 탐지', left:62.77, top:59, w:9.53, h:19.93, opt:'confidential' },
+  { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:88.81, top:6.82, top3:1, w:9.53, h:19.93 },
+  { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:88.77, top:45.64, top3:30, w:9.53, h:19.93 },
+  { id:'conf-done', src:'conf-done', ext:'svg', label:'기밀 마스킹 완료', left:88.79, top:59, w:9.53, h:19.93, opt:'confidential' },
   { id:'text-extract', src:'text-extract', label:'텍스트\n직접 추출', left:39.3, top:64.2, w:9.78, h:20.45 },
 ];
 const PIPE_EDGES = [
   { from:'receive', to:'parse' },
   { from:'parse', to:'pii-detect' },
   { from:'parse', to:'inj-detect' },
+  { from:'parse', to:'conf-detect' },
   { from:'pii-detect', to:'pii-done' },
   { from:'inj-detect', to:'inj-done' },
+  { from:'conf-detect', to:'conf-done' },
   { from:'text-extract', to:'parse', dashed:true },
 ];
 const pipeNodeEls = {};
 let pipeDiagramBuilt = false;
+let pipeConfShown = false;   // 지금 그려진 다이어그램에 기밀 노드가 있는가
+let pipeResizeBound = false;
 let pipeSaveTimer = null;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -399,11 +428,13 @@ function buildPipelineDiagram() {
   if (pipeDiagramBuilt) return;
   pipeDiagramBuilt = true;
   const canvas = $('#pipe-diagram');
-  const svg = $('#pipe-lines');
   const saved = (state.settings && state.settings.pipelineLayout) || {};
+  pipeConfShown = confidentialOn();
 
   PIPE_NODES.forEach((n) => {
-    const pos = saved[n.id] || { left: n.left, top: n.top };
+    if (n.opt === 'confidential' && !pipeConfShown) return;
+    const top = pipeConfShown && n.top3 != null ? n.top3 : n.top;
+    const pos = saved[n.id] || { left: n.left, top };
     const el = document.createElement('div');
     el.className = 'pipe-node';
     el.dataset.id = n.id;
@@ -419,8 +450,20 @@ function buildPipelineDiagram() {
     makePipeNodeDraggable(el, canvas);
   });
 
-  window.addEventListener('resize', drawPipeLines);
+  if (!pipeResizeBound) {
+    window.addEventListener('resize', drawPipeLines);
+    pipeResizeBound = true;
+  }
   drawPipeLines();
+}
+
+/** 기밀 탐지를 켜고 끄면(엔진 재시작 후 /health 로 반영) 기밀 노드를 넣거나 빼서 다시 그린다. */
+function syncPipelineOptionalNodes() {
+  if (!pipeDiagramBuilt || confidentialOn() === pipeConfShown) return;
+  Object.keys(pipeNodeEls).forEach((id) => { pipeNodeEls[id].remove(); delete pipeNodeEls[id]; });
+  for (const key of [...pipeFlow.sparks.keys()]) clearSparks(key);
+  pipeDiagramBuilt = false;
+  renderPipeline();
 }
 
 // 위/좌/우는 카드(.pipe-card) 전체 기준 5% 여백만 남기고, 아래쪽은 구분선(.pc-divider)
@@ -533,13 +576,15 @@ function schedulePipeLayoutSave() {
 // getTotalLength() 는 user unit 을 돌려줘 둘이 안 맞고, 늘어난 좌표계 탓에 점도
 // 타원으로 찌그러진다. path.getPointAtLength() 로 좌표만 얻어 HTML div 를 옮기면
 // 발광체는 px 로 그려져 항상 동그랗고, 좌표는 % 라 캔버스가 늘어나도 선 위에 붙는다.
-const PIPE_STAGE_ORDER = ['receive', 'parse', 'pii', 'injection', 'mask'];
+// 기밀 탐지(confidential)는 엔진에서 인젝션 다음에 돈다(인젝션 구간을 가리고 Solar 로 보내려고).
+const PIPE_STAGE_ORDER = ['receive', 'parse', 'pii', 'injection', 'confidential', 'mask'];
 const PIPE_STAGE_NODES = {
   receive: ['receive'],
   parse: ['parse'],
   pii: ['pii-detect'],
   injection: ['inj-detect'],
-  mask: ['pii-done', 'inj-done'],
+  confidential: ['conf-detect'],
+  mask: ['pii-done', 'inj-done', 'conf-done'],
 };
 // 각 단계에서 "빛이 흐르는" 구간 = 그 단계로 들어오는 연결선.
 // receive 는 들어오는 선이 없어 노드만 빛난다.
@@ -547,7 +592,8 @@ const PIPE_STAGE_EDGES = {
   parse: ['receive>parse'],
   pii: ['parse>pii-detect'],
   injection: ['parse>inj-detect'],
-  mask: ['pii-detect>pii-done', 'inj-detect>inj-done'],
+  confidential: ['parse>conf-detect'],
+  mask: ['pii-detect>pii-done', 'inj-detect>inj-done', 'conf-detect>conf-done'],
 };
 const pipeEdgeKey = (e) => `${e.from}>${e.to}`;
 
@@ -845,6 +891,8 @@ function openSettings() {
   $('#remote-url').value = s.remoteUrl || '';
   $('#upstage-api-key').value = s.upstageApiKey || '';
   $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
+  $('#confidential-enabled').checked = !!s.confidentialEnabled;
+  $('#kg-path').value = s.kgPath || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
   loadForcedMaskTerms();
@@ -997,6 +1045,8 @@ $('#settings-save').addEventListener('click', async () => {
   // 빈 문자열도 patch 에 포함시킨다(trim() 만 하고 빈 값이어도 그대로 실어보냄).
   patch.upstageApiKey = $('#upstage-api-key').value.trim();
   patch.mcpRiskScannerEnabled = $('#mcp-risk-scanner-enabled').checked;
+  patch.confidentialEnabled = $('#confidential-enabled').checked;
+  patch.kgPath = $('#kg-path').value.trim();
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
   // 제거). 모델 다운로드는 main.js 가 기동 시 자동으로 트리거한다.
@@ -1055,7 +1105,7 @@ async function init() {
   if ($('#view-connect').classList.contains('active')) refreshProxy();
 });
   api.onMetrics((m) => { state.metrics = m; renderResources($('#db-resources')); });
-  api.onStats((s) => { state.stats = s; renderHome(); renderDashboard(); });
+  api.onStats((s) => { state.stats = s; renderHome(); renderDashboard(); syncPipelineOptionalNodes(); });
   api.onNavigate((view) => goto(view));
   // 구버전 preload 와 섞여 실행될 수 있어 옵셔널 호출 — 없으면 처리현황은 idle 로 남는다.
   api.onPipelineActivity?.((ev) => applyPipelineActivity(ev));

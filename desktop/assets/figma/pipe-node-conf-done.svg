@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">
+  <!-- 처리현황 '기밀 마스킹 완료' 노드 — PII·INJECTION 완료 노드와 같은 초록 방패, 글자만 C(Confidential) -->
+  <rect x="1.5" y="1.5" width="85" height="85" rx="16" fill="#fff" stroke="#c9c9c9" stroke-width="2"/>
+  <path d="M44 17 L65 24.5 V43 C65 56.5 56 65.5 44 71 C32 65.5 23 56.5 23 43 V24.5 Z" fill="#22A65A"/>
+  <text x="44" y="53" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#fff">C</text>
+</svg>

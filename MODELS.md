@@ -10,6 +10,7 @@
 |---|---|---|---|
 | `app/models/pii_engine/models/seed42/` | skt/A.X-Encoder-base + CRF + gazetteer, 단일 seed(seed42) | 499MB | hwan님 GPU 서버(`123.37.28.197`) → 3-seed 앙상블에서 단일 seed로 전환(하드링크 중복 버그 확인 후) |
 | `app/models/injection_engine/{attn,hybrid}/` | EXAONE-4.0-1.2B 위 attention/hybrid 특징을 얹은 regularized MLP 분류기 | 34MB | 같은 팀, `injection_diag` 프로젝트 model_release |
+| `app/models/confidential_engine/models/` | 기밀 탐지 리트리버 — skt/A.X-Encoder-base DocPair (fp16), **기밀 탐지를 켠 경우에만** 받음 | 327MB | 팀 GPU 서버 `kg_secret/models/docre_syn3` (`app/models/confidential_engine/README.md`) |
 
 **EXAONE-4.0-1.2B 백본 자체(bf16, ~2.4GB)는 이 배포 대상이 아니다** — `transformers`가
 최초 실행 시 HuggingFace Hub(`LGAI-EXAONE/EXAONE-4.0-1.2B`, 공개 모델, 인증 불필요 확인됨)
@@ -31,6 +32,7 @@
 https://github.com/theagares/campfire/releases/tag/models-v1
   pii_engine_v1.tar.gz        (sha256: dbf7d8e52bddc44bea869ca9280ff873875babce7ab7acd2ab67453e9ba7a386)
   injection_engine_v1.tar.gz  (sha256: 739b28d517ea2a853bd3fd04d9a2eeeb5afb579b9cfce9fb99283e8afc71a8c3)
+  confidential_engine_v1.tar.gz (sha256: f00681c15de4e4fad357f32ee7c0299d12d3b1d5fab9f10b6910b41a19517cc0)
 ```
 
 패키징 방법(재현/버전 갱신 시 참고):

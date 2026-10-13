@@ -53,20 +53,13 @@ function readStats(app) {
   }
 
   try {
-    const sumBetween = (since) => {
-      const row = db
-        .prepare(
-          'SELECT COALESCE(SUM(pii_count),0) AS pii, COALESCE(SUM(injection_count),0) AS inj, COUNT(*) AS jobs ' +
-            'FROM jobs WHERE created_at >= ?'
-        )
-        .get(since);
-      return { pii: row.pii || 0, inj: row.inj || 0, jobs: row.jobs || 0 };
-    };
-    const totalRow = db
-      .prepare(
-        'SELECT COALESCE(SUM(pii_count),0) AS pii, COALESCE(SUM(injection_count),0) AS inj, COUNT(*) AS jobs FROM jobs'
-      )
-      .get();
+    // 기밀 탐지(CONFIDENTIAL)는 엔진이 piiItems 에 같이 실어 pii_count 에 섞여 있다 — type_counts(JSON)에서
+    // 따로 꺼내 PII 에서 뺀다. 예전 기록에도 같은 규칙이라 그대로 맞는다.
+    const CONF = "COALESCE(json_extract(type_counts, '$.CONFIDENTIAL'), 0)";
+    const SUMS = `COALESCE(SUM(pii_count),0) AS pii, COALESCE(SUM(injection_count),0) AS inj, COALESCE(SUM(${CONF}),0) AS conf, COUNT(*) AS jobs`;
+    const split = (row) => ({ pii: (row.pii || 0) - (row.conf || 0), inj: row.inj || 0, conf: row.conf || 0, jobs: row.jobs || 0 });
+    const sumBetween = (since) => split(db.prepare(`SELECT ${SUMS} FROM jobs WHERE created_at >= ?`).get(since));
+    const totalRow = split(db.prepare(`SELECT ${SUMS} FROM jobs`).get());
 
     const today = sumBetween(startOfTodayEpoch());
     const week = sumBetween(daysAgoEpoch(7));
@@ -75,9 +68,7 @@ function readStats(app) {
     // 추이: 최근 14일 일별 합계
     const trend = [];
     const rows = db
-      .prepare(
-        'SELECT created_at, pii_count, injection_count FROM jobs WHERE created_at >= ?'
-      )
+      .prepare(`SELECT created_at, pii_count, injection_count, ${CONF} AS conf FROM jobs WHERE created_at >= ?`)
       .all(daysAgoEpoch(14));
     const buckets = new Map();
     for (let i = 13; i >= 0; i--) {
@@ -85,7 +76,7 @@ function readStats(app) {
       d.setHours(0, 0, 0, 0);
       d.setDate(d.getDate() - i);
       const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      buckets.set(key, { date: key, pii: 0, injection: 0 });
+      buckets.set(key, { date: key, pii: 0, injection: 0, confidential: 0 });
     }
     for (const r of rows) {
       const d = new Date(r.created_at * 1000);
@@ -93,8 +84,9 @@ function readStats(app) {
       const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       const b = buckets.get(key);
       if (b) {
-        b.pii += r.pii_count || 0;
+        b.pii += (r.pii_count || 0) - (r.conf || 0);
         b.injection += r.injection_count || 0;
+        b.confidential += r.conf || 0;
       }
     }
     for (const v of buckets.values()) trend.push(v);
@@ -112,6 +104,12 @@ function readStats(app) {
         week: week.inj,
         month: month.inj,
         total: totalRow.inj || 0,
+      },
+      confidential: {
+        today: today.conf,
+        week: week.conf,
+        month: month.conf,
+        total: totalRow.conf,
       },
       jobs: totalRow.jobs || 0,
       trend,

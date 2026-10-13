@@ -40,7 +40,17 @@ function deriveModelStatus(engineStatus) {
   const modelsReady = (engineStatus.health && engineStatus.health.modelsReady) || {};
   const piiActive = running && !!modelsReady.pii;
   const injectionActive = running && !!modelsReady.injection;
+  // 기밀 탐지(선택 기능) — 엔진이 실제로 켜고 떴을 때만 enabled. 화면은 enabled 일 때만 이 항목을 그린다
+  const conf = (engineStatus.health && engineStatus.health.confidential) || {};
+  const confEnabled = running && !!conf.enabled;
+  const confActive = confEnabled && !!conf.ready;
   return {
+    confidential: {
+      name: 'confidential_retriever',
+      enabled: confEnabled,
+      ready: confActive,
+      label: !running ? '중지됨' : confActive ? '작동 중' : conf.kgReady === false ? 'KG 파일 없음' : '준비 중',
+    },
     pii: {
       name: detectors.pii || 'pii_encoder',
       ready: piiActive,
@@ -126,9 +136,17 @@ function register(ctx) {
       patch &&
       patch.mcpRiskScannerEnabled !== undefined &&
       !!patch.mcpRiskScannerEnabled !== !!prev.mcpRiskScannerEnabled;
-    if (policyChanged || apiKeyChanged || riskScannerChanged) {
+    const confidentialChanged =
+      patch &&
+      ((patch.confidentialEnabled !== undefined && !!patch.confidentialEnabled !== !!prev.confidentialEnabled) ||
+        (patch.kgPath !== undefined && patch.kgPath !== prev.kgPath));
+    if (policyChanged || apiKeyChanged || riskScannerChanged || confidentialChanged) {
       if (config.get('securityEnabled')) {
-        engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
+        engineManager
+          .restart()
+          // 기밀 탐지를 켰으면 리트리버 가중치를 받는다 (없으면 ensureModels 가 바로 돌아온다)
+          .then(() => confidentialChanged && next.confidentialEnabled && onEnsureModels && onEnsureModels())
+          .catch((err) => console.error('[ipc] restart 실패:', err.message));
       }
     }
     return next;

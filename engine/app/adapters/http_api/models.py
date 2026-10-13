@@ -1,6 +1,7 @@
 """
 app/adapters/http_api/models.py
 GET  /models/status  — PII/인젝션 실 모델(encoder/llm_mcp) 가중치가 로컬에 있는지 확인.
+                       기밀 탐지 리트리버(선택 기능)는 켜져 있는지(enabled)와 함께 알린다.
 POST /models/fetch   — models-v1 GitHub Release에서 가중치를 내려받아 압축 해제(백그라운드
                        job, 기존 job_registry/`/jobs/{id}/events` 패턴 재사용해 진행 상황 폴링).
 
@@ -65,6 +66,14 @@ _ASSETS: dict[str, dict[str, Any]] = {
         "extract_to": lambda: config.INJECTION_ENGINE_DIR,
         "label": "인젝션 MLP 헤드",
     },
+    # 기밀 탐지 리트리버(A.X-Encoder DocPair, fp16, 압축 327MB) — 선택 기능이라 기밀 탐지를 켠 경우에만 받는다.
+    # 3단계 학습본(한국어 번역 Re-DocRED + 회사 합성 술어 180개). models/ 아래 4개 파일
+    "confidential": {
+        "url": f"{_RELEASE_BASE}/confidential_engine_v1.tar.gz",
+        "sha256": "f00681c15de4e4fad357f32ee7c0299d12d3b1d5fab9f10b6910b41a19517cc0",
+        "extract_to": lambda: config.CONFIDENTIAL_ENGINE_DIR,
+        "label": "기밀 탐지 모델",
+    },
 }
 
 # fire-and-forget 백그라운드 태스크가 GC 되지 않도록 참조를 들고 있는다.
@@ -94,6 +103,8 @@ def _status() -> dict[str, Any]:
             "head": _injection_head_present(),
             "backbone": backbone.is_cached(),
         },
+        # 선택 기능 — enabled 가 아니면 ready 가 거짓이어도 받지 않는다(앱도 enabled 일 때만 기다린다)
+        "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
     }
 
 
@@ -243,6 +254,8 @@ async def _fetch_job(job_id: str) -> None:
             await _download_and_extract("injection", _ASSETS["injection"], emit)
         if not backbone.is_cached():
             await _download_backbone(emit)
+        if config.CONFIDENTIAL_ENABLED and not model_status.confidential_ready():
+            await _download_and_extract("confidential", _ASSETS["confidential"], emit)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})

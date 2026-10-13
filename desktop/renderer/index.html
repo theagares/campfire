@@ -75,6 +75,14 @@
                   <span class="mp-dot"></span><span class="mp-text">Injection model</span>
                 </div>
               </div>
+              <!-- 기밀 탐지(선택 기능) — 켜져 있을 때만 보인다 (app.js renderHome) -->
+              <div class="home-pill-row" id="home-conf-row" style="display:none">
+                <span class="hp-label">기밀</span>
+                <span class="hp-div"></span>
+                <div class="model-pill" id="home-conf">
+                  <span class="mp-dot"></span><span class="mp-text">Confidential model</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -193,6 +201,27 @@
               </div>
             </div>
 
+            <!-- 기밀 탐지(선택 기능) — 켜져 있을 때만 보인다 (app.js renderDashboard). 리트리버도 A.X 인코더라 같은 그림 -->
+            <div class="dash-row grid grid-2" id="dash-conf-row" style="display:none">
+              <div class="card model-card pii" id="dash-conf-card">
+                <span class="mc-title">기밀 탐지 | A.X + Solar</span>
+                <span class="mc-dot" id="dash-conf-dot"></span>
+                <img class="mc-photo" src="../assets/figma/dash-pii-model.png" alt="" />
+                <div class="mc-caption" id="dash-conf-label">A.X 리트리버 · Solar Pro 4 판정</div>
+              </div>
+              <div class="card detect-card">
+                <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-pii-deco.svg" alt="" />기밀 탐지량</div>
+                <div class="dc-stats">
+                  <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-conf-today">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">주간</span><span class="sb-value" id="tile-conf-week">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">월간</span><span class="sb-value" id="tile-conf-month">–</span><span class="sb-unit">건</span></div>
+                </div>
+                <svg class="dc-chart" id="dc-chart-conf" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+                <div class="dc-divider"></div>
+                <div class="dc-footer">누적 <b id="tile-conf-total">–</b>건 탐지</div>
+              </div>
+            </div>
+
             <div class="dash-row card res-card">
               <div class="rc-title"><img class="rc-deco" src="../assets/figma/dash-res-deco.svg" alt="" />시스템 리소스</div>
               <div class="res-cols" id="db-resources"></div>
@@ -278,7 +307,7 @@
         <!-- Upstage Solar API 키 — 인젝션 2단계 localize 용(PLAN 근본원인 대응) -->
         <div class="field">
           <label for="upstage-api-key">Upstage Solar API 키</label>
-          <div class="hint">인젝션 탐지 시 정확한 위치를 찾는 데 사용됩니다(Upstage Solar Pro 4). 비워두면 전체 문단을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
+          <div class="hint">인젝션 탐지 시 정확한 위치를 찾고, 기밀 탐지를 켜면 기밀 판정에도 사용됩니다(Upstage Solar Pro 4). 비워두면 인젝션은 전체 문단을, 기밀은 의심 근거 문장을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
           <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
         </div>
 
@@ -291,6 +320,19 @@
             </div>
             <input type="checkbox" id="mcp-risk-scanner-enabled" />
           </div>
+        </div>
+
+        <!-- 기밀 탐지 — 회사 KG + 리트리버 + Solar Pro 4 (engine/app/core/detectors/confidential). 기본 OFF. -->
+        <div class="field">
+          <div class="setting-row">
+            <div>
+              <label for="confidential-enabled">기밀 탐지 (회사 지식그래프)</label>
+              <div class="hint">문서가 회사 KG 의 사실을 말하는 문장을 찾아 기밀이면 마스킹합니다. 켜면 개인정보를 가린 문서 본문과 해당 KG 사실이 기밀 판단을 위해 Upstage Solar 로 전송됩니다(문서당 한 번, 응답 형식이 틀리면 한 번 더). Upstage API 키가 없거나, 기밀 탐지 모델이 준비되지 않았거나, 판단에 실패하면 보내지 않고 사실마다 근거 문장(최대 3개)을 가립니다(검토 화면에서 풀 수 있음). 변경 시 엔진이 재시작됩니다.</div>
+            </div>
+            <input type="checkbox" id="confidential-enabled" />
+          </div>
+          <label for="kg-path">KG 파일 경로 (JSONL)</label>
+          <input type="text" id="kg-path" placeholder="C:\company\kg.jsonl" autocomplete="off" />
         </div>
 
         <div class="divider"></div>

@@ -26,6 +26,7 @@ TYPE_LABELS: dict[str, str] = {
     "ORGANIZATION": "기관명",
     "BANK_ACCOUNT": "계좌번호",
     "CREDENTIAL": "자격증명",
+    "CONFIDENTIAL": "기밀",
     "USER_DEFINED_TERM": "사용자 지정",
     "OTHER_PII": "개인정보",
 }
