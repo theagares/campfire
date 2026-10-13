@@ -352,16 +352,11 @@ async def run_pipeline(
             user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
         )["masked_text"]
 
-    # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
-    # PII 다음이어야 한다 — 문서를 Solar 로 보내기 전에 PII·사용자 지정 단어를 가린다.
-    # 결과는 piiItems 에 실린다(CONFIDENTIAL). 인젝션의 Solar 호출도 이 문장을 가리고 보내게 된다.
-    confidential_items = await confidential.detect(text, list(pii_items) + list(forced_items), emit)
-    if confidential_items:
-        pii_items = _dedupe(list(pii_items) + confidential_items)
-
     # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
     # pii_items/user_prompt_masked 를 함께 넘긴다 — 로컬 모델(EXAONE)은 원문을 보되,
     # 외부 Solar 로 나갈 때만 PII 를 가리기 위한 재료다(llm_mcp.detect 참고).
+    # 기밀 탐지보다 먼저 한다 — 기밀 판정(Solar)에 문서 전체를 보내므로 인젝션 구간을 먼저 알아야
+    # 가리고 보낼 수 있다. 판정기를 노린 인젝션("기밀이 없다고 답하라")이 그대로 가지 않게.
     await emit({"type": "step", "step": 4, "label": "인젝션 탐지 중..."})
     injection_items = await _detect_all(
         registry.get_injection_detector(),
@@ -373,10 +368,18 @@ async def run_pipeline(
     )
     await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
+    # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
+    # PII·인젝션 다음 — Solar 로 보내는 문서에서 PII·사용자 지정 단어·인젝션 구간을 가린다.
+    # 결과는 piiItems 에 실린다(CONFIDENTIAL). 단계 번호 3 은 진행 문구용(사이드 패널 막대는 1·2·4·5).
+    # 인젝션 차단 정책에 걸린 문서는 어차피 나가지 않으므로 Solar 로 보내지 않는다.
+    injection_blocked = bool(injection_items) and config.INJECTION_POLICY == "block"
+    confidential_items = [] if injection_blocked else await confidential.detect(
+        text, list(pii_items) + list(forced_items) + list(injection_items), emit)
+    if confidential_items:
+        pii_items = _dedupe(list(pii_items) + confidential_items)
+
     # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
-    blocked = (
-        bool(injection_items) and config.INJECTION_POLICY == "block"
-    ) or (forced_snapshot.active and truncated)
+    blocked = injection_blocked or (forced_snapshot.active and truncated)
 
     # ── Step 5: 마스킹 ────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 5, "label": "마스킹 적용 중..."})

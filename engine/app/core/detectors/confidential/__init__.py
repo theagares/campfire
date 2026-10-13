@@ -4,7 +4,7 @@ app/core/detectors/confidential/__init__.py
 
   1. kg.py       KG 엔티티 이름이 나오는 위치 → 주어·목적어가 둘 다 나온 트리플(후보)
   2. retriever   문장 단위 창마다(인코더 길이 제한) 후보 쌍·술어의 여유값(s − s_TH)과 문장별 주의
-  3. judge       모든 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 전부 + PII 를 가린 문서 전체 →
+  3. judge       모든 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 전부 + PII·인젝션을 가린 문서 전체 →
                  Solar 1회로 "어느 문장이 진술했고 기밀인가"
   4. 고른 문장에서 PII·사용자 지정 구간을 뺀 나머지를 CONFIDENTIAL 로 (PII 는 자기 토글 유지)
 
@@ -159,7 +159,7 @@ def _display(ent: str, mentions, masked_items: list[Detection]) -> str:
 
 
 async def detect(text: str, masked_items: list[Detection], emit: Emit | None = None) -> list[Detection]:
-    """masked_items: 이미 가려질 PII·사용자 지정 구간 (원문 좌표) — Solar 로 보내기 전 가리고, 결과에서 뺀다."""
+    """masked_items: 이미 가려질 PII·사용자 지정·인젝션 구간 (원문 좌표) — Solar 로 보내기 전 가리고, 결과에서 뺀다."""
     if not config.CONFIDENTIAL_ENABLED or not text or not text.strip():
         return []
     graph = await asyncio.to_thread(kg.get, config.KG_PATH)
