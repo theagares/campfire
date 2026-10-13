@@ -75,6 +75,14 @@
                   <span class="mp-dot"></span><span class="mp-text">Injection model</span>
                 </div>
               </div>
+              <!-- 기밀 탐지(선택 기능) — 켜져 있을 때만 보인다 (app.js renderHome) -->
+              <div class="home-pill-row" id="home-conf-row" style="display:none">
+                <span class="hp-label">기밀</span>
+                <span class="hp-div"></span>
+                <div class="model-pill" id="home-conf">
+                  <span class="mp-dot"></span><span class="mp-text">Confidential model</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -193,6 +201,27 @@
               </div>
             </div>
 
+            <!-- 기밀 탐지(선택 기능) — 켜져 있을 때만 보인다 (app.js renderDashboard). 리트리버도 A.X 인코더라 같은 그림 -->
+            <div class="dash-row grid grid-2" id="dash-conf-row" style="display:none">
+              <div class="card model-card pii" id="dash-conf-card">
+                <span class="mc-title">기밀 탐지 | A.X + Solar</span>
+                <span class="mc-dot" id="dash-conf-dot"></span>
+                <img class="mc-photo" src="../assets/figma/dash-pii-model.png" alt="" />
+                <div class="mc-caption" id="dash-conf-label">A.X 리트리버 · Solar Pro 4 판정</div>
+              </div>
+              <div class="card detect-card">
+                <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-pii-deco.svg" alt="" />기밀 탐지량</div>
+                <div class="dc-stats">
+                  <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-conf-today">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">주간</span><span class="sb-value" id="tile-conf-week">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">월간</span><span class="sb-value" id="tile-conf-month">–</span><span class="sb-unit">건</span></div>
+                </div>
+                <svg class="dc-chart" id="dc-chart-conf" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+                <div class="dc-divider"></div>
+                <div class="dc-footer">누적 <b id="tile-conf-total">–</b>건 탐지</div>
+              </div>
+            </div>
+
             <div class="dash-row card res-card">
               <div class="rc-title"><img class="rc-deco" src="../assets/figma/dash-res-deco.svg" alt="" />시스템 리소스</div>
               <div class="res-cols" id="db-resources"></div>
@@ -278,7 +307,7 @@
         <!-- Upstage Solar API 키 — 인젝션 2단계 localize 용(PLAN 근본원인 대응) -->
         <div class="field">
           <label for="upstage-api-key">Upstage Solar API 키</label>
-          <div class="hint">인젝션 탐지 시 정확한 위치를 찾는 데 사용됩니다(Upstage Solar Pro 4). 비워두면 전체 문단을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
+          <div class="hint">인젝션 탐지 시 정확한 위치를 찾고, 기밀 탐지를 켜면 기밀 판정에도 사용됩니다(Upstage Solar Pro 4). 비워두면 인젝션은 전체 문단을, 기밀은 의심 문장을 모두 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
           <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
         </div>
 

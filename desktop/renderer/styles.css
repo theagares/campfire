@@ -553,6 +553,10 @@ img { display:block; }
 .global-banner.progress {
   background:var(--purple-soft); color:var(--ink-600); border-bottom-color:var(--purple);
 }
+/* --warn-soft·--purple-soft 는 반투명이라 배너 아래 사이드바 접기 아이콘이 글자 위로 비쳤다(실측 화면) —
+   같은 색을 흰 바탕 위에 깔아 불투명하게 */
+.global-banner { background:linear-gradient(var(--warn-soft), var(--warn-soft)), #fff; }
+.global-banner.progress { background:linear-gradient(var(--purple-soft), var(--purple-soft)), #fff; }
 .global-banner span#global-banner-text { flex:1; }
 .global-banner .icon-x { flex:0 0 auto; }
 

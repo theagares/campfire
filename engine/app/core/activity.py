@@ -38,10 +38,11 @@ _subscribers: set[asyncio.Queue] = set()
 _active: dict[str, dict[str, Any]] = {}
 
 # orchestrator 가 내보내는 step 번호 → 처리현황이 아는 단계 이름.
-# (step 3 은 없다 — 청크 분할이 step 2 에 합쳐져 있다. orchestrator 참고)
+# step 3 은 기밀 탐지(선택 기능) — 인젝션(step 4) 다음에 돈다(orchestrator 참고). 꺼져 있으면 안 나온다.
 _STEP_STAGE = {
     1: "parse",
     2: "pii",
+    3: "confidential",
     4: "injection",
     5: "mask",
 }

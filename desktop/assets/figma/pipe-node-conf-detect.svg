@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">
+  <!-- 처리현황 '기밀 탐지' 노드 — 회사 지식그래프(점·선). 다른 노드 아이콘(88×88 둥근 사각형)과 같은 틀 -->
+  <rect x="1.5" y="1.5" width="85" height="85" rx="16" fill="#fff" stroke="#c9c9c9" stroke-width="2"/>
+  <g stroke="#584CDC" stroke-width="3" stroke-linecap="round">
+    <line x1="30" y1="34" x2="57" y2="27"/>
+    <line x1="30" y1="34" x2="40" y2="60"/>
+    <line x1="57" y1="27" x2="40" y2="60"/>
+    <line x1="57" y1="27" x2="63" y2="55"/>
+  </g>
+  <g fill="#584CDC">
+    <circle cx="30" cy="34" r="7"/>
+    <circle cx="57" cy="27" r="6"/>
+    <circle cx="40" cy="60" r="7"/>
+    <circle cx="63" cy="55" r="5.5"/>
+  </g>
+</svg>

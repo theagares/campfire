@@ -248,6 +248,25 @@ def test_sse_sends_snapshot_then_live_events():
     assert second["stage"] == "injection"
 
 
+def test_confidential_step_is_broadcast_as_its_own_stage():
+    """기밀 탐지(step 3)는 처리현황의 기밀 노드를 밝힐 수 있게 별도 단계로 방송된다."""
+    q = activity_bus.subscribe()
+    activity_bus.job_started("conf-job", source="prompt")
+    activity_bus.job_event("conf-job", {"type": "step", "step": 3, "label": "기밀 탐지 중 (KG 후보 3개)..."})
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    activity_bus.unsubscribe(q)
+    assert events[-1]["stage"] == "confidential"
+    assert activity_bus.snapshot()[0]["stage"] == "confidential"
+
+
+def test_health_reports_confidential_state(client, monkeypatch):
+    monkeypatch.setattr(config, "CONFIDENTIAL_ENABLED", True)
+    monkeypatch.setattr(model_status, "confidential_ready", lambda: False)
+    assert client.get("/health").json()["confidential"] == {"enabled": True, "ready": False}
+
+
 def test_broadcast_never_carries_real_job_id():
     """방송에 진짜 job id 가 실리면 안 된다.
 

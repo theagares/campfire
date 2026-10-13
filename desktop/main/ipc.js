@@ -40,7 +40,17 @@ function deriveModelStatus(engineStatus) {
   const modelsReady = (engineStatus.health && engineStatus.health.modelsReady) || {};
   const piiActive = running && !!modelsReady.pii;
   const injectionActive = running && !!modelsReady.injection;
+  // 기밀 탐지(선택 기능) — 엔진이 실제로 켜고 떴을 때만 enabled. 화면은 enabled 일 때만 이 항목을 그린다
+  const conf = (engineStatus.health && engineStatus.health.confidential) || {};
+  const confEnabled = running && !!conf.enabled;
+  const confActive = confEnabled && !!conf.ready;
   return {
+    confidential: {
+      name: 'confidential_retriever',
+      enabled: confEnabled,
+      ready: confActive,
+      label: !running ? '중지됨' : confActive ? '작동 중' : '준비 중',
+    },
     pii: {
       name: detectors.pii || 'pii_encoder',
       ready: piiActive,
