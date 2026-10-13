@@ -49,7 +49,7 @@ function deriveModelStatus(engineStatus) {
       name: 'confidential_retriever',
       enabled: confEnabled,
       ready: confActive,
-      label: !running ? '중지됨' : confActive ? '작동 중' : '준비 중',
+      label: !running ? '중지됨' : confActive ? '작동 중' : conf.kgReady === false ? 'KG 파일 없음' : '준비 중',
     },
     pii: {
       name: detectors.pii || 'pii_encoder',

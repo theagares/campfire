@@ -282,3 +282,90 @@ def test_인젝션_차단_정책이면_기밀_판정을_솔라에_보내지_않�
     spy = _SpySolar({"출시 시기"})
     result = _pipeline(setup, monkeypatch, spy, policy="block")
     assert result["blocked"] and not spy.sent
+
+
+def _run_doc(monkeypatch, doc):
+    monkeypatch.setattr(model_status, "all_ready", lambda: True)
+    monkeypatch.setattr(config, "INJECTION_LOCALIZE_ENABLED", False)
+    monkeypatch.setattr(registry, "get_pii_detector", lambda: _StubDetector([]))
+    monkeypatch.setattr(registry, "get_injection_detector", lambda: _StubDetector([]))
+    from app.core.pipeline.orchestrator import run_pipeline
+
+    return asyncio.run(run_pipeline(text=doc))
+
+
+def test_사용자_지정_단어는_사실_문장으로도_솔라에_가지_않는다(setup, monkeypatch, tmp_path):
+    # 문서엔 별칭("AR-7")만 있어도 KG 정식 이름("오로라")이, 문서에 없는 술어("Aurora 예산")가
+    # 사실 문장에 실려 나가던 경로. 엔티티는 문서 표기로, 사실 문장 전체는 등록어 검사를 거친다.
+    from app.core import forced_mask
+
+    rows = [
+        {"s": "오로라", "p": "출시 시기", "o": "2027년 3월", "aliases": {"오로라": ["AR-7"]}},
+        {"s": "가온연구소", "p": "Aurora 예산", "o": "30억"},
+    ]
+    path = tmp_path / "kg_forced.jsonl"
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    spy = _SpySolar({"출시 시기", "예산"})
+    setup(_FakeRetriever(), spy)
+    monkeypatch.setattr(config, "KG_PATH", str(path))
+    forced_mask.registry.configure(["오로라", "Aurora"])
+
+    result = _run_doc(monkeypatch, "AR-7 출시는 2027년 3월로 정했다. 가온연구소의 올해 예산은 30억이다.")
+
+    body = "\n".join(spy.sent)
+    assert spy.sent and "오로라" not in body and "aurora" not in body.casefold()
+    assert "(AR-7, 출시 시기, 2027년 3월)" in body
+    assert "[사용자 지정 마스킹] 예산" in body
+    assert "[기밀 마스킹]" in result["maskedText"]
+
+
+def test_사용자_지정_규칙이_켜진_채_잘린_문서는_솔라로_보내지_않는다(setup, monkeypatch):
+    from app.core import forced_mask
+
+    spy = _SpySolar({"출시 시기"})
+    setup(_FakeRetriever(), spy)
+    forced_mask.registry.configure(["문서에없는단어"])
+    monkeypatch.setattr(config, "MAX_TEXT_CHARS", len(DOC) - 5)
+    result = _run_doc(monkeypatch, DOC)
+    assert result["blocked"] and not spy.sent
+
+
+def test_리트리버가_준비되지_않았으면_솔라로_보내지_않고_근거_문장을_가린다(setup, monkeypatch):
+    fake, spy = _FakeRetriever(), _SpySolar({"출시 시기"})
+    setup(fake, spy)
+    monkeypatch.setattr(model_status, "confidential_ready", lambda: False)
+    items = asyncio.run(confidential.detect(DOC, PII))
+    assert not spy.sent and not fake.requests
+    assert items and all(it["confidence"] == 0.5 for it in items)
+    assert any("2027년 3월" in it["text"] for it in items)
+
+
+class _BrokenRetriever:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def score(self, req: dict) -> list[dict]:
+        self.calls += 1
+        raise RuntimeError("retriever did not start")
+
+
+def test_리트리버가_실패하면_다시_띄우지_않고_솔라로_보내지_않는다(setup, monkeypatch):
+    monkeypatch.setattr(config, "CONFIDENTIAL_WINDOW_CHARS", 25)  # 후보가 있는 창이 둘
+    broken, spy = _BrokenRetriever(), _SpySolar({"출시 시기"})
+    setup(broken, spy)
+    items = asyncio.run(confidential.detect(DOC, PII))
+    assert broken.calls == 1 and not spy.sent
+    assert items and all(it["confidence"] == 0.5 for it in items)
+
+
+def test_KG_의_모양이_틀린_줄은_건너뛴다(tmp_path):
+    path = tmp_path / "kg_bad.jsonl"
+    path.write_text("\n".join([
+        json.dumps({"s": "가온연구소", "p": "본사 위치", "o": "서울"}, ensure_ascii=False),
+        "[]",
+        "5",
+        json.dumps({"s": "오로라", "p": "출시 시기", "o": "2027년 3월", "aliases": {"오로라": 5}}, ensure_ascii=False),
+        json.dumps({"aliases": "x"}),
+    ]), encoding="utf-8")
+    graph = kg.load(path)
+    assert {(t.s, t.p, t.o) for t in graph.triples} == {("가온연구소", "본사 위치", "서울"), ("오로라", "출시 시기", "2027년 3월")}

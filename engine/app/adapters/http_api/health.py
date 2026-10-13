@@ -13,6 +13,7 @@ GET /health — 시그니처 필드 필수 (PLAN §11).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 
@@ -24,6 +25,10 @@ from app.core.detectors import registry
 router = APIRouter()
 
 _last_extension_seen_at: float | None = None
+
+
+def _kg_file_ok() -> bool:
+    return bool(config.KG_PATH) and Path(config.KG_PATH).is_file()
 
 
 @router.get("/health")
@@ -57,8 +62,13 @@ async def health(request: Request):
         # 동작하는지"를 이름만으로 알 수 없다 — 가중치 실제 존재 여부를 따로 내려준다
         # (데스크탑 앱의 모델 pill 이 이걸로 활성/비활성을 판단한다, ipc.js 참고).
         "modelsReady": {"pii": model_status.pii_ready(), "injection": model_status.injection_ready()},
-        # 기밀 탐지(선택 기능) — 앱이 켜져 있을 때만 홈·대시보드·처리현황에 보여 준다
-        "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
+        # 기밀 탐지(선택 기능) — 앱이 켜져 있을 때만 홈·대시보드·처리현황에 보여 준다.
+        # KG 파일이 없으면 탐지는 아무것도 안 하므로 가중치가 있어도 작동 중이 아니다.
+        "confidential": {
+            "enabled": config.CONFIDENTIAL_ENABLED,
+            "ready": model_status.confidential_ready() and _kg_file_ok(),
+            "kgReady": _kg_file_ok(),
+        },
         "injectionPolicy": config.INJECTION_POLICY,
         "supportedExtensions": sorted(config.SUPPORTED_EXTENSIONS),
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,

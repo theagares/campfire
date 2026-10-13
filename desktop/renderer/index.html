@@ -307,7 +307,7 @@
         <!-- Upstage Solar API 키 — 인젝션 2단계 localize 용(PLAN 근본원인 대응) -->
         <div class="field">
           <label for="upstage-api-key">Upstage Solar API 키</label>
-          <div class="hint">인젝션 탐지 시 정확한 위치를 찾고, 기밀 탐지를 켜면 기밀 판정에도 사용됩니다(Upstage Solar Pro 4). 비워두면 인젝션은 전체 문단을, 기밀은 의심 문장을 모두 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
+          <div class="hint">인젝션 탐지 시 정확한 위치를 찾고, 기밀 탐지를 켜면 기밀 판정에도 사용됩니다(Upstage Solar Pro 4). 비워두면 인젝션은 전체 문단을, 기밀은 의심 근거 문장을 마스킹하는 안전 모드로 동작합니다. 이 값은 암호화 없이 로컬 설정 파일에 저장됩니다.</div>
           <input type="password" id="upstage-api-key" placeholder="up_..." autocomplete="off" />
         </div>
 
@@ -327,7 +327,7 @@
           <div class="setting-row">
             <div>
               <label for="confidential-enabled">기밀 탐지 (회사 지식그래프)</label>
-              <div class="hint">문서가 회사 KG 의 사실을 말하는 문장을 찾아 기밀이면 마스킹합니다. 켜면 개인정보를 가린 문서 본문과 해당 KG 사실이 기밀 판단을 위해 Upstage Solar 로 전송됩니다(문서당 한 번). Upstage API 키가 없거나 판단에 실패하면 의심 문장을 모두 가립니다(검토 화면에서 풀 수 있음). 변경 시 엔진이 재시작됩니다.</div>
+              <div class="hint">문서가 회사 KG 의 사실을 말하는 문장을 찾아 기밀이면 마스킹합니다. 켜면 개인정보를 가린 문서 본문과 해당 KG 사실이 기밀 판단을 위해 Upstage Solar 로 전송됩니다(문서당 한 번, 응답 형식이 틀리면 한 번 더). Upstage API 키가 없거나, 기밀 탐지 모델이 준비되지 않았거나, 판단에 실패하면 보내지 않고 사실마다 근거 문장(최대 3개)을 가립니다(검토 화면에서 풀 수 있음). 변경 시 엔진이 재시작됩니다.</div>
             </div>
             <input type="checkbox" id="confidential-enabled" />
           </div>

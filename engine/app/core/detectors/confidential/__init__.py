@@ -8,8 +8,9 @@ app/core/detectors/confidential/__init__.py
                  Solar 1회로 "어느 문장이 진술했고 기밀인가"
   4. 고른 문장에서 PII·사용자 지정 구간을 뺀 나머지를 CONFIDENTIAL 로 (PII 는 자기 토글 유지)
 
-실패 처리: 리트리버를 못 쓰면(가중치 없음·오류) 후보를 전부 Solar 에 넘기고, Solar 를 못
-쓰면(키 없음·오류·해석 불가) 근거 문장(리트리버 주의 기준)을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽.
+실패 처리: 리트리버를 못 쓰거나(가중치 없음·오류) Solar 를 못 쓰면(키 없음·오류·해석 불가) 근거
+문장을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽. 리트리버 없이 Solar 로 보내지 않는다: 그러면
+문서가 말하지도 않은 KG 사실까지 문서와 함께 나간다.
 계획: 문서/리트리버/기밀탐지_계획.md
 """
 
@@ -21,7 +22,6 @@ from typing import Any, Awaitable, Callable
 
 from app import config
 from app.core import model_status
-from app.core.masker.masker import placeholder_for
 from app.core.masker.redact_map import build_redaction
 
 from ..base import CONFIDENTIAL, ORGANIZATION, Detection
@@ -90,14 +90,16 @@ def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
-async def _score_window(text: str, sents, idxs, mentions, cands) -> list[tuple[kg.Triple, list[int]]]:
-    """창 하나에서 리트리버를 통과한 (사실, 근거 문장 번호들)."""
+async def _score_window(
+    text: str, sents, idxs, mentions, cands, use_retriever: bool
+) -> tuple[list[tuple[kg.Triple, list[int]]], bool]:
+    """창 하나에서 리트리버를 통과한 (사실, 근거 문장 번호들) 과, 리트리버로 실제 걸렀는지."""
     ws, we = sents[idxs[0]][0], sents[idxs[-1]][1]
     ents = {ent: [(a, b) for a, b in spans if ws <= a and b <= we] for ent, spans in mentions.items()}
     ents = {ent: spans for ent, spans in ents.items() if spans}
     win_cands = [t for t in cands if t.s in ents and t.o in ents]
     if not win_cands:
-        return []
+        return [], True
     names = list(ents)
     preds = list(dict.fromkeys(t.p for t in win_cands))
     pair_preds: dict[tuple[str, str], list[str]] = {}
@@ -109,7 +111,7 @@ async def _score_window(text: str, sents, idxs, mentions, cands) -> list[tuple[k
         return {i for i in idxs for sp in ents[ent] if _overlaps(sp, sents[i])}
 
     results: list[dict[str, Any]] | None = None
-    if model_status.confidential_ready():
+    if use_retriever:
         req = {
             "text": text[ws:we],
             "entities": [[[a - ws, b - ws] for a, b in ents[n]] for n in names],
@@ -119,7 +121,7 @@ async def _score_window(text: str, sents, idxs, mentions, cands) -> list[tuple[k
         }
         try:
             results = await retriever.get().score(req)
-        except Exception:  # noqa: BLE001 - 리트리버 실패 → 거르지 않고 Solar 에 다 넘긴다
+        except Exception:  # noqa: BLE001 - 리트리버 실패 → 호출부가 Solar 없이 근거 문장을 가린다
             results = None
 
     out: list[tuple[kg.Triple, list[int]]] = []
@@ -138,7 +140,7 @@ async def _score_window(text: str, sents, idxs, mentions, cands) -> list[tuple[k
             if results is not None and margins is not None and margins[j] <= config.CONFIDENTIAL_DELTA:
                 continue
             out.append((kg.Triple(s, p, o), sorted(ev)))
-    return out
+    return out, results is not None
 
 
 def _redacted(text: str, span: tuple[int, int], masked_items: list[Detection]) -> str:
@@ -149,17 +151,20 @@ def _redacted(text: str, span: tuple[int, int], masked_items: list[Detection]) -
     return build_redaction(text[a:b], local).text
 
 
-def _display(ent: str, mentions, masked_items: list[Detection]) -> str:
-    """사실 문장 속 엔티티 이름 — 문서에서 PII 로 가려진 엔티티면 같은 자리표시자로."""
-    for sp in mentions.get(ent, ()):
-        for it in masked_items:
-            if _overlaps(sp, (int(it["start"]), int(it["end"]))):
-                return placeholder_for(it.get("type", "OTHER_PII"))
-    return ent
+def _display(ent: str, mentions, masked_items: list[Detection], text: str) -> str:
+    """사실 문장 속 엔티티 — KG 정식 이름이 아니라 문서에 실제로 나온 표기를, 문장과 똑같이 가려서.
+
+    정식 이름을 쓰면 문서에는 별칭("AR-7")만 있어도 정식 이름("오로라" — 사용자 지정 단어일 수도,
+    사람 실명일 수도 있다)이 Solar 로 나간다. 문서 표기는 이미 문장과 같은 가림을 거친다.
+    """
+    return _redacted(text, mentions[ent][0], masked_items)
 
 
-async def detect(text: str, masked_items: list[Detection], emit: Emit | None = None) -> list[Detection]:
-    """masked_items: 이미 가려질 PII·사용자 지정·인젝션 구간 (원문 좌표) — Solar 로 보내기 전 가리고, 결과에서 뺀다."""
+async def detect(
+    text: str, masked_items: list[Detection], emit: Emit | None = None, forced=None,
+) -> list[Detection]:
+    """masked_items: 이미 가려질 PII·사용자 지정·인젝션 구간 (원문 좌표) — Solar 로 보내기 전 가리고, 결과에서 뺀다.
+    forced: 이 요청의 사용자 지정 마스킹 스냅샷 — 문서에 없는 KG 술어 같은 사실 문장 속 등록어도 가린다."""
     if not config.CONFIDENTIAL_ENABLED or not text or not text.strip():
         return []
     graph = await asyncio.to_thread(kg.get, config.KG_PATH)
@@ -174,8 +179,14 @@ async def detect(text: str, masked_items: list[Detection], emit: Emit | None = N
 
     sents = split_sentences(text)
     hits: dict[kg.Triple, set[int]] = {}  # 통과한 사실 → 근거 문장 (Solar 를 못 쓸 때만 쓴다)
+    use_retriever = model_status.confidential_ready()
+    all_scored = True
     for idxs in _windows(sents, config.CONFIDENTIAL_WINDOW_CHARS):  # 리트리버는 요청을 어차피 하나씩 처리
-        for t, ev in await _score_window(text, sents, idxs, mentions, cands):
+        window_hits, scored = await _score_window(text, sents, idxs, mentions, cands, use_retriever)
+        if not scored:
+            # 한 번 못 뜬 리트리버를 창마다 다시 띄우면(창마다 기동 시간 상한까지 대기) 문서 하나에 수 분이 걸린다
+            use_retriever = all_scored = False
+        for t, ev in window_hits:
             hits.setdefault(t, set()).update(ev)
 
     flagged: dict[int, tuple[float, str]] = {}
@@ -185,11 +196,18 @@ async def detect(text: str, masked_items: list[Detection], emit: Emit | None = N
         kg_spans = [sp for sps in mentions.values() for sp in sps]
         for_solar = [it for it in masked_items if not (it.get("type") == ORGANIZATION and any(
             _overlaps((int(it["start"]), int(it["end"])), sp) for sp in kg_spans))]
-        # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
-        verdict = await judge.judge(
-            [_redacted(text, sp, for_solar) for sp in sents],
-            [(_display(t.s, mentions, for_solar), t.p, _display(t.o, mentions, for_solar)) for t in hits],
-        )
+
+        def no_forced(s: str) -> str:  # 사용자 지정 단어는 어떤 경로로도 Solar 에 원문으로 가지 않는다
+            return build_redaction(s, forced.find(s)).text if forced is not None else s
+
+        verdict = None
+        if all_scored:  # 리트리버가 거르지 못한 사실은 문서와 함께 내보내지 않는다 — 아래에서 근거 문장을 가린다
+            # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
+            verdict = await judge.judge(
+                [no_forced(_redacted(text, sp, for_solar)) for sp in sents],
+                [tuple(no_forced(x) for x in (_display(t.s, mentions, for_solar, text), t.p,
+                                               _display(t.o, mentions, for_solar, text))) for t in hits],
+            )
         if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
             flagged = {i: (0.5, "encoder") for ev in hits.values() for i in ev}
         else:

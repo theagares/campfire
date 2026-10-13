@@ -371,15 +371,16 @@ async def run_pipeline(
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
     # PII·인젝션 다음 — Solar 로 보내는 문서에서 PII·사용자 지정 단어·인젝션 구간을 가린다.
     # 결과는 piiItems 에 실린다(CONFIDENTIAL). 단계 번호 3 은 진행 문구용(사이드 패널 막대는 1·2·4·5).
-    # 인젝션 차단 정책에 걸린 문서는 어차피 나가지 않으므로 Solar 로 보내지 않는다.
-    injection_blocked = bool(injection_items) and config.INJECTION_POLICY == "block"
-    confidential_items = [] if injection_blocked else await confidential.detect(
-        text, list(pii_items) + list(forced_items) + list(injection_items), emit)
+    # 차단될 문서(인젝션 차단 정책, 사용자 지정 규칙이 켜진 채 잘린 문서)는 어차피 나가지 않으므로
+    # Solar 로도 보내지 않는다 — 그래서 차단 여부를 먼저 정한다.
+    # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
+    blocked = (
+        bool(injection_items) and config.INJECTION_POLICY == "block"
+    ) or (forced_snapshot.active and truncated)
+    confidential_items = [] if blocked else await confidential.detect(
+        text, list(pii_items) + list(forced_items) + list(injection_items), emit, forced_snapshot)
     if confidential_items:
         pii_items = _dedupe(list(pii_items) + confidential_items)
-
-    # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
-    blocked = injection_blocked or (forced_snapshot.active and truncated)
 
     # ── Step 5: 마스킹 ────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 5, "label": "마스킹 적용 중..."})

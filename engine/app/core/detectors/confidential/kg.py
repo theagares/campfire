@@ -96,8 +96,14 @@ def load(path: Path) -> KnowledgeGraph:
             if not line:
                 continue
             row = json.loads(line)
-            for ent, forms in (row.get("aliases") or {}).items():
-                aliases.setdefault(str(ent), set()).update(str(x) for x in forms)
+            if not isinstance(row, dict):
+                continue  # 모양이 틀린 줄 하나 때문에 검사 전체가 실패하지 않게 그 줄만 버린다
+            row_aliases = row.get("aliases")
+            for ent, forms in (row_aliases.items() if isinstance(row_aliases, dict) else ()):
+                if isinstance(forms, str):
+                    forms = [forms]
+                if isinstance(forms, list):
+                    aliases.setdefault(str(ent), set()).update(str(x) for x in forms)
             if row.get("s") and row.get("p") and row.get("o"):
                 t = Triple(str(row["s"]), str(row["p"]), str(row["o"]))
                 if t not in seen:
@@ -125,7 +131,7 @@ def get(path: str | Path | None) -> KnowledgeGraph | None:
             return _cached[2]
         try:
             kg = load(p)
-        except (OSError, ValueError):
-            return _cached[2] if _cached and _cached[0] == str(p) else None  # 갱신 중 깨진 파일 — 이전 것 유지
+        except Exception:  # noqa: BLE001 - 갱신 중 깨진 파일 — 이전 것 유지
+            return _cached[2] if _cached and _cached[0] == str(p) else None
         _cached = (str(p), mtime, kg)
         return kg

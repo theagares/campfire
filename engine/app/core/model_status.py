@@ -46,6 +46,6 @@ CONFIDENTIAL_REQUIRED_FILES = ("model.safetensors", "config.json", "tokenizer.js
 
 def confidential_ready() -> bool:
     """기밀 탐지 리트리버 가중치. all_ready() 에 넣지 않는다 — 회사 KG 를 쓰는 선택 기능이라
-    없다고 PII·인젝션까지 꺼지면 안 된다. 없으면 리트리버 없이 후보를 전부 Solar 에 넘긴다."""
+    없다고 PII·인젝션까지 꺼지면 안 된다. 없으면 Solar 로 보내지 않고 근거 문장을 가린다."""
     model_dir = config.CONFIDENTIAL_ENGINE_DIR / "models"
     return all((model_dir / f).is_file() for f in CONFIDENTIAL_REQUIRED_FILES)
