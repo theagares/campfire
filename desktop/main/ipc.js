@@ -132,7 +132,11 @@ function register(ctx) {
         (patch.kgPath !== undefined && patch.kgPath !== prev.kgPath));
     if (policyChanged || apiKeyChanged || riskScannerChanged || confidentialChanged) {
       if (config.get('securityEnabled')) {
-        engineManager.restart().catch((err) => console.error('[ipc] restart 실패:', err.message));
+        engineManager
+          .restart()
+          // 기밀 탐지를 켰으면 리트리버 가중치를 받는다 (없으면 ensureModels 가 바로 돌아온다)
+          .then(() => confidentialChanged && next.confidentialEnabled && onEnsureModels && onEnsureModels())
+          .catch((err) => console.error('[ipc] restart 실패:', err.message));
       }
     }
     return next;

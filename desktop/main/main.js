@@ -163,12 +163,14 @@ async function ensureModelsAutoDownload() {
   try {
     await waitForEngineRunning();
     const status = await models.getStatus(engineManager);
-    const modelsReady = !!(status.pii?.ready && status.injection?.ready);
-    if (modelsReady) return; // 이미 준비된 상태 — 재다운로드 불필요
+    const coreReady = !!(status.pii?.ready && status.injection?.ready);
+    // 기밀 탐지 리트리버는 사용자가 기밀 탐지를 켠 경우에만 받는다(선택 기능, 약 330MB)
+    const confidentialReady = !status.confidential?.enabled || !!status.confidential?.ready;
+    if (coreReady && confidentialReady) return; // 이미 준비된 상태 — 재다운로드 불필요
 
     ipc.broadcast('models:fetchProgress', {
       type: 'progress',
-      label: '필수 보안 모델(약 600MB)을 준비하는 중...',
+      label: coreReady ? '기밀 탐지 모델(약 330MB)을 준비하는 중...' : '필수 보안 모델(약 600MB)을 준비하는 중...',
     });
     await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
   } catch (err) {
