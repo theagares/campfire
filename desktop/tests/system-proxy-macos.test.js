@@ -94,9 +94,21 @@ test('macOS runner는 모든 활성 서비스에 PAC를 적용하고 원래 값�
 
   const run = mac.createRunner({ execFileImpl: fakeExec });
   const previous = await run('query');
-  const applied = await run('set-pac', 'http://127.0.0.1:48211/campfire.pac?v=1');
+  const beforeSet = calls.length;
+  const applied = await run('set-pac', {
+    url: 'http://127.0.0.1:48211/campfire.pac?v=1', before: previous,
+  });
   assert.equal(applied.services[0].pacEnabled, true);
   assert.equal(applied.services[0].pacUrl, 'http://127.0.0.1:48211/campfire.pac?v=1');
+  const setCalls = calls.slice(beforeSet);
+  assert.equal(
+    setCalls.filter((c) => c[1] === '-listallnetworkservices').length, 0,
+    'enableNow가 읽은 상태를 다시 조회하면 전환이 불필요하게 느려진다',
+  );
+  assert.equal(
+    setCalls.filter((c) => c[1] === '-getautoproxyurl').length, previous.services.length,
+    '적용 뒤에는 PAC 필드만 최소 조회해 검증해야 한다',
+  );
   await run('restore', JSON.stringify(previous));
 
   const elevated = calls.filter((c) => c[0] === '/usr/bin/osascript');
@@ -108,6 +120,17 @@ test('macOS runner는 모든 활성 서비스에 PAC를 적용하고 원래 값�
   assert.ok(!/-setautoproxyurl/.test(elevated[1].at(-1)), '원래 PAC 가 없었으면 URL 을 쓰지 않는다(빈 URL 은 거부된다)');
   assert.ok(!/set -e/.test(elevated[1].at(-1)), '복원은 첫 실패에서 멈추지 않고 모든 서비스를 되돌린다');
   assert.ok(!elevated.some((c) => c.at(-1).includes('Bridge')), '비활성 서비스는 바꾸면 안 된다');
+});
+
+test('system-proxy는 macOS set-pac에 이미 읽은 상태를 함께 넘긴다', async () => {
+  const seen = [];
+  const runner = async (command, arg) => { seen.push([command, arg]); return {}; };
+  const sp = create(runner, 'darwin');
+  const before = { platform: 'darwin', services: [{ name: 'Wi-Fi' }] };
+  await sp.setPac('http://127.0.0.1:48211/campfire.pac?v=1', before);
+  assert.deepEqual(seen[0], ['set-pac', {
+    url: 'http://127.0.0.1:48211/campfire.pac?v=1', before,
+  }]);
 });
 
 test('셸 인자는 서비스 이름의 메타문자를 데이터로만 취급한다', () => {

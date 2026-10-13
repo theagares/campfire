@@ -82,7 +82,9 @@ $('#conn-ext-install').addEventListener('click', async (e) => {
 
 // ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
 let mcpRefreshPromise = null;
-async function refreshMcpClients() {
+async function refreshMcpClients({ force = false } = {}) {
+  // 연결·해제 직후(force)에는 그 전에 시작된 조회를 기다린 뒤 새로 본다 — 진행 중이던 결과는 낡았다.
+  if (force && mcpRefreshPromise) await mcpRefreshPromise;
   if (mcpRefreshPromise) return mcpRefreshPromise;
   mcpRefreshPromise = api.detectMcpClients()
     .catch(() => ({ mcpUrl: null, clients: [] }))
@@ -113,12 +115,14 @@ function renderMcpClients() {
     }
     const statusText = !c.available ? '미설치' : c.connected ? '연결됨' : '미연결';
     const actionLabel = c.connected ? '연결 해제' : '연결하기';
+    const errorHint = c.error ? `<div class="hint error">${escapeHtml(c.error)}</div>` : '';
     return `
       <div class="mcp-client-row" data-id="${c.id}">
         <div class="mcp-client-head">
           <span class="mcp-client-name">${c.name}</span>
           <span class="badge-plain">${statusText}</span>
         </div>
+        ${errorHint}
         <button class="conn-link mcp-action-btn" data-id="${c.id}" data-connected="${!!c.connected}" ${c.available ? '' : 'disabled'}>${actionLabel}</button>
       </div>`;
   }).join('');
@@ -144,7 +148,7 @@ $('#mcp-client-list').addEventListener('click', async (e) => {
     showGlobalBanner(`MCP 연결 실패(${id}): ${err.message || err}`);
   }
   actionBtn.textContent = originalLabel;
-  await refreshMcpClients();
+  await refreshMcpClients({ force: true });
 });
 
 // ── 프록시 게이트웨이 ─────────────────────────────────────────────────────────
@@ -155,11 +159,48 @@ async function refreshProxy() {
   state.proxy = await api.getProxyStatus().catch(() => null);
   renderProxy();
 }
+let proxyRouteRefreshBusy = false;
+async function refreshProxyRoute() {
+  if (proxyRouteRefreshBusy || !api.getProxyRouteStatus
+      || !$('#view-connect').classList.contains('active') || !state.proxy) return;
+  proxyRouteRefreshBusy = true;
+  try {
+    const quick = await api.getProxyRouteStatus();
+    if (quick) {
+      state.proxy = {
+        ...state.proxy,
+        desired: quick.desired,
+        engine: quick.engine,
+        lastError: quick.lastError,
+      };
+      renderProxy();
+    }
+  } catch { /* 다음 폴링에서 다시 확인 */ }
+  finally { proxyRouteRefreshBusy = false; }
+}
 function setLight(sel, on) {
   const el = $(sel);
   if (!el) return;
   el.classList.toggle('on', !!on);
   el.classList.toggle('off', !on);
+}
+function setRouteLight(route) {
+  const el = $('#proxy-light-route');
+  if (!el) return;
+  const mode = route?.mode || 'unknown';
+  const labels = {
+    proxy: '프록시 경로 확인됨',
+    extension: '확장 보호 확인됨',
+    fallback: '확장으로 안전 복구',
+    off: '보호 꺼짐',
+    mixed: '탭별 경로 다름',
+    unknown: '브라우저 확인 대기',
+  };
+  el.classList.toggle('on', mode === 'proxy' || mode === 'extension');
+  el.classList.toggle('warn', mode === 'fallback' || mode === 'mixed' || mode === 'off');
+  el.classList.toggle('off', mode === 'unknown');
+  const text = el.querySelector('.mp-text');
+  if (text) text.textContent = labels[mode] || labels.unknown;
 }
 function renderProxy() {
   const toggle = $('#proxy-toggle');
@@ -170,6 +211,7 @@ function renderProxy() {
     toggle.disabled = true;
     toggle.checked = false;
     ['#proxy-light-engine', '#proxy-light-ca', '#proxy-light-system'].forEach((s) => setLight(s, false));
+    setRouteLight(null);
     hint.innerHTML = `<div class="hint">${st ? 'Windows와 macOS에서만 지원합니다.' : '상태를 불러오지 못했습니다.'}</div>`;
     return;
   }
@@ -181,10 +223,12 @@ function renderProxy() {
   setLight('#proxy-light-engine', running);
   setLight('#proxy-light-ca', eng && eng.caTrusted === true);
   setLight('#proxy-light-system', applied);
+  setRouteLight(eng?.extensionRoute);
   hint.innerHTML = proxyHintHtml(st, running, applied);
 }
 function proxyHintHtml(st, running, applied) {
   const err = st.lastError;
+  const route = st.engine?.extensionRoute || { mode: 'unknown', activeTabs: 0 };
   if (state.proxyBusy) return '<div class="hint">적용 중…</div>';
   if (!st.engine) return '<div class="hint">엔진이 실행 중이어야 켤 수 있습니다.</div>';
   if (err && err.code === 'ca') {
@@ -211,9 +255,35 @@ function proxyHintHtml(st, running, applied) {
     }
     return '<div class="hint warn">엔진 프록시가 내려가 있어 AI 사이트가 막혀 있습니다. 검사 없이 나가지 않도록 일부러 막은 상태이며, 엔진이 다시 뜨면 풀립니다.</div>';
   }
-  if (st.desired && applied) return '<div class="hint">켜짐 — AI 사이트로 가는 업로드가 검토 대기로 붙들립니다. 다른 사이트는 평소처럼 직접 나갑니다.</div>';
+  if (st.desired && applied && route.mode === 'proxy') {
+    return `<div class="hint">적용 완료 — 열려 있는 AI 탭 ${route.activeTabs || 1}개에서 실제 프록시 경로를 확인했습니다.</div>`;
+  }
+  if (st.desired && applied && route.mode === 'fallback') {
+    return '<div class="hint warn">시스템 설정은 적용됐지만 브라우저 응답에서 프록시 표식이 보이지 않습니다. 검사 누락을 막기 위해 확장 보호를 계속 사용 중입니다. AI 탭을 새로고침해 다시 확인하세요.</div>';
+  }
+  if (st.desired && applied && route.mode === 'mixed') {
+    if (route.counts?.off) {
+      return '<div class="hint warn">일부 AI 탭에서 프록시도 확장도 확인되지 않았습니다. 확장 프로그램의 보호를 켜고 해당 탭을 새로고침하세요.</div>';
+    }
+    return '<div class="hint warn">탭마다 확인된 보호 경로가 다릅니다. 프록시가 확인되지 않은 탭은 확장이 계속 보호합니다. 해당 AI 탭을 새로고침하세요.</div>';
+  }
+  if (st.desired && applied && route.mode === 'off') {
+    return '<div class="hint warn">브라우저에서 프록시 표식을 확인하지 못했고 확장 보호도 꺼져 있습니다. 확장 프로그램의 보호를 켠 뒤 AI 탭을 새로고침하세요.</div>';
+  }
+  if (st.desired && applied) {
+    return '<div class="hint">시스템 적용 완료 — 열려 있는 AI 탭에서 실제 프록시 경로를 확인하는 중입니다. AI 사이트를 열면 자동으로 결과가 표시됩니다.</div>';
+  }
   if (st.desired) return '<div class="hint">켜는 중…</div>';
-  return '<div class="hint">꺼짐 — 브라우저가 평소처럼 직접 나갑니다.</div>';
+  if (route.mode === 'extension' || route.mode === 'fallback') {
+    return `<div class="hint">전환 완료 — 열려 있는 AI 탭 ${route.activeTabs || 1}개에서 확장 프로그램 보호를 확인했습니다.</div>`;
+  }
+  if (route.mode === 'off') {
+    return '<div class="hint warn">확장 프로그램 보호가 꺼져 있습니다. 확장 팝업에서 보호를 켜세요.</div>';
+  }
+  if (route.mode === 'mixed' || route.mode === 'proxy') {
+    return '<div class="hint">프록시를 해제했고 브라우저가 확장 보호로 돌아오는지 확인 중입니다.</div>';
+  }
+  return '<div class="hint">꺼짐 — AI 사이트를 열면 확장 프로그램 보호 여부를 자동으로 확인합니다.</div>';
 }
 $('#proxy-toggle').addEventListener('change', async (e) => {
   const want = e.currentTarget.checked;
@@ -1116,6 +1186,8 @@ async function init() {
   setInterval(() => {
     if ($('#view-connect').classList.contains('active')) refreshMcpClients();
   }, 30000);
+  // 전체 시스템 프록시 조회는 비싸므로 실제 탭 경로만 가볍게 갱신한다.
+  setInterval(refreshProxyRoute, 1500);
 }
 
 init().catch((err) => console.error('[renderer] init 실패:', err));

@@ -53,6 +53,29 @@
     }, '*');
   }
 
+  function sendProxyExpectationToMain(expected) {
+    window.postMessage({
+      __campfire_config: true,
+      direction: 'isolated-to-main',
+      type: 'SECUREDOC_PROXY_EXPECTATION',
+      bridgeToken,
+      enabled: Boolean(expected),
+    }, '*');
+  }
+
+  function refreshProxyExpectation() {
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_PROXY_EXPECTATION' }, (result) => {
+        // 서비스 워커/엔진을 못 물으면 프록시를 기대하지 않는다. MAIN world는 즉시
+        // 확장 보호로 복귀하므로 확인 실패가 보호 공백으로 이어지지 않는다.
+        void chrome.runtime.lastError;
+        sendProxyExpectationToMain(Boolean(result?.expected));
+      });
+    } catch {
+      sendProxyExpectationToMain(false);
+    }
+  }
+
   /** MAIN world(interceptor.js)에 "이 파일은 content.js가 사용자 검토까지 이미
    *  마쳤다"고 알린다.
    *
@@ -104,6 +127,12 @@
   }
 
   sendBridgeTokenToMain();
+  // 하위 frame마다 확인 요청을 보내면 같은 탭이 여러 상태로 집계된다. 보호 경로는
+  // top frame 하나가 능동 확인하고, MAIN world의 게이트도 그 결과로 즉시 전환한다.
+  if (window.top === window) {
+    refreshProxyExpectation();
+    setInterval(refreshProxyExpectation, 2000);
+  }
 
   // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
   //
@@ -178,48 +207,10 @@
   // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
   let proxyMarkAt = 0;
   let proxyTtlMs = 15000;
-  let proxyStatusTimer = null;
-  let proxyStatusChecking = false;
   function proxyInPath() {
     // proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 이 명시 검사가 없으면
     // Date.now() 가 작을 때(테스트의 가상 시계 등) 0-0<TTL 이 참이 돼 오판한다.
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
-  }
-
-  function clearProxyInPath() {
-    proxyMarkAt = 0;
-    clearTimeout(proxyStatusTimer);
-    proxyStatusTimer = null;
-    window.postMessage({
-      __campfire_config: true,
-      direction: 'isolated-to-main',
-      type: 'SECUREDOC_PROXY_OUT_OF_PATH',
-      bridgeToken,
-    }, '*');
-  }
-
-  // 응답 표식은 "이 브라우저가 실제 프록시를 지났다"는 강한 증거라 켜는 판단에는
-  // 그대로 쓴다. 다만 데스크탑에서 프록시를 끈 직후에는 마지막 표식이 15초 남아
-  // 확장까지 손을 놓는 틈이 생겼다. 표식을 본 동안만 실제 엔진 상태를 짧게 확인하고,
-  // running:false가 확인되면 TTL을 기다리지 않고 보호를 되살린다.
-  function scheduleProxyStatusCheck(delay = 0) {
-    clearTimeout(proxyStatusTimer);
-    if (!proxyInPath()) return;
-    proxyStatusTimer = setTimeout(async () => {
-      if (proxyStatusChecking || !proxyInPath()) return;
-      proxyStatusChecking = true;
-      let status = null;
-      try {
-        status = await sendToSW({ type: 'GET_PROXY_STATUS' });
-      } finally {
-        proxyStatusChecking = false;
-      }
-      if (status && status.running === false) {
-        clearProxyInPath();
-        return;
-      }
-      if (proxyInPath()) scheduleProxyStatusCheck(250);
-    }, delay);
   }
 
   function isSupportedFile(file) {
@@ -2777,13 +2768,22 @@
     if (event.source !== window) return;
     if (!event.data?.__securedoc || event.data.direction !== 'main-to-isolated') return;
 
-    // MAIN world(interceptor)가 "프록시가 실제 경로에 있다"를 알린다. 그 동안 확장은
-    // 파일 staging·프롬프트 게이트를 멈춘다 — 프록시가 단독으로 맡는다(위조는 bridgeToken 검증).
-    if (event.data.type === 'SECUREDOC_PROXY_IN_PATH') {
+    // MAIN world가 능동 HEAD 요청에서 본 실제 보호 경로를 알린다. 표식이 확인된
+    // proxy 모드에서만 확장이 손을 떼고, 나머지는 즉시 확장 보호를 유지한다.
+    if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
-      proxyMarkAt = Date.now();
+      proxyMarkAt = event.data.mode === 'proxy' ? Date.now() : 0;
       proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
-      scheduleProxyStatusCheck();
+      if (window.top === window) {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'REPORT_PROXY_ROUTE',
+            mode: event.data.mode,
+            host: location.hostname,
+            expectedProxy: Boolean(event.data.expectedProxy),
+          }, () => { void chrome.runtime.lastError; });
+        } catch { /* extension context invalidated */ }
+      }
       return;
     }
 

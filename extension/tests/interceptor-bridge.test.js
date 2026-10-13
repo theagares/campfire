@@ -34,12 +34,13 @@ const noop = function () {};
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 /** interceptor.js 를 새 샌드박스에 올리고 조작 손잡이를 돌려준다. */
-function load() {
+function load({ proxyMarked = false } = {}) {
   const win = new Map();
   const doc = new Map();
   const origFetchCalls = [];
-  let proxyHeader = false;
+  const posted = [];
   const store = Object.create(null);
+  let hasProxyMark = proxyMarked;
 
   Object.assign(store, {
     console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
@@ -86,9 +87,10 @@ function load() {
     origFetchCalls.push(args);
     return Promise.resolve({
       ok: true,
-      headers: {
-        get: (name) => proxyHeader && String(name).toLowerCase() === 'x-campfire-proxy' ? '1' : null,
-      },
+      url: String(args[0]),
+      headers: { get: (name) => (
+        hasProxyMark && String(name).toLowerCase() === 'x-campfire-proxy' ? '1' : null
+      ) },
     });
   };
 
@@ -109,7 +111,7 @@ function load() {
   store.self = sandbox;
   store.top = sandbox;
   store.addEventListener = (t, f) => { const a = win.get(t) || []; a.push(f); win.set(t, a); };
-  store.postMessage = noop;
+  store.postMessage = (message) => { posted.push(message); };
 
   const ctx = vm.createContext(sandbox);
   vm.runInContext(SRC, ctx, { filename: 'interceptor.js' });
@@ -137,14 +139,13 @@ function load() {
     return origFetchCalls.length > 0;
   }
 
-  async function markProxy() {
-    proxyHeader = true;
-    await sandbox.fetch('https://chatgpt.com/ping');
-    await settle();
-    proxyHeader = false;
-  }
-
-  return { config, passedThrough, markProxy };
+  return {
+    config,
+    passedThrough,
+    posted,
+    sandbox,
+    setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
+  };
 }
 
 const withToken = () => {
@@ -284,15 +285,65 @@ async function main() {
     );
   }
 
-  // (12) 프록시를 끈 것이 확인되면 15초 TTL을 기다리지 않고 확장 보호가 돌아온다.
+  // (12) 엔진이 프록시를 기대해도 실제 HEAD 응답에 표식이 있을 때만 확장이 양보한다.
+  {
+    const t = load({ proxyMarked: true });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'proxy'));
+    assert.strictEqual(
+      await t.passedThrough(), true,
+      '실제 프록시 표식을 확인했는데 확장이 계속 이중 인터셉트한다',
+    );
+  }
+
+  // (13) 설정은 켜졌지만 표식이 없으면 fallback을 보고하고 확장 보호를 유지한다.
   {
     const t = withToken();
-    await t.markProxy();
-    assert.strictEqual(await t.passedThrough(), true, '프록시 표식을 본 뒤 확장이 양보하지 않았다');
-    t.config({ type: 'SECUREDOC_PROXY_OUT_OF_PATH', bridgeToken: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'fallback'));
     assert.strictEqual(
       await t.passedThrough(), false,
-      '프록시 OFF 확인 뒤에도 확장이 원본을 통과시켰다',
+      '프록시 표식 없이 확장이 손을 뗐다 — 보호 공백이 생긴다',
+    );
+  }
+
+  // (14) 프록시를 끄면 TTL을 기다리지 않고 즉시 확장 보호로 돌아온다.
+  {
+    const t = load({ proxyMarked: true });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: false,
+    });
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      '프록시 해제 뒤에도 TTL 동안 확장 보호가 비었다',
+    );
+  }
+
+  // (15) 다른 호스트 응답의 표식(예: Gemini 업로드 호스트)으로는 이 탭의 보호를 내려놓지 않는다.
+  {
+    const t = withToken();
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    t.setProxyMarked(true);
+    await t.sandbox.fetch('https://push.clients6.google.com/upload/status');
+    await settle();
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      '다른 호스트 응답의 표식만 보고 확장이 손을 뗐다',
     );
   }
 

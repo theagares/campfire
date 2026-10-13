@@ -239,6 +239,15 @@ test('resumeIfDesired: 원할 때만, 이미 걸려 있으면 다시 안 건다'
   assert.deepStrictEqual(steps(on.log, 'system'), [], '이미 걸린 걸 또 건드렸다');
 });
 
+test('경로 상태 폴링은 느린 시스템 프록시 조회를 건너뛴다', async () => {
+  const h = harness();
+  h.log.length = 0;
+  const status = await h.toggle.routeStatus();
+  assert.ok(status.engine);
+  assert.deepStrictEqual(steps(h.log, 'system'), []);
+  assert.deepStrictEqual(steps(h.log, 'engine'), ['GET /proxy/status']);
+});
+
 test('켜기·끄기가 겹쳐도 한 줄로 돈다', async () => {
   const h = harness();
   await Promise.all([h.toggle.set(true), h.toggle.set(false), h.toggle.set(true)]);

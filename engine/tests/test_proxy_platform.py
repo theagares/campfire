@@ -50,6 +50,21 @@ def test_macos_ca_trust_requires_cert_in_keychain(tmp_path):
     assert proxy._macos_ca_trusted(cert, run=run) is False
 
 
+def test_macos_ca_trust_is_cached_briefly(monkeypatch, tmp_path):
+    # 상태 조회가 1~2초마다 오므로 security 프로세스를 매번 띄우지 않는다.
+    cert = tmp_path / "mitmproxy-ca-cert.pem"
+    cert.write_text("dummy")
+    calls = []
+    monkeypatch.setattr(proxy.sys, "platform", "darwin")
+    monkeypatch.setattr(proxy, "ca_cert_path", lambda: str(cert))
+    monkeypatch.setattr(proxy, "_ca_trust_cache", None)
+    monkeypatch.setattr(proxy, "_macos_ca_trusted", lambda p: calls.append(p) or True)
+    assert proxy.ca_trusted() is True and proxy.ca_trusted() is True
+    assert len(calls) == 1
+    monkeypatch.setattr(proxy.time, "monotonic", lambda: 10**9)  # TTL 이 지나면 다시 본다
+    assert proxy.ca_trusted() is True and len(calls) == 2
+
+
 def test_proxy_status_supports_macos(monkeypatch, tmp_path):
     cert = tmp_path / "mitmproxy-ca-cert.pem"
     monkeypatch.setattr(proxy.sys, "platform", "darwin")

@@ -141,6 +141,9 @@ img { display:block; }
 .model-pill.off { border:1px solid rgba(120,120,120,.18); }
 .model-pill.off .mp-dot { background:var(--grey-500); }
 .model-pill.off .mp-text { color:var(--ink-mute); }
+.model-pill.warn { border:1px solid #d88a16; }
+.model-pill.warn .mp-dot { background:#d88a16; }
+.model-pill.warn .mp-text { color:#b45309; }
 
 /* ── 연결 ── */
 .conn-stack { display:flex; flex-direction:column; gap:16px; }

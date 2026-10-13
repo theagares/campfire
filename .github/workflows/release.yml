@@ -151,6 +151,24 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Verify MCP source integrations
+        working-directory: desktop
+        run: |
+          npm run check
+          npm test -- --test-reporter=spec
+
+      - name: Verify HTTP MCP and stdio shim
+        working-directory: engine
+        shell: bash
+        run: |
+          if [ -f .venv/python.exe ]; then PY=.venv/python.exe; else PY=.venv/bin/python; fi
+          # pytest 는 사용자에게 배포되는 .venv 밖에 둔다. 모델 폴더도 임시 폴더로 —
+          # 앱 lifespan 이 러너의 실제 MODELS_ROOT 에 런타임 파일을 복사해 두면, 뒤의 설치본
+          # 모델 검증이 패키징에서 빠진 파일을 그 사본으로 메워 놓쳐 버린다.
+          "$PY" -m pip install --target "$RUNNER_TEMP/pytest-lib" "pytest>=8.0"
+          PYTHONPATH="$RUNNER_TEMP/pytest-lib" SECUREDOC_MODELS_DIR="$RUNNER_TEMP/campfire-test-models" \
+            "$PY" -m pytest tests/test_mcp.py -q
+
       - name: Build & upload as draft release asset
         working-directory: desktop
         shell: bash
@@ -222,6 +240,14 @@ jobs:
             if (-not $ok) { Start-Sleep -Seconds 5 }
           }
           if (-not $ok) { Write-Error "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 5분 대기)"; exit 1 }
+
+          # 소스 트리의 테스트가 아니라 실제 설치본에 들어간 Python/모듈 경로로 stdio
+          # shim을 띄워 Claude Desktop과 같은 initialize -> tools/list 왕복을 확인한다.
+          $engineDir = "$env:LOCALAPPDATA\Programs\Campfire\resources\engine"
+          node desktop\scripts\smoke-mcp-stdio.js `
+            --python "$engineDir\.venv\python.exe" `
+            --engine-dir "$engineDir" `
+            --url "http://127.0.0.1:$port/mcp"
 
           # /health 만 200인 것은 충분하지 않다. 모델 다운로드가 끝나기 전에도 엔진은
           # 살아 있고 요청을 "models_not_ready"로 통과시킨다. 실제 설치본에서 모델
@@ -326,6 +352,13 @@ jobs:
             if [ "$ok" -ne 1 ]; then sleep 5; fi
           done
           if [ "$ok" -ne 1 ]; then echo "엔진 /health 응답을 받지 못했습니다(포트 48200-48209, 60초 대기)"; exit 1; fi
+
+          # .app 내부의 Python과 모듈을 직접 사용한다. 개발 환경 테스트가 통과해도 패키징
+          # filter가 shim이나 의존성을 빠뜨리면 여기서 실패한다.
+          node desktop/scripts/smoke-mcp-stdio.js \
+            --python "$RES/.venv/bin/python" \
+            --engine-dir "$RES" \
+            --url "http://127.0.0.1:$PORT/mcp"
 
           echo "--- 번들된 macOS 프록시 런타임 기동 검증 ---"
           proxy_status=$(curl -fsS -X POST "http://127.0.0.1:$PORT/proxy/start")

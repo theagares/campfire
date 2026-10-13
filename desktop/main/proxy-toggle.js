@@ -97,7 +97,7 @@ function create({
       previous: config.get('proxySystemPrevious'),
     });
     try {
-      await systemProxy.setPac(pacUrl);
+      await systemProxy.setPac(pacUrl, current);
     } catch (err) {
       let restored = false;
       try {
@@ -180,20 +180,20 @@ function create({
     },
 
     async status() {
-      let engineProxy = null;
-      try {
-        engineProxy = await engine('GET', '/proxy/status');
-      } catch { /* 엔진 꺼짐 */ }
-      let system = null;
-      if (systemProxy.supported) {
+      // 엔진 HTTP와 OS 설정 조회는 서로 독립이다. macOS에서는 networksetup 조회가
+      // 상대적으로 비싸므로 직렬로 기다리지 않는다.
+      const engineStatus = engine('GET', '/proxy/status').catch(() => null);
+      const systemStatus = (async () => {
+        if (!systemProxy.supported) return null;
         try {
           const q = await systemProxy.query();
           const applied = systemProxy.isFullyOurs || systemProxy.isOurs;
-          system = { ...q, ours: applied.call(systemProxy, q, pacServer.PAC_PREFIX) };
+          return { ...q, ours: applied.call(systemProxy, q, pacServer.PAC_PREFIX) };
         } catch (err) {
-          system = { error: err.message };
+          return { error: err.message };
         }
-      }
+      })();
+      const [engineProxy, system] = await Promise.all([engineStatus, systemStatus]);
       return {
         platform: process.platform,
         supported: systemProxy.supported,
@@ -201,6 +201,16 @@ function create({
         engine: engineProxy,
         pacServing: pacServer.isRunning(),
         system,
+        lastError,
+      };
+    },
+
+    /** UI의 짧은 폴링용. 느린 OS networksetup/PowerShell 조회 없이 실제 탭 보고만 갱신한다. */
+    async routeStatus() {
+      const engineProxy = await engine('GET', '/proxy/status').catch(() => null);
+      return {
+        desired: !!config.get('proxyEnabled'),
+        engine: engineProxy,
         lastError,
       };
     },

@@ -7,8 +7,9 @@
  * Claude Code / Claude Desktop 은 실제로 자동 등록까지 수행한다:
  *   - Claude Code: 공식 CLI(`claude mcp add/remove`)를 그대로 호출 — 내부 설정 파일
  *     포맷/경로를 추측하지 않고 공식 인터페이스에 위임한다(이번 세션에서 실측 검증됨).
- *   - Claude Desktop: 공식 문서화된 claude_desktop_config.json 의 mcpServers 스키마를
- *     직접 읽고 쓴다(Anthropic 공개 문서 기준 안정적인 포맷).
+ *   - Claude Desktop: 설정 파일이 지원하는 로컬 stdio 서버로 등록하고, 번들된
+ *     stdio_shim 이 실행 중인 Campfire HTTP MCP로 중계한다. HTTP 서버를 설정 파일에
+ *     직접 넣으면 Claude Desktop이 무시하므로 사용하지 않는다.
  * 나머지(Cursor/Windsurf/Cline/VS Code Copilot)는 클라이언트마다 MCP 설정 스키마·경로가
  * 자주 바뀌고 있어, 잘못 자동으로 써버리면 사용자의 기존 설정을 조용히 깨뜨릴 위험이
  * 있다 — 그래서 붙여넣을 JSON 스니펫만 제공한다(수동, method:'manual').
@@ -22,13 +23,15 @@ const appPaths = require('./paths');
 
 const SERVER_NAME = 'campfire';
 const RISK_SCANNER_SERVER_NAME = 'campfire-mcp-risk-scanner';
+const CLAUDE_SHORT_TIMEOUT_MS = 8000;
+const CLAUDE_MUTATION_TIMEOUT_MS = 15000;
+// Claude Code의 MCP 시작 기본 제한은 30초다. get은 해당 서버를 실제 health-check하므로
+// 그보다 짧게 자르면 정상 설정도 실패로 오판한다.
+const CLAUDE_HEALTH_TIMEOUT_MS = 40000;
 // 리브랜딩 이전에 등록해둔 키. 사용자의 claude_desktop_config.json 에 그대로 남아 있어서,
 // 새 키만 보면 "연결 안 됨" 으로 보이고 해제해도 옛 항목이 계속 남는다. 조회·해제 때
 // 둘 다 취급하고, 연결할 때는 옛 항목을 지우고 새 키로 바꿔 쓴다.
 const LEGACY_SERVER_NAMES = ['securedoc-gateway'];
-const DETECT_CACHE_MS = 30000;
-let _detectPromise = null;
-let _detectCache = null;
 const mainServerKeysIn = (servers) =>
   [SERVER_NAME, ...LEGACY_SERVER_NAMES].filter(k => servers && servers[k]);
 const managedServerKeysIn = (servers) =>
@@ -59,9 +62,13 @@ function resolveCliPath() {
       // -lc: 로그인 셸로 rc 를 읽되 대화형(-i)은 피한다 — 대화형은 프롬프트 설정에서
       // 멈춰 앱 기동이 지연될 수 있다. 실패/타임아웃은 조용히 넘어간다.
       const shellPath = await new Promise((resolve) => {
-        execFile(shell, ['-lc', 'printf %s "$PATH"'], { timeout: 3000 }, (err, stdout) => {
-          resolve(err ? '' : String(stdout || ''));
-        });
+        try {
+          execFile(shell, ['-lc', 'printf %s "$PATH"'], { timeout: 3000 }, (err, stdout) => {
+            resolve(err ? '' : String(stdout || ''));
+          });
+        } catch {
+          resolve('');
+        }
       });
       shellPath.split(path.delimiter).filter(Boolean).forEach(add);
     }
@@ -137,30 +144,83 @@ async function resolveClaudeLauncher() {
   return _claudeLauncherPromise;
 }
 
+function claudeTimeoutFor(args, env = process.env) {
+  if (args[0] === 'mcp' && ['get', 'add'].includes(args[1])) {
+    const configured = Number(env.MCP_TIMEOUT);
+    return Number.isFinite(configured) && configured > 0
+      ? Math.max(CLAUDE_HEALTH_TIMEOUT_MS, Math.min(configured + 10000, 300000))
+      : CLAUDE_HEALTH_TIMEOUT_MS;
+  }
+  if (args[0] === 'mcp' && args[1] === 'remove') {
+    return CLAUDE_MUTATION_TIMEOUT_MS;
+  }
+  return CLAUDE_SHORT_TIMEOUT_MS;
+}
+
 async function runClaude(args) {
   const PATH = await resolveCliPath();
   const launcher = await resolveClaudeLauncher();
   return new Promise((resolve) => {
-    execFile(
-      launcher.command,
-      [...launcher.prefixArgs, ...args],
-      { timeout: 8000, windowsHide: true, env: { ...process.env, PATH } },
-      (err, stdout, stderr) => {
-        resolve({ ok: !err, stdout: stdout || '', stderr: stderr || '' });
-      },
-    );
+    const finish = (err, stdout = '', stderr = '') => resolve({
+      ok: !err,
+      stdout: stdout || '',
+      stderr: stderr || (err && err.message) || '',
+      code: err && err.code,
+      timedOut: !!(err && err.killed),
+    });
+    try {
+      execFile(
+        launcher.command,
+        [...launcher.prefixArgs, ...args],
+        { timeout: claudeTimeoutFor(args), windowsHide: true, env: { ...process.env, PATH } },
+        finish,
+      );
+    } catch (err) {
+      finish(err);
+    }
   });
 }
 
-/** `claude mcp list` 의 `name: ...` 행을 정확히 찾는다.
- *
- * 단순 includes('campfire') 는 위험 검사기 이름(campfire-mcp-risk-scanner)만 있어도
- * 메인 MCP가 있다고 오판한다.
- */
-function listedServer(stdout, name) {
-  return String(stdout || '')
-    .split(/\r?\n/)
-    .some(line => line.trimStart().startsWith(`${name}:`));
+function resultText(result) {
+  return [result && result.stdout, result && result.stderr].filter(Boolean).join('\n').trim();
+}
+
+function isMissingClaudeServer(result) {
+  return !result.ok && /No MCP server (?:named|found)/i.test(resultText(result));
+}
+
+function outputField(output, label) {
+  const prefix = `${label}:`;
+  const line = String(output || '').split(/\r?\n/)
+    .find(candidate => candidate.trimStart().startsWith(prefix));
+  return line ? line.trimStart().slice(prefix.length).trim() : '';
+}
+
+function parseClaudeServer(name, result) {
+  if (isMissingClaudeServer(result)) return { name, exists: false };
+  if (!result.ok) {
+    const suffix = result.timedOut ? ' (시간 초과)' : '';
+    throw new Error(resultText(result) || `claude mcp get ${name} 실행 실패${suffix}`);
+  }
+  const output = resultText(result);
+  const status = outputField(output, 'Status');
+  const scope = outputField(output, 'Scope');
+  return {
+    name,
+    exists: true,
+    scope,
+    userScope: /^User config\b/i.test(scope),
+    healthy: /\bConnected\b/i.test(status) && !/\b(?:Failed|Disconnected)\b/i.test(status),
+    type: outputField(output, 'Type').toLowerCase(),
+    url: outputField(output, 'URL'),
+    command: outputField(output, 'Command'),
+    args: outputField(output, 'Args'),
+    status,
+  };
+}
+
+async function inspectClaudeServer(name, invoke = runClaude) {
+  return parseClaudeServer(name, await invoke(['mcp', 'get', name]));
 }
 
 function buildRiskScannerLaunch(app) {
@@ -173,6 +233,20 @@ function buildRiskScannerLaunch(app) {
       PYTHONPATH: packaged ? engineDir : path.resolve(engineDir, '..'),
       PYTHONUTF8: '1',
       PYTHONPYCACHEPREFIX: appPaths.resolvePycacheDir(),
+    },
+  };
+}
+
+function buildMainBridgeLaunch(app, mcpUrl) {
+  const engineDir = appPaths.resolveEngineDir(app);
+  return {
+    command: appPaths.resolvePythonExe(engineDir),
+    args: ['-m', 'app.adapters.mcp.stdio_shim'],
+    env: {
+      PYTHONPATH: engineDir,
+      PYTHONUTF8: '1',
+      PYTHONPYCACHEPREFIX: appPaths.resolvePycacheDir(),
+      SECUREDOC_MCP_URL: mcpUrl,
     },
   };
 }
@@ -195,55 +269,149 @@ function buildClaudeCodeAddPlans(app, mcpUrl) {
   ];
 }
 
-async function claudeCodeInfo(invoke = runClaude) {
-  const ver = await invoke(['--version']);
-  if (!ver.ok) {
-    return { id: 'claude_code', name: 'Claude Code', method: 'cli', available: false, connected: false };
+function sameCommand(left, right) {
+  if (!left || !right) return false;
+  if (process.platform === 'win32') return left.toLowerCase() === right.toLowerCase();
+  return left === right;
+}
+
+function claudeStateMatchesPlan(state, plan) {
+  if (!state.exists || !state.userScope) return false;
+  const transportIndex = plan.args.indexOf('--transport');
+  const transport = transportIndex >= 0 ? plan.args[transportIndex + 1] : 'stdio';
+  if (state.type !== transport) return false;
+  if (transport === 'http') {
+    return state.url === plan.args.at(-1);
   }
-  const list = await invoke(['mcp', 'list']);
-  const mainConnected = list.ok
-    && [SERVER_NAME, ...LEGACY_SERVER_NAMES].some(k => listedServer(list.stdout, k));
-  const scannerConnected = list.ok && listedServer(list.stdout, RISK_SCANNER_SERVER_NAME);
-  const connected = mainConnected && scannerConnected;
-  return { id: 'claude_code', name: 'Claude Code', method: 'cli', available: true, connected };
+  const separator = plan.args.indexOf('--');
+  const command = separator >= 0 ? plan.args[separator + 1] : '';
+  const args = separator >= 0 ? plan.args.slice(separator + 2) : [];
+  return sameCommand(state.command, command)
+    && state.args.replace(/\s+/g, ' ').trim() === args.join(' ');
+}
+
+function claudeStateReady(state, plan) {
+  return claudeStateMatchesPlan(state, plan) && state.healthy;
+}
+
+async function claudeCodeInfo(app, mcpUrl, invoke = runClaude) {
+  let ver;
+  try {
+    ver = await invoke(['--version']);
+  } catch (err) {
+    return {
+      id: 'claude_code', name: 'Claude Code', method: 'cli', available: false, connected: false,
+      error: err.message || String(err),
+    };
+  }
+  if (!ver.ok) {
+    return {
+      id: 'claude_code', name: 'Claude Code', method: 'cli', available: false, connected: false,
+      error: resultText(ver),
+    };
+  }
+  try {
+    const plans = buildClaudeCodeAddPlans(app, mcpUrl);
+    const states = await Promise.all(plans.map(plan => inspectClaudeServer(plan.name, invoke)));
+    const connected = states.every((state, index) => claudeStateReady(state, plans[index]));
+    let error = '';
+    const conflicting = states.find(state => state.exists && !state.userScope);
+    const unhealthy = states.find((state, index) => (
+      claudeStateMatchesPlan(state, plans[index]) && !state.healthy
+    ));
+    if (conflicting) error = `${conflicting.name}이 user가 아닌 다른 scope에서 우선 적용 중입니다.`;
+    else if (unhealthy) error = `${unhealthy.name} 설정은 맞지만 연결 상태가 ${unhealthy.status || '비정상'}입니다.`;
+    return {
+      id: 'claude_code', name: 'Claude Code', method: 'cli', available: true, connected, error,
+    };
+  } catch (err) {
+    return {
+      id: 'claude_code', name: 'Claude Code', method: 'cli', available: true, connected: false,
+      error: err.message || String(err),
+    };
+  }
 }
 
 async function claudeCodeConnect(app, mcpUrl, invoke = runClaude) {
-  // 기존 버전에서 campfire만 연결한 사용자는 위험 검사기만 추가해야 한다. 둘을 무조건
-  // 다시 add 하면 이미 존재하는 이름 때문에 첫 명령부터 실패한다.
-  const list = await invoke(['mcp', 'list']);
-  if (!list.ok) throw new Error(list.stderr.trim() || 'claude mcp list 실행 실패');
-  const hasMain = [SERVER_NAME, ...LEGACY_SERVER_NAMES]
-    .some(name => listedServer(list.stdout, name));
-  const hasScanner = listedServer(list.stdout, RISK_SCANNER_SERVER_NAME);
-  const plans = buildClaudeCodeAddPlans(app, mcpUrl).filter(plan => (
-    plan.name === SERVER_NAME ? !hasMain : !hasScanner
-  ));
+  const plans = buildClaudeCodeAddPlans(app, mcpUrl);
+  const states = await Promise.all(plans.map(plan => inspectClaudeServer(plan.name, invoke)));
+  const conflicting = states.find(state => state.exists && !state.userScope);
+  if (conflicting) {
+    throw new Error(
+      `${conflicting.name}이 ${conflicting.scope || '다른 scope'}에 있어 user 설정을 가립니다. `
+      + '해당 scope의 동명 서버를 먼저 제거하세요.',
+    );
+  }
+
   const added = [];
 
-  for (const plan of plans) {
+  for (let index = 0; index < plans.length; index += 1) {
+    const plan = plans[index];
+    const state = states[index];
+    if (claudeStateReady(state, plan)) continue;
+    // 명령/URL이 같아 보여도 get 출력에 감춰진 env가 오래됐을 수 있다. health가
+    // 실패한 user 설정은 같은 값으로 단정하지 말고 제거 후 현재 전체 설정으로 복구한다.
+    if (state.exists) {
+      const removed = await invoke(['mcp', 'remove', '--scope', 'user', plan.name]);
+      if (!removed.ok && !isMissingClaudeServer(removed)) {
+        throw new Error(resultText(removed) || `claude mcp remove ${plan.name} 실행 실패`);
+      }
+    }
     const res = await invoke(plan.args);
     if (!res.ok) {
-      // add 가 설정 기록 뒤 health-check 에서 실패했을 가능성까지 포함해, 이번 연결에서
-      // 새로 다룬 이름만 정리한다. 기존에 있던 사용자 설정은 건드리지 않는다.
-      for (const name of [...new Set([plan.name, ...added])].reverse()) {
-        await invoke(['mcp', 'remove', '--scope', 'user', name]);
+      const rollbackFailures = [];
+      // 성공이 확인된 add만 되돌린다. 실패한 plan 이름까지 지우면 동시에 만들어진
+      // 설정이나 기존 설정을 삭제할 수 있다.
+      for (const name of [...added].reverse()) {
+        const rollback = await invoke(['mcp', 'remove', '--scope', 'user', name]);
+        if (!rollback.ok && !isMissingClaudeServer(rollback)) {
+          rollbackFailures.push(`${name}: ${resultText(rollback) || 'remove 실패'}`);
+        }
       }
-      throw new Error(res.stderr.trim() || `claude mcp add ${plan.name} 실행 실패`);
+      const rollbackMessage = rollbackFailures.length
+        ? `; 롤백 실패: ${rollbackFailures.join(', ')}`
+        : '';
+      throw new Error((resultText(res) || `claude mcp add ${plan.name} 실행 실패`) + rollbackMessage);
     }
     added.push(plan.name);
+  }
+
+  const verified = await Promise.all(plans.map(plan => inspectClaudeServer(plan.name, invoke)));
+  const badIndex = verified.findIndex((state, index) => !claudeStateReady(state, plans[index]));
+  if (badIndex >= 0) {
+    const rollbackFailures = [];
+    for (const name of [...added].reverse()) {
+      const rollback = await invoke(['mcp', 'remove', '--scope', 'user', name]);
+      if (!rollback.ok && !isMissingClaudeServer(rollback)) {
+        rollbackFailures.push(`${name}: ${resultText(rollback) || 'remove 실패'}`);
+      }
+    }
+    const state = verified[badIndex];
+    const rollbackMessage = rollbackFailures.length
+      ? `; 롤백 실패: ${rollbackFailures.join(', ')}`
+      : '';
+    throw new Error(`${plans[badIndex].name} 등록 검증 실패: ${state.status || '설정 불일치'}${rollbackMessage}`);
+  }
+
+  // 새 이름이 모두 정상인 뒤에만 user-scope 레거시 이름을 정리한다.
+  for (const name of LEGACY_SERVER_NAMES) {
+    const legacy = await invoke(['mcp', 'remove', '--scope', 'user', name]);
+    if (!legacy.ok && !isMissingClaudeServer(legacy)) {
+      throw new Error(resultText(legacy) || `claude mcp remove ${name} 실행 실패`);
+    }
   }
 }
 
 async function claudeCodeDisconnect(invoke = runClaude) {
-  // 옛 이름과 위험 검사기까지 모두 시도한다. 없는 이름을 지우면 실패하므로,
-  // 하나라도 성공하면 해제된 것으로 본다(모두 없을 때만 오류).
-  const results = [];
+  const failures = [];
   for (const key of [SERVER_NAME, ...LEGACY_SERVER_NAMES, RISK_SCANNER_SERVER_NAME]) {
-    results.push(await invoke(['mcp', 'remove', '--scope', 'user', key]));
+    const result = await invoke(['mcp', 'remove', '--scope', 'user', key]);
+    if (!result.ok && !isMissingClaudeServer(result)) {
+      failures.push(`${key}: ${resultText(result) || 'remove 실패'}`);
+    }
   }
-  if (!results.some(r => r.ok)) {
-    throw new Error(results[0].stderr.trim() || 'claude mcp remove 실행 실패');
+  if (failures.length) {
+    throw new Error(`일부 Claude Code MCP를 제거하지 못했습니다: ${failures.join(', ')}`);
   }
 }
 
@@ -251,43 +419,130 @@ function claudeDesktopConfigPath(app) {
   return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
 }
 
-function readJsonSafe(p) {
-  if (!fs.existsSync(p)) return {};
+function readJsonDocument(p) {
+  if (!fs.existsSync(p)) return { data: {}, raw: null };
+  let raw;
   try {
-    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-  } catch {
-    return {};
+    raw = fs.readFileSync(p, 'utf-8');
+  } catch (err) {
+    throw new Error(`Claude Desktop 설정 파일을 읽을 수 없습니다: ${err.message}`);
+  }
+  let data;
+  try {
+    // PowerShell 5.1 등으로 편집하면 UTF-8 BOM 이 붙는다 — 손상이 아니다.
+    data = JSON.parse(raw.replace(/^﻿/, ''));
+  } catch (err) {
+    throw new Error(`Claude Desktop 설정 JSON이 손상되어 변경하지 않았습니다: ${err.message}`);
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Claude Desktop 설정 JSON의 최상위 값이 객체가 아니어서 변경하지 않았습니다.');
+  }
+  return { data, raw };
+}
+
+function writeJsonAtomic(configPath, data, expectedRaw) {
+  // 설정 파일이 심볼릭 링크(dotfiles 관리 등)면 링크를 일반 파일로 바꾸지 않게 실제 파일에 쓴다.
+  const p = fs.existsSync(configPath) ? fs.realpathSync(configPath) : configPath;
+  const dir = path.dirname(p);
+  fs.mkdirSync(dir, { recursive: true });
+  const currentRaw = fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+  if (currentRaw !== expectedRaw) {
+    throw new Error('Claude Desktop 설정이 다른 프로세스에서 변경되어 저장을 중단했습니다. 다시 시도하세요.');
+  }
+
+  const temp = path.join(
+    dir,
+    `.${path.basename(p)}.campfire-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  const backup = `${p}.campfire-backup`;
+  let fd = null;
+  try {
+    const mode = fs.existsSync(p) ? fs.statSync(p).mode : 0o600;
+    fd = fs.openSync(temp, 'wx', mode);
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+
+    const latestRaw = fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+    if (latestRaw !== expectedRaw) {
+      throw new Error('Claude Desktop 설정이 저장 도중 변경되어 덮어쓰지 않았습니다. 다시 시도하세요.');
+    }
+    // 백업은 Campfire 가 처음 손대기 전의 원본 하나만 남긴다 — 매번 덮어쓰면 두 번째 저장에서 원본이 사라진다.
+    if (latestRaw !== null && !fs.existsSync(backup)) fs.copyFileSync(p, backup);
+    fs.renameSync(temp, p);
+  } catch (err) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* 이미 닫힘 */ }
+    }
+    try { fs.rmSync(temp, { force: true }); } catch { /* 임시 파일 정리 실패는 원래 오류를 보존 */ }
+    throw err;
   }
 }
 
-function claudeDesktopInfo(app) {
+function mcpServersIn(data, { create = false } = {}) {
+  if (data.mcpServers === undefined && create) {
+    data.mcpServers = {};
+    return data.mcpServers;
+  }
+  if (
+    data.mcpServers
+    && typeof data.mcpServers === 'object'
+    && !Array.isArray(data.mcpServers)
+  ) {
+    return data.mcpServers;
+  }
+  if (data.mcpServers === undefined) return undefined;
+  throw new Error('Claude Desktop 설정의 mcpServers가 객체가 아니어서 변경하지 않았습니다.');
+}
+
+function sameLaunch(actual, expected) {
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  if (!sameCommand(actual.command, expected.command)) return false;
+  if (!Array.isArray(actual.args) || actual.args.length !== expected.args.length) return false;
+  if (!actual.args.every((value, index) => value === expected.args[index])) return false;
+  if (!actual.env || typeof actual.env !== 'object' || Array.isArray(actual.env)) return false;
+  return Object.entries(expected.env).every(([key, value]) => actual.env[key] === value);
+}
+
+function claudeDesktopInfo(app, mcpUrl) {
   const p = claudeDesktopConfigPath(app);
-  const data = readJsonSafe(p);
-  const connected = mainServerKeysIn(data.mcpServers).length > 0
-    && !!(data.mcpServers && data.mcpServers[RISK_SCANNER_SERVER_NAME]);
-  return { id: 'claude_desktop', name: 'Claude Desktop', method: 'config', available: true, connected, configPath: p };
+  try {
+    const { data } = readJsonDocument(p);
+    const servers = mcpServersIn(data);
+    const connected = !!servers
+      && sameLaunch(servers[SERVER_NAME], buildMainBridgeLaunch(app, mcpUrl))
+      && sameLaunch(servers[RISK_SCANNER_SERVER_NAME], buildRiskScannerLaunch(app));
+    return {
+      id: 'claude_desktop', name: 'Claude Desktop', method: 'config', available: true,
+      connected, configPath: p,
+    };
+  } catch (err) {
+    return {
+      id: 'claude_desktop', name: 'Claude Desktop', method: 'config', available: true,
+      connected: false, configPath: p, error: err.message || String(err),
+    };
+  }
 }
 
 function claudeDesktopConnect(app, mcpUrl) {
   const p = claudeDesktopConfigPath(app);
-  const data = readJsonSafe(p);
-  data.mcpServers = data.mcpServers && typeof data.mcpServers === 'object' ? data.mcpServers : {};
+  const { data, raw } = readJsonDocument(p);
+  data.mcpServers = mcpServersIn(data, { create: true });
   for (const k of LEGACY_SERVER_NAMES) delete data.mcpServers[k]; // 옛 이름으로 중복 등록되지 않게
-  data.mcpServers[SERVER_NAME] = { type: 'http', url: mcpUrl };
+  data.mcpServers[SERVER_NAME] = buildMainBridgeLaunch(app, mcpUrl);
   data.mcpServers[RISK_SCANNER_SERVER_NAME] = buildRiskScannerLaunch(app);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  writeJsonAtomic(p, data, raw);
 }
 
 function claudeDesktopDisconnect(app) {
   const p = claudeDesktopConfigPath(app);
   if (!fs.existsSync(p)) return;
-  const data = readJsonSafe(p);
-  const keys = managedServerKeysIn(data.mcpServers);
+  const { data, raw } = readJsonDocument(p);
+  const keys = managedServerKeysIn(mcpServersIn(data));
   if (keys.length) {
     for (const k of keys) delete data.mcpServers[k]; // 옛 이름으로 남은 항목까지 정리
-    fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    writeJsonAtomic(p, data, raw);
   }
 }
 
@@ -328,56 +583,58 @@ function manualClients(app, mcpUrl) {
   ];
 }
 
-async function detectClients(app, mcpUrl) {
-  const now = Date.now();
-  if (_detectCache && _detectCache.mcpUrl === mcpUrl && now < _detectCache.expiresAt) {
+// claude mcp get 은 실제 환경에서 수 초가 걸린다. 렌더러의 갱신 요청이 겹쳐도 같은
+// CLI 를 여러 개 띄우지 않고 하나의 결과를 함께 기다리며, 잠시 재사용한다.
+const DETECT_CACHE_MS = 30000;
+let _detectPromise = null;
+let _detectCache = null;
+
+async function detectClients(app, mcpUrl, invoke = runClaude) {
+  if (_detectCache && _detectCache.mcpUrl === mcpUrl && Date.now() < _detectCache.expiresAt) {
     return _detectCache.clients;
   }
-  // claude mcp list는 실제 환경에서 수 초가 걸린다. 렌더러의 갱신 요청이 겹쳐도
-  // 같은 CLI를 여러 개 띄우지 않고 하나의 결과를 함께 기다린다.
   if (_detectPromise && _detectPromise.mcpUrl === mcpUrl) return _detectPromise.promise;
 
-  const promise = Promise.all([claudeCodeInfo(), Promise.resolve(claudeDesktopInfo(app))])
-    .then(([cc, cd]) => {
-      const clients = [cc, cd, ...manualClients(app, mcpUrl)];
+  const promise = Promise.all([
+    claudeCodeInfo(app, mcpUrl, invoke),
+    Promise.resolve(claudeDesktopInfo(app, mcpUrl)),
+  ]).then(([cc, cd]) => {
+    const clients = [cc, cd, ...manualClients(app, mcpUrl)];
+    // 조회 도중 연결·해제가 있었으면 이 결과는 이미 낡았다 — 캐시에 넣지 않는다.
+    // 오류가 섞인 결과(일시적인 CLI 실패 등)도 30초 동안 버튼을 막지 않게 넣지 않는다.
+    if (_detectPromise?.promise === promise && !clients.some(client => client && client.error)) {
       _detectCache = { mcpUrl, clients, expiresAt: Date.now() + DETECT_CACHE_MS };
-      return clients;
-    })
-    .finally(() => {
-      if (_detectPromise?.promise === promise) _detectPromise = null;
-    });
+    }
+    return clients;
+  }).finally(() => {
+    if (_detectPromise?.promise === promise) _detectPromise = null;
+  });
   _detectPromise = { mcpUrl, promise };
   return promise;
 }
 
+// 연결·해제 뒤에는 진행 중이던 조회까지 버리고 새로 본다. 실패해도 일부는 바뀌었을 수 있다.
 function invalidateDetectionCache() {
   _detectCache = null;
+  _detectPromise = null;
 }
 
-async function connect(app, clientId, mcpUrl) {
-  if (clientId === 'claude_code') {
-    const result = await claudeCodeConnect(app, mcpUrl);
+async function connect(app, clientId, mcpUrl, invoke = runClaude) {
+  try {
+    if (clientId === 'claude_code') return await claudeCodeConnect(app, mcpUrl, invoke);
+    if (clientId === 'claude_desktop') return claudeDesktopConnect(app, mcpUrl);
+  } finally {
     invalidateDetectionCache();
-    return result;
-  }
-  if (clientId === 'claude_desktop') {
-    const result = claudeDesktopConnect(app, mcpUrl);
-    invalidateDetectionCache();
-    return result;
   }
   throw new Error('이 클라이언트는 자동 연결을 지원하지 않습니다 — 스니펫을 복사해 수동으로 설정하세요');
 }
 
-async function disconnect(app, clientId) {
-  if (clientId === 'claude_code') {
-    const result = await claudeCodeDisconnect();
+async function disconnect(app, clientId, invoke = runClaude) {
+  try {
+    if (clientId === 'claude_code') return await claudeCodeDisconnect(invoke);
+    if (clientId === 'claude_desktop') return claudeDesktopDisconnect(app);
+  } finally {
     invalidateDetectionCache();
-    return result;
-  }
-  if (clientId === 'claude_desktop') {
-    const result = claudeDesktopDisconnect(app);
-    invalidateDetectionCache();
-    return result;
   }
   throw new Error('이 클라이언트는 자동 연결 해제를 지원하지 않습니다');
 }
@@ -389,8 +646,12 @@ module.exports = {
   SERVER_NAME,
   RISK_SCANNER_SERVER_NAME,
   _test: {
-    listedServer,
+    claudeTimeoutFor,
+    parseClaudeServer,
+    inspectClaudeServer,
+    claudeStateMatchesPlan,
     buildRiskScannerLaunch,
+    buildMainBridgeLaunch,
     buildClaudeCodeAddPlans,
     claudeCodeInfo,
     claudeCodeConnect,
@@ -399,9 +660,11 @@ module.exports = {
     claudeDesktopConnect,
     claudeDesktopDisconnect,
     manualClients,
+    readJsonDocument,
+    writeJsonAtomic,
+    mcpServersIn,
+    sameLaunch,
     resolveClaudeLauncherInPath,
     runClaude,
   },
-  // 테스트에서 프로세스 전역 캐시를 격리한다.
-  _resetDetectionCache: invalidateDetectionCache,
 };

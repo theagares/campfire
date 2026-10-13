@@ -40,7 +40,11 @@
   const _PROXY_MARK_HEADER = 'x-campfire-proxy';
   const _PROXY_TTL_MS = 15000;   // 이 시간 안에 표식을 못 보면 프록시가 빠진 것으로 본다
   let _proxyMarkAt = 0;
-  let _lastProxyPost = 0;
+  let _proxyExpected = false;
+  let _proxyProbe = null;
+  let _lastProxyEvidenceAt = 0;
+  let _lastRouteMode = '';
+  let _lastRoutePost = 0;
 
   function proxyInPath() {
     // _proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 명시 검사가 없으면
@@ -48,25 +52,88 @@
     return _proxyMarkAt > 0 && Date.now() - _proxyMarkAt < _PROXY_TTL_MS;
   }
 
-  function _noteProxyMark() {
-    _proxyMarkAt = Date.now();
-    // isolated(content.js)도 게이트를 내려야 한다. 매번 보내면 시끄러우니 2초로 throttle.
-    if (_bridgeToken && Date.now() - _lastProxyPost > 2000) {
-      _lastProxyPost = Date.now();
+  function _reportProxyRoute(mode) {
+    const now = Date.now();
+    // 상태 변화는 즉시, 같은 상태는 heartbeat 로만 보낸다. 엔진은 오래된 탭 보고를
+    // 자동 만료시키므로 닫힌 탭이 계속 '적용됨'으로 보이지 않는다.
+    if (_bridgeToken && (mode !== _lastRouteMode || now - _lastRoutePost > 5000)) {
+      _lastRouteMode = mode;
+      _lastRoutePost = now;
       try {
         window.postMessage({
           __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
-          type: 'SECUREDOC_PROXY_IN_PATH', ttlMs: _PROXY_TTL_MS,
+          type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: _proxyExpected,
+          ttlMs: _PROXY_TTL_MS,
         }, '*');
       } catch { /* noop */ }
     }
+  }
+
+  function _setProxyRoute(mode) {
+    if (mode === 'proxy') _proxyMarkAt = Date.now();
+    else _proxyMarkAt = 0; // 확장 보호를 즉시 복구한다(fail-closed).
+    _reportProxyRoute(mode);
+  }
+
+  function _extensionMode(fallback = false) {
+    if (!_protectionEnabled || !_fileInterceptEnabled) return 'off';
+    return fallback ? 'fallback' : 'extension';
+  }
+
+  function _noteProxyMark() {
+    // 프록시 해제 직전 시작된 요청의 늦은 응답이 표식을 달고 올 수 있다. 현재 엔진이
+    // 프록시를 기대하지 않으면 그 오래된 표식으로 다시 15초간 확장을 끄지 않는다.
+    _lastProxyEvidenceAt = Date.now();
+    _setProxyRoute(_proxyExpected ? 'proxy' : _extensionMode());
+  }
+
+  async function _probeProxyPath() {
+    if (_proxyProbe) return _proxyProbe;
+    _lastProxyEvidenceAt = Date.now();
+    _proxyProbe = (async () => {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timeout = setTimeout(() => controller?.abort?.(), 1500);
+      try {
+        // 같은 origin의 가벼운 HEAD라 CORS 권한이 필요 없고, 실제 탭의 PAC 경로를
+        // 그대로 지난다. query는 캐시 우회를 위한 것으로 서버 의미에는 관여하지 않는다.
+        const response = await _rawFetch(`/.well-known/campfire-proxy-probe?ts=${Date.now()}`, {
+          method: 'HEAD', cache: 'no-store', credentials: 'same-origin', redirect: 'follow',
+          signal: controller?.signal,
+        });
+        if (!_proxyExpected) {
+          _setProxyRoute(_extensionMode());
+          return;
+        }
+        const marked = !!response?.headers?.get?.(_PROXY_MARK_HEADER);
+        _setProxyRoute(marked ? 'proxy' : _extensionMode(true));
+      } catch {
+        // 일시적인 HEAD 실패 중에도 아직 유효한 실제 표식이 있으면 보호 경로를
+        // 흔들지 않는다. 표식도 없으면 확장을 유지한다.
+        if (!_proxyExpected) _setProxyRoute(_extensionMode());
+        else if (proxyInPath()) _reportProxyRoute('proxy');
+        else _setProxyRoute(_extensionMode(true));
+      } finally {
+        clearTimeout(timeout);
+        _proxyProbe = null;
+      }
+    })();
+    return _proxyProbe;
+  }
+
+  // 표식은 이 탭과 같은 호스트의 응답일 때만 증거로 본다. Gemini 처럼 업로드만 다른 호스트
+  // (push.clients6.google.com)로 프록시를 지나는 사이트에서, 그 응답 표식으로 본 사이트
+  // 프롬프트 보호까지 내려놓으면 안 된다. URL 을 모르면 증거가 아니다(보호 유지).
+  function _sameHostResponse(url) {
+    try { return !!url && new URL(url, location.href).hostname === location.hostname; } catch { return false; }
   }
 
   // 모든 실제 네트워크 fetch 는 이걸 지난다. 응답에 프록시 표식이 있으면 기록한다.
   const _origFetch = function (input, init) {
     const p = _rawFetch(input, init);
     p.then((r) => {
-      try { if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER)) _noteProxyMark(); } catch { /* noop */ }
+      try {
+        if (r && r.headers && r.headers.get(_PROXY_MARK_HEADER) && _sameHostResponse(r.url)) _noteProxyMark();
+      } catch { /* noop */ }
     }, () => {});
     return p;
   };
@@ -107,12 +174,17 @@
       _bridgeToken = String(event.data.token || '');
       return;
     }
-    // 데스크탑에서 프록시를 끄면 마지막 표식의 TTL을 기다리지 않고 즉시 확장 보호를
-    // 복구한다. isolated world가 엔진 /proxy/status를 확인한 뒤 보내는 안전한 방향
-    // (보호를 켜는 방향)의 신호다. 토큰도 확인해 페이지의 불필요한 이중 검사를 막는다.
-    if (event.data.type === 'SECUREDOC_PROXY_OUT_OF_PATH') {
+    if (event.data.type === 'SECUREDOC_PROXY_EXPECTATION') {
       if (!fromIsolated(event.data)) return;
-      _proxyMarkAt = 0;
+      _proxyExpected = Boolean(event.data.enabled);
+      if (!_proxyExpected) {
+        _setProxyRoute(_extensionMode());
+      } else if (proxyInPath() && Date.now() - _lastProxyEvidenceAt < 5000) {
+        // 방금 일반 사이트 요청에서 실제 표식을 봤다면 별도 HEAD를 또 보내지 않는다.
+        _reportProxyRoute('proxy');
+      } else {
+        _probeProxyPath();
+      }
       return;
     }
     // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
@@ -157,6 +229,8 @@
     }
     _protectionEnabled = nextEnabled;
     _fileInterceptEnabled = nextFileEnabled;
+    if (!_proxyExpected) _setProxyRoute(_extensionMode());
+    else if (!proxyInPath()) _probeProxyPath();
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
   });
 
@@ -1017,7 +1091,8 @@
     try {
       this.addEventListener('loadend', function () {
         try {
-          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)) _noteProxyMark();
+          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)
+            && _sameHostResponse(this.responseURL)) _noteProxyMark();
         } catch { /* noop */ }
       }, { once: true });
     } catch { /* noop */ }

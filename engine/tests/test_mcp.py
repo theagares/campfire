@@ -7,9 +7,13 @@ MCP 어댑터 검증 (PLAN §4, U2 Phase 1 완료 기준).
 
 from __future__ import annotations
 
+import os
 import socket
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +22,7 @@ pytest.importorskip("mcp")
 
 import anyio
 from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
 
@@ -106,8 +111,14 @@ def test_mcp_tools(server, tmp_path):
     assert gs["policy"]["injection"] in ("mask", "block")
 
 
-def test_mcp_scan_file(server, tmp_path):
+def test_mcp_scan_file(server, tmp_path, monkeypatch):
+    from app.adapters.mcp import tools as mcp_tools
     from app.core import model_status
+
+    # pytest temp directories live outside the user's home on macOS. Make the
+    # test's intended workspace boundary explicit so scan_file exercises a
+    # permitted path consistently on every platform.
+    monkeypatch.setattr(mcp_tools, "_PROJECT_ROOT", tmp_path.resolve())
 
     f = tmp_path / "sample.txt"
     f.write_text("연락처 010-1234-5678 / 이메일 a@b.com", encoding="utf-8")
@@ -126,3 +137,56 @@ def test_mcp_scan_file(server, tmp_path):
         assert res["stats"]["piiCount"] >= 1
     else:
         assert res["scanStatus"] == "models_not_ready"
+
+
+def test_stdio_shim_relays_to_http_mcp(server):
+    """Claude Desktop에 등록하는 실제 stdio 명령이 HTTP MCP를 끝까지 중계한다."""
+    engine_root = Path(__file__).resolve().parents[1]
+
+    async def _drive_shim() -> set[str]:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "app.adapters.mcp.stdio_shim"],
+            cwd=engine_root,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(engine_root),
+                "PYTHONUTF8": "1",
+                "SECUREDOC_MCP_URL": server,
+            },
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                return {tool.name for tool in tools.tools}
+
+    names = anyio.run(_drive_shim)
+    assert {"scan_text", "scan_file", "get_status"}.issubset(names)
+
+
+def test_packaged_stdio_smoke_script(server):
+    """릴리스 검증에 쓰는 Node 스모크도 실제 stdio shim과 HTTP MCP를 왕복한다."""
+    engine_root = Path(__file__).resolve().parents[1]
+    repo_root = engine_root.parent
+    script = repo_root / "desktop" / "scripts" / "smoke-mcp-stdio.js"
+    completed = subprocess.run(
+        [
+            "node",
+            str(script),
+            "--python",
+            sys.executable,
+            "--engine-dir",
+            str(engine_root),
+            "--url",
+            server,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=45,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "stdio -> HTTP MCP 정상" in completed.stdout

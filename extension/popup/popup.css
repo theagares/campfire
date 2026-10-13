@@ -74,6 +74,7 @@ body {
 }
 .status-pill.ok { color: var(--ok); }
 .status-pill.off { color: var(--danger); }
+.status-pill.warn { color: var(--warn); }
 
 @keyframes ambient-glow-c {
   0%, 100% { opacity: .93; transform: translate(-50%,-50%) scale(1); }
@@ -97,6 +98,7 @@ body {
 .status-pill.ok .dot { background: var(--ok); color: var(--ok); }
 .status-pill.ok .dot::before { opacity: 1; will-change: opacity, transform; animation: ambient-glow-c 6.3s ease-in-out infinite; }
 .status-pill.off .dot { background: var(--danger); color: var(--danger); }
+.status-pill.warn .dot { background:var(--warn); color:var(--warn); }
 
 .engine-detail { font-size: 10.5px; color: var(--ink-mute); margin: 8px 0 2px; word-break: break-all; }
 

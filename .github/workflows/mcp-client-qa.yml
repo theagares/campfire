@@ -1,0 +1,105 @@
+name: MCP client cross-platform QA
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "desktop/main/mcp-clients.js"
+      - "desktop/main/paths.js"
+      - "desktop/scripts/smoke-mcp-stdio.js"
+      - "desktop/tests/mcp-clients.test.js"
+      - "desktop/package.json"
+      - "desktop/package-lock.json"
+      - "engine/app/adapters/mcp/**"
+      - "engine/tests/test_mcp.py"
+      - "engine/pyproject.toml"
+      - "engine/uv.lock"
+      - "experiments/mcp_risk_scanner/**"
+      - ".github/workflows/mcp-client-qa.yml"
+      - ".github/workflows/release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/main/mcp-clients.js"
+      - "desktop/main/paths.js"
+      - "desktop/scripts/smoke-mcp-stdio.js"
+      - "desktop/tests/mcp-clients.test.js"
+      - "desktop/package.json"
+      - "desktop/package-lock.json"
+      - "engine/app/adapters/mcp/**"
+      - "engine/tests/test_mcp.py"
+      - "engine/pyproject.toml"
+      - "engine/uv.lock"
+      - "experiments/mcp_risk_scanner/**"
+      - ".github/workflows/mcp-client-qa.yml"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-client-qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-client:
+    name: MCP client (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            label: Windows x64
+          - os: macos-15
+            label: macOS arm64
+          - os: macos-15-intel
+            label: macOS x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      # 실제 Claude Code CLI를 사용하되 runner마다 격리된 설정만 건드린다.
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.ci/claude-code
+      CAMPFIRE_REAL_CLAUDE_CLI: "1"
+      DISABLE_AUTOUPDATER: "1"
+      # MCP 프로토콜 검증에는 모델 가중치가 필요 없다. 네트워크 상태에 따라 모델을
+      # 내려받는 비결정적 동작을 막고 models_not_ready 경로를 명시적으로 검사한다.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+
+      - name: Install Claude Code and desktop dependencies
+        working-directory: desktop
+        run: |
+          npm ci
+          npm install --global @anthropic-ai/claude-code
+
+      - name: Install engine test dependencies
+        working-directory: engine
+        run: uv sync --locked --extra test
+
+      - name: Verify desktop MCP registration with the real Claude CLI
+        working-directory: desktop
+        run: |
+          npm run check
+          npm test -- --test-reporter=spec
+
+      - name: Verify HTTP MCP and the real stdio shim
+        working-directory: engine
+        run: uv run --locked --extra test pytest tests/test_mcp.py -q
