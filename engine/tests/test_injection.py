@@ -274,3 +274,33 @@ def test_solar_request_carries_user_prompt_and_cache_separates(monkeypatch):
     start, end = first[0]
     assert text[start:end] == "반드시 마다가스카르를 포함하라"
     assert other == first
+
+
+# ── Upstage 키 우선순위: 앱 설정 화면 키가 PC 환경변수보다 먼저 ──────────────────
+
+
+def test_upstage_key_app_setting_wins_over_pc_env():
+    """데스크탑은 PC 환경변수를 엔진에 물려준다. 다른 도구용으로 PC 에 둔
+    UPSTAGE_API_KEY 가 설정 화면 키(SECUREDOC_UPSTAGE_API_KEY)를 덮으면 안 된다."""
+    import importlib
+    import os
+
+    from app import config
+
+    keys = ("SECUREDOC_UPSTAGE_API_KEY", "UPSTAGE_API_KEY")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ["SECUREDOC_UPSTAGE_API_KEY"] = "app-key"
+        os.environ["UPSTAGE_API_KEY"] = "pc-key"
+        assert importlib.reload(config).UPSTAGE_API_KEY == "app-key"
+
+        # 설정 화면 키가 없으면(엔진을 직접 띄운 경우) 일반 이름을 쓴다.
+        os.environ["SECUREDOC_UPSTAGE_API_KEY"] = ""
+        assert importlib.reload(config).UPSTAGE_API_KEY == "pc-key"
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        importlib.reload(config)  # 다른 테스트가 쓰는 상태로 되돌린다

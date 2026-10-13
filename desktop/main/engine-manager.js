@@ -132,9 +132,12 @@ class EngineManager extends EventEmitter {
       SECUREDOC_MCP_RISK_SCANNER_ENABLED:
         this.config.get('mcpRiskScannerEnabled') ? '1' : '0',
       // Upstage Solar API 키. 설정 화면(#upstage-api-key)에서 저장한 값을 그대로
-      // 전달한다 — 없으면 빈 문자열이고, 엔진 config.py 가 이를 os.environ.get(...) or ""
-      // 로 안전하게 받아 INJECTION_LOCALIZE_ENABLED=False 로 처리한다(별도 분기 불필요).
+      // 전달한다 — 없으면 빈 문자열이고, 엔진은 2단계(Solar)를 끈다.
       SECUREDOC_UPSTAGE_API_KEY: this.config.get('upstageApiKey') || '',
+      // PC 에 다른 도구용 UPSTAGE_API_KEY 가 있으면 위 process.env 로 물려 들어가,
+      // 설정 화면에서 키를 지워도 엔진이 그 키로 Solar 를 계속 부른다. 넘기지 않는다
+      // (spawn 은 undefined 값을 환경변수로 넘기지 않는다).
+      UPSTAGE_API_KEY: undefined,
       // MCP 파일 도구(secure_read_file 등)의 작업 루트. 비워 두면 엔진이 홈 디렉터리를
       // 기본값으로 쓴다 — cwd 를 쓰면 안 된다. 아래 cwd 주석대로 우리는 cwd 를 사용자
       // 데이터 폴더로 옮겼고, 엔진이 그걸 경계로 삼으면 사용자 파일을 하나도 못 읽는다

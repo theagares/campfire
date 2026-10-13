@@ -231,9 +231,11 @@ def _load_dotenv_value(key: str) -> str:
 # misaligned 라고 판정한 청크에 대해서만 호출하므로 비용/지연이 항상 붙지 않는다.
 # 실패/애매하면(빈 응답, API 오류, 응답이 원문과 정확히 일치하지 않음) 기존처럼
 # 청크 전체를 마스킹하는 fail-safe 로 되돌아간다(검사 자체를 생략하지 않음).
+# 앱 설정 화면 키(SECUREDOC_)를 먼저 본다. 데스크탑은 PC 환경변수를 엔진에 물려주므로,
+# UPSTAGE_API_KEY 를 먼저 보면 다른 도구용으로 PC 에 둔 키가 설정 화면 키를 덮는다.
 UPSTAGE_API_KEY: str = (
-    os.environ.get("UPSTAGE_API_KEY")
-    or os.environ.get("SECUREDOC_UPSTAGE_API_KEY")
+    os.environ.get("SECUREDOC_UPSTAGE_API_KEY")
+    or os.environ.get("UPSTAGE_API_KEY")
     or _load_dotenv_value("upstage_key")
 )
 UPSTAGE_API_BASE: str = os.environ.get(
