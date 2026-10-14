@@ -234,3 +234,79 @@ def test_solar_concurrency_is_capped_per_document(monkeypatch):
     classified = [({"text": f"t{i}", "offset": i}, {"is_injection": True}) for i in range(64)]
     asyncio.run(orchestrator._finalize_staged_injection(Inj(), "x" * 100, classified))
     assert peak <= config.DETECT_CONCURRENCY
+
+
+# ── 인젝션 sidecar: 느린 CPU 에서 예열·요청이 시간 상한을 넘던 문제 (v0.2.32 릴리스 E2E) ──
+
+
+def _injection_detector(monkeypatch, device):
+    from app.core.detectors.injection.llm_mcp import InjectionLlmMcpDetector
+
+    detector = InjectionLlmMcpDetector()
+    detector.residency.device = device
+
+    async def no_watch():
+        return None
+
+    monkeypatch.setattr(detector, "_idle_watcher", no_watch)
+    return detector
+
+
+def test_injection_respawns_when_warmup_kills_process(monkeypatch):
+    # 예열이 120초를 넘기면 _infer_batch 가 프로세스를 내리고 예외는 삼켜진다. 그대로 로드 완료로
+    # 두면 첫 실요청이 없는 프로세스로 가 AssertionError → /jobs 500 (Intel mac·Windows 릴리스 E2E).
+    detector = _injection_detector(monkeypatch, "cpu")
+    spawned = []
+
+    async def spawn():
+        spawned.append(1)
+        detector._process = _FakeProc()
+
+    async def slow_warmup(texts, *, user_prompts=None):
+        detector._process = None  # 시간 상한에 걸려 내려진 상태
+        raise RuntimeError("timed out")
+
+    monkeypatch.setattr(detector, "_spawn_process", spawn)
+    monkeypatch.setattr(detector, "_infer_batch", slow_warmup)
+    asyncio.run(detector._ensure_process())
+    assert len(spawned) == 2 and detector._process is not None
+
+
+@pytest.mark.parametrize("device, expected", [("cpu", [1]), ("cuda", [8])])
+def test_injection_warmup_batch_only_on_cuda(monkeypatch, device, expected):
+    detector = _injection_detector(monkeypatch, device)
+    sizes = []
+
+    async def infer(texts, *, user_prompts=None):
+        sizes.append(len(texts))
+        return [{} for _ in texts]
+
+    monkeypatch.setattr(config, "INJECTION_BATCH_SIZE", 8)
+    monkeypatch.setattr(detector, "_infer_batch", infer)
+    asyncio.run(detector._warmup())
+    assert sizes == expected
+
+
+@pytest.mark.parametrize("device, max_size", [("cpu", 2), ("cuda", 8)])
+def test_injection_requests_are_small_on_cpu(monkeypatch, device, max_size):
+    detector = _injection_detector(monkeypatch, device)
+    sizes = []
+
+    async def ready():
+        pass
+
+    async def infer_batch(texts, *, user_prompts=None):
+        sizes.append(len(texts))
+        return [{"is_injection": False, "scores": {}} for _ in texts]
+
+    async def infer(text, user_prompt=None):
+        sizes.append(1)
+        return {"is_injection": False, "scores": {}}
+
+    monkeypatch.setattr(config, "INJECTION_BATCH_SIZE", 8)
+    monkeypatch.setattr(config, "INJECTION_CPU_BATCH_SIZE", 2)
+    monkeypatch.setattr(detector, "_ensure_process", ready)
+    monkeypatch.setattr(detector, "_infer_batch", infer_batch)
+    monkeypatch.setattr(detector, "_infer", infer)
+    results = asyncio.run(detector.classify_batch_local([f"문장 {i}" for i in range(8)]))
+    assert len(results) == 8 and max(sizes) == max_size and sum(sizes) == 8

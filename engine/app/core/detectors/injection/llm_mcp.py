@@ -222,6 +222,10 @@ class InjectionLlmMcpDetector:
             self.residency.state = "loading"
             await self._spawn_process()
             await self._warmup()
+            if self._process is None or self._process.returncode is not None:
+                # 예열이 시간 상한을 넘겨 프로세스가 내려졌다(예열 실패는 삼킨다). 이 상태로
+                # 로드 완료 처리하면 첫 실요청이 없는 프로세스로 가서 검사 전체가 실패했다.
+                await self._spawn_process()
             self.residency.mark_loaded_immediately()
             if self._watcher_task is None or self._watcher_task.done():
                 self._watcher_task = asyncio.create_task(self._idle_watcher())
@@ -230,10 +234,12 @@ class InjectionLlmMcpDetector:
         """CUDA 커널 선택/캐싱 1회성 비용을 로딩 단계에서 미리 지불(best-effort —
         실패해도 로딩 자체를 실패시키지 않는다. 실패 시 그 비용은 첫 실요청이
         떠안을 뿐, 기능적으로 달라지는 건 없다)."""
+        # 묶음 예열은 CUDA 의 고정 shape 를 위한 것이다. CPU·MPS 에서 8개 묶음은 비용만 크다.
+        count = config.INJECTION_BATCH_SIZE if self.residency.device == "cuda" else 1
         with contextlib.suppress(Exception):
             await self._infer_batch(
-                [_WARMUP_TEXT] * config.INJECTION_BATCH_SIZE,
-                user_prompts=[_WARMUP_USER_PROMPT] * config.INJECTION_BATCH_SIZE,
+                [_WARMUP_TEXT] * count,
+                user_prompts=[_WARMUP_USER_PROMPT] * count,
             )
 
     async def _idle_watcher(self) -> None:
@@ -288,7 +294,8 @@ class InjectionLlmMcpDetector:
         self._next_id += 1
         async with self._request_lock:
             proc = self._process
-            assert proc is not None and proc.stdin is not None and proc.stdout is not None
+            if proc is None or proc.stdin is None or proc.stdout is None:
+                raise RuntimeError("injection_llm_mcp: 서브프로세스가 없습니다 — 다음 요청이 다시 띄웁니다")
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
@@ -630,12 +637,20 @@ class InjectionLlmMcpDetector:
             # Preserve the detector's long-standing single-item hook contract.
             # Production still reaches the same batched sidecar implementation via
             # _infer, while tests and integrations that replace _infer keep working.
-            if len(valid_texts) == 1:
-                results = [await self._infer(valid_texts[0], valid_prompts[0])]
-            else:
-                results = await self._infer_batch(
-                    valid_texts, user_prompts=valid_prompts
-                )
+            # CPU·MPS 는 요청 하나의 계산량을 줄여 요청마다의 시간 상한 안에 들게 한다.
+            step = (
+                config.INJECTION_BATCH_SIZE
+                if self.residency.device == "cuda"
+                else config.INJECTION_CPU_BATCH_SIZE
+            )
+            results = []
+            for start in range(0, len(valid_texts), step):
+                part = valid_texts[start : start + step]
+                prompts = valid_prompts[start : start + step]
+                if len(part) == 1:
+                    results.append(await self._infer(part[0], prompts[0]))
+                else:
+                    results += await self._infer_batch(part, user_prompts=prompts)
         finally:
             self.residency.touch()
 

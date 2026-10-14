@@ -466,7 +466,10 @@ class InjectionDetector:
             )
             offsets_unpadded = unpadded.pop("offset_mapping")
             longest = max(len(input_ids) for input_ids in unpadded["input_ids"])
-            target_length = max(self.pad_tokens, ((longest + 31) // 32) * 32)
+            # 고정 길이(pad_tokens)로 채우는 것은 CUDA 에서 같은 shape 를 다시 쓰기 위해서다.
+            # CPU·MPS 는 묶음의 가장 긴 것에 맞춘다(오른쪽 채움 + 마스크라 결과는 같고 계산만 준다).
+            bucket = ((longest + 31) // 32) * 32
+            target_length = max(self.pad_tokens, bucket) if self.device == "cuda" else bucket
             target_length = min(target_length, self.max_seq_len)
             rows = [
                 {key: values[index] for key, values in unpadded.items()}

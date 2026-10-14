@@ -214,6 +214,12 @@ INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN
 INJECTION_BATCH_SIZE: int = max(
     1, int(os.environ.get("SECUREDOC_INJECTION_BATCH_SIZE", "8"))
 )
+# CPU·MPS 에서는 요청 하나에 이만큼만 담는다. 8개 묶음은 CUDA 기준이라, 느린 CPU(CI 의 Intel
+# mac·Windows 러너)에서는 요청 하나가 DETECT_INFER_TIMEOUT_SEC(120초)를 넘겨 프로세스가 죽었다.
+# 2개면 요청 하나의 계산량이 예전 1,000자 청크 하나와 비슷하다.
+INJECTION_CPU_BATCH_SIZE: int = max(
+    1, int(os.environ.get("SECUREDOC_INJECTION_CPU_BATCH_SIZE", "2"))
+)
 INJECTION_PAD_TOKENS: int = max(
     1,
     min(
