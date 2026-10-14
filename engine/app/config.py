@@ -101,10 +101,25 @@ MCP_RISK_SCANNER_CALL_TIMEOUT_SEC: float = float(os.environ.get(
 ))
 
 # ── 파이프라인 (PLAN §6) ──────────────────────────────────────────────────────
-# 실측(인젝션 LLM, 6,000자 문서 기준): 1,500자 청크(5개)=0.36초/3.67GB peak vs
-# 1,000자 청크(7개)=0.34초/3.09GB peak — 1,000자가 속도·VRAM 둘 다 더 나은
-# 유일한 지점(그 이하로 더 쪼개면 청크당 고정 오버헤드가 누적돼 총 시간이 늘어남).
+# 레거시/공용 문자 청크 기본값. PII는 원문 전체를 detector에 넘긴 뒤 아래
+# PII_WINDOW_SIZE/OVERLAP으로 한 번만 자르고, 인젝션은 별도 토큰 청크를 사용한다.
 CHUNK_SIZE: int = int(os.environ.get("SECUREDOC_CHUNK_SIZE", "1000"))
+
+# 인젝션 탐지용 슬라이딩 윈도우. 실제 EXAONE 토크나이저 기준이라 한글/영문 비율이
+# 달라도 모델이 보는 입력 크기가 일정하다. 48토큰 겹침은 이번 100페이지 회귀 문서의
+# 한국어 전용 19토큰 회귀 인젝션이 어떤 경계에 놓여도 적어도 한 윈도우에 온전히
+# 들어갈 여유를 남기면서
+# 중복 추론량을 줄인다.
+INJECTION_CHUNK_TOKENS: int = max(
+    2, int(os.environ.get("SECUREDOC_INJECTION_CHUNK_TOKENS", "128"))
+)
+INJECTION_CHUNK_OVERLAP_TOKENS: int = max(
+    0,
+    min(
+        INJECTION_CHUNK_TOKENS - 1,
+        int(os.environ.get("SECUREDOC_INJECTION_CHUNK_OVERLAP_TOKENS", "48")),
+    ),
+)
 
 # ── 요청 제한 ─────────────────────────────────────────────────────────────────
 MAX_UPLOAD_BYTES: int = int(os.environ.get("SECUREDOC_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
@@ -193,6 +208,37 @@ INJECTION_VARIANT: str = os.environ.get("SECUREDOC_INJECTION_VARIANT", "hybrid")
 INJECTION_DEVICE: str = os.environ.get("SECUREDOC_INJECTION_DEVICE", "auto")
 INJECTION_DTYPE: str = os.environ.get("SECUREDOC_INJECTION_DTYPE", "bfloat16")
 INJECTION_MAX_SEQ_LEN: int = int(os.environ.get("SECUREDOC_INJECTION_MAX_SEQ_LEN", "4096"))
+# 128-token document windows benchmarked best in groups of eight.  Standard
+# prompts render to at most 192 model tokens, so that is the reusable CUDA shape;
+# unusually long user prompts automatically move to a larger 32-token bucket.
+INJECTION_BATCH_SIZE: int = max(
+    1, int(os.environ.get("SECUREDOC_INJECTION_BATCH_SIZE", "8"))
+)
+INJECTION_PAD_TOKENS: int = max(
+    1,
+    min(
+        INJECTION_MAX_SEQ_LEN,
+        int(os.environ.get("SECUREDOC_INJECTION_PAD_TOKENS", "192")),
+    ),
+)
+# Eager attention remains mandatory because the trained classifier consumes
+# attention probabilities.  Compact capture retains only its 1,024 sampled
+# positions per layer instead of all layer matrices.
+INJECTION_COMPACT_ATTENTIONS: bool = os.environ.get(
+    "SECUREDOC_INJECTION_COMPACT_ATTENTIONS", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+# The hybrid head only consumes pooled values from layers 8/15/22/30.  Capture
+# those pools in-place instead of retaining every token from every hidden layer.
+INJECTION_COMPACT_HIDDEN_STATES: bool = os.environ.get(
+    "SECUREDOC_INJECTION_COMPACT_HIDDEN_STATES", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+# Windows CUDA has no supported Triton runtime, and the cudagraphs backend added
+# 8.7s of warm-up without improving steady-state latency in the 100-page benchmark.
+# Keep compilation available for explicit platform validation, but use the measured
+# eager path by default.
+INJECTION_COMPILE: bool = os.environ.get(
+    "SECUREDOC_INJECTION_COMPILE", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 INJECTION_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_INJECTION_PYTHON_EXECUTABLE", sys.executable)
 # gateway 파이프라인은 문서 청크 텍스트 한 덩어리만 주지만, 이 분류기는 원래
 # system_prompt/user_prompt/tool_response 3필드(간접 인젝션: 에이전트가 도구 응답을
@@ -277,7 +323,10 @@ PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # 기본값 "auto" — INJECTION_DEVICE와 동일한 이유(위 주석 참고): CPU 전용 torch가
 # 배포됐을 때도 죽지 않고 CPU로 폴백하게 한다.
 PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "auto")
-PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "8"))
+PII_DTYPE: str = os.environ.get("SECUREDOC_PII_DTYPE", "float16")
+# 직접 400/60 윈도우, CUDA FP16 기준 batch 8보다 p50 10.8% 단축되며
+# 피크 VRAM 증가는 34.7MiB였다(대표 회귀 입력 138윈도우, 각 10회 실측).
+PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "16"))
 PII_MAX_LENGTH: int = int(os.environ.get("SECUREDOC_PII_MAX_LENGTH", "256"))  # 토큰 기준(모델 권장 기본값)
 # 위 PII_MAX_LENGTH(토큰)보다 청크가 길면 뒷부분이 잘리므로, detect() 내부에서
 # 문자 기준 슬라이딩 윈도우로 잘라 여러 건을 한 번에 배치 추론한다.
@@ -288,6 +337,23 @@ PII_WINDOW_SIZE: int = int(os.environ.get("SECUREDOC_PII_WINDOW_SIZE", "400"))
 PII_WINDOW_OVERLAP: int = int(os.environ.get("SECUREDOC_PII_WINDOW_OVERLAP", "60"))
 PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", sys.executable)
 PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
+
+# CUDA에서는 두 모델을 한 프로세스에 상주시켜 명시적인 stream 두 개로 동시에
+# 실행한다. CUDA가 없거나 통합 worker 로딩/추론이 실패하면 detector가 유지하던
+# 기존 개별 sidecar 경로로 자동 폴백한다. 환경변수로 끄면 처음부터 개별 경로만 쓴다.
+COMBINED_GPU_WORKER_ENABLED: bool = os.environ.get(
+    "SECUREDOC_COMBINED_GPU_WORKER_ENABLED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+COMBINED_GPU_PYTHON_EXECUTABLE: str = os.environ.get(
+    "SECUREDOC_COMBINED_GPU_PYTHON_EXECUTABLE",
+    INJECTION_PYTHON_EXECUTABLE,
+)
+COMBINED_GPU_LOAD_TIMEOUT_SEC: float = float(
+    os.environ.get(
+        "SECUREDOC_COMBINED_GPU_LOAD_TIMEOUT_SEC",
+        str(max(PII_LOAD_TIMEOUT_SEC, INJECTION_LLM_LOAD_DELAY_SEC)),
+    )
+)
 
 # ── 경로 ──────────────────────────────────────────────────────────────────────
 # store 는 "사용자 기기에 쌓이는 것" 이므로 모델 가중치와 같은 자리에 둔다 —

@@ -122,6 +122,11 @@ class InjectionLlmMcpDetector:
             "--device", config.INJECTION_DEVICE,
             "--dtype", config.INJECTION_DTYPE,
             "--max-seq-len", str(config.INJECTION_MAX_SEQ_LEN),
+            "--batch-size", str(config.INJECTION_BATCH_SIZE),
+            "--pad-tokens", str(config.INJECTION_PAD_TOKENS),
+            "--compile" if config.INJECTION_COMPILE else "--no-compile",
+            "--compact-attentions" if config.INJECTION_COMPACT_ATTENTIONS else "--no-compact-attentions",
+            "--compact-hidden-states" if config.INJECTION_COMPACT_HIDDEN_STATES else "--no-compact-hidden-states",
             "--stdio",
         ]
         # Windows(특히 한국어 로케일)에서 자식 프로세스의 sys.stdin/stdout 이 기본
@@ -225,7 +230,10 @@ class InjectionLlmMcpDetector:
         실패해도 로딩 자체를 실패시키지 않는다. 실패 시 그 비용은 첫 실요청이
         떠안을 뿐, 기능적으로 달라지는 건 없다)."""
         with contextlib.suppress(Exception):
-            await self._infer(_WARMUP_TEXT, user_prompt=_WARMUP_USER_PROMPT)
+            await self._infer_batch(
+                [_WARMUP_TEXT] * config.INJECTION_BATCH_SIZE,
+                user_prompts=[_WARMUP_USER_PROMPT] * config.INJECTION_BATCH_SIZE,
+            )
 
     async def _idle_watcher(self) -> None:
         """유휴 타임아웃이 지나면 실제로 서브프로세스를 죽여 VRAM 을 회수한다."""
@@ -244,11 +252,37 @@ class InjectionLlmMcpDetector:
                 return
 
     async def _infer(self, text: str, user_prompt: str | None = None) -> dict[str, Any]:
+        return (await self._infer_batch([text], user_prompts=[user_prompt]))[0]
+
+    async def _infer_batch(
+        self,
+        texts: list[str],
+        *,
+        user_prompts: list[str | None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Send one fixed-size-friendly inference request to the EXAONE sidecar."""
+        if not texts:
+            return []
+        if len(texts) > config.INJECTION_BATCH_SIZE:
+            raise ValueError(
+                f"injection batch has {len(texts)} items; maximum is {config.INJECTION_BATCH_SIZE}"
+            )
+        if user_prompts is None:
+            user_prompts = [None] * len(texts)
+        if len(user_prompts) != len(texts):
+            raise ValueError("texts and user_prompts must have the same length")
+
+        request_id = str(self._next_id)
         request = {
-            "id": str(self._next_id),
-            "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
-            "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
-            "tool_response": text,
+            "id": request_id,
+            "records": [
+                {
+                    "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
+                    "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
+                    "tool_response": text,
+                }
+                for text, user_prompt in zip(texts, user_prompts, strict=True)
+            ],
         }
         self._next_id += 1
         async with self._request_lock:
@@ -257,16 +291,12 @@ class InjectionLlmMcpDetector:
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             proc.stdin.write(line)
             await proc.stdin.drain()
-            # 응답 대기에 상한을 둔다. 없으면 서브프로세스가 멎었을 때(GPU 이상 등)
-            # 이 readline 이 영원히 대기하는데, 그게 _request_lock 안이라 뒤에 줄 선
-            # 청크 전부가 같이 멎는다(50장 문서 = 111개). 잡음 라인이 계속 와도
-            # 무한정 늘어나지 않게 매 줄이 아니라 전체에 대한 마감시각으로 잰다.
             loop = asyncio.get_running_loop()
             deadline = loop.time() + config.DETECT_INFER_TIMEOUT_SEC
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    await self._kill_process()  # 멎은 프로세스는 버린다 — 다음 요청이 새로 띄운다
+                    await self._kill_process()
                     raise RuntimeError(
                         f"injection_llm_mcp: 서브프로세스가 {config.DETECT_INFER_TIMEOUT_SEC}초 안에 "
                         "응답하지 않음 — 프로세스를 재시작합니다"
@@ -274,7 +304,7 @@ class InjectionLlmMcpDetector:
                 try:
                     out_line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
                 except asyncio.TimeoutError:
-                    continue  # 다음 루프에서 remaining<=0 으로 걸려 위 분기로 간다
+                    continue
                 if not out_line:
                     stderr = b""
                     if proc.stderr is not None:
@@ -283,9 +313,19 @@ class InjectionLlmMcpDetector:
                         f"injection_llm_mcp: 서브프로세스가 응답 없이 종료됨: {stderr.decode(errors='replace')[-2000:]}"
                     )
                 try:
-                    return json.loads(out_line.decode())
+                    response = json.loads(out_line.decode())
                 except json.JSONDecodeError:
-                    continue  # transformers 진단 잡음 라인 — 무시하고 다음 줄 대기
+                    continue
+                if response.get("id") != request_id:
+                    continue
+                if "error" in response:
+                    return [dict(response) for _ in texts]
+                results = response.get("results")
+                if not isinstance(results, list) or len(results) != len(texts):
+                    raise RuntimeError(
+                        "injection_llm_mcp: batch response count does not match request"
+                    )
+                return results
 
     # 인젝션의 정의를 넓게 준다. 예전 프롬프트는 인젝션을 "원래 지시를 무시하거나
     # 변조하도록 요구하는 시도" 로만 정의했는데, 그러면 기존 지시를 건드리지 않고
@@ -535,16 +575,106 @@ class InjectionLlmMcpDetector:
         return out
 
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
-        if not text.strip():
-            return []
+        return (await self.detect_batch([text], metas=[meta]))[0]
+
+    async def detect_batch(
+        self,
+        texts: list[str],
+        *,
+        metas: list[ChunkMeta | None] | None = None,
+    ) -> list[list[Detection]]:
+        """Classify up to ``INJECTION_BATCH_SIZE`` chunks in one EXAONE forward.
+
+        Solar localization remains asynchronous and runs only for positive rows.
+        """
+        if metas is None:
+            metas = [None] * len(texts)
+        if len(metas) != len(texts):
+            raise ValueError("texts and metas must have the same length")
+
+        results = await self.classify_batch_local(
+            texts,
+            user_prompts=[(meta or {}).get("user_prompt") for meta in metas],
+        )
+        return await self.finalize_batch_local(texts, results, metas=metas)
+
+    async def classify_batch_local(
+        self,
+        texts: list[str],
+        *,
+        user_prompts: list[str | None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run only the local EXAONE classification phase.
+
+        This phase never calls Solar, so it is safe to overlap with PII detection.
+        The pipeline joins both results before calling :meth:`finalize_batch_local`,
+        where PII-redacted Solar localization happens.
+        """
+        if user_prompts is None:
+            user_prompts = [None] * len(texts)
+        if len(user_prompts) != len(texts):
+            raise ValueError("texts and user_prompts must have the same length")
+
+        output: list[dict[str, Any]] = [
+            {"is_injection": False, "scores": {}} for _ in texts
+        ]
+        valid_indices = [index for index, text in enumerate(texts) if text.strip()]
+        if not valid_indices:
+            return output
+
         await self._ensure_process()
-        # 실제 사용자 프롬프트가 있으면(meta.user_prompt) 그걸 쓰고, 없으면(예: MCP
-        # scan_text 등 호출 맥락이 없는 경로) config 의 일반 placeholder 로 대체한다.
-        user_prompt = (meta or {}).get("user_prompt")
+        valid_texts = [texts[index] for index in valid_indices]
+        valid_prompts = [user_prompts[index] for index in valid_indices]
         try:
-            result = await self._infer(text, user_prompt=user_prompt)
+            # Preserve the detector's long-standing single-item hook contract.
+            # Production still reaches the same batched sidecar implementation via
+            # _infer, while tests and integrations that replace _infer keep working.
+            if len(valid_texts) == 1:
+                results = [await self._infer(valid_texts[0], valid_prompts[0])]
+            else:
+                results = await self._infer_batch(
+                    valid_texts, user_prompts=valid_prompts
+                )
         finally:
             self.residency.touch()
+
+        for index, result in zip(valid_indices, results, strict=True):
+            output[index] = result
+        return output
+
+    async def finalize_batch_local(
+        self,
+        texts: list[str],
+        results: list[dict[str, Any]],
+        *,
+        metas: list[ChunkMeta | None] | None = None,
+    ) -> list[list[Detection]]:
+        """Convert local classifications to detections and localize positives.
+
+        ``metas`` must contain the PII spans prepared by the pipeline before this
+        method is called. Only this phase may send redacted text to Solar.
+        """
+        if len(results) != len(texts):
+            raise ValueError("texts and results must have the same length")
+        if metas is None:
+            metas = [None] * len(texts)
+        if len(metas) != len(texts):
+            raise ValueError("texts and metas must have the same length")
+
+        return list(await asyncio.gather(
+            *(
+                self._detections_from_result(text, meta, result)
+                for text, meta, result in zip(texts, metas, results, strict=True)
+            )
+        ))
+
+    async def _detections_from_result(
+        self,
+        text: str,
+        meta: ChunkMeta | None,
+        result: dict[str, Any],
+    ) -> list[Detection]:
+        user_prompt = (meta or {}).get("user_prompt")
 
         if "error" in result:
             # 토큰화/스팬 탐색 실패 등 — 해당 청크만 미탐지로 넘어간다(전체 요청은

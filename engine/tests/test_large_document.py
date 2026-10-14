@@ -85,6 +85,31 @@ async def _짧은_문서():
     )
 
 
+class _BatchSpyDetector:
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+        self.chunk_indices: list[int] = []
+
+    async def detect_batch(self, texts, *, metas=None):
+        self.batch_sizes.append(len(texts))
+        self.chunk_indices.extend(meta["chunk_index"] for meta in metas)
+        return [[] for _ in texts]
+
+
+def test_배치_검출기는_여덟_청크씩_묶고_누락하지_않는다(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(config, "INJECTION_BATCH_SIZE", 8)
+        text = "가" * 19
+        chunks = [{"text": "가", "offset": index} for index in range(19)]
+        spy = _BatchSpyDetector()
+        await _detect_all(spy, text, chunks)
+        return chunks, spy
+
+    chunks, spy = asyncio.run(scenario())
+    assert spy.batch_sizes == [8, 8, 3]
+    assert spy.chunk_indices == list(range(len(chunks)))
+
+
 class _HungStdout:
     """영원히 아무것도 안 주는 stdout — 멎은 서브프로세스."""
 

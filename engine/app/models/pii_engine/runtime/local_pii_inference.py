@@ -48,6 +48,34 @@ REGEX_RULES = [
 ]
 
 
+def build_label_mask(
+    word_ids_list: list[list[int | None]],
+    offset_mapping: list[list[tuple[int, int]]],
+) -> torch.Tensor:
+    """CRF가 판정할 각 word의 첫 유효 토큰을 CPU bool 텐서로 만든다.
+
+    CUDA 텐서에 Python에서 원소별로 쓰면 작은 GPU 작업이 토큰 수만큼 발생한다.
+    동일한 first-seen 규칙을 Python bool 행렬에 적용한 뒤 torch.tensor를 한 번만
+    호출하면 비연속으로 반복되는 word id까지 기존 의미를 그대로 유지하면서 그
+    호출 비용을 없앨 수 있다.
+    """
+    rows: list[list[bool]] = []
+    for word_ids, offsets in zip(word_ids_list, offset_mapping, strict=True):
+        seen_words: set[int] = set()
+        row: list[bool] = []
+        for word_id, (_, char_end) in zip(word_ids, offsets, strict=True):
+            selected = (
+                word_id is not None
+                and char_end != 0
+                and word_id not in seen_words
+            )
+            row.append(selected)
+            if selected:
+                seen_words.add(word_id)
+        rows.append(row)
+    return torch.tensor(rows, dtype=torch.bool)
+
+
 def char_bio_to_entities(sentence: str, char_labels: list[str]) -> list[dict[str, Any]]:
     entities = []
     start = cur_label = None
@@ -121,6 +149,7 @@ class PIIDetector:
         self,
         model_dir: str | Path,
         device: str = "auto",
+        dtype: str = "float16",
         batch_size: int = 8,
         max_length: int = 256,
     ):
@@ -128,6 +157,7 @@ class PIIDetector:
         self.batch_size = batch_size
         self.max_length = max_length
         self.device = self._resolve_device(device)
+        self.dtype = self._resolve_dtype(dtype, self.device)
         self.label_map = json.loads((self.model_dir / "label_map.json").read_text(encoding="utf-8"))
         self.target_labels = self.label_map["target_labels"]
         self.id2label = {int(k): v for k, v in self.label_map["id2label"].items()}
@@ -148,7 +178,7 @@ class PIIDetector:
             raise RuntimeError("Fast tokenizer is required for offset mapping.")
 
         self.model = TokenClassifierForPII.from_pretrained(str(self.model_dir), trust_remote_code=True)
-        self.model = self.model.to(torch.float32).to(self.device)
+        self.model = self.model.to(device=self.device, dtype=self.dtype)
         self.model.eval()
 
         self.gaz_trie = None
@@ -165,6 +195,15 @@ class PIIDetector:
             return "mps"
         return "cpu"
 
+    @staticmethod
+    def _resolve_dtype(dtype: str, device: str) -> "torch.dtype":
+        """가속기에서는 요청 dtype을 쓰고 CPU에서는 호환성 우선 FP32로 폴백한다."""
+        if dtype not in {"float16", "float32"}:
+            raise ValueError(f"Unsupported PII dtype: {dtype}")
+        if device == "cpu":
+            return torch.float32
+        return getattr(torch, dtype)
+
     @torch.inference_mode()
     def predict(self, texts: list[str]) -> list[list[dict[str, Any]]]:
         all_entities: list[list[dict[str, Any]]] = []
@@ -180,17 +219,13 @@ class PIIDetector:
             )
             offset_mapping = encoded.pop("offset_mapping").tolist()
             word_ids_list = [encoded.word_ids(i) for i in range(len(batch_texts))]
+            # 토큰화 결과와 label mask를 CPU에서 완성한 뒤 배치 단위로 GPU에
+            # 전송한다. CUDA bool 텐서에 원소별로 기록하던 수천 번의 작은 작업을
+            # 없애면서 모델이 받는 값은 그대로 유지한다.
+            label_mask = build_label_mask(word_ids_list, offset_mapping)
             input_ids = encoded["input_ids"].to(self.device)
             attention_mask = encoded["attention_mask"].to(self.device)
-
-            label_mask = torch.zeros(input_ids.shape, dtype=torch.bool, device=self.device)
-            for batch_idx, offsets in enumerate(offset_mapping):
-                seen_words = set()
-                for token_idx, (word_id, (_, char_end)) in enumerate(zip(word_ids_list[batch_idx], offsets)):
-                    if word_id is None or char_end == 0 or word_id in seen_words:
-                        continue
-                    seen_words.add(word_id)
-                    label_mask[batch_idx, token_idx] = True
+            label_mask = label_mask.to(self.device)
 
             gaz_features = None
             if self.gaz_trie is not None:
@@ -296,7 +331,7 @@ def write_response(payload: dict[str, Any]) -> None:
 
 
 def run_stdio(detector: PIIDetector) -> None:
-    write_response({"ready": True, "device": detector.device})
+    write_response({"ready": True, "device": detector.device, "dtype": str(detector.dtype)})
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -324,11 +359,18 @@ def main() -> None:
     parser.add_argument("--texts-json")
     parser.add_argument("--stdio", action="store_true")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--dtype", default="float16", choices=["float16", "float32"])
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=256)
     args = parser.parse_args()
 
-    detector = PIIDetector(args.model_dir, device=args.device, batch_size=args.batch_size, max_length=args.max_length)
+    detector = PIIDetector(
+        args.model_dir,
+        device=args.device,
+        dtype=args.dtype,
+        batch_size=args.batch_size,
+        max_length=args.max_length,
+    )
     if args.stdio:
         run_stdio(detector)
         return
