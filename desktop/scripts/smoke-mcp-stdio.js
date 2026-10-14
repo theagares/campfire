@@ -25,8 +25,10 @@ function requiredOption(name) {
 }
 
 async function main() {
-  const python = requiredOption('python');
-  const engineDir = requiredOption('engine-dir');
+  // 아래 spawn 이 cwd 를 engineDir 로 바꾸므로 상대 경로는 그 안에서 다시 풀려 ENOENT 가 난다
+  // (macOS 릴리스 검증이 desktop/release/... 상대 경로를 넘긴다). 여기서 절대 경로로 고정한다.
+  const python = path.resolve(requiredOption('python'));
+  const engineDir = path.resolve(requiredOption('engine-dir'));
   const url = requiredOption('url');
   const child = spawn(python, ['-m', 'app.adapters.mcp.stdio_shim'], {
     cwd: engineDir,
