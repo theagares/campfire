@@ -18,6 +18,9 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from app import config
+
+from . import combined_gpu
 from .base import Detector
 from .injection import llm_mcp as injection_llm_mcp
 from .pii import encoder as pii_encoder
@@ -33,6 +36,19 @@ def load_detectors() -> None:
     """lifespan 기동 시 1회 호출."""
     get_pii_detector()
     get_injection_detector()
+    if config.COMBINED_GPU_WORKER_ENABLED:
+        # 두 모델을 같은 CUDA context에 올리는 주 경로를 앱 시작과 함께 예열한다.
+        # 실패는 client 내부에서 비활성화되고 첫 요청이 기존 sidecar로 폴백한다.
+        # smoke 스크립트처럼 이벤트 루프 밖에서 미리 registry를 구성하는 호출도
+        # 허용한다. 그 경우에는 첫 실제 비동기 요청이 worker를 지연 기동한다.
+        async def prewarm_pii_sidecar() -> None:
+            # 통합 worker 를 못 쓰는 기기(CUDA 없음 등)는 예전처럼 PII 모델을 미리 띄운다 —
+            # encoder.build() 는 통합 worker 가 켜져 있으면 예열을 건너뛰기 때문이다.
+            with contextlib.suppress(Exception):
+                await get_pii_detector()._ensure_process()
+
+        with contextlib.suppress(RuntimeError):
+            combined_gpu.get_worker().prewarm_background(on_unavailable=prewarm_pii_sidecar)
 
 
 def get_pii_detector() -> Detector:
@@ -74,6 +90,7 @@ def reset_cache() -> None:
     종료 완료까지 기다리지는 않는 best-effort).
     """
     global _pii_detector, _injection_detector
+    combined_gpu.reset_worker()
     for det in (_pii_detector, _injection_detector):
         proc = getattr(det, "_process", None)
         if proc is not None and proc.returncode is None:

@@ -1,7 +1,7 @@
 """
 app/core/pipeline/orchestrator.py
 파이프라인 오케스트레이션 (PLAN §2, §6):
-    parse → chunk(1500자) → detect(pii, injection) → mask → wrap
+    parse → PII 문자 청크 / injection 토큰 청크 → detect → mask → wrap
 
 - PII/인젝션 위치는 모두 "원문 기준" 좌표로 정규화해 반환한다(익스텐션 계약).
 - 파싱 실패/미지원/타임아웃은 예외로 죽지 않고 scan_status 로 통과 처리(PLAN §9.2).
@@ -17,11 +17,12 @@ from typing import Any, Awaitable, Callable
 
 from app import config
 from app.core import forced_mask, model_status
-from app.core.detectors import confidential, registry
+from app.core.detectors import combined_gpu, confidential, registry
 from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_OK, STATUS_TIMEOUT, parse_document
+from app.core.pipeline import injection_chunker
 
 Emit = Callable[[dict], Awaitable[None]]
 
@@ -55,7 +56,7 @@ async def _parse_off_loop(file_bytes: bytes, mime_type: str, file_name: str) -> 
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int = 100) -> list[dict]:
-    """1,500자 청크 분할(+겹침). 경계에서 매치가 잘리는 것을 겹침으로 완화."""
+    """문자 청크 분할(+겹침). 경계에서 매치가 잘리는 것을 겹침으로 완화."""
     if not text:
         return [{"text": "", "offset": 0}]
     chunks: list[dict] = []
@@ -83,7 +84,7 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
     return out
 
 
-async def _detect_pii(text: str, chunks: list[dict]) -> list[Detection]:
+async def _detect_pii(text: str) -> list[Detection]:
     """PII 탐지 = 모델 탐지 + 자격증명 정규식.
 
     자격증명(API 키/토큰/개인키/비밀번호)은 개인정보가 아니라서 PII 모델의 라벨
@@ -97,7 +98,11 @@ async def _detect_pii(text: str, chunks: list[dict]) -> list[Detection]:
     자격증명 탐지는 청크를 타지 않고 원문 전체를 한 번에 본다. PEM 블록처럼 여러
     줄에 걸친 항목이 청크 경계에서 잘리면 안 되기 때문이다.
     """
-    model_items = await _detect_all(registry.get_pii_detector(), text, chunks)
+    # EncoderPiiDetector가 원문을 400/60 윈도우로 나눠 한 번의 sidecar 요청 안에서
+    # 배치 추론한다. 여기서 먼저 1000/100으로 자르면 겹친 부분을 다시 윈도잉해
+    # 중복 forward와 경계 조각 오탐이 늘어나므로 원문 전체를 한 청크로 넘긴다.
+    whole_text = [{"text": text, "offset": 0}]
+    model_items = await _detect_all(registry.get_pii_detector(), text, whole_text)
     return _dedupe(list(model_items) + credentials.detect(text))
 
 
@@ -158,7 +163,7 @@ async def _detect_all(
     total = len(chunks)
     sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
 
-    async def _run(idx: int, ch: dict) -> tuple[dict, list[Detection]]:
+    def _meta(idx: int, ch: dict) -> dict[str, Any]:
         meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
         if user_prompt:
             meta["user_prompt"] = user_prompt
@@ -167,11 +172,38 @@ async def _detect_all(
             meta["pii_spans"] = _pii_spans_for_chunk(pii_items, ch)
         if user_prompt_masked is not None:
             meta["user_prompt_masked"] = user_prompt_masked
+        return meta
+
+    async def _run(idx: int, ch: dict) -> tuple[dict, list[Detection]]:
         async with sem:
-            dets = await detector.detect(ch["text"], meta=meta)
+            dets = await detector.detect(ch["text"], meta=_meta(idx, ch))
         return ch, dets
 
-    pairs = await asyncio.gather(*(_run(idx, ch) for idx, ch in enumerate(chunks)))
+    batch_detect = getattr(detector, "detect_batch", None)
+    if callable(batch_detect):
+        indexed = list(enumerate(chunks))
+
+        async def _run_batch(group: list[tuple[int, dict]]) -> list[tuple[dict, list[Detection]]]:
+            async with sem:
+                detections = await batch_detect(
+                    [chunk["text"] for _, chunk in group],
+                    metas=[_meta(index, chunk) for index, chunk in group],
+                )
+            if len(detections) != len(group):
+                raise RuntimeError("detector batch response count does not match request")
+            return [
+                (chunk, rows)
+                for (_, chunk), rows in zip(group, detections, strict=True)
+            ]
+
+        groups = [
+            indexed[start : start + config.INJECTION_BATCH_SIZE]
+            for start in range(0, len(indexed), config.INJECTION_BATCH_SIZE)
+        ]
+        nested = await asyncio.gather(*(_run_batch(group) for group in groups))
+        pairs = [pair for group in nested for pair in group]
+    else:
+        pairs = await asyncio.gather(*(_run(idx, ch) for idx, ch in enumerate(chunks)))
 
     results: list[Detection] = []
     for ch, dets in pairs:
@@ -180,6 +212,199 @@ async def _detect_all(
             d["end"] += ch["offset"]
             d["text"] = text[d["start"] : d["end"]]
             results.append(d)
+    return _dedupe(results)
+
+
+def _supports_staged_injection(detector: Any) -> bool:
+    """Whether the detector can separate local classification from Solar."""
+    return callable(getattr(detector, "classify_batch_local", None)) and callable(
+        getattr(detector, "finalize_batch_local", None)
+    )
+
+
+async def _classify_injection_locally(
+    detector: Any,
+    chunks: list[dict],
+    *,
+    user_prompt: str | None = None,
+) -> list[tuple[dict, dict[str, Any]]]:
+    """Run only EXAONE while PII detection is in flight.
+
+    No external API is called here. The returned local decisions are deliberately
+    kept separate from detections until PII spans are available for Solar redaction.
+    """
+    classify = detector.classify_batch_local
+    indexed = list(enumerate(chunks))
+    groups = [
+        indexed[start : start + config.INJECTION_BATCH_SIZE]
+        for start in range(0, len(indexed), config.INJECTION_BATCH_SIZE)
+    ]
+    sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
+
+    async def _run_batch(
+        group: list[tuple[int, dict]],
+    ) -> list[tuple[dict, dict[str, Any]]]:
+        async with sem:
+            results = await classify(
+                [chunk["text"] for _, chunk in group],
+                user_prompts=[user_prompt for _ in group],
+            )
+        if len(results) != len(group):
+            raise RuntimeError("local injection response count does not match request")
+        return [
+            (chunk, result)
+            for (_, chunk), result in zip(group, results, strict=True)
+        ]
+
+    nested = await asyncio.gather(*(_run_batch(group) for group in groups))
+    return [pair for group in nested for pair in group]
+
+
+async def _try_combined_local_inference(
+    pii_detector: Any,
+    injection_detector: Any,
+    text: str,
+    injection_chunks: list[dict],
+    *,
+    user_prompt: str | None = None,
+) -> tuple[
+    list[Detection],
+    list[Detection],
+    list[tuple[dict, dict[str, Any]]],
+] | None:
+    """PII와 EXAONE을 한 CUDA 프로세스의 두 stream에서 실행한다.
+
+    worker는 로컬 원시 추론만 수행한다. Solar 호출은 이 함수가 끝나 PII 좌표가
+    준비된 뒤 기존 ``_finalize_staged_injection``에서만 일어난다. 통합 worker를
+    사용할 수 없으면 ``None``을 반환해 기존 두 sidecar 병렬 경로로 폴백한다.
+    """
+    prepare = getattr(pii_detector, "prepare_windows", None)
+    decode = getattr(pii_detector, "decode_windows", None)
+    if (
+        not config.COMBINED_GPU_WORKER_ENABLED
+        or not _supports_staged_injection(injection_detector)
+        or not callable(prepare)
+        or not callable(decode)
+    ):
+        return None
+
+    document_windows = prepare(text)
+    prompt_windows = prepare(user_prompt) if user_prompt else []
+    pii_texts = [window for window, _ in document_windows]
+    pii_texts.extend(window for window, _ in prompt_windows)
+    if not pii_texts:
+        return None
+
+    # 빈·공백 청크는 모델에 보내지 않는다(개별 경로의 classify_batch_local 과 같다). 빈 문자열은
+    # 토큰이 0개라 워커 요청 전체가 실패했다 — 스캔본 PDF(추출 텍스트 "") + 사용자 프롬프트.
+    valid_indices = [i for i, chunk in enumerate(injection_chunks) if chunk["text"].strip()]
+    injection_records = [
+        {
+            "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
+            "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
+            "tool_response": injection_chunks[i]["text"],
+        }
+        for i in valid_indices
+    ]
+    worker = combined_gpu.get_worker()
+    try:
+        entity_lists, valid_results = await worker.infer_parallel(
+            pii_texts, injection_records
+        )
+        local_results: list[dict[str, Any]] = [
+            {"is_injection": False, "scores": {}} for _ in injection_chunks
+        ]
+        for i, result in zip(valid_indices, valid_results, strict=True):
+            local_results[i] = result
+        document_count = len(document_windows)
+        document_entities = entity_lists[:document_count]
+        prompt_entities = entity_lists[document_count:]
+        pii_items = _dedupe(
+            list(decode(text, document_windows, document_entities))
+            + credentials.detect(text)
+        )
+        user_pii_items = (
+            _dedupe(
+                list(decode(user_prompt, prompt_windows, prompt_entities))
+                + credentials.detect(user_prompt)
+            )
+            if user_prompt
+            else []
+        )
+        classified = list(zip(injection_chunks, local_results, strict=True))
+    except combined_gpu.CombinedGpuUnavailable:
+        return None
+    except Exception:
+        # 응답 형식/복원 단계까지 포함해 통합 경로에 문제가 생기면 같은 요청을
+        # 검증된 개별 sidecar로 재실행한다. 연속 실패가 쌓이면 worker 가 스스로 꺼져
+        # 매 요청을 지연시키지 않는다(한 번의 실패로 끄지는 않는다).
+        await worker.fail()
+        return None
+
+    for detector in (pii_detector, injection_detector):
+        residency = getattr(detector, "residency", None)
+        if residency is not None:
+            residency.device = "cuda"
+            residency.touch()
+    return pii_items, user_pii_items, classified
+
+
+async def _finalize_staged_injection(
+    detector: Any,
+    text: str,
+    classified: list[tuple[dict, dict[str, Any]]],
+    *,
+    user_prompt: str | None = None,
+    user_prompt_masked: str | None = None,
+    pii_items: list[Detection] | None = None,
+) -> list[Detection]:
+    """Run PII-safe Solar localization after both local models have joined."""
+    total = len(classified)
+    finalize = detector.finalize_batch_local
+    indexed = list(enumerate(classified))
+    # 청크 하나씩 세마포어 안에서 마무리한다. 묶음(8개) 단위로 잡으면 묶음 안에서 Solar 가
+    # 8개씩 동시에 나가 문서당 동시 호출이 DETECT_CONCURRENCY×8(64)까지 늘었다.
+    groups = [[item] for item in indexed]
+    sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
+
+    def _meta(index: int, chunk: dict) -> dict[str, Any]:
+        meta: dict[str, Any] = {
+            "chunk_index": index,
+            "total_chunks": total,
+            "offset": chunk["offset"],
+        }
+        if user_prompt:
+            meta["user_prompt"] = user_prompt
+        if pii_items:
+            meta["pii_spans"] = _pii_spans_for_chunk(pii_items, chunk)
+        if user_prompt_masked is not None:
+            meta["user_prompt_masked"] = user_prompt_masked
+        return meta
+
+    async def _run_batch(
+        group: list[tuple[int, tuple[dict, dict[str, Any]]]],
+    ) -> list[tuple[dict, list[Detection]]]:
+        chunks = [chunk for _, (chunk, _) in group]
+        local_results = [result for _, (_, result) in group]
+        async with sem:
+            detections = await finalize(
+                [chunk["text"] for chunk in chunks],
+                local_results,
+                metas=[_meta(index, chunk) for (index, _), chunk in zip(group, chunks, strict=True)],
+            )
+        if len(detections) != len(group):
+            raise RuntimeError("final injection response count does not match request")
+        return list(zip(chunks, detections, strict=True))
+
+    nested = await asyncio.gather(*(_run_batch(group) for group in groups))
+    pairs = [pair for group in nested for pair in group]
+    results: list[Detection] = []
+    for chunk, detections in pairs:
+        for detection in detections:
+            detection["start"] += chunk["offset"]
+            detection["end"] += chunk["offset"]
+            detection["text"] = text[detection["start"] : detection["end"]]
+            results.append(detection)
     return _dedupe(results)
 
 
@@ -334,38 +559,124 @@ async def run_pipeline(
             forced_policy=forced_policy,
         )
 
-    # ── Step 2~3: 청크 + PII 탐지 ─────────────────────────────────────────────
-    chunks = _split_chunks(text, config.CHUNK_SIZE)
-    await emit({"type": "step", "step": 2, "label": f"PII 탐지 중 (총 {len(chunks)}개 청크)..."})
-    pii_items = await _detect_pii(text, chunks)
-    await emit({"type": "step", "step": 2, "label": f"PII 탐지 완료 ({len(pii_items)}개)", "done": True})
+    # ── Step 2~4: PII + 로컬 인젝션 병렬 탐지 ────────────────────────────────
+    # EXAONE의 로컬 분류는 원문을 보며 외부로 아무것도 보내지 않으므로 PII와 동시에
+    # 실행해도 안전하다. 두 결과가 모두 끝난 뒤에만 PII 좌표를 meta에 넣고 Solar
+    # 위치 확인을 시작한다. 따라서 외부 API에는 이전과 똑같이 마스킹된 텍스트만 간다.
+    await emit({
+        "type": "step",
+        "step": 2,
+        "label": (
+            f"PII 탐지 중 ({config.PII_WINDOW_SIZE}자/"
+            f"{config.PII_WINDOW_OVERLAP}자 겹침)..."
+        ),
+    })
+    await emit({"type": "step", "step": 4, "label": "인젝션 토큰 청킹 중..."})
+    pii_detector = registry.get_pii_detector()
+    injection_detector = registry.get_injection_detector()
+    staged_injection = _supports_staged_injection(injection_detector)
+    injection_chunks = await asyncio.to_thread(
+        injection_chunker.split_injection_chunks, text
+    )
+    await emit({
+        "type": "step",
+        "step": 4,
+        "label": (
+            f"인젝션 로컬 탐지 중 (총 {len(injection_chunks)}개, "
+            f"{config.INJECTION_CHUNK_TOKENS}토큰/"
+            f"{config.INJECTION_CHUNK_OVERLAP_TOKENS}토큰 겹침)..."
+        ),
+    })
 
-    # ── user_prompt 자체도 PII 스캔(문서와 함께 보류됐다가 같이 넘어온 경우) ───
-    # 인젝션 탐지보다 "먼저" 한다 — 인젝션 2차 위치특정이 외부 API(Solar)를 부를 때
-    # 사용자 프롬프트도 함께 보내므로, 그 전에 가릴 것을 알고 있어야 한다.
+    combined_result = await _try_combined_local_inference(
+        pii_detector,
+        injection_detector,
+        text,
+        injection_chunks,
+        user_prompt=user_prompt,
+    )
+    classified: list[tuple[dict, dict[str, Any]]] | None = None
+    if combined_result is not None:
+        pii_items, user_prompt_pii_items, classified = combined_result
+    else:
+        # CUDA가 없거나 통합 worker가 실패하면 검증된 개별 sidecar 경로를 그대로 쓴다.
+        # 두 로컬 모델은 서로 다른 프로세스지만 기존처럼 동시에 실행한다.
+        classified_task: asyncio.Task[
+            list[tuple[dict, dict[str, Any]]]
+        ] | None = None
+        user_pii_task: asyncio.Task[list[Detection]] | None = None
+        pii_task = asyncio.create_task(_detect_pii(text))
+        running_tasks: list[asyncio.Task[Any]] = [pii_task]
+        if user_prompt:
+            user_pii_task = asyncio.create_task(_detect_pii(user_prompt))
+            running_tasks.append(user_pii_task)
+        if staged_injection:
+            classified_task = asyncio.create_task(
+                _classify_injection_locally(
+                    injection_detector,
+                    injection_chunks,
+                    user_prompt=user_prompt,
+                )
+            )
+            running_tasks.append(classified_task)
+
+        try:
+            pii_items = await pii_task
+            if user_pii_task is not None:
+                user_prompt_pii_items = await user_pii_task
+            else:
+                user_prompt_pii_items = []
+            if classified_task is not None:
+                classified = await classified_task
+        except BaseException:
+            # 한 단계가 실패하거나 요청이 취소되면 다른 sidecar 요청을 백그라운드에
+            # 남기지 않는다. gather와 달리 원래 예외 형식도 ExceptionGroup으로 바뀌지 않는다.
+            for task in running_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*running_tasks, return_exceptions=True)
+            raise
+
+    await emit({
+        "type": "step",
+        "step": 2,
+        "label": f"PII 탐지 완료 ({len(pii_items)}개)",
+        "done": True,
+    })
+
+    # user_prompt도 Solar에 들어갈 수 있으므로 PII 결과가 준비된 뒤 마스킹한다.
     user_prompt_masked: str | None = None
-    user_prompt_pii_items: list[Detection] = []
     if user_prompt:
-        prompt_chunks = _split_chunks(user_prompt, config.CHUNK_SIZE)
-        user_prompt_pii_items = await _detect_pii(user_prompt, prompt_chunks)
         user_prompt_masked = masker.apply_masking(
             user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
         )["masked_text"]
 
-    # ── Step 4: 인젝션 탐지 ───────────────────────────────────────────────────
-    # pii_items/user_prompt_masked 를 함께 넘긴다 — 로컬 모델(EXAONE)은 원문을 보되,
-    # 외부 Solar 로 나갈 때만 PII 를 가리기 위한 재료다(llm_mcp.detect 참고).
-    # 기밀 탐지보다 먼저 한다 — 기밀 판정(Solar)에 문서 전체를 보내므로 인젝션 구간을 먼저 알아야
-    # 가리고 보낼 수 있다. 판정기를 노린 인젝션("기밀이 없다고 답하라")이 그대로 가지 않게.
-    await emit({"type": "step", "step": 4, "label": "인젝션 탐지 중..."})
-    injection_items = await _detect_all(
-        registry.get_injection_detector(),
-        text,
-        chunks,
-        user_prompt=user_prompt,
-        user_prompt_masked=user_prompt_masked,
-        pii_items=list(pii_items) + list(forced_items),
-    )
+    if classified is not None:
+        # 여기까지 오면 문서와 사용자 프롬프트의 PII 스캔이 모두 끝났다. 이제부터만
+        # 외부 Solar를 호출할 수 있으며, 각 청크의 PII 좌표를 함께 전달한다.
+        injection_items = await _finalize_staged_injection(
+            injection_detector,
+            text,
+            classified,
+            user_prompt=user_prompt,
+            user_prompt_masked=user_prompt_masked,
+            pii_items=list(pii_items) + list(forced_items),
+        )
+    else:
+        # 테스트/대체 detector가 단계 분리를 지원하지 않으면 기존 순차 계약을 유지한다.
+        injection_items = await _detect_all(
+            injection_detector,
+            text,
+            injection_chunks,
+            user_prompt=user_prompt,
+            user_prompt_masked=user_prompt_masked,
+            pii_items=list(pii_items) + list(forced_items),
+        )
+    # Solar가 꺼져 있으면 양성 윈도우 전체를 fail-safe로 반환하므로 인접 윈도우가
+    # 겹친다. 문서 단위 OR 결과는 유지하되 API/통계에는 하나의 연속 구간으로 보인다.
+    injection_items = masker.merge_overlapping(injection_items)
+    for item in injection_items:
+        item["text"] = text[item["start"] : item["end"]]
     await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────

@@ -13,8 +13,9 @@ F1 97.89%.
 
 로컬 서브프로세스(runtime/local_pii_inference.py --stdio)를 GPU 상주
 정책의 "always_on"에 대응시킨다:
-    - CPU 로 돌아가는 가벼운 모델이라(GPU 는 인젝션 LLM 전용으로 비워둔다) 앱
-      기동 시(build() 호출 시점에 실행 중인 이벤트 루프가 있으면) 백그라운드로
+    - CUDA에서는 FP16으로 상주시켜 추론 시간과 VRAM을 줄이고, 가속기가 없는
+      환경에서는 FP32 CPU로 안전하게 폴백한다. 앱 기동 시(build() 호출 시점에
+      실행 중인 이벤트 루프가 있으면) 백그라운드로
       즉시 로딩을 시작한다(pre-warm). 이벤트 루프가 없으면(예: 단순 스크립트에서
       직접 build() 호출) 첫 detect() 호출 시 지연 로딩된다.
     - 로딩이 끝나기 전에 요청이 오면 fail-closed 로 로딩 완료까지 대기한 뒤
@@ -23,7 +24,7 @@ F1 97.89%.
       뜬 서브프로세스는 앱이 끝날 때까지 계속 상주한다.
 
 토큰 길이 제약: 이 모델의 권장 max_length 는 256 토큰인데(원 번들 기본값),
-gateway 파이프라인은 1,500자 청크를 그대로 넘긴다 — 그대로 넣으면 뒷부분이
+gateway 파이프라인은 원문 전체를 한 번에 넘긴다 — 그대로 넣으면 뒷부분이
 잘려 후반부 PII 를 놓친다. detect() 내부에서 문자 기준 슬라이딩 윈도우
 (PII_WINDOW_SIZE/PII_WINDOW_OVERLAP)로 청크를 잘라 한 번에 배치 추론하고,
 윈도우 겹침으로 중복 탐지된 엔터티는 (type, start, end) 기준으로 both dedupe한다.
@@ -151,8 +152,12 @@ class EncoderPiiDetector:
             # 실행 중인 이벤트 루프가 있으면(정상적으로 lifespan 안에서 build() 호출된
             # 경우) 앱 기동 즉시 백그라운드 pre-warm 을 시작한다(always_on 취지).
             # 루프가 없으면(예: 스크립트에서 직접 build()) 첫 detect() 에서 지연 로딩.
-            asyncio.get_running_loop()
-            asyncio.create_task(self._ensure_process())
+            # 통합 GPU worker가 켜진 경우에는 그 worker가 PII 모델까지 함께 예열한다.
+            # 여기서 개별 sidecar도 띄우면 같은 가중치를 GPU에 두 번 올리게 되므로,
+            # 개별 sidecar는 통합 worker 실패 시 첫 detect()에서만 지연 기동한다.
+            if not config.COMBINED_GPU_WORKER_ENABLED:
+                asyncio.get_running_loop()
+                asyncio.create_task(self._ensure_process())
 
     def _runtime_script(self) -> Path:
         return config.PII_ENGINE_DIR / "runtime" / "local_pii_inference.py"
@@ -166,6 +171,7 @@ class EncoderPiiDetector:
             str(self._runtime_script()),
             "--model-dir", str(self._model_dir()),
             "--device", config.PII_DEVICE,
+            "--dtype", config.PII_DTYPE,
             "--batch-size", str(config.PII_BATCH_SIZE),
             "--max-length", str(config.PII_MAX_LENGTH),
             "--stdio",
@@ -193,6 +199,7 @@ class EncoderPiiDetector:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=config.SUBPROCESS_STREAM_LIMIT,
         )
         assert self._process.stdout is not None
         payload = await self._read_ready_line(config.PII_LOAD_TIMEOUT_SEC, self.name)
@@ -309,19 +316,24 @@ class EncoderPiiDetector:
             raise RuntimeError(f"{self.name}: 추론 오류: {result['error']}")
         return result
 
-    async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
+    def prepare_windows(self, text: str) -> list[tuple[str, int]]:
+        """통합 worker와 개별 sidecar가 동일한 400/60 윈도우를 쓰게 한다."""
         if not text.strip():
             return []
-        await self._ensure_process()
-        try:
-            windows = _split_windows(text, config.PII_WINDOW_SIZE, config.PII_WINDOW_OVERLAP)
-            entity_lists = await self._infer_batch([w for w, _ in windows])
-        finally:
-            self.residency.touch()
+        return _split_windows(text, config.PII_WINDOW_SIZE, config.PII_WINDOW_OVERLAP)
 
+    def decode_windows(
+        self,
+        text: str,
+        windows: list[tuple[str, int]],
+        entity_lists: list[list[dict[str, Any]]],
+    ) -> list[Detection]:
+        """worker의 윈도우별 BIO 결과를 원문 좌표 Detection으로 복원한다."""
+        if len(entity_lists) != len(windows):
+            raise RuntimeError("pii_encoder: 윈도우 응답 수가 요청 수와 다릅니다")
         seen: set[tuple[str, int, int]] = set()
         detections: list[Detection] = []
-        for (_, win_offset), entities in zip(windows, entity_lists):
+        for (_, win_offset), entities in zip(windows, entity_lists, strict=True):
             for entity in entities:
                 gateway_type = LABEL_MAP.get(entity["label"], OTHER_PII)
                 start = win_offset + int(entity["begin"])
@@ -341,6 +353,21 @@ class EncoderPiiDetector:
                     )
                 )
         return detections
+
+    async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
+        windows = self.prepare_windows(text)
+        if not windows:
+            return []
+        await self._ensure_process()
+        texts = [window for window, _ in windows]
+        entity_lists: list[list[dict[str, Any]]] = []
+        try:
+            # 요청마다 윈도우 수 상한 — 응답 한 줄 크기와 추론 시간 상한이 문서 길이에 비례해 커지지 않게.
+            for start in range(0, len(texts), config.PII_WINDOWS_PER_RPC):
+                entity_lists += await self._infer_batch(texts[start : start + config.PII_WINDOWS_PER_RPC])
+        finally:
+            self.residency.touch()
+        return self.decode_windows(text, windows, entity_lists)
 
 
 def build() -> EncoderPiiDetector:
