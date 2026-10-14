@@ -310,3 +310,38 @@ def test_injection_requests_are_small_on_cpu(monkeypatch, device, max_size):
     monkeypatch.setattr(detector, "_infer", infer)
     results = asyncio.run(detector.classify_batch_local([f"문장 {i}" for i in range(8)]))
     assert len(results) == 8 and max(sizes) == max_size and sum(sizes) == 8
+
+
+def test_sidecar_path_loads_pii_before_injection(monkeypatch):
+    # 처음 검사에서 PII·EXAONE 을 동시에 올리면 느린 CPU 에서 PII 로딩이 60초 상한을 넘겼다
+    # (Intel mac 설치본 E2E). PII 를 먼저 올린 뒤 추론은 병렬로 한다.
+    from app.core.detectors import registry
+
+    order: list[str] = []
+
+    class Pii:
+        async def _ensure_process(self):
+            order.append("pii_load")
+
+        async def detect(self, text, *, meta=None):
+            return []
+
+    class Inj:
+        async def classify_batch_local(self, texts, *, user_prompts=None):
+            order.append("injection_classify")
+            return [{"is_injection": False, "scores": {}} for _ in texts]
+
+        async def finalize_batch_local(self, texts, results, *, metas=None):
+            return [[] for _ in texts]
+
+    monkeypatch.setattr(model_status, "all_ready", lambda: True)
+    monkeypatch.setattr(config, "COMBINED_GPU_WORKER_ENABLED", False)
+    monkeypatch.setattr(registry, "get_pii_detector", lambda: Pii())
+    monkeypatch.setattr(registry, "get_injection_detector", lambda: Inj())
+    monkeypatch.setattr(
+        orchestrator.injection_chunker, "split_injection_chunks",
+        lambda text: [{"text": text, "offset": 0}],
+    )
+
+    asyncio.run(orchestrator.run_pipeline(text="평범한 문서입니다."))
+    assert order.index("pii_load") < order.index("injection_classify")
