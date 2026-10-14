@@ -601,6 +601,12 @@ async def run_pipeline(
     else:
         # CUDA가 없거나 통합 worker가 실패하면 검증된 개별 sidecar 경로를 그대로 쓴다.
         # 두 로컬 모델은 서로 다른 프로세스지만 기존처럼 동시에 실행한다.
+        # 다만 처음 띄울 때는 PII 모델부터 올린다. 두 모델(PII, EXAONE 2.4GB)을 동시에 올리면
+        # 느린 CPU 에서 서로 느려져 PII 로딩이 시간 상한(PII_LOAD_TIMEOUT_SEC)을 넘겼다(Intel mac
+        # 설치본 E2E). 이미 떠 있으면 바로 지나가므로 추론 병렬화는 그대로다.
+        ensure_pii = getattr(pii_detector, "_ensure_process", None)
+        if callable(ensure_pii):
+            await ensure_pii()
         classified_task: asyncio.Task[
             list[tuple[dict, dict[str, Any]]]
         ] | None = None
