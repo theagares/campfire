@@ -199,6 +199,7 @@ class EncoderPiiDetector:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=config.SUBPROCESS_STREAM_LIMIT,
         )
         assert self._process.stdout is not None
         payload = await self._read_ready_line(config.PII_LOAD_TIMEOUT_SEC, self.name)
@@ -358,8 +359,12 @@ class EncoderPiiDetector:
         if not windows:
             return []
         await self._ensure_process()
+        texts = [window for window, _ in windows]
+        entity_lists: list[list[dict[str, Any]]] = []
         try:
-            entity_lists = await self._infer_batch([window for window, _ in windows])
+            # 요청마다 윈도우 수 상한 — 응답 한 줄 크기와 추론 시간 상한이 문서 길이에 비례해 커지지 않게.
+            for start in range(0, len(texts), config.PII_WINDOWS_PER_RPC):
+                entity_lists += await self._infer_batch(texts[start : start + config.PII_WINDOWS_PER_RPC])
         finally:
             self.residency.touch()
         return self.decode_windows(text, windows, entity_lists)

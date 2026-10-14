@@ -41,8 +41,14 @@ def load_detectors() -> None:
         # 실패는 client 내부에서 비활성화되고 첫 요청이 기존 sidecar로 폴백한다.
         # smoke 스크립트처럼 이벤트 루프 밖에서 미리 registry를 구성하는 호출도
         # 허용한다. 그 경우에는 첫 실제 비동기 요청이 worker를 지연 기동한다.
+        async def prewarm_pii_sidecar() -> None:
+            # 통합 worker 를 못 쓰는 기기(CUDA 없음 등)는 예전처럼 PII 모델을 미리 띄운다 —
+            # encoder.build() 는 통합 worker 가 켜져 있으면 예열을 건너뛰기 때문이다.
+            with contextlib.suppress(Exception):
+                await get_pii_detector()._ensure_process()
+
         with contextlib.suppress(RuntimeError):
-            combined_gpu.get_worker().prewarm_background()
+            combined_gpu.get_worker().prewarm_background(on_unavailable=prewarm_pii_sidecar)
 
 
 def get_pii_detector() -> Detector:

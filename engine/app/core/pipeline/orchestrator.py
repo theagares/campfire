@@ -295,19 +295,27 @@ async def _try_combined_local_inference(
     if not pii_texts:
         return None
 
+    # 빈·공백 청크는 모델에 보내지 않는다(개별 경로의 classify_batch_local 과 같다). 빈 문자열은
+    # 토큰이 0개라 워커 요청 전체가 실패했다 — 스캔본 PDF(추출 텍스트 "") + 사용자 프롬프트.
+    valid_indices = [i for i, chunk in enumerate(injection_chunks) if chunk["text"].strip()]
     injection_records = [
         {
             "system_prompt": config.INJECTION_LLM_SYSTEM_PROMPT,
             "user_prompt": user_prompt or config.INJECTION_LLM_USER_PROMPT,
-            "tool_response": chunk["text"],
+            "tool_response": injection_chunks[i]["text"],
         }
-        for chunk in injection_chunks
+        for i in valid_indices
     ]
     worker = combined_gpu.get_worker()
     try:
-        entity_lists, local_results = await worker.infer_parallel(
+        entity_lists, valid_results = await worker.infer_parallel(
             pii_texts, injection_records
         )
+        local_results: list[dict[str, Any]] = [
+            {"is_injection": False, "scores": {}} for _ in injection_chunks
+        ]
+        for i, result in zip(valid_indices, valid_results, strict=True):
+            local_results[i] = result
         document_count = len(document_windows)
         document_entities = entity_lists[:document_count]
         prompt_entities = entity_lists[document_count:]
@@ -328,9 +336,9 @@ async def _try_combined_local_inference(
         return None
     except Exception:
         # 응답 형식/복원 단계까지 포함해 통합 경로에 문제가 생기면 같은 요청을
-        # 검증된 개별 sidecar로 재실행한다. 반복 실패로 매 요청을 지연시키지 않게
-        # 현재 앱 실행 동안에는 통합 worker를 비활성화한다.
-        await worker.disable()
+        # 검증된 개별 sidecar로 재실행한다. 연속 실패가 쌓이면 worker 가 스스로 꺼져
+        # 매 요청을 지연시키지 않는다(한 번의 실패로 끄지는 않는다).
+        await worker.fail()
         return None
 
     for detector in (pii_detector, injection_detector):
@@ -354,10 +362,9 @@ async def _finalize_staged_injection(
     total = len(classified)
     finalize = detector.finalize_batch_local
     indexed = list(enumerate(classified))
-    groups = [
-        indexed[start : start + config.INJECTION_BATCH_SIZE]
-        for start in range(0, len(indexed), config.INJECTION_BATCH_SIZE)
-    ]
+    # 청크 하나씩 세마포어 안에서 마무리한다. 묶음(8개) 단위로 잡으면 묶음 안에서 Solar 가
+    # 8개씩 동시에 나가 문서당 동시 호출이 DETECT_CONCURRENCY×8(64)까지 늘었다.
+    groups = [[item] for item in indexed]
     sem = asyncio.Semaphore(config.DETECT_CONCURRENCY)
 
     def _meta(index: int, chunk: dict) -> dict[str, Any]:

@@ -46,3 +46,8 @@ def test_cpu_falls_back_to_fp32():
 def test_invalid_dtype_is_rejected():
     with pytest.raises(ValueError, match="Unsupported PII dtype"):
         PIIDetector._resolve_dtype("bfloat16", "cuda")
+
+
+def test_mps_stays_fp32():
+    # FP16 결과가 같다는 확인은 CUDA 에서만 했다 — Apple Silicon 은 기존처럼 FP32.
+    assert PIIDetector._resolve_dtype("float16", "mps") is torch.float32

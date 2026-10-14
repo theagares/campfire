@@ -197,10 +197,13 @@ class PIIDetector:
 
     @staticmethod
     def _resolve_dtype(dtype: str, device: str) -> "torch.dtype":
-        """가속기에서는 요청 dtype을 쓰고 CPU에서는 호환성 우선 FP32로 폴백한다."""
+        """CUDA 에서만 요청 dtype 을 쓰고 그 밖(CPU·MPS)은 FP32 로 둔다.
+
+        FP16 결과가 기존과 같다는 확인은 CUDA 에서만 했다. Apple Silicon(MPS) FP16 은 검증한 적이 없다.
+        """
         if dtype not in {"float16", "float32"}:
             raise ValueError(f"Unsupported PII dtype: {dtype}")
-        if device == "cpu":
+        if device != "cuda":
             return torch.float32
         return getattr(torch, dtype)
 

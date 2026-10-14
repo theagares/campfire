@@ -156,6 +156,7 @@ class InjectionLlmMcpDetector:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=config.SUBPROCESS_STREAM_LIMIT,
         )
         assert self._process.stdout is not None
         payload = await self._read_ready_line(config.INJECTION_LLM_LOAD_DELAY_SEC, "injection_llm_mcp")

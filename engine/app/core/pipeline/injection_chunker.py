@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import Any
 
 from app import config
@@ -26,27 +27,47 @@ _FALLBACK_CHARS = 300
 _FALLBACK_OVERLAP_CHARS = 160
 
 
+class _FileTokenizer:
+    """캐시된 tokenizer.json 을 tokenizers 로 직접 읽는다.
+
+    transformers.AutoTokenizer 는 torch 까지 엔진(게이트웨이) 프로세스에 올려 첫 검사에서
+    상주 메모리가 수백 MB 늘었다. fast tokenizer 의 offset 은 같은 tokenizers 백엔드에서
+    나오므로 결과가 같다. split_token_chunks 가 쓰는 호출 모양만 맞춘다.
+    """
+
+    def __init__(self, path: Path) -> None:
+        from tokenizers import Tokenizer
+
+        self._tokenizer = Tokenizer.from_file(str(path))
+
+    def __call__(self, text: str, **_kwargs) -> dict[str, Any]:
+        encoding = self._tokenizer.encode(text, add_special_tokens=False)
+        return {"offset_mapping": encoding.offsets}
+
+
+def _tokenizer_file() -> Path | None:
+    model_id = backbone.model_id()
+    if not model_id:
+        return None
+    if Path(model_id).is_dir():
+        candidates = [Path(model_id)]
+    else:
+        snapshots = (backbone.repo_cache_dir() or Path()) / "snapshots"
+        candidates = sorted(p for p in snapshots.iterdir() if p.is_dir()) if snapshots.is_dir() else []
+    return next((c / "tokenizer.json" for c in candidates if (c / "tokenizer.json").is_file()), None)
+
+
 def _get_tokenizer():
     """Load and cache the detector tokenizer without loading a second model."""
     global _TOKENIZER
     with _TOKENIZER_LOCK:
         if _TOKENIZER is not None:
             return _TOKENIZER
-        model_id = backbone.model_id()
-        if not model_id:
-            raise RuntimeError("인젝션 모델의 tokenizer id를 찾지 못했습니다")
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
-            trust_remote_code=True,
-            use_fast=True,
-            local_files_only=backbone.is_cached(),
-        )
-        if not tokenizer.is_fast:
-            raise RuntimeError("인젝션 토큰 청킹에는 fast tokenizer가 필요합니다")
-        _TOKENIZER = tokenizer
-        return tokenizer
+        path = _tokenizer_file()
+        if path is None:
+            raise RuntimeError("인젝션 모델의 tokenizer.json 을 찾지 못했습니다")
+        _TOKENIZER = _FileTokenizer(path)
+        return _TOKENIZER
 
 
 def _is_sentence_boundary(

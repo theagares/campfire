@@ -337,13 +337,26 @@ PII_WINDOW_SIZE: int = int(os.environ.get("SECUREDOC_PII_WINDOW_SIZE", "400"))
 PII_WINDOW_OVERLAP: int = int(os.environ.get("SECUREDOC_PII_WINDOW_OVERLAP", "60"))
 PII_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_PII_PYTHON_EXECUTABLE", sys.executable)
 PII_LOAD_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PII_LOAD_TIMEOUT_SEC", "60"))
+# PII sidecar 요청 하나에 담는 윈도우 수. 문서 전체를 한 요청으로 보내면 응답 한 줄이
+# 끝없이 커지고(긴 문서에서 수 MB) 추론 시간 상한도 문서 전체에 걸린다 — 요청마다 상한을 둔다.
+PII_WINDOWS_PER_RPC: int = max(1, int(os.environ.get("SECUREDOC_PII_WINDOWS_PER_RPC", "32")))
+# 하위 프로세스 stdout 한 줄(JSONL 응답)의 읽기 상한. asyncio 기본값 64KiB 는 긴 문서의
+# 응답 한 줄을 넘지 못해 ValueError 로 검사 전체가 실패했다.
+SUBPROCESS_STREAM_LIMIT: int = 2 ** 26
 
 # CUDA에서는 두 모델을 한 프로세스에 상주시켜 명시적인 stream 두 개로 동시에
 # 실행한다. CUDA가 없거나 통합 worker 로딩/추론이 실패하면 detector가 유지하던
 # 기존 개별 sidecar 경로로 자동 폴백한다. 환경변수로 끄면 처음부터 개별 경로만 쓴다.
+# macOS 에는 CUDA 가 없으므로 기본으로 끈다(앱 시작마다 torch 를 띄워 "없음" 을 확인할 이유가 없다).
+# 장치를 cpu 등으로 직접 지정했으면 그 지정이 통합 worker(항상 CUDA)에 무시되지 않게 끈다.
 COMBINED_GPU_WORKER_ENABLED: bool = os.environ.get(
-    "SECUREDOC_COMBINED_GPU_WORKER_ENABLED", "1"
-).strip().lower() in {"1", "true", "yes", "on"}
+    "SECUREDOC_COMBINED_GPU_WORKER_ENABLED", "0" if sys.platform == "darwin" else "1"
+).strip().lower() in {"1", "true", "yes", "on"} and {PII_DEVICE, INJECTION_DEVICE} <= {"auto", "cuda"}
+# 통합 worker 요청 하나에 담는 양 — PII 와 같은 이유(응답 크기·시간 상한)로 문서를 나눠 보낸다.
+COMBINED_GPU_PII_WINDOWS_PER_REQUEST: int = 64
+COMBINED_GPU_INJECTION_RECORDS_PER_REQUEST: int = 128
+# 연속 실패가 이만큼 쌓이면 이번 앱 실행 동안 통합 worker 를 끄고 개별 sidecar 만 쓴다.
+COMBINED_GPU_MAX_FAILURES: int = 3
 COMBINED_GPU_PYTHON_EXECUTABLE: str = os.environ.get(
     "SECUREDOC_COMBINED_GPU_PYTHON_EXECUTABLE",
     INJECTION_PYTHON_EXECUTABLE,
