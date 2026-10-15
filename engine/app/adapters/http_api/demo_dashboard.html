@@ -36,12 +36,18 @@
   .demo-tag { color: var(--orange-ink); background: var(--orange-soft); }
 
   /* 깔때기 */
-  .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 14px 20px 0; }
-  .stage { position: relative; background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px 14px; border-top: 3px solid var(--line); transition: border-color .3s, transform .3s; }
-  .stage .lbl { font-size: 12px; color: var(--ink-2); font-weight: 600; }
-  .stage .num { font-size: 28px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
-  .stage .sub { font-size: 11.5px; color: var(--ink-3); min-height: 17px; }
-  .stage:not(:last-child)::after { content: "›"; position: absolute; right: -10px; top: 50%; transform: translateY(-50%); color: var(--ink-3); font-size: 18px; }
+  .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
+  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 12px 7px; border-top: 3px solid var(--line); transition: border-color .3s, transform .3s; }
+  .stage .lbl { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 단계 사이 화살표 — 간격 가운데에 원 배지로 */
+  .stage:not(:last-child)::after {
+    content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
+    width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--panel); border: 1.5px solid var(--purple); color: var(--purple);
+    font-size: 13px; font-weight: 800; line-height: 1; box-shadow: 0 1px 3px rgba(88, 76, 220, .25);
+  }
   .stage.on { transform: translateY(-1px); }
   .stage.kg.on { border-top-color: var(--ink-3); }
   .stage.cand.on { border-top-color: var(--purple); }
@@ -234,7 +240,7 @@ async function loadKg() {
               componentSpacing: 40 },
     style: [
       { selector: "node", style: {
-        label: "data(label)", "font-size": 10, color: "#9CA3AF", "background-color": "#D1D5DB", width: 12, height: 12,
+        label: "data(label)", "font-size": 10, color: "#9CA3AF", "background-color": "#D1D5DB", width: 15, height: 15,
         "text-valign": "bottom", "text-margin-y": 3, opacity: 0.45, "font-family": "Pretendard, Malgun Gothic, sans-serif",
         "transition-property": "opacity, background-color, width, height", "transition-duration": "300ms" } },
       { selector: "edge", style: {
@@ -242,7 +248,7 @@ async function loadKg() {
         "font-family": "Pretendard, Malgun Gothic, sans-serif", "text-rotation": "autorotate",
         "text-background-color": "#FFFFFF", "text-background-opacity": 0.9, "text-background-padding": 2,
         "transition-property": "line-color, width, opacity", "transition-duration": "400ms" } },
-      { selector: "node.in-doc", style: { opacity: 1, "background-color": "#584CDC", color: "#111827", "font-size": 16, "font-weight": 700, width: 22, height: 22,
+      { selector: "node.in-doc", style: { opacity: 1, "background-color": "#584CDC", color: "#111827", "font-size": 16, "font-weight": 700, width: 28, height: 28,
         "text-background-color": "#FFFFFF", "text-background-opacity": 0.85, "text-background-padding": 2 } },
       { selector: "node.faded", style: { opacity: 0.12 } },
       { selector: "edge.faded", style: { opacity: 0.12 } },
