@@ -50,7 +50,7 @@ FIX_FORMAT = ('형식이 틀렸다. JSON 하나로만 다시 답하라. "진술"
               '{"공개": ["T3"], "진술": {"T1": [3], "T2": [], "T3": [5, 6]}}')
 _PROMPT_CACHE_KEY = "campfire-confidential-judge-v6"  # 시스템 프롬프트 개정 시 올린다
 _CACHE_MAX = 256
-_cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
+_cache: OrderedDict[str, tuple[list[tuple[int, int]], list[int]]] = OrderedDict()  # → (기밀 쌍, 공개 사실 번호)
 _client: httpx.AsyncClient | None = None
 
 
@@ -62,6 +62,12 @@ def user_message(sentences: list[str], facts: list[tuple[str, str, str]]) -> str
 
 def parse(content: str, n_sent: int, n_fact: int) -> list[tuple[int, int]] | None:
     """{"공개": ["T3"], "진술": {"T1": [3], ...}} → 공개가 아닌 사실의 (문장, 사실). 사실을 빠뜨렸거나 형식이 틀리면 None."""
+    decoded = _decode(content, n_sent, n_fact)
+    return None if decoded is None else decoded[0]
+
+
+def _decode(content: str, n_sent: int, n_fact: int) -> tuple[list[tuple[int, int]], list[int]] | None:
+    """parse 와 같고, Solar 가 공개라고 한 사실 번호(0부터)도 함께 — 시연 대시보드가 보여 준다."""
     start = content.find("{")
     try:
         obj, _ = json.JSONDecoder().raw_decode(content[start:]) if start >= 0 else (None, 0)
@@ -90,10 +96,13 @@ def parse(content: str, n_sent: int, n_fact: int) -> list[tuple[int, int]] | Non
                 out.append((s - 1, t - 1))
     if bad and not out:
         return None  # 문장 번호를 하나도 못 맞췄다 — "없다" 가 아니라 "못 맞췄다"
-    return out
+    return out, sorted(int(t[1:]) - 1 for t in public if t[1:].isdigit() and 1 <= int(t[1:]) <= n_fact)
 
 
-async def judge(sentences: list[str], facts: list[tuple[str, str, str]]) -> list[tuple[int, int]] | None:
+async def judge(
+    sentences: list[str], facts: list[tuple[str, str, str]], info: dict | None = None,
+) -> list[tuple[int, int]] | None:
+    """info 를 주면 답을 얻었을 때 {"public": 공개 사실 번호, "cached": 캐시에서 꺼냈나} 를 채운다 (시연 추적용)."""
     global _client
     if not config.UPSTAGE_API_KEY or not sentences or not facts:
         return None
@@ -101,7 +110,10 @@ async def judge(sentences: list[str], facts: list[tuple[str, str, str]]) -> list
     key = hashlib.sha256(message.encode("utf-8")).hexdigest()  # 실제로 보내는 것 기준
     if key in _cache:
         _cache.move_to_end(key)
-        return _cache[key]
+        pairs, public = _cache[key]
+        if info is not None:
+            info.update(public=public, cached=True)
+        return pairs
     if _client is None:
         _client = httpx.AsyncClient(timeout=config.UPSTAGE_TIMEOUT_SEC)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": message}]
@@ -120,12 +132,15 @@ async def judge(sentences: list[str], facts: list[tuple[str, str, str]]) -> list
             if attempt == 0:
                 await asyncio.sleep(1.0)
             continue
-        result = parse(content, len(sentences), len(facts))
+        result = _decode(content, len(sentences), len(facts))
         if result is not None:
             break
         messages = messages[:2] + [{"role": "assistant", "content": content}, {"role": "user", "content": FIX_FORMAT}]
-    if result is not None:
-        _cache[key] = result
-        if len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
-    return result
+    if result is None:
+        return None
+    _cache[key] = result
+    if len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
+    if info is not None:
+        info.update(public=result[1], cached=False)
+    return result[0]

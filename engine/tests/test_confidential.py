@@ -378,3 +378,40 @@ def test_판정_답은_공개를_빼고_읽고_사실을_빠뜨리면_다시_묻
     assert judge.parse('{"공개": [], "진술": {"T1": [3]}}', 5, 2) is None       # T2 를 건너뜀
     assert judge.parse('{"공개": [], "진술": {"T1": [9]}}', 5, 1) is None       # 문장 번호를 못 맞춤
     assert judge.parse('{"기밀": [{"s": 3, "t": 1}]}', 5, 1) is None           # 예전 형식
+
+
+def test_시연_추적은_켰을_때만_KG_사실과_가린_문장의_연결을_싣는다(setup, monkeypatch):
+    from app.core import demo_trace
+
+    demo_trace.reset()
+    fake, spy = _FakeRetriever({"설립자": -20.0}), _SpySolar({"출시 시기"})
+    setup(fake, spy)
+    asyncio.run(confidential.detect(DOC, PII))
+    assert demo_trace.snapshot() == []                      # 기본은 꺼짐 — 아무것도 남기지 않는다
+
+    monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
+    asyncio.run(confidential.detect(DOC, PII))
+    ev = {e["stage"]: e for e in demo_trace.snapshot()}
+    assert list(ev) == ["start", "retriever", "solar", "verdict", "done"]
+    assert NAME not in " ".join(ev["start"]["sentences"]) and "[이름 마스킹]" in ev["start"]["sentences"][0]
+    assert not any(NAME in x for f in ev["solar"]["shown"] for x in f)   # 문장·사실 모두 Solar 가 본 것만
+    assert ["가온연구소", "설립자", "김하늘", -20.0] in ev["retriever"]["scores"]  # 거른 사실도 점수와 함께
+    assert ev["verdict"]["pairs"] == [[1, ["오로라", "출시 시기", "2027년 3월"]]]  # 어느 사실이 어느 문장을 가렸나
+    assert ev["verdict"]["public"] == [["가온연구소", "본사 위치", "서울"]] and ev["verdict"]["cached"] is True
+    assert ev["done"]["flagged"] == [[1, 0.95, "llm"]]
+    demo_trace.reset()
+
+
+def test_시연_대시보드_경로는_꺼져_있으면_없다(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    c = TestClient(app)  # 시작 처리(lifespan — 사이드카 등)는 필요 없다
+    assert c.get("/demo/dashboard").status_code == 404
+    assert c.get("/demo/kg").status_code == 404
+    assert c.get("/health").json()["demoDashboard"] is None
+    monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
+    monkeypatch.setattr(config, "KG_PATH", "")
+    assert "기밀 판정" in c.get("/demo/dashboard").text
+    assert c.get("/demo/kg").json()["triples"] == []         # KG 미설정

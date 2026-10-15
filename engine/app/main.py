@@ -127,6 +127,9 @@ def main() -> None:
     port = find_available_port()
     config.BOUND_PORT = port
     logger.info("[engine] %s:%d 에서 시작합니다 (service=%s)", config.HOST, port, config.SERVICE_NAME)
+    if config.DEMO_TRACE_ENABLED:
+        logger.warning("[engine] 시연 추적 켜짐 — 대시보드 http://%s:%d/demo/dashboard (가린 문장을 메모리에 둠)",
+                       config.HOST, port)
     uvicorn.run(app, host=config.HOST, port=port, log_level="info")
 
 

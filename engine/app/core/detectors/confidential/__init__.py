@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from typing import Any, Awaitable, Callable
 
 from app import config
-from app.core import model_status
+from app.core import demo_trace, model_status
 from app.core.masker.redact_map import build_redaction
 
-from ..base import CONFIDENTIAL, ORGANIZATION, Detection
+from ..base import CONFIDENTIAL, INJECTION_TYPES, ORGANIZATION, PII_TYPES, Detection
 from . import judge, kg, retriever
 
 Emit = Callable[[dict], Awaitable[None]]
@@ -90,10 +91,15 @@ def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
+def _spo(t: kg.Triple) -> list[str]:
+    return [t.s, t.p, t.o]
+
+
 async def _score_window(
-    text: str, sents, idxs, mentions, cands, use_retriever: bool
+    text: str, sents, idxs, mentions, cands, use_retriever: bool, scores: dict | None = None,
 ) -> tuple[list[tuple[kg.Triple, list[int]]], bool]:
-    """창 하나에서 리트리버를 통과한 (사실, 근거 문장 번호들) 과, 리트리버로 실제 걸렀는지."""
+    """창 하나에서 리트리버를 통과한 (사실, 근거 문장 번호들) 과, 리트리버로 실제 걸렀는지.
+    scores 를 주면 걸러진 것까지 사실별 여유값(창 여럿이면 최댓값, 못 쟀으면 None)을 채운다 (시연 추적용)."""
     ws, we = sents[idxs[0]][0], sents[idxs[-1]][1]
     ents = {ent: [(a, b) for a, b in spans if ws <= a and b <= we] for ent, spans in mentions.items()}
     ents = {ent: spans for ent, spans in ents.items() if spans}
@@ -137,7 +143,11 @@ async def _score_window(
             ev = ev[: MAX_EVIDENCE - 1] + [idxs[rank[0]]]  # 주의가 가장 큰 문장은 늘 포함
         for j, p in enumerate(pair_preds[(s, o)]):
             margins = res.get("margins")
-            if results is not None and margins is not None and margins[j] <= config.CONFIDENTIAL_DELTA:
+            m = margins[j] if results is not None and margins is not None else None
+            if scores is not None:
+                t, prev = kg.Triple(s, p, o), scores.get(kg.Triple(s, p, o))
+                scores[t] = m if prev is None else (prev if m is None else max(prev, m))
+            if m is not None and m <= config.CONFIDENTIAL_DELTA:
                 continue
             out.append((kg.Triple(s, p, o), sorted(ev)))
     return out, results is not None
@@ -172,46 +182,72 @@ async def detect(
         return []
     mentions = graph.mentions(text)
     cands = graph.candidates(mentions)
+    trace = demo_trace.start()  # 시연 추적 — 꺼져 있으면 None 이고 아래 publish 는 아무것도 안 한다
+    if not cands and trace is None:
+        return []
+
+    sents = split_sentences(text)
+    # KG 에 있는 회사·기관 이름은 Solar 에 그대로 — 기관명(ORGANIZATION)까지 가리면 사실이 "([기관명 마스킹], 협력사,
+    # [기관명 마스킹])" 이 되어 판단할 수 없었다(실측). 개인정보(이름·연락처 등)는 그대로 가린다
+    kg_spans = [sp for sps in mentions.values() for sp in sps]
+    for_solar = [it for it in masked_items if not (it.get("type") == ORGANIZATION and any(
+        _overlaps((int(it["start"]), int(it["end"])), sp) for sp in kg_spans))]
+
+    def no_forced(s: str) -> str:  # 사용자 지정 단어는 어떤 경로로도 Solar 에 원문으로 가지 않는다
+        return build_redaction(s, forced.find(s)).text if forced is not None else s
+
+    def solar_sentences() -> list[str]:
+        return [no_forced(_redacted(text, sp, for_solar)) for sp in sents]
+
+    if trace is not None:  # 문장은 Solar 가 보는 것(가린 것)만 싣는다
+        demo_trace.publish(trace, "start", sentences=solar_sentences(), entities=sorted(mentions),
+                           candidates=[_spo(t) for t in cands], delta=config.CONFIDENTIAL_DELTA,
+                           masked=dict(Counter("pii" if it.get("type") in PII_TYPES else "injection"
+                                               if it.get("type") in INJECTION_TYPES else "other" for it in masked_items)))
     if not cands:
+        demo_trace.publish(trace, "done", flagged=[])
         return []
     if emit:
         await emit({"type": "step", "step": 3, "label": f"기밀 탐지 중 (KG 후보 {len(cands)}개)..."})
 
-    sents = split_sentences(text)
     hits: dict[kg.Triple, set[int]] = {}  # 통과한 사실 → 근거 문장 (Solar 를 못 쓸 때만 쓴다)
+    scores: dict[kg.Triple, float | None] | None = {} if trace is not None else None
     use_retriever = model_status.confidential_ready()
     all_scored = True
     for idxs in _windows(sents, config.CONFIDENTIAL_WINDOW_CHARS):  # 리트리버는 요청을 어차피 하나씩 처리
-        window_hits, scored = await _score_window(text, sents, idxs, mentions, cands, use_retriever)
+        window_hits, scored = await _score_window(text, sents, idxs, mentions, cands, use_retriever, scores)
         if not scored:
             # 한 번 못 뜬 리트리버를 창마다 다시 띄우면(창마다 기동 시간 상한까지 대기) 문서 하나에 수 분이 걸린다
             use_retriever = all_scored = False
         for t, ev in window_hits:
             hits.setdefault(t, set()).update(ev)
+    if trace is not None:
+        demo_trace.publish(trace, "retriever", scored=all_scored,
+                           scores=[[*_spo(t), m] for t, m in scores.items()],
+                           passed=[[*_spo(t), sorted(ev)] for t, ev in hits.items()])
 
     flagged: dict[int, tuple[float, str]] = {}
     if hits:
-        # KG 에 있는 회사·기관 이름은 Solar 에 그대로 — 기관명(ORGANIZATION)까지 가리면 사실이 "([기관명 마스킹], 협력사,
-        # [기관명 마스킹])" 이 되어 판단할 수 없었다(실측). 개인정보(이름·연락처 등)는 그대로 가린다
-        kg_spans = [sp for sps in mentions.values() for sp in sps]
-        for_solar = [it for it in masked_items if not (it.get("type") == ORGANIZATION and any(
-            _overlaps((int(it["start"]), int(it["end"])), sp) for sp in kg_spans))]
-
-        def no_forced(s: str) -> str:  # 사용자 지정 단어는 어떤 경로로도 Solar 에 원문으로 가지 않는다
-            return build_redaction(s, forced.find(s)).text if forced is not None else s
-
+        facts = list(hits)  # 이 순서가 Solar 에 보내는 [T#] 번호다 (T1 = facts[0])
         verdict = None
+        info: dict = {}
         if all_scored:  # 리트리버가 거르지 못한 사실은 문서와 함께 내보내지 않는다 — 아래에서 근거 문장을 가린다
+            shown = [tuple(no_forced(x) for x in (_display(t.s, mentions, for_solar, text), t.p,
+                                                  _display(t.o, mentions, for_solar, text))) for t in facts]
+            if trace is not None:
+                demo_trace.publish(trace, "solar", facts=[_spo(t) for t in facts], shown=[list(f) for f in shown])
             # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
-            verdict = await judge.judge(
-                [no_forced(_redacted(text, sp, for_solar)) for sp in sents],
-                [tuple(no_forced(x) for x in (_display(t.s, mentions, for_solar, text), t.p,
-                                               _display(t.o, mentions, for_solar, text))) for t in hits],
-            )
+            verdict = await judge.judge(solar_sentences(), shown, info)
         if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
             flagged = {i: (0.5, "encoder") for ev in hits.values() for i in ev}
         else:
             flagged = {s: (0.95, "llm") for s, _ in verdict}
+        if trace is not None:
+            demo_trace.publish(trace, "verdict", fallback=verdict is None, cached=info.get("cached", False),
+                               pairs=[[s, _spo(facts[t])] for s, t in verdict or []],
+                               public=[_spo(facts[t]) for t in info.get("public", [])])
+    if trace is not None:
+        demo_trace.publish(trace, "done", flagged=[[i, *flagged[i]] for i in sorted(flagged)])
 
     covers = [(int(it["start"]), int(it["end"])) for it in masked_items]
     out: list[Detection] = []

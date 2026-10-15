@@ -70,6 +70,8 @@ async def health(request: Request):
             "ready": model_status.confidential_ready() and _kg_file_ok(),
             "kgReady": _kg_file_ok(),
         },
+        # 시연 전용 KG 기밀 판정 대시보드 경로 (SECUREDOC_DEMO_TRACE=1 일 때만) — 포트가 매번 달라 여기서 찾는다
+        "demoDashboard": "/demo/dashboard" if config.DEMO_TRACE_ENABLED else None,
         "injectionPolicy": config.INJECTION_POLICY,
         "supportedExtensions": sorted(config.SUPPORTED_EXTENSIONS),
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,
