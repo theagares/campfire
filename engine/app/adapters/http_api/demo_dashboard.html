@@ -37,10 +37,14 @@
 
   /* 깔때기 */
   .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
-  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 12px 7px; border-top: 3px solid var(--line); transition: border-color .3s, transform .3s; }
-  .stage .lbl { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  /* 단계 박스 — 앱 시그니처 보라. 도달한 단계는 채우고, 아직이면 연하게 */
+  .stage { position: relative; background: #EEECFC; color: var(--purple); border-radius: 10px; padding: 6px 12px 7px;
+           transition: background .35s, color .35s, transform .3s; }
+  .stage .lbl { font-size: 11.5px; font-weight: 600; opacity: .85; }
   .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
-  .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage .sub { font-size: 11px; opacity: .75; min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage.on { background: var(--purple); color: #FFFFFF; box-shadow: 0 2px 8px rgba(88, 76, 220, .28); }
+  .stage.masked.on { background: #4A3FC4; }
   /* 단계 사이 화살표 — 간격 가운데에 원 배지로 */
   .stage:not(:last-child)::after {
     content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
@@ -48,16 +52,9 @@
     background: var(--panel); border: 1.5px solid var(--purple); color: var(--purple);
     font-size: 13px; font-weight: 800; line-height: 1; box-shadow: 0 1px 3px rgba(88, 76, 220, .25);
   }
-  .stage.on { transform: translateY(-1px); }
-  .stage.kg.on { border-top-color: var(--ink-3); }
-  .stage.cand.on { border-top-color: var(--purple); }
-  .stage.pass.on { border-top-color: var(--orange); }
-  .stage.secret.on { border-top-color: var(--red); }
-  .stage.secret.on .num { color: var(--red-ink); }
-  .stage.masked.on { border-top-color: var(--red); background: var(--red-soft); }
   .stage.flash { animation: flash .7s ease; }
-  @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .45); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
-  .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--orange); border-right-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
+  @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
   @keyframes rot { to { transform: rotate(360deg); } }
 
   /* 본문 */
