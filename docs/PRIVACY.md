@@ -55,6 +55,13 @@ perplexity.ai)에서만 동작하며, 그 사이트에서 다음을 읽습니다
 
 모두 사용자 PC에만 있습니다. 삭제는 앱 제거 및 확장 삭제로 이루어집니다.
 
+- **시연 전용 추적(기본 꺼짐)**: 앱을 띄우기 전에 환경 변수 `SECUREDOC_DEMO_TRACE=1` 을 직접 켠
+  경우에만, 기밀 탐지 과정(문서에서 찾은 KG 사실·리트리버 점수·Solar 판정·가린 문장 번호)과
+  **Solar 에 보낸 것과 같은 가린 문장**을 엔진 메모리에 최근 20건까지 두고
+  `http://127.0.0.1:<포트>/demo/dashboard` 로 보여 줍니다. 디스크에는 쓰지 않고 엔진을 끄면 사라지지만,
+  켜 둔 동안에는 같은 PC 의 다른 프로그램도 이 주소에서 가린 문장을 볼 수 있습니다. 시연에만 쓰고,
+  설정 화면에는 없습니다.
+
 ## 4. 하지 않는 것
 
 - 개발자 또는 제3자 서버로 사용자 데이터 전송 — 하지 않습니다
@@ -98,5 +105,12 @@ knowledge-graph facts are sent to Upstage, once per document (one retry on a mal
 reply), to judge whether they are
 confidential. Local scan history is stored in SQLite as metadata only (job id, file name, source,
 timestamp, counts, offsets); **no raw text or text snippets are stored.**
+A demo-only trace exists for presentations: only when `SECUREDOC_DEMO_TRACE=1` is set
+before launching the app, the engine keeps the last 20 confidentiality-check traces
+(matched knowledge-graph facts, retriever scores, the Solar verdict, and the same masked
+sentences that were sent to Solar) in memory and serves them at
+`http://127.0.0.1:<port>/demo/dashboard`. Nothing is written to disk and it is gone when the
+engine stops, but while it is on, other programs on the same machine can read those masked
+sentences. It is off by default and not exposed in the settings screen.
 
 Contact: please open an issue at https://github.com/theagares/campfire/issues

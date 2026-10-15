@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Campfire 기밀 판정</title>
+<link rel="icon" href="data:,">
+<!-- 시연 전용 (SECUREDOC_DEMO_TRACE=1). 엔진이 직접 준다 — /demo/kg, /demo/trace/stream 과 같은 출처 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+  :root {
+    --bg: #F6F6F8; --panel: #FFFFFF; --ink: #0A0A0A; --ink-2: #4B5563; --ink-3: #9CA3AF; --line: #E5E7EB;
+    --purple: #584CDC; --purple-soft: rgba(88, 76, 220, .10);
+    --red: #F04452; --red-soft: #FEECEE; --red-ink: #B4232F;
+    --orange: #FF9500; --orange-soft: #FFF4E5; --orange-ink: #A85F00;
+    --green: #09AE4B; --green-soft: #E6F7ED; --green-ink: #067A35;
+    --blue-soft: #EEF0FF; --mask: #EEF0F3;
+    --radius: 12px; --shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 "Pretendard", "Inter", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+  header h1 span { color: var(--purple); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--mask); color: var(--ink-2); white-space: nowrap; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+  .pill.live .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(9, 174, 75, .2); }
+  .pill.down .dot { background: var(--red); }
+  .grow { flex: 1; }
+  .meta { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .demo-tag { color: var(--orange-ink); background: var(--orange-soft); }
+
+  /* 깔때기 */
+  .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
+  /* 단계 박스 — 흰 바탕, 위쪽 띠만 앱 시그니처 보라 (도달한 단계). 아직이면 연한 띠 */
+  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 12px 7px;
+           border-top: 4px solid #DDD9F8; transition: border-color .35s, transform .3s; }
+  .stage .lbl { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage.on { border-top-color: var(--purple); }
+  .stage .spin { color: var(--purple); }
+  /* 단계 사이 화살표 — 간격 가운데 */
+  .stage:not(:last-child)::after {
+    content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
+    width: 22px; text-align: center; color: var(--purple); font-size: 20px; font-weight: 800; line-height: 1;
+  }
+  .stage.flash { animation: flash .7s ease; }
+  @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* 본문 */
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 470px; gap: 14px; padding: 14px 20px 16px; }
+  .card { background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; }
+  .card > h2 { margin: 0; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  .card > h2 small { font-weight: 500; color: var(--ink-3); }
+  .left { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .right { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  #graph-card { flex: 1; position: relative; }
+  #cy { flex: 1; min-height: 0; }
+  .legend { position: absolute; left: 12px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--ink-2); background: rgba(255, 255, 255, .92); padding: 6px 10px; border-radius: 8px; }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 4px; }
+  .graph-tools { position: absolute; right: 12px; top: 50px; display: flex; gap: 6px; }
+  button { font: inherit; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--purple); color: var(--purple); }
+  button.on { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .empty { margin: auto; color: var(--ink-3); text-align: center; padding: 24px; font-size: 13px; }
+
+  /* 검사 목록 */
+  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; }
+  .scan { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
+  .scan:hover { border-color: var(--purple); }
+  .scan.sel { border-color: var(--purple); box-shadow: 0 0 0 2px var(--purple-soft); }
+  .scan .t { font-size: 11px; color: var(--ink-3); display: flex; justify-content: space-between; }
+  .scan .n { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 2px 0 4px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-right: 4px; }
+  .b-secret { background: var(--red-soft); color: var(--red-ink); }
+  .b-none { background: var(--mask); color: var(--ink-2); }
+  .b-run { background: var(--purple-soft); color: var(--purple); }
+  .b-cache { background: var(--blue-soft); color: var(--purple); }
+  .b-fb { background: var(--orange-soft); color: var(--orange-ink); }
+
+  /* 문장 */
+  #doc-card { flex: 1.15; }
+  #doc { overflow-y: auto; padding: 8px 10px 12px; }
+  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; border-left: 3px solid transparent; transition: background .3s, border-color .3s; }
+  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 2px; font-variant-numeric: tabular-nums; }
+  .sent .st { word-break: keep-all; overflow-wrap: anywhere; }
+  .sent.ev { background: var(--orange-soft); border-left-color: var(--orange); }
+  .sent.secret { background: var(--red-soft); border-left-color: var(--red); }
+  .sent.fallback { background: var(--orange-soft); border-left-color: var(--red); }
+  .sent.hover { box-shadow: inset 0 0 0 2px var(--purple); }
+  .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: #fff; color: var(--red-ink); border: 1px solid #F7B6BC; cursor: default; }
+  .mask { display: inline-block; font-size: 11px; line-height: 1.4; padding: 0 5px; border-radius: 4px; background: var(--mask); color: var(--ink-2); font-weight: 600; }
+
+  /* 사실 표 */
+  #facts-card { flex: 1; }
+  #facts { overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 11px; color: var(--ink-3); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); z-index: 1; white-space: nowrap; }
+  td.fact { word-break: keep-all; overflow-wrap: anywhere; }
+  td { padding: 5px 10px; border-bottom: 1px solid #F1F2F4; vertical-align: middle; }
+  tr.hover td { background: var(--purple-soft); }
+  .st-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .s-secret { background: var(--red-soft); color: var(--red-ink); }
+  .s-fallback { background: var(--red-soft); color: var(--red-ink); }
+  .s-public { background: var(--green-soft); color: var(--green-ink); }
+  .s-nostmt { background: var(--blue-soft); color: var(--purple); }
+  .s-passed { background: var(--orange-soft); color: var(--orange-ink); }
+  .s-filtered, .s-unscored, .s-cand { background: var(--mask); color: var(--ink-2); }
+  .fact b { font-weight: 700; }
+  .fact .p { color: var(--ink-2); }
+  .score { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar { position: relative; width: 64px; height: 6px; background: var(--mask); border-radius: 3px; }
+  .bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--ink-3); }
+  .bar.ok span { background: var(--orange); }
+  .bar em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); opacity: .55; }
+  .refs { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; }
+
+  @media (max-width: 1100px) {
+    body { overflow: auto; }
+    main { grid-template-columns: 1fr; }
+    #graph-card { min-height: 420px; }
+    .funnel { grid-template-columns: repeat(2, 1fr); }
+    .stage::after { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Campfire <span>기밀 판정</span> 실시간</h1>
+  <span class="pill" id="conn"><span class="dot"></span><span>연결 중</span></span>
+  <span class="pill demo-tag">시연 전용 · 메모리에만 보관</span>
+  <span class="grow"></span>
+  <span class="meta" id="kgmeta"></span>
+</header>
+
+<section class="funnel">
+  <div class="stage kg on"><div class="lbl">회사 KG 사실</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
+  <div class="stage cand"><div class="lbl">① 문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
+  <div class="stage pass"><div class="lbl">② 리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
+  <div class="stage secret"><div class="lbl">③ Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
+  <div class="stage masked"><div class="lbl">④ 가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
+</section>
+
+<main>
+  <div class="left">
+    <div class="card" id="graph-card">
+      <h2>회사 지식그래프 <small id="graph-sub">문서를 검사하면 관련 사실이 표시됩니다</small></h2>
+      <div id="cy"></div>
+      <div class="graph-tools">
+        <button id="btn-focus" class="on" title="검사한 문서와 관련된 부분만 확대">문서 관련만</button>
+        <button id="btn-all" title="KG 전체 보기">전체 KG</button>
+      </div>
+      <div class="legend">
+        <span><i style="border-color:#9CA3AF"></i>후보</span>
+        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>리트리버가 거름</span>
+        <span><i style="border-color:#FF9500"></i>리트리버 통과</span>
+        <span><i style="border-color:#F04452"></i>Solar 기밀</span>
+        <span><i style="border-color:#09AE4B"></i>Solar 공개</span>
+        <span><i style="border-color:#A5B4FC;border-top-style:dotted"></i>문서가 진술 안 함</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>검사 목록 <small>최근 20건 · 엔진을 끄면 사라짐</small><span class="grow"></span><button id="btn-follow" class="on">최신 따라가기</button></h2>
+      <div id="history"><div class="empty">아직 검사한 문서가 없습니다 — 앱이나 확장 프로그램으로 문서를 올려 보세요</div></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="card" id="doc-card">
+      <h2>문서 <small>Solar 가 본 그대로 — 개인정보·인젝션은 가린 상태</small></h2>
+      <div id="doc"><div class="empty">검사가 시작되면 문장이 나타납니다</div></div>
+    </div>
+    <div class="card" id="facts-card">
+      <h2>KG 사실별 판정 <small id="facts-sub"></small></h2>
+      <div id="facts"><div class="empty">문서에서 찾은 KG 사실이 여기에 나옵니다</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const K = (s, p, o) => `${s}␟${p}␟${o}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const STEP_MS = { start: 650, retriever: 800, solar: 300, verdict: 900, done: 400 };  // 단계가 하나씩 켜지는 간격
+const STATUS = {
+  secret: ["기밀", "s-secret"], fallback: ["판정 불가 → 가림", "s-fallback"], public: ["공개", "s-public"],
+  nostmt: ["진술 안 함", "s-nostmt"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["리트리버가 거름", "s-filtered"],
+  unscored: ["채점 안 됨", "s-unscored"], cand: ["후보", "s-cand"],
+};
+const ORDER = ["secret", "fallback", "public", "nostmt", "passed", "filtered", "unscored", "cand"];
+
+let cy = null, delta = -10, kgCount = 0, globalPos = {};
+const edgeOf = new Map();          // 사실 키 → 그래프 간선 id
+const nodeOf = new Map();          // 엔티티 이름 → 노드 id
+const scans = new Map();           // 검사 번호 → 상태
+const seen = new Set();            // "검사/단계" — 재접속 스냅샷과 실시간이 겹쳐도 한 번만
+let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "";
+
+// ── KG 그래프 ─────────────────────────────────────────────────────────────
+async function loadKg() {
+  const r = await fetch("/demo/kg", { cache: "no-store" });
+  const kg = await r.json();
+  delta = kg.delta; kgCount = kg.triples.length;
+  $("#f-kg").textContent = kgCount;
+  $("#f-kg-sub").textContent = `엔티티 ${new Set(kg.triples.flatMap((t) => [t[0], t[2]])).size}개`;
+  $("#kgmeta").textContent = `리트리버 기준 δ ${delta}` + (kg.confidentialEnabled ? "" : " · 기밀 탐지 꺼짐");
+  if (!kgCount) {
+    $("#cy").innerHTML = '<div class="empty">KG 파일이 설정되지 않았습니다 — 앱 설정에서 KG 경로를 지정하세요</div>';
+    return;
+  }
+  const elements = [];
+  kg.triples.forEach(([s, p, o], i) => {
+    for (const n of [s, o]) {
+      if (!nodeOf.has(n)) { nodeOf.set(n, `n${nodeOf.size}`); elements.push({ data: { id: nodeOf.get(n), label: n } }); }
+    }
+    const id = `e${i}`;
+    edgeOf.set(K(s, p, o), id);
+    elements.push({ data: { id, source: nodeOf.get(s), target: nodeOf.get(o), label: p, key: K(s, p, o) } });
+  });
+  cy = cytoscape({
+    container: $("#cy"), elements, wheelSensitivity: 0.25, minZoom: 0.2, maxZoom: 3,
+    layout: { name: "cose", animate: false, randomize: false, padding: 30, nodeDimensionsIncludeLabels: true,
+              boundingBox: { x1: 0, y1: 0, w: $("#cy").clientWidth * 1.6, h: $("#cy").clientHeight * 1.6 },
+              nodeRepulsion: () => 200000, idealEdgeLength: () => 60, edgeElasticity: () => 100, gravity: 1.5, numIter: 2500,
+              componentSpacing: 40 },
+    style: [
+      { selector: "node", style: {
+        label: "data(label)", "font-size": 10, color: "#9CA3AF", "background-color": "#D1D5DB", width: 15, height: 15,
+        "text-valign": "bottom", "text-margin-y": 3, opacity: 0.45, "font-family": "Pretendard, Malgun Gothic, sans-serif",
+        "transition-property": "opacity, background-color, width, height", "transition-duration": "300ms" } },
+      { selector: "edge", style: {
+        width: 1, "line-color": "#E5E7EB", "curve-style": "bezier", opacity: 0.6, "font-size": 10.5,
+        "font-family": "Pretendard, Malgun Gothic, sans-serif", "text-rotation": "autorotate",
+        "text-background-color": "#FFFFFF", "text-background-opacity": 0.9, "text-background-padding": 2,
+        "transition-property": "line-color, width, opacity", "transition-duration": "400ms" } },
+      { selector: "node.in-doc", style: { opacity: 1, "background-color": "#584CDC", color: "#111827", "font-size": 16, "font-weight": 700, width: 28, height: 28,
+        "text-background-color": "#FFFFFF", "text-background-opacity": 0.85, "text-background-padding": 2 } },
+      { selector: "node.faded", style: { opacity: 0.12 } },
+      { selector: "edge.faded", style: { opacity: 0.12 } },
+      { selector: "edge.cand", style: { "line-color": "#9CA3AF", width: 2, opacity: 0.95 } },
+      { selector: "edge.unscored", style: { "line-color": "#D1D5DB", width: 1.5, opacity: 0.95 } },
+      { selector: "edge.filtered", style: { "line-color": "#C7CBD1", "line-style": "dashed", width: 2, opacity: 1, label: "data(scoreLabel)", color: "#9CA3AF", "font-size": 12 } },
+      { selector: "edge.passed", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
+      { selector: "edge.nostmt", style: { "line-color": "#A5B4FC", "line-style": "dotted", width: 3, opacity: 1, label: "data(label)", color: "#584CDC", "font-size": 13 } },
+      { selector: "edge.public", style: { "line-color": "#09AE4B", width: 4, opacity: 1, label: "data(label)", color: "#067A35", "font-weight": 700, "font-size": 14 } },
+      { selector: "edge.secret", style: { "line-color": "#F04452", width: 5, opacity: 1, label: "data(label)", color: "#B4232F", "font-weight": 800, "font-size": 14 } },
+      { selector: "edge.fallback", style: { "line-color": "#F04452", "line-style": "dashed", width: 4.5, opacity: 1, label: "data(label)", color: "#B4232F", "font-size": 13 } },
+      { selector: ".hl", style: { "overlay-color": "#584CDC", "overlay-opacity": 0.18, "overlay-padding": 7 } },
+      { selector: ".hidden", style: { display: "none" } },
+    ],
+  });
+  globalPos = Object.fromEntries(cy.nodes().map((n) => [n.id(), { ...n.position() }]));  // "전체 KG" 로 돌아갈 자리
+  cy.on("mouseover", "edge", (e) => hoverFact(e.target.data("key"), true));
+  cy.on("mouseout", "edge", (e) => hoverFact(e.target.data("key"), false));
+  cy.on("mouseover", "node", (e) => e.target.connectedEdges().addClass("hl"));
+  cy.on("mouseout", "node", (e) => e.target.connectedEdges().removeClass("hl"));
+}
+
+// ── 검사 상태 ─────────────────────────────────────────────────────────────
+function newScan(id, at) {
+  return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
+           passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false, cached: false,
+           flagged: [], t: {} };
+}
+
+function applyEvent(sc, ev) {
+  sc.stage = ev.stage; sc.t[ev.stage] = ev.at;
+  if (ev.stage === "start") {
+    sc.sentences = ev.sentences || []; sc.entities = ev.entities || []; sc.masked = ev.masked || {};
+    sc.candidates = (ev.candidates || []).map((t) => K(...t));
+  } else if (ev.stage === "retriever") {
+    sc.scored = ev.scored !== false;
+    for (const [s, p, o, m] of ev.scores || []) sc.scores.set(K(s, p, o), m);
+    for (const [s, p, o, evs] of ev.passed || []) sc.passed.set(K(s, p, o), evs);
+  } else if (ev.stage === "solar") {
+    sc.facts = (ev.facts || []).map((t) => K(...t));
+  } else if (ev.stage === "verdict") {
+    sc.fallback = !!ev.fallback; sc.cached = !!ev.cached;
+    sc.pairs = (ev.pairs || []).map(([s, t]) => [s, K(...t)]);
+    sc.publics = new Set((ev.public || []).map((t) => K(...t)));
+  } else if (ev.stage === "done") {
+    sc.flagged = ev.flagged || [];
+  }
+}
+
+const reached = (sc, stage) => ["start", "retriever", "solar", "verdict", "done"].indexOf(sc.stage) >= ["start", "retriever", "solar", "verdict", "done"].indexOf(stage);
+
+function statusOf(sc, key) {
+  if (reached(sc, "verdict") && sc.t.verdict !== undefined) {
+    if (sc.fallback && sc.passed.has(key)) return "fallback";
+    if (sc.pairs.some(([, k]) => k === key)) return "secret";
+    if (sc.publics.has(key)) return "public";
+    if (sc.facts.includes(key)) return "nostmt";
+  }
+  if (reached(sc, "retriever") && sc.t.retriever !== undefined) {
+    if (sc.passed.has(key)) return "passed";
+    return sc.scores.has(key) && sc.scores.get(key) !== null ? "filtered" : "unscored";
+  }
+  return "cand";
+}
+
+// ── 그리기 ────────────────────────────────────────────────────────────────
+function render(sc, animate = true) {
+  renderFunnel(sc);
+  renderGraph(sc, animate);
+  renderDoc(sc);
+  renderFacts(sc);
+}
+
+function setStage(cls, on, flash) {
+  const el = document.querySelector(`.stage.${cls}`);
+  el.classList.toggle("on", on);
+  if (flash) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+}
+
+function renderFunnel(sc) {
+  const st = sc.stage;
+  const secretFacts = new Set(sc.pairs.map(([, k]) => k));
+  const r = reached(sc, "retriever") && sc.t.retriever !== undefined;
+  const v = reached(sc, "verdict") && sc.t.verdict !== undefined;
+  const d = sc.stage === "done";
+  $("#f-cand").textContent = sc.candidates.length;
+  $("#f-cand-sub").textContent = `문서에서 찾은 엔티티 ${sc.entities.length}개`;
+  const count = (x) => sc.candidates.filter((k) => statusOf(sc, k) === x).length;
+  $("#f-pass").textContent = r ? sc.passed.size : (d ? 0 : "–");
+  $("#f-pass-sub").textContent = !r ? "" : !sc.scored ? "리트리버 없음 — Solar 로 보내지 않음"
+    : `${count("filtered")}개는 기준 미달로 거름` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
+  if (st === "solar") {
+    $("#f-secret").innerHTML = '<span class="spin"></span>';
+    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 전송`;
+  } else if (v) {
+    $("#f-secret").textContent = sc.fallback ? "–" : secretFacts.size;
+    $("#f-secret-sub").textContent = sc.fallback ? "판정 불가 — 근거 문장을 낮은 신뢰도로 가림"
+      : `공개 ${sc.publics.size} · 진술 안 함 ${sc.facts.length - secretFacts.size - sc.publics.size}` + (sc.cached ? " · 캐시" : "");
+  } else {
+    $("#f-secret").textContent = d ? 0 : "–";
+    $("#f-secret-sub").textContent = d ? "Solar 로 보낼 사실 없음" : "";
+  }
+  $("#f-masked").textContent = d ? sc.flagged.length : "–";
+  const m = sc.masked;
+  $("#f-masked-sub").textContent = d ? `전체 ${sc.sentences.length}문장 중 · PII ${m.pii || 0} · 인젝션 ${m.injection || 0}` : "";
+  const prev = sc._shown || "";
+  setStage("cand", !!st, st === "start" && prev !== "start");
+  setStage("pass", r, st === "retriever" && prev !== "retriever");
+  setStage("secret", v, st === "verdict" && prev !== "verdict");
+  setStage("masked", d && sc.flagged.length > 0, st === "done" && prev !== "done");
+  sc._shown = st;
+}
+
+function renderGraph(sc, animate) {
+  if (!cy) return;
+  const classes = "in-doc faded cand unscored filtered passed nostmt public secret fallback hl";
+  cy.batch(() => {
+    cy.elements().removeClass(classes);
+    const ents = new Set(sc.entities);
+    const cands = new Set(sc.candidates);
+    cy.nodes().forEach((n) => n.addClass(ents.has(n.data("label")) ? "in-doc" : (sc.stage ? "faded" : "")));
+    cy.edges().forEach((e) => {
+      const key = e.data("key");
+      if (!cands.has(key)) { if (sc.stage) e.addClass("faded"); return; }
+      const st = statusOf(sc, key);
+      e.addClass(st);
+      const m = sc.scores.get(key);
+      e.data("scoreLabel", m === undefined || m === null ? "" : `${e.data("label")} ${fmtScore(m)}`);
+    });
+  });
+  const focusKey = `${sc.id}:${focusMode}`;
+  if (focusKey !== lastFocusKey) {  // 검사·보기 방식이 바뀔 때만 다시 배치 (단계마다는 색만 바꾼다)
+    lastFocusKey = focusKey;
+    const dur = animate ? 600 : 0;
+    if (focusMode && sc.entities.length) {
+      // 전체 KG 배치를 그대로 확대하면 문서 속 엔티티끼리 겹친다 — 관련 부분만 남겨 따로 배치
+      const cands = new Set(sc.candidates);
+      const sub = cy.nodes(".in-doc").union(cy.edges().filter((e) => cands.has(e.data("key"))));
+      cy.elements().removeClass("hidden");
+      cy.elements().not(sub).addClass("hidden");
+      sub.layout({ name: "cose", animate: dur > 0, animationDuration: dur, fit: true, padding: 40, randomize: true,
+                   boundingBox: { x1: 0, y1: 0, w: cy.width(), h: cy.height() },  // 화면 비율대로 퍼뜨려 축소를 줄인다
+                   nodeDimensionsIncludeLabels: true, nodeRepulsion: () => 120000, idealEdgeLength: () => 60,
+                   edgeElasticity: () => 100, gravity: 2.5, numIter: 2500, nodeOverlap: 20, componentSpacing: 30 }).run();
+    } else {
+      cy.elements().removeClass("hidden");
+      cy.layout({ name: "preset", positions: (n) => globalPos[n.id()], animate: dur > 0, animationDuration: dur,
+                  fit: true, padding: 30 }).run();
+    }
+  }
+  $("#graph-sub").textContent = sc.candidates.length
+    ? `검사 #${sc.id} — 문서 속 엔티티 ${sc.entities.length}개, 후보 사실 ${sc.candidates.length}개`
+    : `검사 #${sc.id} — 문서에서 KG 엔티티 쌍을 찾지 못함`;
+}
+
+function fmtSentence(t) {
+  return esc(t).replace(/\[([^\[\]]{1,14}마스킹)\]/g, '<span class="mask">$1</span>');
+}
+
+function renderDoc(sc) {
+  if (!sc.sentences.length) { $("#doc").innerHTML = '<div class="empty">문장이 없습니다</div>'; return; }
+  const flagged = new Map(sc.flagged.map(([i, , src]) => [i, src]));
+  const bySent = new Map();
+  for (const [s, k] of sc.pairs) { if (!bySent.has(s)) bySent.set(s, []); bySent.get(s).push(k); }
+  const ev = new Set();
+  if (reached(sc, "retriever") && !reached(sc, "done")) for (const evs of sc.passed.values()) evs.forEach((i) => ev.add(i));
+  const html = sc.sentences.map((t, i) => {
+    const cls = flagged.has(i) ? (flagged.get(i) === "llm" ? "secret" : "fallback") : (ev.has(i) ? "ev" : "");
+    const chips = (sc.stage === "done" ? bySent.get(i) || [] : []).map((k) => {
+      const [s, p, o] = k.split("␟");
+      return `<span class="chip" data-key="${esc(k)}" title="${esc(`(${s}, ${p}, ${o})`)}">${esc(p)} · ${esc(o)}</span>`;
+    }).join("");
+    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st">${fmtSentence(t)}</span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+  }).join("");
+  const box = $("#doc");
+  const keep = box.dataset.scan === String(sc.id) ? box.scrollTop : 0;
+  box.innerHTML = html; box.dataset.scan = sc.id; box.scrollTop = keep;
+  if (sc.stage === "done" && sc._scrolled !== true && sc.flagged.length) {
+    sc._scrolled = true;
+    box.querySelector(".sent.secret, .sent.fallback")?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  box.querySelectorAll(".sent").forEach((el) => {
+    const keys = bySent.get(Number(el.dataset.i)) || [];
+    el.onmouseenter = () => { el.classList.add("hover"); keys.forEach((k) => markFact(k, true)); };
+    el.onmouseleave = () => { el.classList.remove("hover"); keys.forEach((k) => markFact(k, false)); };
+  });
+}
+
+function sentencesOf(sc, key) {
+  const fromVerdict = sc.pairs.filter(([, k]) => k === key).map(([s]) => s);
+  return fromVerdict.length ? fromVerdict : (sc.fallback ? sc.passed.get(key) || [] : []);
+}
+
+function renderFacts(sc) {
+  if (!sc.candidates.length) { $("#facts").innerHTML = '<div class="empty">이 문서에는 KG 후보 사실이 없습니다</div>'; $("#facts-sub").textContent = ""; return; }
+  const rows = sc.candidates.map((k) => ({ k, st: statusOf(sc, k), m: sc.scores.get(k) }));
+  rows.sort((a, b) => ORDER.indexOf(a.st) - ORDER.indexOf(b.st) || (b.m ?? -99) - (a.m ?? -99));
+  const lo = -30, hi = 5, pct = (x) => Math.max(0, Math.min(100, ((x - lo) / (hi - lo)) * 100));
+  const html = `<table><thead><tr><th>판정</th><th>KG 사실 (주어 · 관계 · 목적어)</th><th>리트리버 점수</th><th>문장</th></tr></thead><tbody>` +
+    rows.map(({ k, st, m }) => {
+      const [s, p, o] = k.split("␟");
+      const [label, cls] = STATUS[st];
+      const score = m === undefined || m === null ? '<span class="refs">–</span>'
+        : `<div class="score"><div class="bar ${m > delta ? "ok" : ""}"><span style="width:${pct(m)}%"></span><em style="left:${pct(delta)}%"></em></div>${fmtScore(m)}</div>`;
+      const refs = sentencesOf(sc, k).map((i) => `S${i + 1}`).join(", ");
+      return `<tr data-key="${esc(k)}"><td><span class="st-chip ${cls}">${label}</span></td>` +
+        `<td class="fact"><b>${esc(s)}</b> <span class="p">· ${esc(p)} ·</span> <b>${esc(o)}</b></td><td>${score}</td><td class="refs">${refs}</td></tr>`;
+    }).join("") + "</tbody></table>";
+  $("#facts").innerHTML = html;
+  const c = (x) => rows.filter((r) => r.st === x).length;
+  $("#facts-sub").textContent = `후보 ${rows.length} · 통과 ${sc.passed.size}` + (c("secret") ? ` · 기밀 ${c("secret")}` : "");
+  $("#facts").querySelectorAll("tr[data-key]").forEach((tr) => {
+    tr.onmouseenter = () => hoverFact(tr.dataset.key, true);
+    tr.onmouseleave = () => hoverFact(tr.dataset.key, false);
+  });
+}
+
+function markFact(key, on) {
+  const id = edgeOf.get(key);
+  if (cy && id) cy.getElementById(id).toggleClass("hl", on);
+  document.querySelectorAll(`#facts tr[data-key="${CSS.escape(key)}"]`).forEach((tr) => tr.classList.toggle("hover", on));
+}
+
+function hoverFact(key, on) {
+  markFact(key, on);
+  const sc = scans.get(selected);
+  if (!sc) return;
+  for (const i of sentencesOf(sc, key)) document.querySelector(`.sent[data-i="${i}"]`)?.classList.toggle("hover", on);
+}
+
+function scanTitle(sc) {  // 메일이면 제목 줄, 아니면 첫 문장
+  const subject = sc.sentences.find((t) => /^(Subject|제목):/i.test(t.trim()));
+  const first = subject ? subject.replace(/^\s*(Subject|제목):\s*/i, "")
+    : sc.sentences.find((t) => t.trim().length >= 6 && !/^\[[^\]]*\]$/.test(t.trim())) || sc.sentences.find((t) => t.trim()) || "(빈 문서)";
+  return first.replace(/\[[^\[\]]{1,14}마스킹\]/g, "▒").slice(0, 40);
+}
+
+const fmtScore = (m) => (Math.abs(m) < 0.05 ? "0.0" : `${m > 0 ? "+" : ""}${m.toFixed(1)}`);
+const fmtTime = (at) => new Date((at || 0) * 1000).toTimeString().slice(0, 8);
+
+function renderHistory() {
+  const box = $("#history");
+  if (!scans.size) return;
+  const ids = [...scans.keys()].sort((a, b) => b - a);
+  box.innerHTML = ids.map((id) => {
+    const sc = scans.get(id);
+    const time = fmtTime(sc.at);
+    let badges = "";
+    if (sc.stage !== "done" || sc.pending.length) badges += '<span class="badge b-run">진행 중</span>';
+    else if (sc.fallback) badges += `<span class="badge b-fb">판정 불가 · ${sc.flagged.length}문장</span>`;
+    else if (sc.flagged.length) badges += `<span class="badge b-secret">기밀 ${sc.flagged.length}문장</span>`;
+    else badges += `<span class="badge b-none">${sc.candidates.length ? "기밀 없음" : "KG 후보 없음"}</span>`;
+    if (sc.cached) badges += '<span class="badge b-cache">캐시</span>';
+    return `<div class="scan ${id === selected ? "sel" : ""}" data-id="${id}"><div class="t"><span>#${id}</span><span>${time}</span></div>` +
+      `<div class="n" title="${esc(scanTitle(sc))}">${esc(scanTitle(sc))}</div>${badges}</div>`;
+  }).join("");
+  box.querySelectorAll(".scan").forEach((el) => el.onclick = () => {
+    selected = Number(el.dataset.id);
+    follow = selected === Math.max(...scans.keys());
+    $("#btn-follow").classList.toggle("on", follow);
+    lastFocusKey = "";
+    render(scans.get(selected), false);
+    renderHistory();
+  });
+}
+
+// ── 이벤트 받기 ───────────────────────────────────────────────────────────
+function take(ev, instant) {
+  const tag = `${ev.scan}/${ev.stage}`;
+  if (seen.has(tag)) return;
+  seen.add(tag);
+  if (!scans.has(ev.scan)) {
+    scans.set(ev.scan, newScan(ev.scan, ev.at));
+    while (scans.size > 20) scans.delete(Math.min(...scans.keys()));
+  }
+  const sc = scans.get(ev.scan);
+  if (instant) { applyEvent(sc, ev); return; }
+  sc.pending.push(ev);
+  if (follow) selected = ev.scan;
+  if (!pumping) pump();
+}
+
+async function pump() {  // 단계를 하나씩 간격을 두고 적용 — 이벤트가 몰려 와도 화면에서는 차례로 켜진다
+  pumping = true;
+  for (;;) {
+    const sc = [...scans.values()].sort((a, b) => a.id - b.id).find((s) => s.pending.length);
+    if (!sc) break;
+    const ev = sc.pending.shift();
+    applyEvent(sc, ev);
+    if (follow && selected !== sc.id) { selected = sc.id; lastFocusKey = ""; }
+    if (sc.id === selected) render(sc);
+    renderHistory();
+    await sleep(sc.id === selected ? STEP_MS[ev.stage] || 500 : 0);
+  }
+  pumping = false;
+}
+
+setInterval(() => {  // Solar 판정 중 경과 시간
+  const sc = scans.get(selected);
+  if (sc && sc.stage === "solar" && sc.t.solar) {
+    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.t.solar).toFixed(1)}초`;
+  }
+}, 200);
+
+function connect() {
+  const es = new EventSource("/demo/trace/stream");
+  const conn = $("#conn");
+  es.onopen = () => { conn.className = "pill live"; conn.lastElementChild.textContent = "실시간 연결됨"; };
+  es.onerror = () => { conn.className = "pill down"; conn.lastElementChild.textContent = "연결 끊김 — 다시 연결 중"; };
+  es.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "snapshot") {
+      for (const e of ev.events || []) take(e, true);
+      if (scans.size && (follow || selected === null)) selected = Math.max(...scans.keys());
+      if (selected !== null && scans.has(selected)) { lastFocusKey = ""; render(scans.get(selected), false); }
+      renderHistory();
+    } else if (ev.type === "trace") {
+      take(ev, false);
+    }
+  };
+}
+
+$("#btn-follow").onclick = () => {
+  follow = !follow;
+  $("#btn-follow").classList.toggle("on", follow);
+  if (follow && scans.size) { selected = Math.max(...scans.keys()); lastFocusKey = ""; render(scans.get(selected), false); renderHistory(); }
+};
+$("#btn-focus").onclick = () => { focusMode = true; $("#btn-focus").classList.add("on"); $("#btn-all").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); };
+$("#btn-all").onclick = () => { focusMode = false; $("#btn-all").classList.add("on"); $("#btn-focus").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); else cy?.animate({ fit: { padding: 30 }, duration: 400 }); };
+
+loadKg().catch((e) => { $("#cy").innerHTML = `<div class="empty">KG 를 불러오지 못했습니다: ${esc(e.message)}</div>`; }).finally(connect);
+</script>
+</body>
+</html>

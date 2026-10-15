@@ -63,7 +63,7 @@ class _FakeResponse:
 
 
 class _SpySolar:
-    """보낸 본문을 붙잡고, 정해진 사실(술어 이름) 이 있는 [T#] 와 그 사실을 진술한 첫 [S#] 를 기밀로 답한다."""
+    """보낸 본문을 붙잡고, 사실마다 그것을 진술한 첫 [S#] 를 답한다 — 정해진 술어가 아닌 사실은 "공개" 로."""
 
     def __init__(self, secret_predicates: set[str], fail: bool = False) -> None:
         self.secret = secret_predicates
@@ -77,13 +77,13 @@ class _SpySolar:
             raise RuntimeError("network down")
         sents = [ln for ln in msg.splitlines() if ln.startswith("[S")]
         facts = [ln for ln in msg.splitlines() if ln.startswith("[T")]
-        hits = []
+        public, stated = [], {}
         for ti, f in enumerate(facts, 1):
-            if any(p in f for p in self.secret):
-                obj = f.split(", ")[-1].rstrip(")")
-                si = next((k for k, s in enumerate(sents, 1) if obj in s), 1)
-                hits.append({"s": si, "t": ti})
-        return _FakeResponse(__import__("json").dumps({"기밀": hits}, ensure_ascii=False))
+            obj = f.split(", ")[-1].rstrip(")")
+            stated[f"T{ti}"] = [next((k for k, s in enumerate(sents, 1) if obj in s), 1)]
+            if not any(p in f for p in self.secret):
+                public.append(f"T{ti}")
+        return _FakeResponse(__import__("json").dumps({"공개": public, "진술": stated}, ensure_ascii=False))
 
 
 @pytest.fixture
@@ -369,3 +369,49 @@ def test_KG_의_모양이_틀린_줄은_건너뛴다(tmp_path):
     ]), encoding="utf-8")
     graph = kg.load(path)
     assert {(t.s, t.p, t.o) for t in graph.triples} == {("가온연구소", "본사 위치", "서울"), ("오로라", "출시 시기", "2027년 3월")}
+
+
+def test_판정_답은_공개를_빼고_읽고_사실을_빠뜨리면_다시_묻는다():
+    content = '{"공개": ["T2", 4], "진술": {"T1": [3], "T2": [1], "T3": [5, "S4"], "T4": [2]}}\n이상입니다 {끝}'
+    assert judge.parse(content, 5, 4) == [(2, 0), (4, 2), (3, 2)]             # 공개(T2·T4) 는 빼고, 뒤에 붙은 말은 버림
+    assert judge.parse('{"공개": [], "진술": {"T1": [], "T2": []}}', 5, 2) == []  # 명시적 '없음'
+    assert judge.parse('{"공개": [], "진술": {"T1": [3]}}', 5, 2) is None       # T2 를 건너뜀
+    assert judge.parse('{"공개": [], "진술": {"T1": [9]}}', 5, 1) is None       # 문장 번호를 못 맞춤
+    assert judge.parse('{"기밀": [{"s": 3, "t": 1}]}', 5, 1) is None           # 예전 형식
+
+
+def test_시연_추적은_켰을_때만_KG_사실과_가린_문장의_연결을_싣는다(setup, monkeypatch):
+    from app.core import demo_trace
+
+    demo_trace.reset()
+    fake, spy = _FakeRetriever({"설립자": -20.0}), _SpySolar({"출시 시기"})
+    setup(fake, spy)
+    asyncio.run(confidential.detect(DOC, PII))
+    assert demo_trace.snapshot() == []                      # 기본은 꺼짐 — 아무것도 남기지 않는다
+
+    monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
+    asyncio.run(confidential.detect(DOC, PII))
+    ev = {e["stage"]: e for e in demo_trace.snapshot()}
+    assert list(ev) == ["start", "retriever", "solar", "verdict", "done"]
+    assert NAME not in " ".join(ev["start"]["sentences"]) and "[이름 마스킹]" in ev["start"]["sentences"][0]
+    assert not any(NAME in x for f in ev["solar"]["shown"] for x in f)   # 문장·사실 모두 Solar 가 본 것만
+    assert ["가온연구소", "설립자", "김하늘", -20.0] in ev["retriever"]["scores"]  # 거른 사실도 점수와 함께
+    assert ev["verdict"]["pairs"] == [[1, ["오로라", "출시 시기", "2027년 3월"]]]  # 어느 사실이 어느 문장을 가렸나
+    assert ev["verdict"]["public"] == [["가온연구소", "본사 위치", "서울"]] and ev["verdict"]["cached"] is True
+    assert ev["done"]["flagged"] == [[1, 0.95, "llm"]]
+    demo_trace.reset()
+
+
+def test_시연_대시보드_경로는_꺼져_있으면_없다(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    c = TestClient(app)  # 시작 처리(lifespan — 사이드카 등)는 필요 없다
+    assert c.get("/demo/dashboard").status_code == 404
+    assert c.get("/demo/kg").status_code == 404
+    assert c.get("/health").json()["demoDashboard"] is None
+    monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
+    monkeypatch.setattr(config, "KG_PATH", "")
+    assert "기밀 판정" in c.get("/demo/dashboard").text
+    assert c.get("/demo/kg").json()["triples"] == []         # KG 미설정

@@ -315,6 +315,9 @@ CONFIDENTIAL_WINDOW_CHARS: int = int(os.environ.get("SECUREDOC_CONFIDENTIAL_WIND
 # 합성 테스트 처음 보는 술어 재현율 δ −6 0.94 / −10 0.99 (오답 통과 0.05 / 0.19), 헥토 시연 문서 10개의
 # 기밀 사실 가림 δ −6 95/105 / −10 104/105 (놓친 것은 길고 빽빽한 문서의 −6 ~ −9 여유값)
 CONFIDENTIAL_DELTA: float = float(os.environ.get("SECUREDOC_CONFIDENTIAL_DELTA", "-10.0"))
+# 시연 전용 — 기밀 판정 과정(KG 후보·리트리버 점수·Solar 답·가린 문장)을 메모리에만 두고 /demo/dashboard 로 보여 준다.
+# 원문 비저장 원칙의 예외라 기본 꺼짐·설정 화면에 없음. 켜면 같은 PC 의 다른 프로그램도 가린 문장을 볼 수 있다 (docs/PRIVACY.md)
+DEMO_TRACE_ENABLED: bool = os.environ.get("SECUREDOC_DEMO_TRACE", "0") == "1"
 
 # ── PII 인코더 실제 모델 (skt/A.X-Encoder-base + CRF + gazetteer 단일 모델,
 #   hwan님이 준비한 pii_skt_crf_gaz_mix_all_x3_local_app 번들의 seed42 를 로컬
