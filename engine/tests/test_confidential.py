@@ -63,7 +63,7 @@ class _FakeResponse:
 
 
 class _SpySolar:
-    """보낸 본문을 붙잡고, 정해진 사실(술어 이름) 이 있는 [T#] 와 그 사실을 진술한 첫 [S#] 를 기밀로 답한다."""
+    """보낸 본문을 붙잡고, 사실마다 그것을 진술한 첫 [S#] 를 답한다 — 정해진 술어가 아닌 사실은 "공개" 로."""
 
     def __init__(self, secret_predicates: set[str], fail: bool = False) -> None:
         self.secret = secret_predicates
@@ -77,13 +77,13 @@ class _SpySolar:
             raise RuntimeError("network down")
         sents = [ln for ln in msg.splitlines() if ln.startswith("[S")]
         facts = [ln for ln in msg.splitlines() if ln.startswith("[T")]
-        hits = []
+        public, stated = [], {}
         for ti, f in enumerate(facts, 1):
-            if any(p in f for p in self.secret):
-                obj = f.split(", ")[-1].rstrip(")")
-                si = next((k for k, s in enumerate(sents, 1) if obj in s), 1)
-                hits.append({"s": si, "t": ti})
-        return _FakeResponse(__import__("json").dumps({"기밀": hits}, ensure_ascii=False))
+            obj = f.split(", ")[-1].rstrip(")")
+            stated[f"T{ti}"] = [next((k for k, s in enumerate(sents, 1) if obj in s), 1)]
+            if not any(p in f for p in self.secret):
+                public.append(f"T{ti}")
+        return _FakeResponse(__import__("json").dumps({"공개": public, "진술": stated}, ensure_ascii=False))
 
 
 @pytest.fixture
@@ -371,9 +371,10 @@ def test_KG_의_모양이_틀린_줄은_건너뛴다(tmp_path):
     assert {(t.s, t.p, t.o) for t in graph.triples} == {("가온연구소", "본사 위치", "서울"), ("오로라", "출시 시기", "2027년 3월")}
 
 
-def test_판정_답_앞의_사실별_줄은_건너뛰고_마지막_JSON_만_읽는다():
-    content = ('T1: 3 / 기밀\nT2: - / 공개 {메모}\nT3: 5 / 기밀\n'
-               '{"기밀": [{"s": 3, "t": 1}, {"s": 5, "t": 3}]}\n이상입니다.')
-    assert judge.parse(content, 5, 3) == [(2, 0), (4, 2)]
-    assert judge.parse('{"기밀": []}', 5, 3) == []
-    assert judge.parse("T1: - / 공개", 5, 3) is None
+def test_판정_답은_공개를_빼고_읽고_사실을_빠뜨리면_다시_묻는다():
+    content = '{"공개": ["T2", 4], "진술": {"T1": [3], "T2": [1], "T3": [5, "S4"], "T4": [2]}}\n이상입니다 {끝}'
+    assert judge.parse(content, 5, 4) == [(2, 0), (4, 2), (3, 2)]             # 공개(T2·T4) 는 빼고, 뒤에 붙은 말은 버림
+    assert judge.parse('{"공개": [], "진술": {"T1": [], "T2": []}}', 5, 2) == []  # 명시적 '없음'
+    assert judge.parse('{"공개": [], "진술": {"T1": [3]}}', 5, 2) is None       # T2 를 건너뜀
+    assert judge.parse('{"공개": [], "진술": {"T1": [9]}}', 5, 1) is None       # 문장 번호를 못 맞춤
+    assert judge.parse('{"기밀": [{"s": 3, "t": 1}]}', 5, 1) is None           # 예전 형식

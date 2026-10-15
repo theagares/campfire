@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from collections import OrderedDict
 
 import httpx
@@ -38,17 +37,18 @@ SYSTEM_PROMPT = (
     "내부 조직·인사, 미공개 기술·연구, 고객·협력사 정보.\n"
     "   기밀 아님 예: 회사 소재지·설립 연도처럼 이미 공개되어 누구나 아는 사실.\n"
     "   애매하면 기밀로 본다.\n"
-    # JSON 만 바로 쓰게 하면 사실을 실행마다 몇 개씩 건너뛰었다(실측: 같은 입력에서 피해 고객 수 사실을 5회 중 4회 놓침).
-    # 사실마다 한 줄씩 먼저 쓰게 하면 목록을 끝까지 훑고, 같은 입력에 같은 답이 나왔다(5회 동일)
-    "먼저 [사실]을 T1 부터 끝까지 하나씩 'T번호: 진술한 문장 번호(없으면 -) / 기밀 또는 공개' 한 줄로 짧게 쓰고, "
-    '마지막 줄에 진술되었고 기밀인 경우만 골라 JSON 하나로 답하라: {"기밀": [{"s": 문장번호, "t": 사실번호}]}\n'
-    "s 는 [S숫자] 의 숫자, t 는 [T숫자] 의 숫자다. 한 문장이 사실 여러 개를 진술하면 항목을 여러 개 쓴다.\n"
-    '없으면 {"기밀": []}'
+    # 답은 JSON 하나 — 응답 시간은 출력 토큰 수 ÷ 서버 생성 속도라 출력이 짧아야 한다. 실측(시연 문서 10개 × 5회):
+    #   기밀 항목만 고르게 하면 사실을 실행마다 몇 개씩 건너뜀 (피해 고객 수 사실을 5회 중 4회 놓침)
+    #   모든 사실을 키로 쓰게 하면 안 빠뜨리지만 기밀 판단 없이 진술 문장을 다 적음 (공개 사실 '본사 서울' 을 매번 고름)
+    #   공개 사실 번호를 먼저, 사실별 진술 문장을 다음에 쓰게 하면 490/490 · 공개 오탐 0 · 5회 동일 (예시의 "공개" 를 뒤로
+    #   돌리면 공개 오탐이 남았다 — 순서를 바꾸지 말 것)
+    'JSON 하나로만 답하라. "진술"에는 [사실]의 T1 부터 마지막까지 모든 사실을 빠짐없이 키로 쓰고, '
+    '값은 그 사실을 진술한 문장 번호([S숫자] 의 숫자) 목록(진술되지 않았으면 빈 목록)이다. "공개"에는 기밀이 아닌 사실의 번호를 쓴다.\n'
+    '예: {"공개": ["T3"], "진술": {"T1": [3], "T2": [], "T3": [5, 6]}}'
 )
-# 사실이 많으면 Solar 가 [[2, 4], ...] 처럼 순서쌍으로 답하는 일이 있었다(실측, 앞뒤 순서도 제각각) — 다시 요구한다
-FIX_FORMAT = ('형식이 틀렸다. 항목마다 {"s": 문장번호, "t": 사실번호} 객체로 써라. '
-              'JSON 하나로만 다시 답하라: {"기밀": [{"s": 1, "t": 2}]}')
-_PROMPT_CACHE_KEY = "campfire-confidential-judge-v5"  # 시스템 프롬프트 개정 시 올린다
+FIX_FORMAT = ('형식이 틀렸다. JSON 하나로만 다시 답하라. "진술"에는 [사실]의 T1 부터 마지막까지 모든 사실을 빠짐없이 키로 쓴다: '
+              '{"공개": ["T3"], "진술": {"T1": [3], "T2": [], "T3": [5, 6]}}')
+_PROMPT_CACHE_KEY = "campfire-confidential-judge-v6"  # 시스템 프롬프트 개정 시 올린다
 _CACHE_MAX = 256
 _cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 _client: httpx.AsyncClient | None = None
@@ -61,34 +61,35 @@ def user_message(sentences: list[str], facts: list[tuple[str, str, str]]) -> str
 
 
 def parse(content: str, n_sent: int, n_fact: int) -> list[tuple[int, int]] | None:
-    # 답 앞에 사실별 판단 줄이 온다 — 마지막 {"기밀" 부터 JSON 하나만 읽는다 (뒤에 붙은 말은 버림)
-    starts = [m.start() for m in re.finditer(r'\{\s*"기밀"', content)]
+    """{"공개": ["T3"], "진술": {"T1": [3], ...}} → 공개가 아닌 사실의 (문장, 사실). 사실을 빠뜨렸거나 형식이 틀리면 None."""
+    start = content.find("{")
     try:
-        if starts:
-            obj, _ = json.JSONDecoder().raw_decode(content[starts[-1]:])
-        else:
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if not match:
-                return None
-            obj = json.loads(match.group(0))
+        obj, _ = json.JSONDecoder().raw_decode(content[start:]) if start >= 0 else (None, 0)
     except json.JSONDecodeError:
         return None
-    items = obj.get("기밀")
-    if not isinstance(items, list):
-        lists = [v for v in obj.values() if isinstance(v, list)]  # 키 이름을 틀리게 뱉는 경우 (인젝션 쪽 실측)
-        if len(lists) != 1:
-            return None
-        items = lists[0]
+    if not isinstance(obj, dict) or not isinstance(obj.get("진술"), dict) or not isinstance(obj.get("공개", []), list):
+        return None
+    stated = obj["진술"]
+    if any(f"T{t}" not in stated for t in range(1, n_fact + 1)):
+        return None  # 빠뜨린 사실이 있다 — 건너뛴 것이라 다시 묻는다
+    public = {f"T{str(x).lstrip('T')}" for x in obj.get("공개", [])}
     out: list[tuple[int, int]] = []
-    for it in items:
-        try:
-            s, t = int(it["s"]), int(it["t"])
-        except (KeyError, TypeError, ValueError):
+    bad = 0
+    for t in range(1, n_fact + 1):
+        nums = stated[f"T{t}"]
+        if not isinstance(nums, list):
             return None
-        if 1 <= s <= n_sent and 1 <= t <= n_fact:
-            out.append((s - 1, t - 1))
-    if items and not out:
-        return None  # 번호를 하나도 못 맞췄다 — "없다" 가 아니라 "못 맞췄다"
+        for s in nums:
+            try:
+                s = int(str(s).lstrip("S"))
+            except ValueError:
+                return None
+            if not 1 <= s <= n_sent:
+                bad += 1
+            elif f"T{t}" not in public:
+                out.append((s - 1, t - 1))
+    if bad and not out:
+        return None  # 문장 번호를 하나도 못 맞췄다 — "없다" 가 아니라 "못 맞췄다"
     return out
 
 
