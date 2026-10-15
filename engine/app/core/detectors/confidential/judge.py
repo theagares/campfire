@@ -38,14 +38,17 @@ SYSTEM_PROMPT = (
     "내부 조직·인사, 미공개 기술·연구, 고객·협력사 정보.\n"
     "   기밀 아님 예: 회사 소재지·설립 연도처럼 이미 공개되어 누구나 아는 사실.\n"
     "   애매하면 기밀로 본다.\n"
-    '진술되었고 기밀인 경우만 골라 JSON 하나로만 답하라: {"기밀": [{"s": 문장번호, "t": 사실번호}]}\n'
+    # JSON 만 바로 쓰게 하면 사실을 실행마다 몇 개씩 건너뛰었다(실측: 같은 입력에서 피해 고객 수 사실을 5회 중 4회 놓침).
+    # 사실마다 한 줄씩 먼저 쓰게 하면 목록을 끝까지 훑고, 같은 입력에 같은 답이 나왔다(5회 동일)
+    "먼저 [사실]을 T1 부터 끝까지 하나씩 'T번호: 진술한 문장 번호(없으면 -) / 기밀 또는 공개' 한 줄로 짧게 쓰고, "
+    '마지막 줄에 진술되었고 기밀인 경우만 골라 JSON 하나로 답하라: {"기밀": [{"s": 문장번호, "t": 사실번호}]}\n'
     "s 는 [S숫자] 의 숫자, t 는 [T숫자] 의 숫자다. 한 문장이 사실 여러 개를 진술하면 항목을 여러 개 쓴다.\n"
     '없으면 {"기밀": []}'
 )
 # 사실이 많으면 Solar 가 [[2, 4], ...] 처럼 순서쌍으로 답하는 일이 있었다(실측, 앞뒤 순서도 제각각) — 다시 요구한다
 FIX_FORMAT = ('형식이 틀렸다. 항목마다 {"s": 문장번호, "t": 사실번호} 객체로 써라. '
               'JSON 하나로만 다시 답하라: {"기밀": [{"s": 1, "t": 2}]}')
-_PROMPT_CACHE_KEY = "campfire-confidential-judge-v4"  # 시스템 프롬프트 개정 시 올린다
+_PROMPT_CACHE_KEY = "campfire-confidential-judge-v5"  # 시스템 프롬프트 개정 시 올린다
 _CACHE_MAX = 256
 _cache: OrderedDict[str, list[tuple[int, int]]] = OrderedDict()
 _client: httpx.AsyncClient | None = None
@@ -58,11 +61,16 @@ def user_message(sentences: list[str], facts: list[tuple[str, str, str]]) -> str
 
 
 def parse(content: str, n_sent: int, n_fact: int) -> list[tuple[int, int]] | None:
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not match:
-        return None
+    # 답 앞에 사실별 판단 줄이 온다 — 마지막 {"기밀" 부터 JSON 하나만 읽는다 (뒤에 붙은 말은 버림)
+    starts = [m.start() for m in re.finditer(r'\{\s*"기밀"', content)]
     try:
-        obj = json.loads(match.group(0))
+        if starts:
+            obj, _ = json.JSONDecoder().raw_decode(content[starts[-1]:])
+        else:
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if not match:
+                return None
+            obj = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
     items = obj.get("기밀")

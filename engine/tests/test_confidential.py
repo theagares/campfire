@@ -369,3 +369,11 @@ def test_KG_의_모양이_틀린_줄은_건너뛴다(tmp_path):
     ]), encoding="utf-8")
     graph = kg.load(path)
     assert {(t.s, t.p, t.o) for t in graph.triples} == {("가온연구소", "본사 위치", "서울"), ("오로라", "출시 시기", "2027년 3월")}
+
+
+def test_판정_답_앞의_사실별_줄은_건너뛰고_마지막_JSON_만_읽는다():
+    content = ('T1: 3 / 기밀\nT2: - / 공개 {메모}\nT3: 5 / 기밀\n'
+               '{"기밀": [{"s": 3, "t": 1}, {"s": 5, "t": 3}]}\n이상입니다.')
+    assert judge.parse(content, 5, 3) == [(2, 0), (4, 2)]
+    assert judge.parse('{"기밀": []}', 5, 3) == []
+    assert judge.parse("T1: - / 공개", 5, 3) is None
