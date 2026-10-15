@@ -45,12 +45,10 @@
   .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stage.on { border-top-color: var(--purple); }
   .stage .spin { color: var(--purple); }
-  /* 단계 사이 화살표 — 간격 가운데에 원 배지로 */
+  /* 단계 사이 화살표 — 간격 가운데 */
   .stage:not(:last-child)::after {
     content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
-    width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
-    background: var(--panel); border: 1.5px solid var(--purple); color: var(--purple);
-    font-size: 13px; font-weight: 800; line-height: 1; box-shadow: 0 1px 3px rgba(88, 76, 220, .25);
+    width: 22px; text-align: center; color: var(--purple); font-size: 20px; font-weight: 800; line-height: 1;
   }
   .stage.flash { animation: flash .7s ease; }
   @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
