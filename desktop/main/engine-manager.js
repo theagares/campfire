@@ -24,6 +24,7 @@ const { app } = require('electron');
 
 const constants = require('./constants');
 const paths = require('./paths');
+const { isLite } = require('./edition');
 
 /**
  * 엔진 로그를 이 프로세스의 stdout 으로 흘릴지 여부.
@@ -167,6 +168,8 @@ class EngineManager extends EventEmitter {
       // 프록시를 켜 둔 상태로 엔진이 재시작되면 엔진이 스스로 프록시를 다시 띄운다.
       // 그 사이 PAC 는 그대로라 AI 사이트는 죽은 포트로 가서 막힌다(fail-closed).
       SECUREDOC_PROXY_ENABLED: this.config.get('proxyEnabled') ? '1' : '0',
+      // 라이트 판(edition.js): 엔진이 기밀 탐지·프록시·MCP·시연 대시보드를 설정과 상관없이 끈다.
+      SECUREDOC_EDITION: isLite(app.getVersion()) ? 'lite' : 'full',
       SECUREDOC_DESKTOP_MANAGED: this.forcedMaskStore ? '1' : '0',
       SECUREDOC_INTERNAL_CONTROL_TOKEN: this.internalControlToken,
     };

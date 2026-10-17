@@ -26,6 +26,7 @@ const proxyToggleMod = require('./proxy-toggle');
 const systemProxyMod = require('./system-proxy');
 const pacServer = require('./pac-server');
 const { ProxyDecisionController } = require('./proxy-decision-ui');
+const { isLite } = require('./edition');
 
 // 단일 인스턴스 (중복 실행 방지)
 const gotLock = app.requestSingleInstanceLock();
@@ -249,8 +250,9 @@ app.whenReady().then(async () => {
   // 아직 PAC 서버가 없으므로 안 되돌리면 브라우저가 없는 PAC 를 찾는다.
   await proxyToggle.recoverOnLaunch();
   // 엔진이 뜰 때마다: 사용자가 프록시를 켜 뒀으면 다시 건다(이미 걸려 있으면 아무것도 안 한다).
+  // 라이트 판은 프록시가 없다 — 정식 판에서 켜 둔 설정이 남아 있어도 걸지 않는다(되돌리기는 위에서 한다).
   engineManager.on('status', (s) => {
-    if (s.state === 'running') {
+    if (s.state === 'running' && !isLite(app.getVersion())) {
       proxyToggle.resumeIfDesired().catch((err) => console.error('[main] 프록시 재적용 실패:', err.message));
     }
   });

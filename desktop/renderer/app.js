@@ -1159,6 +1159,12 @@ function renderAll() {
 async function init() {
   const info = await api.getAppInfo().catch(() => null);
   if (info && info.dev) document.title = 'Campfire (dev)';
+  if (info && info.edition === 'lite') {
+    // 라이트 판(main/edition.js): PII·인젝션·강제 마스킹만. 엔진도 아래 기능을 끈 채로 뜬다.
+    document.title = info.dev ? 'Campfire Lite (dev)' : 'Campfire Lite';
+    for (const sel of ['#conn-mcp-card', '#conn-proxy-card']) $(sel).style.display = 'none';
+    for (const sel of ['#mcp-risk-scanner-enabled', '#confidential-enabled']) $(sel).closest('.field').style.display = 'none';
+  }
 
   state.settings = await api.getSettings();
   state.engine = await api.getEngineStatus();

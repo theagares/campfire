@@ -12,6 +12,7 @@ const mcpClients = require('./mcp-clients');
 const paths = require('./paths');
 const cleanup = require('./cleanup');
 const { PipelineActivity } = require('./pipeline-activity');
+const { isLite, liteSettingsPatch } = require('./edition');
 
 let pipelineActivity = null;
 const busyListeners = new Set();
@@ -79,9 +80,11 @@ function buildStats(engineManager) {
 
 function register(ctx) {
   const { engineManager, config, proxyToggle, onShowDashboard, onQuit, onEnsureModels } = ctx;
+  const lite = isLite(app.getVersion());
 
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
+    edition: lite ? 'lite' : 'full',
     platform: process.platform,
     isPackaged: app.isPackaged,
     dev: process.argv.includes('--dev') || !app.isPackaged,
@@ -107,6 +110,7 @@ function register(ctx) {
   ipcMain.handle('proxy:status', () => proxyToggle.status());
   ipcMain.handle('proxy:routeStatus', () => proxyToggle.routeStatus());
   ipcMain.handle('proxy:set', async (_e, enabled) => {
+    if (lite && enabled) throw new Error('라이트 판에는 프록시 게이트웨이가 없습니다');
     const result = await proxyToggle.set(!!enabled);
     return { result, status: await proxyToggle.status() };
   });
@@ -121,6 +125,7 @@ function register(ctx) {
   ));
 
   ipcMain.handle('settings:set', async (_e, patch) => {
+    if (lite) patch = liteSettingsPatch(patch);
     const prev = config.get();
     const next = config.set(patch || {});
     // 인젝션 정책 변경 → 엔진 재시작으로 env 반영 (엔진엔 REST 쓰기 없음)
@@ -228,11 +233,12 @@ function register(ctx) {
   // ── MCP 클라이언트 원클릭 연결(연결 화면) ──────────────────────────────────
   ipcMain.handle('mcp:detectClients', async () => {
     const base = engineManager.getStatus().baseUrl;
-    const mcpUrl = base ? `${base}/mcp` : null;
+    const mcpUrl = base && !lite ? `${base}/mcp` : null; // 라이트 판 엔진은 MCP 서버를 열지 않는다
     return { mcpUrl, clients: mcpUrl ? await mcpClients.detectClients(app, mcpUrl) : [] };
   });
 
   ipcMain.handle('mcp:connect', async (_e, clientId) => {
+    if (lite) throw new Error('라이트 판에는 MCP 연결이 없습니다');
     const base = engineManager.getStatus().baseUrl;
     if (!base) throw new Error('엔진이 실행 중이 아닙니다');
     await mcpClients.connect(app, clientId, `${base}/mcp`);

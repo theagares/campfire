@@ -447,3 +447,10 @@ PROXY_LOG_REQUESTS: bool = os.environ.get("SECUREDOC_PROXY_LOG_REQUESTS", "0") =
 
 # 프록시가 본 RPC 본문을 이 폴더에 덤프한다(필드 구조 분석용). 기본 꺼짐.
 PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")
+
+# ── 라이트 판 (데스크탑 버전에 -lite, desktop/main/edition.js) ─────────────────
+# PII·인젝션·사용자 지정 강제 마스킹만 쓴다. 기밀 탐지·프록시·MCP(서버·위험 검사기)·시연 대시보드는
+# 위 설정·환경변수와 상관없이 끈다 — 정식 판에서 켜 둔 설정이 남은 채 라이트로 바꿔 설치해도 켜지지 않게.
+LITE: bool = os.environ.get("SECUREDOC_EDITION", "") == "lite"
+if LITE:
+    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = False
