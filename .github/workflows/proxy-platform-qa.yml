@@ -63,7 +63,8 @@ jobs:
       - name: Install proxy test runtime
         working-directory: engine
         shell: bash
-        run: python -m pip install pytest fastapi httpx python-multipart "mcp>=1.26,<2" "mitmproxy>=10"
+        # pyahocorasick: 기밀 탐지(KG 사전 매칭)가 orchestrator 에서 불려 와, 엔진 API 를 import 만 해도 필요하다(#188).
+        run: python -m pip install pytest fastapi httpx python-multipart "mcp>=1.26,<2" "mitmproxy>=10" "pyahocorasick>=2.0"
 
       - name: Test engine proxy lifecycle
         working-directory: engine
