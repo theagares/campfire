@@ -65,8 +65,27 @@ def is_cached() -> bool:
     snapshots = hf_cache_root() / f"models--{mid.replace('/', '--')}" / "snapshots"
     if not snapshots.is_dir():
         return False
-    # 스냅샷 폴더만 있고 config.json 이 없으면 받다 만 상태다 — 캐시로 치지 않는다.
-    return any((s / "config.json").is_file() for s in snapshots.iterdir() if s.is_dir())
+    return any(_snapshot_complete(s) for s in snapshots.iterdir() if s.is_dir())
+
+
+def _snapshot_complete(snap: Path) -> bool:
+    """config.json 과 가중치가 다 받아졌는가.
+
+    config.json 만 보면 안 된다 — 작은 파일이 먼저 받아지므로, 2.4GB 가중치를 아직 받는 중에도
+    준비됨으로 보고 오프라인 플래그로 띄워 "does not appear to have a file named model.safetensors"
+    로 검사 전체가 실패했다(설치 직후 첫 검사, v0.2.34-lite.1 Windows 설치본 E2E 에서 재현).
+    hub 는 받기를 끝낸 파일만 snapshots/ 에 둔다.
+    """
+    if not (snap / "config.json").is_file():
+        return False  # 스냅샷 폴더만 있는 받다 만 상태
+    if (snap / "model.safetensors").is_file():
+        return True
+    index = snap / "model.safetensors.index.json"  # 여러 조각으로 나뉜 가중치
+    try:
+        shards = set(json.loads(index.read_text(encoding="utf-8"))["weight_map"].values())
+    except Exception:
+        return False
+    return bool(shards) and all((snap / name).is_file() for name in shards)
 
 
 def total_download_bytes() -> int | None:
