@@ -106,12 +106,14 @@ import json as _json
 from app.core.detectors.injection import backbone as _bb
 
 
-def _make_cache(tmp_path, model_id, *, with_config=True):
+def _make_cache(tmp_path, model_id, *, with_config=True, with_weights=True):
     root = tmp_path / "hub"
     snap = root / f"models--{model_id.replace('/', '--')}" / "snapshots" / "abc123"
     snap.mkdir(parents=True)
     if with_config:
         (snap / "config.json").write_text("{}", encoding="utf-8")
+    if with_weights:
+        (snap / "model.safetensors").write_bytes(b"weights")
     return root
 
 
@@ -143,6 +145,30 @@ def test_backend_cached_false_when_snapshot_incomplete(tmp_path, monkeypatch):
     _point_engine_dir(monkeypatch, tmp_path, mid)
     monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid, with_config=False)))
     assert _bb.is_cached() is False
+
+
+def test_backend_not_cached_while_weights_still_downloading(tmp_path, monkeypatch):
+    """config.json 은 먼저 받아진다. 가중치를 받는 중에 준비됨으로 보면 오프라인으로 띄워
+    'does not appear to have a file named model.safetensors' 로 첫 검사가 실패했다."""
+    mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+    _point_engine_dir(monkeypatch, tmp_path, mid)
+    monkeypatch.setenv("HF_HUB_CACHE", str(_make_cache(tmp_path, mid, with_weights=False)))
+    assert _bb.is_cached() is False
+
+
+def test_backend_cached_with_complete_shards_only(tmp_path, monkeypatch):
+    mid = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+    _point_engine_dir(monkeypatch, tmp_path, mid)
+    root = _make_cache(tmp_path, mid, with_weights=False)
+    monkeypatch.setenv("HF_HUB_CACHE", str(root))
+    snap = root / f"models--{mid.replace('/', '--')}" / "snapshots" / "abc123"
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    (snap / "model.safetensors.index.json").write_text(
+        _json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}}), encoding="utf-8")
+    (snap / shards[0]).write_bytes(b"1")
+    assert _bb.is_cached() is False  # 두 번째 조각을 아직 받는 중
+    (snap / shards[1]).write_bytes(b"2")
+    assert _bb.is_cached() is True
 
 
 def test_backend_cached_true_for_local_dir_model(tmp_path, monkeypatch):
