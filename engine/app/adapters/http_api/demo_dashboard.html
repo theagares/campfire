@@ -117,7 +117,6 @@
   .s-secret { background: var(--red-soft); color: var(--red-ink); }
   .s-fallback { background: var(--red-soft); color: var(--red-ink); }
   .s-public { background: var(--green-soft); color: var(--green-ink); }
-  .s-nostmt { background: var(--blue-soft); color: var(--purple); }
   .s-passed { background: var(--orange-soft); color: var(--orange-ink); }
   .s-filtered, .s-unscored, .s-cand { background: var(--mask); color: var(--ink-2); }
   .fact b { font-weight: 700; }
@@ -169,7 +168,6 @@
         <span><i style="border-color:#FF9500"></i>리트리버 통과</span>
         <span><i style="border-color:#F04452"></i>Solar 기밀</span>
         <span><i style="border-color:#09AE4B"></i>Solar 공개</span>
-        <span><i style="border-color:#A5B4FC;border-top-style:dotted"></i>문서가 진술 안 함</span>
       </div>
     </div>
     <div class="card">
@@ -199,7 +197,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const STEP_MS = { start: 650, retriever: 800, solar: 300, verdict: 900, done: 400 };  // 단계가 하나씩 켜지는 간격
 const STATUS = {
   secret: ["기밀", "s-secret"], fallback: ["판정 불가 → 가림", "s-fallback"], public: ["공개", "s-public"],
-  nostmt: ["진술 안 함", "s-nostmt"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["관련성 낮음", "s-filtered"],
+  nostmt: ["통과 · 진술 안 함", "s-passed"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["관련성 낮음", "s-filtered"],
   unscored: ["채점 안 됨", "s-unscored"], cand: ["후보", "s-cand"],
 };
 const ORDER = ["secret", "fallback", "public", "nostmt", "passed", "filtered", "unscored", "cand"];
@@ -255,8 +253,8 @@ async function loadKg() {
       { selector: "edge.cand", style: { "line-color": "#9CA3AF", width: 2, opacity: 0.95 } },
       { selector: "edge.unscored", style: { "line-color": "#D1D5DB", width: 1.5, opacity: 0.95 } },
       { selector: "edge.filtered", style: { "line-color": "#C7CBD1", "line-style": "dashed", width: 2, opacity: 1, label: "data(scoreLabel)", color: "#9CA3AF", "font-size": 12 } },
-      { selector: "edge.passed", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
-      { selector: "edge.nostmt", style: { "line-color": "#A5B4FC", "line-style": "dotted", width: 3, opacity: 1, label: "data(label)", color: "#584CDC", "font-size": 13 } },
+      // 리트리버 통과 — Solar 판정 전, 그리고 판정 후에도 '진술 안 함' 이면 주황으로 남는다 (최종 화면에서도 통과가 보이게)
+      { selector: "edge.passed, edge.nostmt", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
       { selector: "edge.public", style: { "line-color": "#09AE4B", width: 4, opacity: 1, label: "data(label)", color: "#067A35", "font-weight": 700, "font-size": 14 } },
       { selector: "edge.secret", style: { "line-color": "#F04452", width: 5, opacity: 1, label: "data(label)", color: "#B4232F", "font-weight": 800, "font-size": 14 } },
       { selector: "edge.fallback", style: { "line-color": "#F04452", "line-style": "dashed", width: 4.5, opacity: 1, label: "data(label)", color: "#B4232F", "font-size": 13 } },
