@@ -230,9 +230,11 @@ app.whenReady().then(async () => {
   tray.create();
 
   // 프록시 요청은 엔진에서 사람 판단을 기다린다. 대시보드가 트레이에 숨겨져도
-  // 응답할 수 있도록 메인 프로세스의 네이티브 확인창으로 연결한다.
-  proxyDecisionUi = new ProxyDecisionController({ engineManager, dialog });
-  proxyDecisionUi.start();
+  // 응답할 수 있도록 메인 프로세스의 네이티브 확인창으로 연결한다. 라이트 판은 프록시가 없다.
+  if (!isLite(app.getVersion())) {
+    proxyDecisionUi = new ProxyDecisionController({ engineManager, dialog });
+    proxyDecisionUi.start();
+  }
 
   // 검사 중이면 트레이 불꽃이 세게 탄다. register() 가 트레이보다 먼저 불리므로
   // 여기서 붙인다(ipc.onPipelineBusy 주석 참고).

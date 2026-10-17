@@ -1232,6 +1232,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'GET_PROXY_EXPECTATION') {
     checkEngineHealth().then((info) => sendResponse({
       expected: Boolean(info?.ok && info?.health?.proxy?.running),
+      lite: info?.health?.edition === 'lite', // 라이트 판 엔진은 프록시가 없다 — 탭이 확인을 멈춘다
     }));
     return true;
   }

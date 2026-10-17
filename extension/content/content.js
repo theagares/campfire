@@ -63,6 +63,7 @@
     }, '*');
   }
 
+  let proxyExpectationTimer = null;
   function refreshProxyExpectation() {
     try {
       chrome.runtime.sendMessage({ type: 'GET_PROXY_EXPECTATION' }, (result) => {
@@ -70,6 +71,11 @@
         // 확장 보호로 복귀하므로 확인 실패가 보호 공백으로 이어지지 않는다.
         void chrome.runtime.lastError;
         sendProxyExpectationToMain(Boolean(result?.expected));
+        // 라이트 판 엔진에는 프록시가 없다 — 경로 확인을 멈춘다(확장 보호는 그대로, 새 탭은 다시 확인).
+        if (result?.lite && proxyExpectationTimer) {
+          clearInterval(proxyExpectationTimer);
+          proxyExpectationTimer = null;
+        }
       });
     } catch {
       sendProxyExpectationToMain(false);
@@ -130,8 +136,8 @@
   // 하위 frame마다 확인 요청을 보내면 같은 탭이 여러 상태로 집계된다. 보호 경로는
   // top frame 하나가 능동 확인하고, MAIN world의 게이트도 그 결과로 즉시 전환한다.
   if (window.top === window) {
+    proxyExpectationTimer = setInterval(refreshProxyExpectation, 2000);
     refreshProxyExpectation();
-    setInterval(refreshProxyExpectation, 2000);
   }
 
   // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
