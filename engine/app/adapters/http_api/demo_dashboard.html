@@ -36,14 +36,22 @@
 
   /* 깔때기 */
   .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
-  /* 단계 박스 — 흰 바탕, 위쪽 띠만 앱 시그니처 보라 (도달한 단계). 아직이면 연한 띠 */
-  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 12px 7px;
-           border-top: 4px solid #DDD9F8; transition: border-color .35s, transform .3s; }
-  .stage .lbl { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  /* 단계 박스 — 진행 상황은 이름 왼쪽 상태 표시로 (GitHub Actions 처럼): 대기 = 번호 원, 진행 중 = 도는 원, 완료 = 보라 체크 */
+  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 7px 12px 7px; transition: transform .3s; }
+  .stage .lbl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
   .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
   .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stage.on { border-top-color: var(--purple); }
-  .stage .spin { color: var(--purple); }
+  .mark { position: relative; flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%;
+          border: 1.5px solid #D5D8DD; color: var(--ink-3); font-size: 10px; font-weight: 700; line-height: 1;
+          transition: background .3s, border-color .3s; }
+  .mark::before { content: attr(data-n); }
+  .stage.run .mark { border-color: #CFCBF5; color: var(--purple); }
+  .stage.run .mark::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--purple);
+                            border-right-color: transparent; border-bottom-color: transparent; animation: rot .9s linear infinite; }
+  .stage.on .mark { background: var(--purple); border-color: var(--purple); }
+  .stage.on .mark::before { content: ""; width: 7px; height: 4px; border-left: 2px solid #FFF; border-bottom: 2px solid #FFF;
+                            transform: translateY(-1px) rotate(-45deg); }
+  @media (prefers-reduced-motion: reduce) { .stage.run .mark::after { animation: none; } }
   /* 단계 사이 화살표 — 간격 가운데 */
   .stage:not(:last-child)::after {
     content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
@@ -51,7 +59,6 @@
   }
   .stage.flash { animation: flash .7s ease; }
   @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
-  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
   @keyframes rot { to { transform: rotate(360deg); } }
 
   /* 본문 */
@@ -94,12 +101,18 @@
   /* 문장 */
   #doc-card { flex: 1.15; }
   #doc { overflow-y: auto; padding: 8px 10px 12px; }
-  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; border-left: 3px solid transparent; transition: background .3s, border-color .3s; }
-  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 2px; font-variant-numeric: tabular-nums; }
-  .sent .st { word-break: keep-all; overflow-wrap: anywhere; }
-  .sent.ev { background: var(--orange-soft); border-left-color: var(--orange); }
-  .sent.secret { background: var(--red-soft); border-left-color: var(--red); }
-  .sent.fallback { background: var(--orange-soft); border-left-color: var(--red); }
+  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; }
+  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .sent .st { word-break: keep-all; overflow-wrap: anywhere; line-height: 1.8; }
+  /* 가림 표시 — Adobe Acrobat 의 "가릴 항목" 처럼 글자를 얇은 빨간 테두리로 감싼다 (줄이 바뀌어도 줄마다).
+     판정 불가(낮은 신뢰도)는 점선, 리트리버가 근거로 본 문장(판정 전)은 주황 점선 밑줄 */
+  .sent .tx { padding: 1px 3px; border: 1.5px solid transparent; border-radius: 3px;
+              -webkit-box-decoration-break: clone; box-decoration-break: clone; transition: border-color .3s; }
+  .sent.secret .tx { border-color: var(--red); }
+  .sent.fallback .tx { border-color: var(--red); border-style: dashed; }
+  .sent.ev .tx { text-decoration: underline dotted var(--orange); text-decoration-thickness: 2px; text-underline-offset: 5px; }
+  .sent.secret .sn, .sent.fallback .sn { color: var(--red-ink); }
+  .sent.ev .sn { color: var(--orange-ink); }
   .sent.hover { box-shadow: inset 0 0 0 2px var(--purple); }
   .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
   .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: #fff; color: var(--red-ink); border: 1px solid #F7B6BC; cursor: default; }
@@ -147,10 +160,10 @@
 
 <section class="funnel">
   <div class="stage kg on"><div class="lbl">회사 KG</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
-  <div class="stage cand"><div class="lbl">① 문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
-  <div class="stage pass"><div class="lbl">② 리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
-  <div class="stage secret"><div class="lbl">③ Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
-  <div class="stage masked"><div class="lbl">④ 가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
+  <div class="stage cand"><div class="lbl"><span class="mark" data-n="1"></span>문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
+  <div class="stage pass"><div class="lbl"><span class="mark" data-n="2"></span>리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
+  <div class="stage secret"><div class="lbl"><span class="mark" data-n="3"></span>Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
+  <div class="stage masked"><div class="lbl"><span class="mark" data-n="4"></span>가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
 </section>
 
 <main>
@@ -339,7 +352,7 @@ function renderFunnel(sc) {
   $("#f-pass-sub").textContent = !r ? "" : !sc.scored ? "리트리버 없음 — Solar 로 보내지 않음"
     : `${count("filtered")}개는 문서와 관련성 낮음` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
   if (st === "solar") {
-    $("#f-secret").innerHTML = '<span class="spin"></span>';
+    $("#f-secret").textContent = "–";  // 도는 표시는 단계 이름 옆 원 하나만
     $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 전송`;
   } else if (v) {
     $("#f-secret").textContent = sc.fallback ? "–" : secretFacts.size;
@@ -353,10 +366,13 @@ function renderFunnel(sc) {
   const m = sc.masked;
   $("#f-masked-sub").textContent = d ? `전체 ${sc.sentences.length}문장 중 · PII ${m.pii || 0} · 인젝션 ${m.injection || 0}` : "";
   const prev = sc._shown || "";
-  setStage("cand", !!st, st === "start" && prev !== "start");
-  setStage("pass", r, st === "retriever" && prev !== "retriever");
-  setStage("secret", v, st === "verdict" && prev !== "verdict");
-  setStage("masked", d && sc.flagged.length > 0, st === "done" && prev !== "done");
+  const done = { cand: !!st, pass: r || d, secret: v || d, masked: d };  // 끝난 검사는 건너뛴 단계도 완료
+  const running = d ? null : ["cand", "pass", "secret", "masked"].find((k) => !done[k]);  // 지금 도는 단계
+  setStage("cand", done.cand, st === "start" && prev !== "start");
+  setStage("pass", done.pass, st === "retriever" && prev !== "retriever");
+  setStage("secret", done.secret, st === "verdict" && prev !== "verdict");
+  setStage("masked", done.masked, st === "done" && prev !== "done");
+  for (const k of ["cand", "pass", "secret", "masked"]) document.querySelector(`.stage.${k}`).classList.toggle("run", k === running);
   sc._shown = st;
 }
 
@@ -419,7 +435,7 @@ function renderDoc(sc) {
       const [s, p, o] = k.split("␟");
       return `<span class="chip" data-key="${esc(k)}" title="${esc(`(${s}, ${p}, ${o})`)}">${esc(p)} · ${esc(o)}</span>`;
     }).join("");
-    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st">${fmtSentence(t)}</span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st"><span class="tx">${fmtSentence(t)}</span></span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
   }).join("");
   const box = $("#doc");
   const keep = box.dataset.scan === String(sc.id) ? box.scrollTop : 0;
