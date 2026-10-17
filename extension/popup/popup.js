@@ -41,6 +41,10 @@ function render(info) {
   if (ok && info?.health) {
     const h = info.health;
     detail.textContent = `버전 ${h.version || '?'} · 정책 ${h.injectionPolicy || '?'} · detector ${(h.detectors ? Object.values(h.detectors).join('/') : '?')}`;
+    // 라이트 판 엔진에는 프록시가 없다 — 보호 경로(프록시/확장) 줄을 보이지 않는다.
+    const lite = h.edition === 'lite';
+    routePill.closest('.row').style.display = lite ? 'none' : '';
+    routeDetail.style.display = lite ? 'none' : '';
     const route = h.extensionRoute || { mode: 'unknown', activeTabs: 0 };
     const routeLabels = {
       proxy: '프록시 확인됨',

@@ -83,6 +83,7 @@ $('#conn-ext-install').addEventListener('click', async (e) => {
 // ── MCP 클라이언트 원클릭 연결 ─────────────────────────────────────────────────
 let mcpRefreshPromise = null;
 async function refreshMcpClients({ force = false } = {}) {
+  if (state.lite) return null; // 라이트 판에는 MCP 가 없다
   // 연결·해제 직후(force)에는 그 전에 시작된 조회를 기다린 뒤 새로 본다 — 진행 중이던 결과는 낡았다.
   if (force && mcpRefreshPromise) await mcpRefreshPromise;
   if (mcpRefreshPromise) return mcpRefreshPromise;
@@ -156,6 +157,9 @@ $('#mcp-client-list').addEventListener('click', async (e) => {
 // 표시등은 저장된 설정이 아니라 **지금 실제 상태**를 그린다 — 켜 두었는데 엔진이
 // 내려가 있으면 그게 그대로 보여야 한다.
 async function refreshProxy() {
+  // 라이트 판에는 프록시가 없다 — 시스템 프록시 조회(PowerShell 실행)도 하지 않는다.
+  // state.proxy 가 비어 있으면 refreshProxyRoute 도 바로 끝난다.
+  if (state.lite) return;
   state.proxy = await api.getProxyStatus().catch(() => null);
   renderProxy();
 }
@@ -1161,6 +1165,7 @@ async function init() {
   if (info && info.dev) document.title = 'Campfire (dev)';
   if (info && info.edition === 'lite') {
     // 라이트 판(main/edition.js): PII·인젝션·강제 마스킹만. 엔진도 아래 기능을 끈 채로 뜬다.
+    state.lite = true;
     document.title = info.dev ? 'Campfire Lite (dev)' : 'Campfire Lite';
     for (const sel of ['#conn-mcp-card', '#conn-proxy-card']) $(sel).style.display = 'none';
     for (const sel of ['#mcp-risk-scanner-enabled', '#confidential-enabled']) $(sel).closest('.field').style.display = 'none';
