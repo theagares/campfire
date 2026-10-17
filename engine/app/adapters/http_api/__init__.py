@@ -11,7 +11,7 @@ REST 어댑터 (PLAN §2). 기존 EC2 API 계약 호환:
   GET  /activity/stream     처리 단계 변화 실시간 SSE (대시보드 처리현황 동기화)
   GET  /mcp-risk-scanner/v1/status
   POST /mcp-risk-scanner/v1/assess  선택형 stdio MCP 사이드카 정적 검사
-  GET  /demo/*              시연 전용 KG 기밀 판정 대시보드 (SECUREDOC_DEMO_TRACE=1 일 때만, 아니면 404)
+  GET  /demo/*              시연 전용 기밀 판정 근거 대시보드 (SECUREDOC_DEMO_TRACE=1 일 때만, 아니면 404)
 """
 
 from fastapi import APIRouter

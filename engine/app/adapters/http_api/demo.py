@@ -1,7 +1,7 @@
 """
 app/adapters/http_api/demo.py
 시연 전용 — SECUREDOC_DEMO_TRACE=1 일 때만 응답하고, 아니면 404.
-  GET /demo/dashboard     실시간 KG 기밀 판정 대시보드 (HTML 한 파일)
+  GET /demo/dashboard     기밀 판정 근거 대시보드 — 실시간 (HTML 한 파일)
   GET /demo/kg            설정된 KG 사실 전부 (그래프 배경)
   GET /demo/trace/stream  기밀 판정 과정 SSE — 첫 프레임은 메모리에 남은 지난 검사들
 

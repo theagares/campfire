@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Campfire 기밀 판정</title>
+<title>Campfire 기밀 판정 근거 대시보드</title>
 <link rel="icon" href="data:,">
 <!-- 시연 전용 (SECUREDOC_DEMO_TRACE=1). 엔진이 직접 준다 — /demo/kg, /demo/trace/stream 과 같은 출처 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
@@ -33,18 +33,25 @@
   .pill.down .dot { background: var(--red); }
   .grow { flex: 1; }
   .meta { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
-  .demo-tag { color: var(--orange-ink); background: var(--orange-soft); }
 
   /* 깔때기 */
   .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
-  /* 단계 박스 — 흰 바탕, 위쪽 띠만 앱 시그니처 보라 (도달한 단계). 아직이면 연한 띠 */
-  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px 12px 7px;
-           border-top: 4px solid #DDD9F8; transition: border-color .35s, transform .3s; }
-  .stage .lbl { font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
+  /* 단계 박스 — 진행 상황은 이름 왼쪽 상태 표시로 (GitHub Actions 처럼): 대기 = 번호 원, 진행 중 = 도는 원, 완료 = 보라 체크 */
+  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 7px 12px 7px; transition: transform .3s; }
+  .stage .lbl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
   .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
   .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stage.on { border-top-color: var(--purple); }
-  .stage .spin { color: var(--purple); }
+  .mark { position: relative; flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%;
+          border: 1.5px solid #D5D8DD; color: var(--ink-3); font-size: 10px; font-weight: 700; line-height: 1;
+          transition: background .3s, border-color .3s; }
+  .mark::before { content: attr(data-n); }
+  .stage.run .mark { border-color: #CFCBF5; color: var(--purple); }
+  .stage.run .mark::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--purple);
+                            border-right-color: transparent; border-bottom-color: transparent; animation: rot .9s linear infinite; }
+  .stage.on .mark { background: var(--purple); border-color: var(--purple); }
+  .stage.on .mark::before { content: ""; width: 7px; height: 4px; border-left: 2px solid #FFF; border-bottom: 2px solid #FFF;
+                            transform: translateY(-1px) rotate(-45deg); }
+  @media (prefers-reduced-motion: reduce) { .stage.run .mark::after { animation: none; } }
   /* 단계 사이 화살표 — 간격 가운데 */
   .stage:not(:last-child)::after {
     content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
@@ -52,7 +59,6 @@
   }
   .stage.flash { animation: flash .7s ease; }
   @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
-  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
   @keyframes rot { to { transform: rotate(360deg); } }
 
   /* 본문 */
@@ -73,8 +79,14 @@
   .empty { margin: auto; color: var(--ink-3); text-align: center; padding: 24px; font-size: 13px; }
 
   /* 검사 목록 */
-  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; }
-  .scan { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
+  /* 한 화면씩 넘긴다 (‹ › 버튼) — 스크롤바는 숨기고 카드 단위로 맞춘다 */
+  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; scroll-snap-type: x mandatory; scroll-padding: 0 12px; scrollbar-width: none; }
+  #history::-webkit-scrollbar { display: none; }
+  .scan { flex: 0 0 210px; scroll-snap-align: start; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
+  .pager { display: flex; align-items: center; gap: 6px; }
+  .pager button { width: 28px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
+  .pager button:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--ink-3); }
+  #hist-page { min-width: 38px; text-align: center; font-size: 11.5px; font-weight: 600; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .scan:hover { border-color: var(--purple); }
   .scan.sel { border-color: var(--purple); box-shadow: 0 0 0 2px var(--purple-soft); }
   .scan .t { font-size: 11px; color: var(--ink-3); display: flex; justify-content: space-between; }
@@ -89,12 +101,18 @@
   /* 문장 */
   #doc-card { flex: 1.15; }
   #doc { overflow-y: auto; padding: 8px 10px 12px; }
-  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; border-left: 3px solid transparent; transition: background .3s, border-color .3s; }
-  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 2px; font-variant-numeric: tabular-nums; }
-  .sent .st { word-break: keep-all; overflow-wrap: anywhere; }
-  .sent.ev { background: var(--orange-soft); border-left-color: var(--orange); }
-  .sent.secret { background: var(--red-soft); border-left-color: var(--red); }
-  .sent.fallback { background: var(--orange-soft); border-left-color: var(--red); }
+  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; }
+  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .sent .st { word-break: keep-all; overflow-wrap: anywhere; line-height: 1.8; }
+  /* 가림 표시 — Adobe Acrobat 의 "가릴 항목" 처럼 글자를 얇은 빨간 테두리로 감싼다 (줄이 바뀌어도 줄마다).
+     판정 불가(낮은 신뢰도)는 점선, 리트리버가 근거로 본 문장(판정 전)은 주황 점선 밑줄 */
+  .sent .tx { padding: 1px 3px; border: 1.5px solid transparent; border-radius: 3px;
+              -webkit-box-decoration-break: clone; box-decoration-break: clone; transition: border-color .3s; }
+  .sent.secret .tx { border-color: var(--red); }
+  .sent.fallback .tx { border-color: var(--red); border-style: dashed; }
+  .sent.ev .tx { text-decoration: underline dotted var(--orange); text-decoration-thickness: 2px; text-underline-offset: 5px; }
+  .sent.secret .sn, .sent.fallback .sn { color: var(--red-ink); }
+  .sent.ev .sn { color: var(--orange-ink); }
   .sent.hover { box-shadow: inset 0 0 0 2px var(--purple); }
   .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
   .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: #fff; color: var(--red-ink); border: 1px solid #F7B6BC; cursor: default; }
@@ -112,7 +130,6 @@
   .s-secret { background: var(--red-soft); color: var(--red-ink); }
   .s-fallback { background: var(--red-soft); color: var(--red-ink); }
   .s-public { background: var(--green-soft); color: var(--green-ink); }
-  .s-nostmt { background: var(--blue-soft); color: var(--purple); }
   .s-passed { background: var(--orange-soft); color: var(--orange-ink); }
   .s-filtered, .s-unscored, .s-cand { background: var(--mask); color: var(--ink-2); }
   .fact b { font-weight: 700; }
@@ -135,19 +152,18 @@
 </head>
 <body>
 <header>
-  <h1>Campfire <span>기밀 판정</span> 실시간</h1>
+  <h1>Campfire <span>기밀 판정 근거</span> 대시보드</h1>
   <span class="pill" id="conn"><span class="dot"></span><span>연결 중</span></span>
-  <span class="pill demo-tag">시연 전용 · 메모리에만 보관</span>
   <span class="grow"></span>
   <span class="meta" id="kgmeta"></span>
 </header>
 
 <section class="funnel">
-  <div class="stage kg on"><div class="lbl">회사 KG 사실</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
-  <div class="stage cand"><div class="lbl">① 문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
-  <div class="stage pass"><div class="lbl">② 리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
-  <div class="stage secret"><div class="lbl">③ Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
-  <div class="stage masked"><div class="lbl">④ 가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
+  <div class="stage kg on"><div class="lbl">회사 KG</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
+  <div class="stage cand"><div class="lbl"><span class="mark" data-n="1"></span>문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
+  <div class="stage pass"><div class="lbl"><span class="mark" data-n="2"></span>리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
+  <div class="stage secret"><div class="lbl"><span class="mark" data-n="3"></span>Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
+  <div class="stage masked"><div class="lbl"><span class="mark" data-n="4"></span>가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
 </section>
 
 <main>
@@ -161,21 +177,21 @@
       </div>
       <div class="legend">
         <span><i style="border-color:#9CA3AF"></i>후보</span>
-        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>리트리버가 거름</span>
+        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>관련성 낮음</span>
         <span><i style="border-color:#FF9500"></i>리트리버 통과</span>
         <span><i style="border-color:#F04452"></i>Solar 기밀</span>
         <span><i style="border-color:#09AE4B"></i>Solar 공개</span>
-        <span><i style="border-color:#A5B4FC;border-top-style:dotted"></i>문서가 진술 안 함</span>
       </div>
     </div>
     <div class="card">
-      <h2>검사 목록 <small>최근 20건 · 엔진을 끄면 사라짐</small><span class="grow"></span><button id="btn-follow" class="on">최신 따라가기</button></h2>
+      <h2>검사 목록 <small>최근 20건</small><span class="grow"></span>
+        <span class="pager"><button id="hist-prev" aria-label="이전 검사들">‹</button><span id="hist-page"></span><button id="hist-next" aria-label="다음 검사들">›</button></span></h2>
       <div id="history"><div class="empty">아직 검사한 문서가 없습니다 — 앱이나 확장 프로그램으로 문서를 올려 보세요</div></div>
     </div>
   </div>
   <div class="right">
     <div class="card" id="doc-card">
-      <h2>문서 <small>Solar 가 본 그대로 — 개인정보·인젝션은 가린 상태</small></h2>
+      <h2>문서 <small>개인정보·인젝션은 가린 상태</small></h2>
       <div id="doc"><div class="empty">검사가 시작되면 문장이 나타납니다</div></div>
     </div>
     <div class="card" id="facts-card">
@@ -194,7 +210,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const STEP_MS = { start: 650, retriever: 800, solar: 300, verdict: 900, done: 400 };  // 단계가 하나씩 켜지는 간격
 const STATUS = {
   secret: ["기밀", "s-secret"], fallback: ["판정 불가 → 가림", "s-fallback"], public: ["공개", "s-public"],
-  nostmt: ["진술 안 함", "s-nostmt"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["리트리버가 거름", "s-filtered"],
+  nostmt: ["통과 · 진술 안 함", "s-passed"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["관련성 낮음", "s-filtered"],
   unscored: ["채점 안 됨", "s-unscored"], cand: ["후보", "s-cand"],
 };
 const ORDER = ["secret", "fallback", "public", "nostmt", "passed", "filtered", "unscored", "cand"];
@@ -204,7 +220,7 @@ const edgeOf = new Map();          // 사실 키 → 그래프 간선 id
 const nodeOf = new Map();          // 엔티티 이름 → 노드 id
 const scans = new Map();           // 검사 번호 → 상태
 const seen = new Set();            // "검사/단계" — 재접속 스냅샷과 실시간이 겹쳐도 한 번만
-let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "";
+let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "", shownNewest = null;
 
 // ── KG 그래프 ─────────────────────────────────────────────────────────────
 async function loadKg() {
@@ -250,8 +266,8 @@ async function loadKg() {
       { selector: "edge.cand", style: { "line-color": "#9CA3AF", width: 2, opacity: 0.95 } },
       { selector: "edge.unscored", style: { "line-color": "#D1D5DB", width: 1.5, opacity: 0.95 } },
       { selector: "edge.filtered", style: { "line-color": "#C7CBD1", "line-style": "dashed", width: 2, opacity: 1, label: "data(scoreLabel)", color: "#9CA3AF", "font-size": 12 } },
-      { selector: "edge.passed", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
-      { selector: "edge.nostmt", style: { "line-color": "#A5B4FC", "line-style": "dotted", width: 3, opacity: 1, label: "data(label)", color: "#584CDC", "font-size": 13 } },
+      // 리트리버 통과 — Solar 판정 전, 그리고 판정 후에도 '진술 안 함' 이면 주황으로 남는다 (최종 화면에서도 통과가 보이게)
+      { selector: "edge.passed, edge.nostmt", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
       { selector: "edge.public", style: { "line-color": "#09AE4B", width: 4, opacity: 1, label: "data(label)", color: "#067A35", "font-weight": 700, "font-size": 14 } },
       { selector: "edge.secret", style: { "line-color": "#F04452", width: 5, opacity: 1, label: "data(label)", color: "#B4232F", "font-weight": 800, "font-size": 14 } },
       { selector: "edge.fallback", style: { "line-color": "#F04452", "line-style": "dashed", width: 4.5, opacity: 1, label: "data(label)", color: "#B4232F", "font-size": 13 } },
@@ -270,11 +286,12 @@ async function loadKg() {
 function newScan(id, at) {
   return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
            passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false, cached: false,
-           flagged: [], t: {} };
+           flagged: [], t: {}, shownAt: {} };
 }
 
 function applyEvent(sc, ev) {
   sc.stage = ev.stage; sc.t[ev.stage] = ev.at;
+  sc.shownAt[ev.stage] = Date.now() / 1000;  // 경과 시간은 화면 시계로 — 엔진 시각(at)은 재접속·재생 때 과거일 수 있다
   if (ev.stage === "start") {
     sc.sentences = ev.sentences || []; sc.entities = ev.entities || []; sc.masked = ev.masked || {};
     sc.candidates = (ev.candidates || []).map((t) => K(...t));
@@ -334,9 +351,9 @@ function renderFunnel(sc) {
   const count = (x) => sc.candidates.filter((k) => statusOf(sc, k) === x).length;
   $("#f-pass").textContent = r ? sc.passed.size : (d ? 0 : "–");
   $("#f-pass-sub").textContent = !r ? "" : !sc.scored ? "리트리버 없음 — Solar 로 보내지 않음"
-    : `${count("filtered")}개는 기준 미달로 거름` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
+    : `${count("filtered")}개는 문서와 관련성 낮음` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
   if (st === "solar") {
-    $("#f-secret").innerHTML = '<span class="spin"></span>';
+    $("#f-secret").textContent = "–";  // 도는 표시는 단계 이름 옆 원 하나만
     $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 전송`;
   } else if (v) {
     $("#f-secret").textContent = sc.fallback ? "–" : secretFacts.size;
@@ -350,10 +367,13 @@ function renderFunnel(sc) {
   const m = sc.masked;
   $("#f-masked-sub").textContent = d ? `전체 ${sc.sentences.length}문장 중 · PII ${m.pii || 0} · 인젝션 ${m.injection || 0}` : "";
   const prev = sc._shown || "";
-  setStage("cand", !!st, st === "start" && prev !== "start");
-  setStage("pass", r, st === "retriever" && prev !== "retriever");
-  setStage("secret", v, st === "verdict" && prev !== "verdict");
-  setStage("masked", d && sc.flagged.length > 0, st === "done" && prev !== "done");
+  const done = { cand: !!st, pass: r || d, secret: v || d, masked: d };  // 끝난 검사는 건너뛴 단계도 완료
+  const running = d ? null : ["cand", "pass", "secret", "masked"].find((k) => !done[k]);  // 지금 도는 단계
+  setStage("cand", done.cand, st === "start" && prev !== "start");
+  setStage("pass", done.pass, st === "retriever" && prev !== "retriever");
+  setStage("secret", done.secret, st === "verdict" && prev !== "verdict");
+  setStage("masked", done.masked, st === "done" && prev !== "done");
+  for (const k of ["cand", "pass", "secret", "masked"]) document.querySelector(`.stage.${k}`).classList.toggle("run", k === running);
   sc._shown = st;
 }
 
@@ -416,7 +436,7 @@ function renderDoc(sc) {
       const [s, p, o] = k.split("␟");
       return `<span class="chip" data-key="${esc(k)}" title="${esc(`(${s}, ${p}, ${o})`)}">${esc(p)} · ${esc(o)}</span>`;
     }).join("");
-    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st">${fmtSentence(t)}</span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st"><span class="tx">${fmtSentence(t)}</span></span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
   }).join("");
   const box = $("#doc");
   const keep = box.dataset.scan === String(sc.id) ? box.scrollTop : 0;
@@ -502,12 +522,25 @@ function renderHistory() {
   }).join("");
   box.querySelectorAll(".scan").forEach((el) => el.onclick = () => {
     selected = Number(el.dataset.id);
-    follow = selected === Math.max(...scans.keys());
-    $("#btn-follow").classList.toggle("on", follow);
+    follow = selected === Math.max(...scans.keys());  // 지난 검사를 보는 중 — 다음 새 검사가 시작되면 다시 따라간다
     lastFocusKey = "";
     render(scans.get(selected), false);
     renderHistory();
   });
+  const newest = ids[0];
+  if (follow && newest !== shownNewest) box.scrollTo({ left: 0, behavior: "smooth" });  // 새 검사는 맨 앞에 생긴다
+  shownNewest = newest;
+  updatePager();
+}
+
+function updatePager() {  // 검사 목록 한 화면 = 한 쪽
+  const box = $("#history");
+  const w = Math.max(1, box.clientWidth);
+  const pages = Math.max(1, Math.ceil((box.scrollWidth - 2) / w));
+  const page = Math.min(pages, Math.round(box.scrollLeft / w) + 1);
+  $("#hist-page").textContent = scans.size ? `${page} / ${pages}` : "";
+  $("#hist-prev").disabled = box.scrollLeft <= 2;
+  $("#hist-next").disabled = box.scrollLeft + box.clientWidth >= box.scrollWidth - 2;
 }
 
 // ── 이벤트 받기 ───────────────────────────────────────────────────────────
@@ -518,6 +551,7 @@ function take(ev, instant) {
   if (!scans.has(ev.scan)) {
     scans.set(ev.scan, newScan(ev.scan, ev.at));
     while (scans.size > 20) scans.delete(Math.min(...scans.keys()));
+    if (!instant) follow = true;  // 새 검사가 시작되면 화면이 그 검사로 넘어간다
   }
   const sc = scans.get(ev.scan);
   if (instant) { applyEvent(sc, ev); return; }
@@ -543,8 +577,8 @@ async function pump() {  // 단계를 하나씩 간격을 두고 적용 — 이�
 
 setInterval(() => {  // Solar 판정 중 경과 시간
   const sc = scans.get(selected);
-  if (sc && sc.stage === "solar" && sc.t.solar) {
-    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.t.solar).toFixed(1)}초`;
+  if (sc && sc.stage === "solar" && sc.shownAt.solar) {
+    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.shownAt.solar).toFixed(1)}초`;
   }
 }, 200);
 
@@ -566,11 +600,11 @@ function connect() {
   };
 }
 
-$("#btn-follow").onclick = () => {
-  follow = !follow;
-  $("#btn-follow").classList.toggle("on", follow);
-  if (follow && scans.size) { selected = Math.max(...scans.keys()); lastFocusKey = ""; render(scans.get(selected), false); renderHistory(); }
-};
+$("#hist-prev").onclick = () => $("#history").scrollBy({ left: -$("#history").clientWidth, behavior: "smooth" });
+$("#hist-next").onclick = () => $("#history").scrollBy({ left: $("#history").clientWidth, behavior: "smooth" });
+$("#history").addEventListener("scroll", () => requestAnimationFrame(updatePager));
+window.addEventListener("resize", updatePager);
+updatePager();
 $("#btn-focus").onclick = () => { focusMode = true; $("#btn-focus").classList.add("on"); $("#btn-all").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); };
 $("#btn-all").onclick = () => { focusMode = false; $("#btn-all").classList.add("on"); $("#btn-focus").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); else cy?.animate({ fit: { padding: 30 }, duration: 400 }); };
 
