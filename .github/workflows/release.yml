@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +57,12 @@ jobs:
           version=$(node -p "require('./desktop/package.json').version")
           tag="v${version}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          # 버전에 '-' 가 있으면(0.2.34-beta.1) 베타 — Pre-release 로 만들고 Latest 로 올리지 않는다.
+          # 정식 앱의 자동 업데이트(electron-updater)는 Latest(/releases/latest)만 보므로 베타를
+          # 받지 않고, 버전에 -beta 가 붙은 앱만 Pre-release 까지 본다.
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "이미 존재하는 릴리스를 재사용합니다: $tag"
             # electron-builder 는 GitHub 상의 실제 릴리스 타입과 package.json 의
@@ -71,7 +78,7 @@ jobs:
             # draft 로 만든다 — 두 플랫폼이 모두 성공하기 전에는 공개되면 안 된다.
             # v0.2.1 때 macOS 가 실패해 Windows 에셋만 담긴 릴리스가 Latest 로 공개돼
             # 버렸다(자동 업데이트가 그걸 보게 되고, mac 사용자는 받을 파일이 없다).
-            gh release create "$tag" --draft --title "$version" --target "$GITHUB_SHA" \
+            gh release create "$tag" --draft --prerelease="$prerelease" --title "$version" --target "$GITHUB_SHA" \
               --notes "빌드 중입니다. 두 플랫폼 빌드가 모두 끝나면 공개됩니다."
             echo "릴리스를 draft 로 생성했습니다: $tag"
           fi
@@ -456,6 +463,23 @@ jobs:
           # draft 생성 때 넣어둔 "빌드 중입니다" placeholder 가 공개된 뒤에도 그대로
           # 남아있던 문제 — publish 단계가 notes 를 갱신한 적이 없었다. generate-notes
           # API 로 이전 릴리스 이후 커밋/PR 목록을 만들어 채운다.
-          notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$tag" --jq .body)
-          gh release edit "$tag" --notes "$notes" --draft=false --latest
-          echo "릴리스를 공개했습니다: $tag"
+          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
+            notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$tag" --jq .body)
+            gh release edit "$tag" --notes "$notes" --draft=false --prerelease --latest=false
+            # 베타가 Latest 가 되면 모든 Windows 사용자에게 자동 업데이트로 나간다 — 그렇게 됐으면
+            # 바로 draft 로 되돌리고 실패시킨다(GitHub 는 Pre-release 를 Latest 로 두지 않지만 확인한다).
+            if [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$tag" ]; then
+              gh release edit "$tag" --draft=true
+              echo "베타가 Latest 로 잡혀 draft 로 되돌렸습니다: $tag"
+              exit 1
+            fi
+            echo "베타(Pre-release)를 공개했습니다: $tag"
+          else
+            # 노트 범위는 직전 정식부터 — 기본값(직전 릴리스)이면 직전 베타부터라 베타에 먼저 실린
+            # 변경이 정식 노트에서 빠진다. 새 릴리스는 아직 draft 라 releases/latest 가 직전 정식이다.
+            prev=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+            notes=$(gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$tag" \
+              ${prev:+-f previous_tag_name="$prev"} --jq .body)
+            gh release edit "$tag" --notes "$notes" --draft=false --latest
+            echo "릴리스를 공개했습니다: $tag"
+          fi
