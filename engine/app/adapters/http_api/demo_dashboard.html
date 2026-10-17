@@ -286,11 +286,12 @@ async function loadKg() {
 function newScan(id, at) {
   return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
            passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false, cached: false,
-           flagged: [], t: {} };
+           flagged: [], t: {}, shownAt: {} };
 }
 
 function applyEvent(sc, ev) {
   sc.stage = ev.stage; sc.t[ev.stage] = ev.at;
+  sc.shownAt[ev.stage] = Date.now() / 1000;  // 경과 시간은 화면 시계로 — 엔진 시각(at)은 재접속·재생 때 과거일 수 있다
   if (ev.stage === "start") {
     sc.sentences = ev.sentences || []; sc.entities = ev.entities || []; sc.masked = ev.masked || {};
     sc.candidates = (ev.candidates || []).map((t) => K(...t));
@@ -576,8 +577,8 @@ async function pump() {  // 단계를 하나씩 간격을 두고 적용 — 이�
 
 setInterval(() => {  // Solar 판정 중 경과 시간
   const sc = scans.get(selected);
-  if (sc && sc.stage === "solar" && sc.t.solar) {
-    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.t.solar).toFixed(1)}초`;
+  if (sc && sc.stage === "solar" && sc.shownAt.solar) {
+    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.shownAt.solar).toFixed(1)}초`;
   }
 }, 200);
 
