@@ -33,7 +33,6 @@
   .pill.down .dot { background: var(--red); }
   .grow { flex: 1; }
   .meta { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
-  .demo-tag { color: var(--orange-ink); background: var(--orange-soft); }
 
   /* 깔때기 */
   .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
@@ -73,8 +72,14 @@
   .empty { margin: auto; color: var(--ink-3); text-align: center; padding: 24px; font-size: 13px; }
 
   /* 검사 목록 */
-  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; }
-  .scan { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
+  /* 한 화면씩 넘긴다 (‹ › 버튼) — 스크롤바는 숨기고 카드 단위로 맞춘다 */
+  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; scroll-snap-type: x mandatory; scroll-padding: 0 12px; scrollbar-width: none; }
+  #history::-webkit-scrollbar { display: none; }
+  .scan { flex: 0 0 210px; scroll-snap-align: start; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
+  .pager { display: flex; align-items: center; gap: 6px; }
+  .pager button { width: 28px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
+  .pager button:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--ink-3); }
+  #hist-page { min-width: 38px; text-align: center; font-size: 11.5px; font-weight: 600; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   .scan:hover { border-color: var(--purple); }
   .scan.sel { border-color: var(--purple); box-shadow: 0 0 0 2px var(--purple-soft); }
   .scan .t { font-size: 11px; color: var(--ink-3); display: flex; justify-content: space-between; }
@@ -137,13 +142,12 @@
 <header>
   <h1>Campfire <span>기밀 판정</span> 실시간</h1>
   <span class="pill" id="conn"><span class="dot"></span><span>연결 중</span></span>
-  <span class="pill demo-tag">시연 전용 · 메모리에만 보관</span>
   <span class="grow"></span>
   <span class="meta" id="kgmeta"></span>
 </header>
 
 <section class="funnel">
-  <div class="stage kg on"><div class="lbl">회사 KG 사실</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
+  <div class="stage kg on"><div class="lbl">회사 KG</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
   <div class="stage cand"><div class="lbl">① 문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
   <div class="stage pass"><div class="lbl">② 리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
   <div class="stage secret"><div class="lbl">③ Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
@@ -161,7 +165,7 @@
       </div>
       <div class="legend">
         <span><i style="border-color:#9CA3AF"></i>후보</span>
-        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>리트리버가 거름</span>
+        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>관련성 낮음</span>
         <span><i style="border-color:#FF9500"></i>리트리버 통과</span>
         <span><i style="border-color:#F04452"></i>Solar 기밀</span>
         <span><i style="border-color:#09AE4B"></i>Solar 공개</span>
@@ -169,13 +173,14 @@
       </div>
     </div>
     <div class="card">
-      <h2>검사 목록 <small>최근 20건 · 엔진을 끄면 사라짐</small><span class="grow"></span><button id="btn-follow" class="on">최신 따라가기</button></h2>
+      <h2>검사 목록 <small>최근 20건</small><span class="grow"></span>
+        <span class="pager"><button id="hist-prev" aria-label="이전 검사들">‹</button><span id="hist-page"></span><button id="hist-next" aria-label="다음 검사들">›</button></span></h2>
       <div id="history"><div class="empty">아직 검사한 문서가 없습니다 — 앱이나 확장 프로그램으로 문서를 올려 보세요</div></div>
     </div>
   </div>
   <div class="right">
     <div class="card" id="doc-card">
-      <h2>문서 <small>Solar 가 본 그대로 — 개인정보·인젝션은 가린 상태</small></h2>
+      <h2>문서 <small>개인정보·인젝션은 가린 상태</small></h2>
       <div id="doc"><div class="empty">검사가 시작되면 문장이 나타납니다</div></div>
     </div>
     <div class="card" id="facts-card">
@@ -194,7 +199,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const STEP_MS = { start: 650, retriever: 800, solar: 300, verdict: 900, done: 400 };  // 단계가 하나씩 켜지는 간격
 const STATUS = {
   secret: ["기밀", "s-secret"], fallback: ["판정 불가 → 가림", "s-fallback"], public: ["공개", "s-public"],
-  nostmt: ["진술 안 함", "s-nostmt"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["리트리버가 거름", "s-filtered"],
+  nostmt: ["진술 안 함", "s-nostmt"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["관련성 낮음", "s-filtered"],
   unscored: ["채점 안 됨", "s-unscored"], cand: ["후보", "s-cand"],
 };
 const ORDER = ["secret", "fallback", "public", "nostmt", "passed", "filtered", "unscored", "cand"];
@@ -204,7 +209,7 @@ const edgeOf = new Map();          // 사실 키 → 그래프 간선 id
 const nodeOf = new Map();          // 엔티티 이름 → 노드 id
 const scans = new Map();           // 검사 번호 → 상태
 const seen = new Set();            // "검사/단계" — 재접속 스냅샷과 실시간이 겹쳐도 한 번만
-let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "";
+let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "", shownNewest = null;
 
 // ── KG 그래프 ─────────────────────────────────────────────────────────────
 async function loadKg() {
@@ -334,7 +339,7 @@ function renderFunnel(sc) {
   const count = (x) => sc.candidates.filter((k) => statusOf(sc, k) === x).length;
   $("#f-pass").textContent = r ? sc.passed.size : (d ? 0 : "–");
   $("#f-pass-sub").textContent = !r ? "" : !sc.scored ? "리트리버 없음 — Solar 로 보내지 않음"
-    : `${count("filtered")}개는 기준 미달로 거름` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
+    : `${count("filtered")}개는 문서와 관련성 낮음` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
   if (st === "solar") {
     $("#f-secret").innerHTML = '<span class="spin"></span>';
     $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 전송`;
@@ -502,12 +507,25 @@ function renderHistory() {
   }).join("");
   box.querySelectorAll(".scan").forEach((el) => el.onclick = () => {
     selected = Number(el.dataset.id);
-    follow = selected === Math.max(...scans.keys());
-    $("#btn-follow").classList.toggle("on", follow);
+    follow = selected === Math.max(...scans.keys());  // 지난 검사를 보는 중 — 다음 새 검사가 시작되면 다시 따라간다
     lastFocusKey = "";
     render(scans.get(selected), false);
     renderHistory();
   });
+  const newest = ids[0];
+  if (follow && newest !== shownNewest) box.scrollTo({ left: 0, behavior: "smooth" });  // 새 검사는 맨 앞에 생긴다
+  shownNewest = newest;
+  updatePager();
+}
+
+function updatePager() {  // 검사 목록 한 화면 = 한 쪽
+  const box = $("#history");
+  const w = Math.max(1, box.clientWidth);
+  const pages = Math.max(1, Math.ceil((box.scrollWidth - 2) / w));
+  const page = Math.min(pages, Math.round(box.scrollLeft / w) + 1);
+  $("#hist-page").textContent = scans.size ? `${page} / ${pages}` : "";
+  $("#hist-prev").disabled = box.scrollLeft <= 2;
+  $("#hist-next").disabled = box.scrollLeft + box.clientWidth >= box.scrollWidth - 2;
 }
 
 // ── 이벤트 받기 ───────────────────────────────────────────────────────────
@@ -518,6 +536,7 @@ function take(ev, instant) {
   if (!scans.has(ev.scan)) {
     scans.set(ev.scan, newScan(ev.scan, ev.at));
     while (scans.size > 20) scans.delete(Math.min(...scans.keys()));
+    if (!instant) follow = true;  // 새 검사가 시작되면 화면이 그 검사로 넘어간다
   }
   const sc = scans.get(ev.scan);
   if (instant) { applyEvent(sc, ev); return; }
@@ -566,11 +585,11 @@ function connect() {
   };
 }
 
-$("#btn-follow").onclick = () => {
-  follow = !follow;
-  $("#btn-follow").classList.toggle("on", follow);
-  if (follow && scans.size) { selected = Math.max(...scans.keys()); lastFocusKey = ""; render(scans.get(selected), false); renderHistory(); }
-};
+$("#hist-prev").onclick = () => $("#history").scrollBy({ left: -$("#history").clientWidth, behavior: "smooth" });
+$("#hist-next").onclick = () => $("#history").scrollBy({ left: $("#history").clientWidth, behavior: "smooth" });
+$("#history").addEventListener("scroll", () => requestAnimationFrame(updatePager));
+window.addEventListener("resize", updatePager);
+updatePager();
 $("#btn-focus").onclick = () => { focusMode = true; $("#btn-focus").classList.add("on"); $("#btn-all").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); };
 $("#btn-all").onclick = () => { focusMode = false; $("#btn-all").classList.add("on"); $("#btn-focus").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); else cy?.animate({ fit: { padding: 30 }, duration: 400 }); };
 
