@@ -37,10 +37,11 @@ async def lifespan(app: FastAPI):
     registry.load_detectors()
     db.init_db()
     logger.info(
-        "[engine] 기동 완료 — detectors=%s, policy=%s, port=%s",
+        "[engine] 기동 완료 — detectors=%s, policy=%s, port=%s, edition=%s",
         registry.active_detectors(),
         config.INJECTION_POLICY,
         config.BOUND_PORT,
+        "lite" if config.LITE else "full",
     )
     # 프록시 게이트웨이(adapters/proxy)는 같은 루프에 얹는다 — 애드온이 붙든 요청과
     # 사람의 판단이 메모리 안의 Future 하나로 이어져야 IPC 없이 HITL 이 된다.
@@ -53,9 +54,12 @@ async def lifespan(app: FastAPI):
         # 엔진과 대상 MCP 사용을 막지 않는다. 앱에는 이 좁은 어댑터 외의 구현 의존성이 없다.
         async with risk_scanner_context() as risk_scanner:
             app.state.mcp_risk_scanner = risk_scanner
-            # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
-            async with mcp_session_context():
+            if config.LITE:  # 라이트 판은 MCP 서버를 열지 않는다(아래 mount_mcp 도 건너뛴다)
                 yield
+            else:
+                # MCP session manager 를 lifespan 동안 기동 (PLAN §4, /mcp Streamable HTTP)
+                async with mcp_session_context():
+                    yield
     finally:
         try:
             await proxy.stop()
@@ -99,7 +103,8 @@ app.include_router(router)
 # MCP Streamable HTTP 엔드포인트를 /mcp 에 마운트 (PLAN §4·§9) — REST 와 프로세스 공유
 from app.adapters.mcp import mount_mcp  # noqa: E402
 
-mount_mcp(app)
+if not config.LITE:  # 라이트 판(config.LITE)은 MCP 를 쓰지 않는다
+    mount_mcp(app)
 
 
 # ── 포트 자동 스캔 (PLAN §11) ─────────────────────────────────────────────────

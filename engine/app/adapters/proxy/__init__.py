@@ -194,6 +194,8 @@ async def start(*, force: bool = False) -> bool:
     엔진을 멈출 이유가 없다.
     """
     global _task, _master
+    if config.LITE:  # 라이트 판에는 프록시 게이트웨이가 없다 — 토글(force) 경로도 막는다
+        return False
     if not force and not config.PROXY_ENABLED:
         return False
     if is_running():
