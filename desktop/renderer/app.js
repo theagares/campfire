@@ -320,6 +320,9 @@ $('#proxy-toggle').addEventListener('change', async (e) => {
     state.proxy = status;
     if (!result.ok && result.code !== 'ca') {
       showGlobalBanner(`프록시를 ${want ? '켜지' : '끄지'} 못했습니다: ${result.message}`);
+    } else if (result.ok && /^프록시(를 | 전환 실패)/.test($('#global-banner-text').textContent)) {
+      // 다시 눌러 성공했는데 앞선 실패 배너가 남아 있으면 지금 상태와 반대로 읽힌다(맥 실측).
+      hideGlobalBanner();
     }
   } catch (err) {
     showGlobalBanner(`프록시 전환 실패: ${err.message || err}`);
@@ -975,9 +978,12 @@ async function loadForcedMaskTerms() {
     forcedMaskUnreadable = true;
     $('#forced-mask-input').disabled = false;
     $('#forced-mask-add').disabled = false;
-    // 맥 키체인 거부처럼 파일은 멀쩡한 경우가 있다(메시지에 다시 승인하는 법이 들어 있다).
-    // 덮어쓰기는 이전 단어를 잃으므로 마지막 수단으로 안내한다.
-    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 그동안 검사는 막혀 있습니다. 그래도 읽을 수 없으면 단어를 하나 이상 다시 입력해 저장해 새 목록으로 복구할 수 있습니다 — 이전 단어는 되살릴 수 없습니다.`);
+    const why = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+    // 맥 키체인 거부는 파일이 멀쩡하고 저장도 안 된다 — 덮어쓰기를 권하면 따라 해도 실패하고,
+    // 성공하더라도 멀쩡한 단어를 잃는다(맥 실측). 다시 승인하는 법(메시지에 있음)만 알린다.
+    setForcedMaskError(/키체인/.test(why)
+      ? `저장된 단어를 읽지 못했습니다. ${why} 그동안 검사는 막혀 있습니다.`
+      : `저장된 단어를 읽지 못했습니다(${why}). 그동안 검사는 막혀 있습니다. 그래도 읽을 수 없으면 단어를 하나 이상 다시 입력해 저장해 새 목록으로 복구할 수 있습니다 — 이전 단어는 되살릴 수 없습니다.`);
   }
 }
 

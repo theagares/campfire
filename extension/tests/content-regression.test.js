@@ -436,6 +436,7 @@ const chromeStub = {
     onChanged: { addListener(fn) { storageListeners.push(fn); } },
   },
   runtime: {
+    id: 'test-id', // 확장과 연결된 탭(재로드로 끊기면 이 값이 사라진다)
     lastError: null,
     getURL: (p) => `chrome-extension://test-id/${p}`,
     onMessage: {
@@ -2787,6 +2788,64 @@ cancelScan(stuckScan);
     if (!retry38 || !retry38.payload.items.some(i => i.fileName === 'lease38.pdf')) {
       throw new Error('(38) 보류 첨부가 사라져 다시 보낸 전송이 프롬프트만 검사했다');
     }
+  }
+
+  // (39) 검토 패널을 못 열었을 때. 맥 실측: 첨부 대기가 말없이 사라졌다. 이제 ① 연결이 살아
+  //      있으면 첨부를 남기고 알린 뒤 다시 보내면 함께 검사하고 ② 확장 재로드로 끊긴 탭이면
+  //      새로고침·재첨부를 안내한다. 어느 쪽이든 검사·전송은 시작하지 않는다.
+  {
+    await clock.tick(9000);
+    const attach39 = (name) => {
+      const f = new FileStub(['pdf'], name, { type: 'application/pdf' });
+      const inp = new HTMLInputElementStub(f, name);
+      dispatchDocumentEvent('change', {
+        target: inp, composedPath: () => [inp, documentStub],
+        preventDefault() {}, stopImmediatePropagation() {},
+      });
+    };
+    const enter39 = () => dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    const badgeText = () => {
+      const b = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
+      return b ? (b.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
+    };
+    promptEditorStub.value = '요약해 줘';
+    documentStub.activeElement = promptEditorStub;
+
+    attach39('panel39.pdf');
+    await flush();
+    failNextOpenPanel = true;
+    const before39 = runtimeMessages.length;
+    enter39();
+    await flush();
+    if (runtimeMessages.slice(before39).some(isScanStart)) throw new Error('(39) 패널을 못 열었는데 검사를 시작했다');
+    if (!badgeText().includes('그대로 대기 중')) throw new Error(`(39) 첨부를 남겼다는 안내가 없다: ${badgeText()}`);
+
+    await clock.tick(4000);
+    nextDecision = { action: 'cancel' };
+    const retry39 = runtimeMessages.length;
+    enter39();
+    await clock.tick(20000);
+    const start39 = runtimeMessages.slice(retry39).find(m => m.type === 'START_MULTI_SCAN');
+    if (!start39 || !start39.payload.items.some(i => i.fileName === 'panel39.pdf')) {
+      throw new Error('(39) 패널을 못 연 뒤 다시 보냈더니 첨부가 사라져 있었다');
+    }
+
+    await clock.tick(9000);
+    attach39('detached39.pdf');
+    await flush();
+    failNextOpenPanel = true;
+    const savedId = chromeStub.runtime.id;
+    delete chromeStub.runtime.id; // 확장 재로드로 이 탭의 스크립트가 끊긴 상태
+    try {
+      enter39();
+      await flush();
+    } finally {
+      chromeStub.runtime.id = savedId;
+    }
+    if (!badgeText().includes('탭을 새로고침')) throw new Error(`(39) 끊긴 탭에 새로고침 안내가 없다: ${badgeText()}`);
   }
 
   console.log('content regression ok');

@@ -39,8 +39,10 @@ function setActionBadge(text, color) {
 // §3 서버 선택 — 48200~48209 병렬 스캔 + 시그니처 + 캐싱
 // ════════════════════════════════════════════════════════════════════════════
 
-/** 단일 포트 /health 시그니처 확인 (500ms 타임아웃). 일치 시 {port} 반환, 아니면 null. */
-async function probePort(port) {
+/** 단일 포트 /health 시그니처 확인 (500ms 타임아웃). 일치 시 {port} 반환, 아니면 null.
+ *  noteWaiting: 우리 엔진인데 규칙을 아직 못 받았으면 null 대신 {waiting:true} 를 준다
+ *  (엔진 탐색이 "엔진 없음" 과 구분해 알리는 데만 쓴다 — 그 엔진으로 보내지는 않는다). */
+async function probePort(port, { noteWaiting = false } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), HEALTH_TIMEOUT_MS);
   try {
@@ -54,6 +56,10 @@ async function probePort(port) {
     if (data && isOurEngine(data.service)
         && data.forcedMask?.managed === true && data.forcedMask?.ready === true) {
       return { port, health: data };
+    }
+    if (noteWaiting && data && isOurEngine(data.service)
+        && data.forcedMask?.managed === true && data.forcedMask?.ready === false) {
+      return { port, waiting: true };
     }
     return null;
   } catch (_) {
@@ -76,10 +82,19 @@ async function probePort(port) {
  */
 async function discoverServer() {
   const ports = Array.from({ length: PORT_SCAN_COUNT }, (_, i) => BASE_PORT + i);
-  const results = await Promise.all(ports.map(probePort));
-  const hits = results.filter(Boolean).sort((a, b) => a.port - b.port);
+  const results = await Promise.all(ports.map((p) => probePort(p, { noteWaiting: true })));
+  const hits = results.filter((r) => r && !r.waiting).sort((a, b) => a.port - b.port);
   if (hits.length === 0) {
     await chrome.storage.session.remove(CACHE_KEY);
+    // 앱은 떠 있는데 규칙을 아직 못 넘겼다 — 맥에서는 새 버전 첫 실행의 키체인 승인 창을
+    // 기다리는 경우가 대표적이다. "엔진 없음" 으로 알리면 사용자는 앱만 다시 켠다(맥 실측).
+    if (results.some((r) => r?.waiting)) {
+      throw new Error(
+        'Campfire 앱이 사용자 지정 마스킹 규칙을 아직 불러오지 못했습니다. macOS 라면 '
+        + "키체인 승인 창('Campfire Safe Storage')에서 로그인 암호를 입력하고 '항상 허용'을 "
+        + '누른 뒤 다시 보내 주세요. (검사 없이 전송하지 않습니다)',
+      );
+    }
     throw new Error(
       '로컬 엔진을 찾을 수 없습니다. Campfire 앱이 실행 중인지 확인하세요. '
       + '(검사 없이 전송하지 않습니다)',

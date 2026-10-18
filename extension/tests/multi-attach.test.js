@@ -561,5 +561,28 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await settle();
   }
 
-  console.log('multi-attach.test.js: 15개 블록 통과');
+  // ── 16) 앱은 떠 있는데 규칙을 아직 못 받은 엔진(맥 키체인 승인 대기)은 "엔진 없음" 과
+  //     구분해 알린다. 그 엔진으로 보내지는 않는다(검사 없이 나가지 않음). 맥 실측: 대기 중에
+  //     "로컬 엔진을 찾을 수 없습니다" 가 떠 사용자가 원인을 알 수 없었다.
+  {
+    const discoverError = async (health) => {
+      sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(health) });
+      delete sessionStore.srv;
+      try {
+        await vm.runInContext('discoverServer()', ctx);
+      } catch (e) {
+        return e.message;
+      }
+      return null;
+    };
+    const waiting = await discoverError({ service: 'campfire', forcedMask: { managed: true, ready: false } });
+    assert.ok(waiting && waiting.includes('키체인'), `규칙 대기 중인 엔진을 엔진 없음으로 알렸다: ${waiting}`);
+    assert.ok(waiting.includes('검사 없이 전송하지 않습니다'));
+    const none = await discoverError({ service: 'something-else' });
+    assert.ok(none && none.includes('로컬 엔진을 찾을 수 없습니다'), `엔진이 없을 때 문구가 바뀌었다: ${none}`);
+    const ready = await discoverError({ service: 'campfire', forcedMask: { managed: true, ready: true } });
+    assert.strictEqual(ready, null, '준비된 엔진을 찾지 못했다');
+  }
+
+  console.log('multi-attach.test.js: 16개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -44,6 +44,11 @@ function privilegedFailureMessage(err) {
     : `macOS 프록시 설정을 바꾸지 못했습니다(종료 코드 ${err.code ?? '알 수 없음'})`;
 }
 
+/** 사용자가 관리자 암호 창을 취소했거나 응답하지 않았는가(시스템 오류와 구분). */
+function privilegedDeclined(err) {
+  return /\(-128\)|User cancel/i.test(String(err.stderr || '')) || !!err.killed;
+}
+
 function parseServices(output) {
   return String(output).split(/\r?\n/)
     .map((line) => line.trim())
@@ -141,7 +146,8 @@ function createRunner({ execFileImpl = execFile } = {}) {
         command,
       ], { timeout: 120000 });
     } catch (err) {
-      throw new Error(privilegedFailureMessage(err));
+      // declined: proxy-toggle 이 자동 재적용을 "사용자가 거절함" 으로 보고 켜 두기를 끈다.
+      throw Object.assign(new Error(privilegedFailureMessage(err)), { declined: privilegedDeclined(err) });
     }
   }
 

@@ -39,6 +39,16 @@ function normalizeTerms(values) {
   return terms;
 }
 
+// 맥은 이 파일의 암호화 키가 키체인에 있다. 앱 서명이 바뀐 뒤(새 버전·정식/라이트 교체)
+// 첫 실행의 승인 창에서 "거부" 하면 이 실행 동안 키를 못 받는다 — 거부 직후엔 복호화 실패가
+// 아니라 isEncryptionAvailable() 부터 false 다(맥 실측). 파일은 멀쩡하므로 덮어쓰기보다 다시
+// 승인할 길을 먼저 알린다. 렌더러는 이 문구의 "키체인" 을 보고 덮어쓰기 안내를 뺀다.
+function macKeychainError(detail) {
+  return new ForcedMaskStoreError(
+    `macOS 키체인에서 암호화 키를 받지 못했습니다(${detail}). 승인 창에서 거부했다면 앱을 종료했다가 다시 열고, 'Campfire Safe Storage' 승인 창에서 로그인 암호를 입력한 뒤 '항상 허용'을 누르세요. 저장된 단어는 그대로 남아 있습니다.`,
+  );
+}
+
 class ForcedMaskStore {
   constructor(userDataDir, safeStorage) {
     this.filePath = path.join(userDataDir, 'forced-mask-terms.enc');
@@ -59,6 +69,7 @@ class ForcedMaskStore {
   list() {
     if (!fs.existsSync(this.filePath)) return [];
     if (!this._encryptionAvailable()) {
+      if (process.platform === 'darwin') throw macKeychainError('보안 저장소를 쓸 수 없음');
       throw new ForcedMaskStoreError('운영체제 보안 저장소를 사용할 수 없어 단어를 불러오지 못했습니다.');
     }
     try {
@@ -67,12 +78,8 @@ class ForcedMaskStore {
       try {
         plain = this.safeStorage.decryptString(encrypted);
       } catch (err) {
-        // 맥에서 복호화 실패는 대개 키체인 승인 창에서 "거부" 를 누른 경우다(앱 서명이 바뀐
-        // 뒤 첫 실행). 파일은 멀쩡하므로 새 목록으로 덮어쓰기 전에 다시 승인할 길을 먼저 알린다.
         if (process.platform !== 'darwin') throw err;
-        throw new ForcedMaskStoreError(
-          `macOS 키체인에서 암호화 키를 받지 못했습니다(${err.message}). 승인 창에서 거부했다면 앱을 종료했다가 다시 열고, 'Campfire Safe Storage' 승인 창에서 로그인 암호를 입력한 뒤 '항상 허용'을 누르세요.`,
-        );
+        throw macKeychainError(err.message);
       }
       const parsed = JSON.parse(plain);
       if (!parsed || parsed.version !== 1) throw new Error('unsupported version');
@@ -86,6 +93,7 @@ class ForcedMaskStore {
   replace(values) {
     const terms = normalizeTerms(values);
     if (!this._encryptionAvailable()) {
+      if (process.platform === 'darwin') throw macKeychainError('보안 저장소를 쓸 수 없어 저장도 못 함');
       throw new ForcedMaskStoreError('운영체제 보안 저장소를 사용할 수 없어 단어를 저장하지 못했습니다.');
     }
     const encrypted = this.safeStorage.encryptString(JSON.stringify({ version: 1, terms }));

@@ -2605,8 +2605,17 @@
       // 패널을 못 열었으면 검사를 시작조차 하지 않는다. 시작해 버리면 결정해 줄
       // 화면이 없어 HITL 타임아웃까지 그 탭의 전송이 통째로 막힌다.
       if (!(await panelOpening)) {
-        if (staged) clearPendingBatch();
-        showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+        // 확장이 다시 로드되면(업데이트·↻) 이 탭의 옛 스크립트는 확장과 끊긴다(runtime.id 가
+        // 사라진다). 첨부를 남겨도 다시 보낼 길이 없으니 탭 새로고침을 안내한다. 그 밖의
+        // 실패면 첨부를 남긴다 — 맥 실측: 패널을 못 열자 첨부 대기가 말없이 사라졌다.
+        if (!chrome.runtime?.id) {
+          if (staged) clearPendingBatch();
+          showBlockedBadge(`⚠️ 확장 프로그램이 다시 로드돼 이 탭과 연결이 끊겼습니다. 원본은 보내지 않았습니다 — 탭을 새로고침한 뒤 ${staged ? '파일을 다시 첨부해 ' : ''}보내주세요.`);
+        } else if (staged && pendingBatch === staged) {
+          showBlockedBadge(`⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본은 보내지 않았습니다. 첨부한 파일 ${staged.items.length}개는 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+        } else {
+          showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+        }
         return;
       }
       decision = staged

@@ -111,12 +111,12 @@ function create({
         // 일부 서비스만 바뀐 뒤 복원마저 실패했을 수 있다. 이때 엔진/PAC/워치독을
         // 내리면 죽은 프록시만 남는다. 사용자가 다시 끄거나 앱 종료 워치독이 복원할
         // 때까지 안전망을 살려 둔다.
-        return fail('system', `${err.message} (원래 프록시 설정 복원도 실패했습니다)`);
+        return fail('system', `${err.message} (원래 프록시 설정 복원도 실패했습니다)`, { declined: !!err.declined });
       }
       watchdog.disarm();
       await pacServer.stop();
       await engine('POST', '/proxy/stop').catch(() => {});
-      return fail('system', err.message);
+      return fail('system', err.message, { declined: !!err.declined });
     }
     config.set({ proxyEnabled: true });
     // 강제종료 대비: 앱이 죽으면(정상이든 강제든) 프록시를 되돌릴 감시 프로세스를
@@ -176,7 +176,15 @@ function create({
      */
     resumeIfDesired() {
       if (!config.get('proxyEnabled') || pacServer.isRunning()) return Promise.resolve(null);
-      return serial(() => (pacServer.isRunning() ? null : enableNow()));
+      return serial(async () => {
+        if (pacServer.isRunning()) return null;
+        const res = await enableNow();
+        // 사용자가 관리자 암호 창을 취소했거나 응답하지 않았으면 켜 두기를 끈다. 남겨 두면
+        // 실행할 때마다 암호 창이 다시 뜨고, 토글은 꺼진 모양이라 누르면 오히려 켜진다(맥 실측).
+        // CA 미신뢰 같은 다른 실패는 사용자가 거절한 게 아니라 그대로 둔다(고치면 다음 실행에 적용).
+        if (res && !res.ok && res.declined) config.set({ proxyEnabled: false });
+        return res;
+      });
     },
 
     async status() {
