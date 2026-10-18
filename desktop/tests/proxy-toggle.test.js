@@ -43,7 +43,7 @@ function harness({
     log.push(['system', cmd]);
     if (cmd === 'query') return { ...sys };
     if (cmd === 'set-pac') {
-      if (setPacError) throw new Error(setPacError);
+      if (setPacError) throw (typeof setPacError === 'string' ? new Error(setPacError) : setPacError);
       sys = { ...sys, flags: 5, pacUrl: arg };
       return { ...sys };
     }
@@ -237,6 +237,35 @@ test('resumeIfDesired: 원할 때만, 이미 걸려 있으면 다시 안 건다'
   on.log.length = 0;
   await on.toggle.resumeIfDesired(); // 엔진 재시작으로 다시 불려도
   assert.deepStrictEqual(steps(on.log, 'system'), [], '이미 걸린 걸 또 건드렸다');
+});
+
+test('resumeIfDesired: 사용자가 관리자 창을 거절하면 켜 두기를 끄고, 다른 실패는 그대로 둔다', async () => {
+  // 맥 실측: 취소해도 proxyEnabled 가 true 로 남아 다음 실행에 암호 창이 또 떴고, 토글은 꺼진
+  // 모양이라 누르면 오히려 켜졌다.
+  const declined = harness({
+    setPacError: Object.assign(new Error('관리자 승인이 취소됐습니다.'), { declined: true }),
+  });
+  declined.store.proxyEnabled = true;
+  const r = await declined.toggle.resumeIfDesired();
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(declined.store.proxyEnabled, false, '거절했는데 켜 두기가 남았다');
+
+  const broken = harness({ setPacError: 'networksetup 실패' });
+  broken.store.proxyEnabled = true;
+  await broken.toggle.resumeIfDesired();
+  assert.strictEqual(broken.store.proxyEnabled, true, '시스템 오류는 사용자가 거절한 게 아니다');
+
+  const ca = harness({ engineStatus: { running: true, caTrusted: false, port: 48210, caPath: 'C:\\ca.cer', hosts: { exact: [], suffixes: [] } } });
+  ca.store.proxyEnabled = true;
+  await ca.toggle.resumeIfDesired();
+  assert.strictEqual(ca.store.proxyEnabled, true, 'CA 미신뢰는 고치면 다음 실행에 적용돼야 한다');
+
+  // 사용자가 직접 켜다 거절한 경우는 원래부터 켜 두기를 저장하지 않는다.
+  const manual = harness({
+    setPacError: Object.assign(new Error('관리자 승인이 취소됐습니다.'), { declined: true }),
+  });
+  await manual.toggle.set(true);
+  assert.strictEqual(manual.store.proxyEnabled, false);
 });
 
 test('경로 상태 폴링은 느린 시스템 프록시 조회를 건너뛴다', async () => {

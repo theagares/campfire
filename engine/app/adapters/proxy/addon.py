@@ -133,7 +133,8 @@ CLAUDE_MESSAGE_RPC_PATHS = (
 #   2.15.4  인라인된 텍스트 파일의 내용 (2.15.1=파일명, 2.15.3=mime, 파일마다 2.15 반복)
 # 나머지(세션 id·UUID·모델명 'claude-opus-5-5'·'ko-KR'·'Asia/Seoul')는 메타데이터라
 # 손대지 않는다. 필드 2 가 없는 액션(메타 핑 등)은 사용자 콘텐츠가 없어 통과시킨다.
-CLAUDE_USER_TEXT_PATHS = {(2, 3), (2, 15, 4)}
+CLAUDE_PROMPT_PATH = (2, 3)
+CLAUDE_USER_TEXT_PATHS = {CLAUDE_PROMPT_PATH, (2, 15, 4)}
 
 GEMINI_UPLOAD_HOST = "push.clients6.google.com"
 GEMINI_UPLOAD_PATH = "/upload/"
@@ -384,15 +385,18 @@ class CampfireAddon:
 
         # 사용자 콘텐츠 필드만 고른다(2.3, 2.15.4). looks_like_text 로 한 번 더 거른다 —
         # 파일 참조 id 등이 그 자리에 오면 텍스트가 아니므로 지나간다.
-        targets = [
-            f for path, f in msg.walk()
+        picked = [
+            (path, f) for path, f in msg.walk()
             if path in CLAUDE_USER_TEXT_PATHS
             and f.message is None and f.value is not None and pb.looks_like_text(f.value)
         ]
-        if not targets:
+        if not picked:
             return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
 
-        masked = await self._scan_texts_and_decide(targets, host="claude.ai")
+        masked = await self._scan_texts_and_decide(
+            [f for _, f in picked], host="claude.ai",
+            prompt_fields=[f for path, f in picked if path == CLAUDE_PROMPT_PATH],
+        )
         if masked is None:
             self._block(flow, "검토 결과 전송하지 않기로 했습니다")
             return
@@ -618,11 +622,15 @@ class CampfireAddon:
 
     # ── 텍스트 여러 필드 검사 + 한 번의 판단 (Claude 메시지 RPC) ──────────────
 
-    async def _scan_texts_and_decide(self, fields, *, host):
+    async def _scan_texts_and_decide(self, fields, *, host, prompt_fields=()):
         """텍스트 필드 여러 개를 검사하고 **판단은 한 번만** 받는다.
 
         메시지 하나에 프롬프트(2.3)와 인라인 파일(2.15.4)이 같이 있어도 검토 요청은
         하나여야 한다 — 필드마다 따로 물으면 사람이 같은 전송을 여러 번 승인한다.
+        prompt_fields: 사용자가 직접 친 프롬프트 필드. 문서 기준("AI 에게 내리는 지시 =
+        인젝션")으로 보면 평범한 요청이 인젝션으로 잡히므로 /jobs/prompt 와 같은 프롬프트
+        기준(direct_prompt)으로 본다(맥 실측: 확장 경로만 고쳐져 프록시 경로에 남아 있었다).
+        인라인 파일 내용은 문서이므로 그대로 문서 기준이다.
         반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함).
         """
         from app.core.pipeline.orchestrator import run_pipeline
@@ -634,7 +642,9 @@ class CampfireAddon:
         truncated = False
         for fld in fields:
             text = fld.value.decode("utf-8", "replace")
-            result = await run_pipeline(text=text)
+            result = await run_pipeline(
+                text=text, direct_prompt=any(fld is p for p in prompt_fields)
+            )
             if result.get("blocked"):
                 logger.info("[proxy] 정책 차단 (Claude 메시지)")
                 return None

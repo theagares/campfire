@@ -129,16 +129,22 @@ function startBroadcastLoops() {
   }, 5000);
 }
 
-/** engineManager 가 'running' 상태가 될 때까지 대기(타임아웃 시 reject). */
+/**
+ * 엔진이 HTTP 로 응답할 수 있을 때까지 대기(타임아웃 시 reject). 'running' 이거나, 맥 키체인
+ * 승인을 기다리는 중(포트는 이미 잡힘)이면 된다 — 모델 상태 확인은 강제 마스킹 규칙과 무관하다.
+ * 예전엔 'running' 만 기다려, 키체인 창을 30초 넘게 두면 모델이 다 있는데도 "필수 모델 자동
+ * 설치 실패 — 인터넷 연결을 확인" 배너가 떴다(맥 실측).
+ */
 function waitForEngineRunning(timeoutMs = 30000) {
+  const reachable = (s) => s.state === 'running' || (s.keychainWait && !!s.baseUrl);
   return new Promise((resolve, reject) => {
-    if (engineManager.getStatus().state === 'running') return resolve();
+    if (reachable(engineManager.getStatus())) return resolve();
     const timer = setTimeout(() => {
       engineManager.off('status', onStatus);
       reject(new Error('엔진 기동 대기 시간 초과'));
     }, timeoutMs);
     function onStatus(s) {
-      if (s.state === 'running') {
+      if (reachable(s)) {
         clearTimeout(timer);
         engineManager.off('status', onStatus);
         resolve();

@@ -138,6 +138,24 @@ def test_인라인_파일_내용도_마스킹한다(monkeypatch):
     assert got[(2, 15, 3)].value.decode() == "text/plain"
 
 
+def test_손으로_친_메시지만_프롬프트_기준으로_검사한다(monkeypatch):
+    # 맥 실측: 프록시를 켜면 "세 줄로 요약하고 존댓말로 답해" 같은 평범한 요청이 인젝션으로
+    # 잡혔다 — 확장(/jobs/prompt)만 프롬프트 기준이고 프록시는 문서 기준이었다.
+    # 인라인 파일 내용은 문서라 문서 기준을 유지해야 한다.
+    import app.core.pipeline.orchestrator as orch
+    seen = {}
+
+    async def spy(*, text=None, direct_prompt=False, **_kw):
+        seen[text] = direct_prompt
+        return {"maskedText": text, "piiItems": [], "injectionItems": [], "blocked": False,
+                "scanStatus": "ok", "truncated": False}
+
+    monkeypatch.setattr(orch, "run_pipeline", spy)
+    body = _send_with(typed="세 줄로 요약하고 존댓말로 답해", file_content="첨부 파일 본문")
+    _run(asyncio.wait_for(CampfireAddon().request(_flow(body)), timeout=0.2))
+    assert seen == {"세 줄로 요약하고 존댓말로 답해": True, "첨부 파일 본문": False}
+
+
 def test_필드2_없는_액션은_통과한다():
     # 실제 120바이트 비전송 액션 모양: 1.x + 15.x, 필드 2 없음
     body = _ld(1, _ld(2, b"conv")) + _ld(14, b"ko-KR") + _ld(15, _ld(1, _ld(7, _ld(2, b"claude-opus-5-5"))))

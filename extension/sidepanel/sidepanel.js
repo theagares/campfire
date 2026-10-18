@@ -719,12 +719,15 @@ function renderResult(kind, result, meta) {
   state.expanded = new Set();
   state.decided = false;
 
-  // 미검사 통과(파싱 실패/미지원/타임아웃) — PLAN §9.2
+  // 미검사 통과(파싱 실패/미지원/타임아웃) — PLAN §9.2. 차단(blocked)은 다시 보내도 또 막히므로
+  // "검사 없이 전송하려면 다시 시도" 를 붙이지 않는다(맥 실측: 규칙 미수신 차단에도 붙었다).
   if (result.scanStatus && result.scanStatus !== 'ok') {
     showView('error');
     el.errTitle.textContent = '검사하지 못했습니다';
-    el.errMsg.textContent =
-      `사유: ${result.reason || result.scanStatus}\n검사 없이 전송하려면 사이트에서 다시 시도하세요.`;
+    el.errMsg.textContent = `사유: ${result.reason || result.scanStatus}\n`
+      + (result.blocked
+        ? '검사 없이 전송하지 않습니다. 원인을 해결한 뒤 다시 보내 주세요.'
+        : '검사 없이 전송하려면 사이트에서 다시 시도하세요.');
     return;
   }
 

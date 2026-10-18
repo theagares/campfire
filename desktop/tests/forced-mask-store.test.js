@@ -69,3 +69,25 @@ test('맥 키체인 거부로 복호화가 실패하면 덮어쓰기 대신 다�
   }
   assert.equal(new ForcedMaskStore(tempDir(), denied).hasStoredTerms(), false, '저장된 단어가 없으면 키체인을 건드리지 않는다');
 });
+
+test('맥 키체인 거부 뒤 보안 저장소 자체를 못 쓸 때도 맥 안내를 주고, 파일은 그대로 둔다', () => {
+  // 맥 실측: 거부 직후엔 복호화 실패가 아니라 isEncryptionAvailable() 부터 false 라서, 위 분기에
+  // 닿지 못하고 일반 문구 + "다시 입력해 덮어쓰기" 안내가 떴다.
+  const dir = tempDir();
+  new ForcedMaskStore(dir, fakeSafeStorage()).replace(['Project Aurora']);
+  const before = fs.readFileSync(path.join(dir, 'forced-mask-terms.enc'));
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try {
+    const store = new ForcedMaskStore(dir, fakeSafeStorage(false));
+    const keychain = (err) => err instanceof ForcedMaskStoreError
+      && /키체인/.test(err.message) && /항상 허용/.test(err.message);
+    assert.throws(() => store.list(), keychain);
+    assert.throws(() => store.replace(['새 단어']), keychain);
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+  assert.deepEqual(fs.readFileSync(path.join(dir, 'forced-mask-terms.enc')), before, '저장된 파일을 덮어썼다');
+  // 맥이 아니면 예전 문구 그대로
+  assert.throws(() => new ForcedMaskStore(dir, fakeSafeStorage(false)).list(), /운영체제 보안 저장소/);
+});
