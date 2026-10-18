@@ -593,5 +593,27 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     assert.strictEqual(info.target, 'local');
   }
 
-  console.log('multi-attach.test.js: 16개 블록 통과');
+  // ── 17) 낡은 패널이 모르는 검토 건에 결정을 보내면, 그 탭에서 기다리던 다중 첨부 배치도 풀린다 ──
+  //     예전엔 다중 배치에도 PANEL_DECISION 을 보내 배치가 안 풀렸고(배치는 CONTENT_BATCH_DECISION 을
+  //     기다린다), 쥐고 있던 검사 차례도 반납되지 않아 다른 탭의 배치까지 막혔다.
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    const one = [{ id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }];
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'held', payload: { items: one } });
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'other-tab', payload: { items: one } }, { tab: { id: 8 } });
+    await settle();
+    const granted = () => tabMessages.filter(m => m.type === 'SCAN_LEASE_GRANTED').map(m => m.sessionId);
+    assert.deepStrictEqual(granted(), ['held'], '첫 배치만 차례를 받아야 한다');
+
+    await send({ type: 'PANEL_DECISION', sessionId: 'no-such', decision: { action: 'send' }, tabId: 7 }, {});
+    await settle();
+    const cancel = tabMessages.find(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === 'held');
+    assert.ok(cancel && cancel.decision.action === 'cancel', '다중 배치에 배치용 취소를 보내지 않았다 — 그 탭 전송이 막힌다');
+    assert.ok(granted().includes('other-tab'), '풀린 배치가 쥐고 있던 검사 차례를 반납하지 않았다');
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'other-tab' }, { tab: { id: 8 } });
+    await settle();
+  }
+
+  console.log('multi-attach.test.js: 17개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

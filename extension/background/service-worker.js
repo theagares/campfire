@@ -824,12 +824,26 @@ function cancelSessionsForTab(tabId) {
   if (tabId == null) return;
   for (const [sid, s] of [...sessions]) {
     if (s?.tabId !== tabId) continue;
-    chrome.tabs.sendMessage(tabId, {
-      type: 'PANEL_DECISION',
-      sessionId: sid,
-      kind: s.kind,
-      decision: { action: 'cancel', reason: 'stale-session' },
-    }).catch(() => {});
+    if (s.kind === 'multi') {
+      // 다중 첨부 배치는 CONTENT_BATCH_DECISION 을 기다린다 — PANEL_DECISION 으로는 안 풀려
+      // 그 탭의 전송이 10분 동안 막혔다. 쥐고 있던 검사 차례·예약·산출물도 함께 놓는다.
+      for (let i = scanQueue.length - 1; i >= 0; i--) {
+        if (scanQueue[i].sessionId === sid) scanQueue.splice(i, 1);
+      }
+      endSession(sid);
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CONTENT_BATCH_DECISION',
+        sessionId: sid,
+        decision: { action: 'cancel', reason: 'stale-session' },
+      }).catch(() => {});
+    } else {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'PANEL_DECISION',
+        sessionId: sid,
+        kind: s.kind,
+        decision: { action: 'cancel', reason: 'stale-session' },
+      }).catch(() => {});
+    }
     sessions.delete(sid);
     if (activeSessionId === sid) activeSessionId = null;
   }

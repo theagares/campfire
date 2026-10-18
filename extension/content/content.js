@@ -924,6 +924,7 @@
     'start-failed': '검사를 시작하지 못했습니다.',
     'prompt-scan-failed': '프롬프트를 검사하지 못해 전송을 멈췄습니다.',
     quota: '검토 중인 다른 탭이 많아 검사를 시작하지 못했습니다.',
+    'stale-session': '검토 화면이 만료돼 전송을 멈췄습니다.',
   };
 
   const supportedItems = (batch) => (batch?.items || []).filter(i => i.supported);
