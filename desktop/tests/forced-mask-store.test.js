@@ -88,6 +88,12 @@ test('맥 키체인 거부 뒤 보안 저장소 자체를 못 쓸 때도 맥 안
     Object.defineProperty(process, 'platform', platform);
   }
   assert.deepEqual(fs.readFileSync(path.join(dir, 'forced-mask-terms.enc')), before, '저장된 파일을 덮어썼다');
-  // 맥이 아니면 예전 문구 그대로
-  assert.throws(() => new ForcedMaskStore(dir, fakeSafeStorage(false)).list(), /운영체제 보안 저장소/);
+  // 맥이 아니면 예전 문구 그대로. 플랫폼을 고정해야 한다 — 맥 CI 러너에서는 실제 플랫폼이
+  // darwin 이라 맥 문구가 나와 실패했다(v0.2.36 첫 빌드).
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    assert.throws(() => new ForcedMaskStore(dir, fakeSafeStorage(false)).list(), /운영체제 보안 저장소/);
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
 });
