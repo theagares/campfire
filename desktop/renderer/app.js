@@ -27,6 +27,23 @@ function hideGlobalBanner() {
 }
 $('#global-banner-close').addEventListener('click', hideGlobalBanner);
 
+// 맥 키체인 승인 대기(main/engine-manager.js _announceKeychainRead). 그동안 메인 프로세스는
+// 멈춰 있지만 이 화면은 별도 프로세스라 타이머가 돈다. 승인 창이 안 뜨는 보통의 실행은 금방
+// 끝나므로 1.5초가 지나도 안 끝났을 때만 띄운다(매 실행 깜빡이지 않게).
+const KEYCHAIN_WAIT_TEXT = 'macOS 키체인 승인을 기다리는 중입니다. "Campfire Safe Storage" 승인 창에서 로그인 암호를 입력하고 \'항상 허용\'을 누르면 검사가 시작됩니다. 창이 다른 창 뒤에 가려져 있을 수 있습니다.';
+let keychainWaitTimer = null;
+function renderKeychainWait(engine) {
+  if (engine && engine.keychainWait) {
+    if (!keychainWaitTimer) {
+      keychainWaitTimer = setTimeout(() => showGlobalBanner(KEYCHAIN_WAIT_TEXT, 'progress'), 1500);
+    }
+    return;
+  }
+  clearTimeout(keychainWaitTimer);
+  keychainWaitTimer = null;
+  if ($('#global-banner-text').textContent === KEYCHAIN_WAIT_TEXT) hideGlobalBanner();
+}
+
 // ── 뷰 라우팅 ────────────────────────────────────────────────────────────────
 function goto(view) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
@@ -223,7 +240,9 @@ function renderProxy() {
   const running = !!(eng && eng.running);
   const applied = !!(st.system && st.system.ours);
   toggle.disabled = !!state.proxyBusy || !eng;
-  toggle.checked = !!st.desired;
+  // 켜 두기로 저장돼 있어도 적용에 실패했으면(CA 미신뢰 등) 켜진 것처럼 보이면 안 된다.
+  // 꺼진 모양으로 두면 사용자가 원인을 고친 뒤 토글을 누르는 것이 곧 다시 시도다.
+  toggle.checked = !!st.desired && !(st.lastError && !applied);
   setLight('#proxy-light-engine', running);
   setLight('#proxy-light-ca', eng && eng.caTrusted === true);
   setLight('#proxy-light-system', applied);
@@ -247,7 +266,10 @@ function proxyHintHtml(st, running, applied) {
     const where = isMac
       ? '터미널에서 아래를 실행하고 macOS 인증 창을 승인한 뒤'
       : '명령 프롬프트에서 아래를 실행한 뒤(관리자 권한 불필요, 보안 경고에서 "예")';
-    return `<div class="hint">CA 인증서를 먼저 신뢰해야 합니다. ${where} 다시 켜세요.</div>
+    const lead = st.desired
+      ? '프록시를 켜 두었지만 CA 인증서가 신뢰되지 않아 적용하지 못했습니다.'
+      : 'CA 인증서를 먼저 신뢰해야 합니다.';
+    return `<div class="hint">${lead} ${where} 다시 켜세요.</div>
       <div class="codeblock-row"><code>${escapeHtml(cmd)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(cmd)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>`;
   }
   if (err) return `<div class="hint warn">${escapeHtml(err.message)}</div>`;
@@ -953,7 +975,9 @@ async function loadForcedMaskTerms() {
     forcedMaskUnreadable = true;
     $('#forced-mask-input').disabled = false;
     $('#forced-mask-add').disabled = false;
-    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 그동안 검사는 막혀 있습니다. 단어를 하나 이상 다시 입력해 저장하면 새 목록으로 복구됩니다 — 이전 단어는 되살릴 수 없습니다.`);
+    // 맥 키체인 거부처럼 파일은 멀쩡한 경우가 있다(메시지에 다시 승인하는 법이 들어 있다).
+    // 덮어쓰기는 이전 단어를 잃으므로 마지막 수단으로 안내한다.
+    setForcedMaskError(`저장된 단어를 읽지 못했습니다(${err.message}). 그동안 검사는 막혀 있습니다. 그래도 읽을 수 없으면 단어를 하나 이상 다시 입력해 저장해 새 목록으로 복구할 수 있습니다 — 이전 단어는 되살릴 수 없습니다.`);
   }
 }
 
@@ -1180,6 +1204,7 @@ async function init() {
 
   api.onEngineStatus((s) => {
   state.engine = s;
+  renderKeychainWait(s);
   renderHome();
   renderDashboard();
   // 엔진이 오르내리면 프록시 표시등도 바뀐다. 연결 화면을 보고 있을 때만 다시 묻는다.

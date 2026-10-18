@@ -26,6 +26,9 @@ class ChunkMeta(TypedDict, total=False):
     # 실제 지시를 무시/변조하려는가"를 판단할 때 placeholder 대신 사용한다.
     # PII detector 는 이 필드를 사용하지 않는다.
     user_prompt: str
+    # 청크가 문서가 아니라 사용자가 직접 쓴 프롬프트다(/jobs/prompt). 인젝션 2차 판정이
+    # 사용자 본인의 작업 요청을 인젝션으로 보지 않는 기준을 쓴다.
+    direct_prompt: bool
 
 
 class Detection(TypedDict):

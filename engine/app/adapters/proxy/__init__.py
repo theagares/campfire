@@ -172,7 +172,8 @@ def status() -> dict:
     except ImportError:  # mitmproxy 미설치
         exact, suffixes = [], []
     return {
-        "supported": sys.platform in {"win32", "darwin"},
+        # 라이트 판은 프록시가 없다(start() 가 거절하고 mitmproxy 도 번들에 없다).
+        "supported": sys.platform in {"win32", "darwin"} and not config.LITE,
         "platform": sys.platform,
         # 앱이 PAC 를 만들 때 쓴다 — 이 호스트만 프록시로, 나머지는 직접.
         "hosts": {"exact": exact, "suffixes": suffixes},

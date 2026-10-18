@@ -85,13 +85,34 @@ class EngineManager extends EventEmitter {
       message: this.message,
       engineDir: this.engineDir,
       pythonExe: this.pythonExe,
+      keychainWait: !!this.keychainWait,
     };
   }
 
+  // 맥은 강제 마스킹 단어 복호화가 키체인을 거친다. 앱 서명이 바뀐 뒤(ad-hoc 서명이라 새
+  // dmg·정식/라이트 교체마다 바뀐다) 첫 읽기는 키체인 승인 창을 띄우고, safeStorage 가 동기
+  // API 라(Electron 35 에는 비동기 API 가 없다) 응답할 때까지 메인 프로세스 전체가 멈춘다.
+  // 그동안 엔진은 규칙을 못 받아 모든 검사를 막는다(맥 실측). 멈추기 전에 상태를 먼저 알리고
+  // 한 번 양보해, 화면(별도 프로세스)이 이유를 띄울 수 있게 한다. 키는 프로세스당 한 번만
+  // 키체인에서 읽으므로 첫 읽기 때만 한다.
+  async _announceKeychainRead() {
+    if (this.keychainReadAnnounced || process.platform !== 'darwin'
+        || !this.forcedMaskStore?.hasStoredTerms?.()) return;
+    this.keychainReadAnnounced = true;
+    this.keychainWait = true;
+    this.emit('status', this.getStatus());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
   _setState(state, message) {
+    const prev = this.state;
     this.state = state;
     this.message = message || null;
     this.emit('status', this.getStatus());
+    // 헬스 폴링은 running 중에도 2.5초마다 status 를 다시 낸다. "막 떴다" 에만 반응해야
+    // 하는 일(프록시 재적용)은 이 이벤트를 듣는다 — status 에 걸면 실패할 때마다 매 tick
+    // 다시 시도해 프록시를 켰다 끄기를 끝없이 반복한다(맥 실측: CA 미신뢰로 분당 24회).
+    if (state === 'running' && prev !== 'running') this.emit('running', this.getStatus());
   }
 
   /** 사이드카 spawn. securityEnabled=false 면 띄우지 않고 disabled 상태로 둔다. */
@@ -302,6 +323,7 @@ class EngineManager extends EventEmitter {
           this.forcedMaskSyncedPort !== found.port || !found.health?.forcedMask?.ready
         )) {
           try {
+            await this._announceKeychainRead();
             const synced = await this.syncForcedMaskTerms(undefined, found.port);
             this.lastHealth = { ...found.health, forcedMask: synced };
           } catch (err) {
@@ -310,9 +332,12 @@ class EngineManager extends EventEmitter {
               this.foreignPorts.add(found.port);
               this.boundPort = null;
             }
+            this.keychainWait = false;
             this._setState('error', `강제 마스킹 단어 동기화 실패: ${err.message}`);
             return;
           }
+          // 아래 _setState / status 가 이 값을 실어 화면의 "키체인 승인 대기" 를 거둔다.
+          this.keychainWait = false;
         }
         if (this.state !== 'running') {
           this._setState('running', null);

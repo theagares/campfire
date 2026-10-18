@@ -51,6 +51,7 @@ def test_lite_refuses_proxy_toggle(monkeypatch):
     monkeypatch.setattr(config, "LITE", True)
     assert asyncio.run(proxy.start(force=True)) is False  # 토글(force) 경로도 막는다
     assert not proxy.is_running()
+    assert proxy.status()["supported"] is False  # /health 도 "지원" 이라고 하지 않는다
 
 
 def _mcp_mounted(edition: str, tmp_path) -> bool:

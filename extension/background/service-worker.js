@@ -1022,6 +1022,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  // content 가 차례(lease)를 기다리다 포기했다(waitForLease 60초). 이 세션을 큐와 함께
+  // 지운다 — 남겨 두면 차례가 왔을 때 lease 를 쥐는데 받을 쪽이 이미 떠나 아무도 finish
+  // 하지 않아, 그 뒤 모든 탭의 다중 첨부 검사가 lease 를 못 받고 60초마다 실패했다.
+  if (type === 'ABORT_MULTI_SCAN') {
+    ensureHydrated().then(() => {
+      const { sessionId } = message;
+      const session = sessions.get(sessionId);
+      const tabId = sender?.tab?.id ?? asTabId(message.tabId);
+      if (session && session.tabId != null && tabId != null && session.tabId !== tabId) {
+        sendResponse({ ok: false, reason: 'not-yours' });
+        return;
+      }
+      for (let i = scanQueue.length - 1; i >= 0; i--) {
+        if (scanQueue[i].sessionId === sessionId) scanQueue.splice(i, 1);
+      }
+      endSession(sessionId);
+      if (session) {
+        pushToPanel({
+          type: 'PANEL_ERROR', sessionId, tabId: session.tabId, seq: ++sessionSeq,
+          error: '다른 검사가 끝나기를 1분 넘게 기다리다 멈췄습니다. 첨부는 그대로 있으니 다시 보내 주세요.',
+        });
+        sessions.delete(sessionId);
+        if (activeSessionId === sessionId) activeSessionId = null;
+        persistSessions();
+      }
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
   // 패널이 활성 탭을 그릴 때 본문을 끌어간다. 브로드캐스트에는 메타만 실리므로
   // (runtime 채널은 열려 있는 모든 확장 페이지에 전역으로 도달한다) 원문은
   // 이렇게 요청한 탭에만, 요청한 항목 하나만 내보낸다.

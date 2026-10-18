@@ -533,5 +533,33 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     }
   }
 
-  console.log('multi-attach.test.js: 14개 블록 통과');
+  // ── 15) content 가 차례를 기다리다 포기하면(ABORT_MULTI_SCAN) 그 세션은 큐에서 빠진다 ──
+  //     안 빠지면 앞 배치가 끝난 뒤 떠난 세션이 lease 를 쥐고 아무도 finish 하지 않아,
+  //     그 뒤 모든 탭의 다중 첨부 검사가 lease 를 못 받고 60초마다 실패했다.
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    const one = [{ id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }];
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'hold', payload: { items: one } });
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'gone', payload: { items: one } });
+    await settle();
+    const holdLease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED' && m.sessionId === 'hold');
+    assert.ok(holdLease, '첫 배치가 lease 를 받지 못했다');
+
+    const aborted = await send({ type: 'ABORT_MULTI_SCAN', sessionId: 'gone' });
+    assert.strictEqual(aborted?.ok, true, 'ABORT_MULTI_SCAN 을 처리하지 않았다');
+    assert.ok(panelOf('PANEL_ERROR').some(m => m.sessionId === 'gone'), '패널에 멈춘 이유가 안 갔다');
+
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'next', payload: { items: one } });
+    await settle();
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'hold', leaseId: holdLease.leaseId });
+    await settle();
+    const grants = tabMessages.filter(m => m.type === 'SCAN_LEASE_GRANTED').map(m => m.sessionId);
+    assert.ok(!grants.includes('gone'), '떠난 세션이 lease 를 쥐었다 — 뒤 배치가 영원히 막힌다');
+    assert.ok(grants.includes('next'), '다음 배치가 lease 를 받지 못했다');
+    for (const sid of ['hold', 'next']) await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: sid });
+    await settle();
+  }
+
+  console.log('multi-attach.test.js: 15개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -146,6 +146,7 @@ async def _detect_all(
     user_prompt: str | None = None,
     user_prompt_masked: str | None = None,
     pii_items: list[Detection] | None = None,
+    direct_prompt: bool = False,
 ) -> list[Detection]:
     """청크별 detect() 를 동시에 실행한다. 각 detector 는 GPU 추론 구간을 자체
     _request_lock 으로 이미 직렬화하므로(서브프로세스 하나 공유) 동시 호출해도
@@ -167,6 +168,8 @@ async def _detect_all(
         meta: dict[str, Any] = {"chunk_index": idx, "total_chunks": total, "offset": ch["offset"]}
         if user_prompt:
             meta["user_prompt"] = user_prompt
+        if direct_prompt:
+            meta["direct_prompt"] = True
         # 외부 API(Solar)로 나갈 때 가려야 할 것들. 로컬 모델은 원문을 그대로 본다.
         if pii_items:
             meta["pii_spans"] = _pii_spans_for_chunk(pii_items, ch)
@@ -357,6 +360,7 @@ async def _finalize_staged_injection(
     user_prompt: str | None = None,
     user_prompt_masked: str | None = None,
     pii_items: list[Detection] | None = None,
+    direct_prompt: bool = False,
 ) -> list[Detection]:
     """Run PII-safe Solar localization after both local models have joined."""
     total = len(classified)
@@ -375,6 +379,8 @@ async def _finalize_staged_injection(
         }
         if user_prompt:
             meta["user_prompt"] = user_prompt
+        if direct_prompt:
+            meta["direct_prompt"] = True
         if pii_items:
             meta["pii_spans"] = _pii_spans_for_chunk(pii_items, chunk)
         if user_prompt_masked is not None:
@@ -417,10 +423,15 @@ async def run_pipeline(
     emit: Emit | None = None,
     wrap_file: bool = False,
     user_prompt: str | None = None,
+    direct_prompt: bool = False,
 ) -> dict[str, Any]:
     """텍스트(prompt) 또는 파일 파이프라인 공통 실행기.
 
     text 가 주어지면 프롬프트 경로, file_bytes 가 주어지면 파일 경로.
+
+    direct_prompt: text 가 문서가 아니라 사용자가 AI 사이트에 직접 쓴 프롬프트다
+    (/jobs/prompt). 인젝션 2차(Solar)가 "문서 속 지시" 기준 대신 사용자 본인의 작업
+    요청은 통과시키는 기준으로 본다(llm_mcp._SOLAR_DIRECT_PROMPT_SYSTEM_PROMPT).
 
     user_prompt: 문서(파일/텍스트)와 "함께" 사용자가 실제로 보내려는 지시문.
     확장 프로그램이 문서 첨부를 곧바로 스캔하지 않고 사용자가 프롬프트를 보낼
@@ -482,7 +493,13 @@ async def run_pipeline(
     # app has delivered the encrypted configuration.  That transient state is
     # fail-closed rather than silently treating it as "no rules".
     if not forced_snapshot.ready:
-        policy_reason = "강제 마스킹 규칙을 아직 불러오지 못했습니다"
+        # 규칙은 데스크탑 앱이 보내 준다. 맥에서는 새 버전·판 교체 뒤 첫 실행 때 앱이 키체인
+        # 승인 창 응답을 기다리며 멈춰 있는 경우가 대표적이라(맥 실측), 확장 화면에서 원인을
+        # 짐작할 수 있게 함께 알린다.
+        policy_reason = (
+            "강제 마스킹 규칙을 아직 불러오지 못했습니다 — Campfire 앱이 실행 중인지, "
+            "macOS 라면 키체인 승인 창('Campfire Safe Storage')이 떠 있지 않은지 확인하세요"
+        )
         await emit({"type": "warning", "scanStatus": "policy_not_ready", "reason": policy_reason})
         return _build_result(
             original_text=text or "",
@@ -667,6 +684,7 @@ async def run_pipeline(
             user_prompt=user_prompt,
             user_prompt_masked=user_prompt_masked,
             pii_items=list(pii_items) + list(forced_items),
+            direct_prompt=direct_prompt,
         )
     else:
         # 테스트/대체 detector가 단계 분리를 지원하지 않으면 기존 순차 계약을 유지한다.
@@ -677,6 +695,7 @@ async def run_pipeline(
             user_prompt=user_prompt,
             user_prompt_masked=user_prompt_masked,
             pii_items=list(pii_items) + list(forced_items),
+            direct_prompt=direct_prompt,
         )
     # Solar가 꺼져 있으면 양성 윈도우 전체를 fail-safe로 반환하므로 인접 윈도우가
     # 겹친다. 문서 단위 OR 결과는 유지하되 API/통계에는 하나의 연속 구간으로 보인다.
@@ -759,7 +778,9 @@ def _build_result(
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
         "originalText": original_text,
-        "maskedText": masked_text,
+        # 차단 결과의 maskedText 는 원문이거나 덜 가린 텍스트일 수 있다(규칙 미수신·파싱 실패).
+        # blocked 를 안 보는 소비자가 "마스킹본" 으로 내보내지 않게 비운다(MCP 응답과 같은 규칙).
+        "maskedText": "" if blocked else masked_text,
         "piiItems": pii_items,
         "injectionItems": injection_items,
         "forcedMaskItems": forced_mask_items,
@@ -796,7 +817,7 @@ def _build_result(
         # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
         # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.
         result["userPromptOriginal"] = user_prompt
-        result["userPromptMasked"] = user_prompt_masked
+        result["userPromptMasked"] = "" if blocked else user_prompt_masked
         result["userPromptPiiItems"] = user_prompt_pii_items or []
         result["userPromptForcedMaskItems"] = user_prompt_forced_mask_items or []
     return result
