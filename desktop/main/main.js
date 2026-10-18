@@ -238,7 +238,16 @@ app.whenReady().then(async () => {
   // 프록시 요청은 엔진에서 사람 판단을 기다린다. 대시보드가 트레이에 숨겨져도
   // 응답할 수 있도록 메인 프로세스의 네이티브 확인창으로 연결한다. 라이트 판은 프록시가 없다.
   if (!isLite(app.getVersion())) {
-    proxyDecisionUi = new ProxyDecisionController({ engineManager, dialog });
+    proxyDecisionUi = new ProxyDecisionController({
+      engineManager,
+      dialog,
+      // 맥은 확인창을 대시보드 창에 붙인다 — 부모 없는 확인창은 앱 전체를 멈춘다(proxy-decision-ui.js).
+      // 트레이에 숨어 있으면 꺼내서 붙인다. 사람 판단이 필요한 순간이라 앞으로 나오는 게 맞다.
+      getParentWindow: () => {
+        showDashboard();
+        return mainWindow;
+      },
+    });
     proxyDecisionUi.start();
   }
 

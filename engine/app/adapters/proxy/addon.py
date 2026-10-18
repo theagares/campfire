@@ -396,6 +396,7 @@ class CampfireAddon:
         masked = await self._scan_texts_and_decide(
             [f for _, f in picked], host="claude.ai",
             prompt_fields=[f for path, f in picked if path == CLAUDE_PROMPT_PATH],
+            flow=flow,
         )
         if masked is None:
             self._block(flow, "검토 결과 전송하지 않기로 했습니다")
@@ -448,6 +449,7 @@ class CampfireAddon:
             file_name=promise.original_name,
             mime=flow.request.headers.get("content-type", ""),
             host="gemini.google.com",
+            flow=flow,
         )
         if masked is None:
             promise.blocked = True
@@ -500,7 +502,7 @@ class CampfireAddon:
             part = parts[i]
             name = part.filename or "upload.bin"
             masked = await self._scan_and_decide(
-                data=part.body, file_name=name, mime=part.content_type, host=host
+                data=part.body, file_name=name, mime=part.content_type, host=host, flow=flow
             )
             if masked is None:
                 self._block(flow, "검토 결과 전송하지 않기로 했습니다")
@@ -585,6 +587,7 @@ class CampfireAddon:
             file_name=promise.original_name,
             mime=flow.request.headers.get("content-type", ""),
             host="chatgpt.com",
+            flow=flow,
         )
         if masked is None:
             promise.blocked = True
@@ -622,7 +625,7 @@ class CampfireAddon:
 
     # ── 텍스트 여러 필드 검사 + 한 번의 판단 (Claude 메시지 RPC) ──────────────
 
-    async def _scan_texts_and_decide(self, fields, *, host, prompt_fields=()):
+    async def _scan_texts_and_decide(self, fields, *, host, prompt_fields=(), flow=None):
         """텍스트 필드 여러 개를 검사하고 **판단은 한 번만** 받는다.
 
         메시지 하나에 프롬프트(2.3)와 인라인 파일(2.15.4)이 같이 있어도 검토 요청은
@@ -682,7 +685,7 @@ class CampfireAddon:
             return _ORIGINAL
         action = await broker.wait(
             file_name="메시지", host=host, result=combined,
-            timeout_s=config.PROXY_DECISION_TIMEOUT_S,
+            timeout_s=config.PROXY_DECISION_TIMEOUT_S, is_alive=_client_alive(flow),
         )
         if action == "cancel":
             return None
@@ -693,7 +696,7 @@ class CampfireAddon:
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
     async def _scan_and_decide(
-        self, *, data: bytes, file_name: str, mime: str, host: str
+        self, *, data: bytes, file_name: str, mime: str, host: str, flow=None
     ) -> bytes | None | object:
         """검사하고 판단을 받는다.
 
@@ -725,6 +728,7 @@ class CampfireAddon:
             host=host,
             result=result,
             timeout_s=config.PROXY_DECISION_TIMEOUT_S,
+            is_alive=_client_alive(flow),
         )
         if action == "cancel":
             return None
@@ -750,6 +754,19 @@ class CampfireAddon:
 # "원본을 그대로 보낸다" 를 나타내는 표식. None(보내지 않음)과 구분해야 해서
 # bytes 도 None 도 아닌 고유 객체를 쓴다.
 _ORIGINAL = object()
+
+
+def _client_alive(flow):
+    """판단을 기다리는 동안 브라우저 연결이 살아 있는지 알려 주는 함수. 모르면 None.
+
+    mitmproxy 는 클라이언트 연결이 닫히면 기다리는 훅과 상관없이 client_conn.timestamp_end 를
+    채운다. 같은 연결에서 요청만 버린 경우(HTTP/2 스트림 취소)는 여기서 알 수 없다 — 그때는
+    앱이 판단 창을 닫는 쪽(desktop/main/proxy-decision-ui.js)이 맡는다.
+    """
+    conn = getattr(flow, "client_conn", None)
+    if conn is None:
+        return None
+    return lambda: conn.timestamp_end is None
 
 
 def _is_clean_result(result: dict) -> bool:

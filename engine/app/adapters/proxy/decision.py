@@ -19,12 +19,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 logger = logging.getLogger("securedoc.proxy.decision")
 
 Action = Literal["send_masked", "send_original", "cancel"]
+
+# 판단을 기다리는 동안 브라우저 연결이 살아 있는지 보는 간격.
+_ALIVE_CHECK_S = 1.0
 
 
 class DecisionTimeout(Exception):
@@ -87,6 +91,7 @@ class DecisionBroker:
         host: str,
         result: dict[str, Any],
         timeout_s: float,
+        is_alive: Callable[[], bool] | None = None,
     ) -> Action:
         """판단이 날 때까지 기다린다. 이 await 동안 브라우저 요청이 붙들려 있다.
 
@@ -113,14 +118,44 @@ class DecisionBroker:
             (result.get("stats") or {}).get("forcedMaskCount", len(result.get("forcedMaskItems") or [])),
         )
         try:
-            return await asyncio.wait_for(pending.future, timeout=timeout_s)
+            if is_alive is None:
+                return await asyncio.wait_for(pending.future, timeout=timeout_s)
+            return await self._wait_while_alive(decision_id, pending.future, timeout_s, is_alive)
         except asyncio.TimeoutError as exc:
             logger.warning("[proxy] 판단 타임아웃 id=%s (%.0fs)", decision_id, timeout_s)
             raise DecisionTimeout(
                 f"{timeout_s:.0f}초 안에 판단이 없었습니다"
             ) from exc
         finally:
+            if not pending.future.done():
+                pending.future.cancel()  # 늦게 온 판단은 resolve 가 409 로 돌려보낸다
             self._pending.pop(decision_id, None)
+
+    @staticmethod
+    async def _wait_while_alive(
+        decision_id: str, future: asyncio.Future, timeout_s: float, is_alive: Callable[[], bool]
+    ) -> Action:
+        """판단을 기다리되, 브라우저가 연결을 끊으면 그 자리에서 끝낸다.
+
+        mitmproxy 는 클라이언트가 끊겨도 기다리는 훅을 취소하지 않는다. 그대로 두면 이미 없는
+        요청의 판단 건이 타임아웃(기본 120초)까지 목록에 남아, 앱이 그 확인창을 계속 띄웠다
+        (맥 실측: 탭을 옮긴 뒤 "취소" 해도 같은 건이 다시 떴다). 끝낼 때는 차단과 같다 —
+        원본을 내보내는 경로가 아니다.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(future), timeout=min(_ALIVE_CHECK_S, remaining)
+                )
+            except asyncio.TimeoutError:
+                if not is_alive():
+                    logger.info("[proxy] 판단 대기 중 브라우저 연결이 끊김 id=%s", decision_id)
+                    raise DecisionTimeout("브라우저 요청이 끊겼습니다") from None
 
     def cancel_all(self, reason: str = "프록시가 중지됐습니다") -> int:
         """붙들고 있는 판단을 전부 끝낸다. 끝낸 개수를 돌려준다.

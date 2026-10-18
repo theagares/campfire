@@ -174,7 +174,7 @@ def test_gemini_본문이_마스킹되고_선언값에_맞춰진다():
     start = _gem_start(a, declared=1000)
     nprime = int(start.request.headers["x-goog-upload-header-content-length"])
 
-    async def fake(*, data, file_name, mime, host):
+    async def fake(*, data, file_name, mime, host, flow=None):
         assert b"SECRET" in data
         return b"# masked"
 
@@ -209,7 +209,7 @@ def test_gemini_재시도도_같은_결과를_쓴다():
     _gem_start(a, declared=1000)
     calls = []
 
-    async def fake(*, data, file_name, mime, host):
+    async def fake(*, data, file_name, mime, host, flow=None):
         calls.append(1)
         return b"# masked"
 
@@ -319,7 +319,7 @@ def test_PUT_재시도는_같은_결과를_쓰고_다시_묻지_않는다():
     _armed(a, "/files/abc/raw")
     asked = []
 
-    async def fake(*, data, file_name, mime, host):
+    async def fake(*, data, file_name, mime, host, flow=None):
         asked.append(file_name)
         return b"# masked"
 
@@ -350,7 +350,7 @@ def test_크기선언이_없는_흐름은_패딩하지_않는다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.txt")
     a._chatgpt["/files/nopad/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host):
+    async def fake(*, data, file_name, mime, host, flow=None):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]
@@ -371,7 +371,7 @@ def test_본문을_바꾸면_타입도_바꾼다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.pdf")
     a._chatgpt["/files/pdf/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host):
+    async def fake(*, data, file_name, mime, host, flow=None):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]
@@ -426,7 +426,7 @@ def test_원본_전송을_골라도_선언값에_맞춰_채운다():
     a = CampfireAddon()
     _armed(a, "/files/orig/raw", declared=64)
 
-    async def original(*, data, file_name, mime, host):
+    async def original(*, data, file_name, mime, host, flow=None):
         return _ORIGINAL
 
     a._scan_and_decide = original  # type: ignore[assignment]

@@ -89,3 +89,46 @@ def test_목록에는_원문이_없다():
         await task
 
     asyncio.run(go())
+
+
+def test_브라우저_연결이_끊기면_판단_건을_바로_끝낸다(monkeypatch):
+    # 맥 실측: 탭을 옮겨 요청이 끊긴 뒤에도 판단 건이 타임아웃(120초)까지 목록에 남아,
+    # 앱이 같은 확인창을 계속 띄웠다. 끊기면 그 자리에서 끝내고(차단과 같다) 목록에서 뺀다.
+    import app.adapters.proxy.decision as decision_mod
+
+    monkeypatch.setattr(decision_mod, "_ALIVE_CHECK_S", 0.02)
+
+    async def go():
+        broker = DecisionBroker()
+        alive = {"v": True}
+        task = asyncio.create_task(broker.wait(
+            file_name="a.docx", host="claude.ai", result=RESULT, timeout_s=30,
+            is_alive=lambda: alive["v"],
+        ))
+        await asyncio.sleep(0.05)
+        [summary] = broker.list_pending()
+        alive["v"] = False
+        with pytest.raises(DecisionTimeout):
+            await asyncio.wait_for(task, timeout=2)
+        assert broker.list_pending() == []
+        assert broker.resolve(summary["id"], "send_original") is False, "끝난 건에 늦게 온 판단은 거절"
+
+    asyncio.run(go())
+
+
+def test_연결이_살아_있으면_사람_판단을_그대로_기다린다(monkeypatch):
+    import app.adapters.proxy.decision as decision_mod
+
+    monkeypatch.setattr(decision_mod, "_ALIVE_CHECK_S", 0.02)
+
+    async def go():
+        broker = DecisionBroker()
+        task = asyncio.create_task(broker.wait(
+            file_name="a.docx", host="claude.ai", result=RESULT, timeout_s=30, is_alive=lambda: True,
+        ))
+        await asyncio.sleep(0.1)  # 확인 주기를 여러 번 지나도
+        [summary] = broker.list_pending()
+        assert broker.resolve(summary["id"], "send_masked") is True
+        assert await task == "send_masked"
+
+    asyncio.run(go())
