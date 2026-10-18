@@ -2,19 +2,37 @@
 /**
  * 프록시가 보류한 검사 결과를 네이티브 확인창으로 보여준다.
  * 대시보드가 트레이에 숨겨진 상태에서도 사람이 안전하게 결정할 수 있다.
+ *
+ * 맥에서는 확인창을 대시보드 창에 붙인다(시트). 부모 창 없는 메시지 박스는 맥에서 동기로
+ * 돌아 그동안 앱 메인 프로세스 전체가 멈추고, 닫으라는 신호(AbortSignal)도 듣지 않는다
+ * (Electron dialog 문서). 맥 실측: 확인창이 떠 있는 동안 앱이 응답하지 않았고, 판단이
+ * 만료돼도 창이 남았다.
  */
 
 const POLL_MS = 500;
+/** 확인창이 떠 있는 동안 그 판단 건이 아직 엔진에 있는지 보는 간격. */
+const WATCH_MS = 1000;
+/** 결정한 건을 기억하는 시간 — 엔진이 아직 목록에 두고 있어도 다시 띄우지 않는다. */
+const HANDLED_TTL_MS = 10 * 60 * 1000;
 
 class ProxyDecisionController {
-  constructor({ engineManager, dialog, fetchImpl = globalThis.fetch, pollMs = POLL_MS }) {
+  constructor({
+    engineManager, dialog, fetchImpl = globalThis.fetch, pollMs = POLL_MS,
+    watchMs = WATCH_MS, getParentWindow = () => null, platform = process.platform,
+  }) {
     this.engineManager = engineManager;
     this.dialog = dialog;
     this.fetch = fetchImpl;
     this.pollMs = pollMs;
+    this.watchMs = watchMs;
+    this.getParentWindow = getParentWindow;
+    this.platform = platform;
     this.timer = null;
     this.stopped = true;
     this.currentId = null;
+    // id -> { action, at, posted }. 결정을 엔진에 못 보냈으면(posted:false) 창 없이 다시 보낸다.
+    // 예전엔 전송이 실패하면 같은 건을 다시 띄워, 사용자가 "취소" 를 눌러도 창이 계속 떴다(맥 실측).
+    this.handled = new Map();
   }
 
   start() {
@@ -63,10 +81,16 @@ class ProxyDecisionController {
     const status = this.engineManager.getStatus();
     if (!status || status.state !== 'running' || !status.baseUrl) return false;
 
+    const now = Date.now();
+    for (const [id, h] of this.handled) if (now - h.at > HANDLED_TTL_MS) this.handled.delete(id);
+    for (const [id, h] of this.handled) {
+      if (!h.posted) await this._post(status.baseUrl, id, h.action);
+    }
+
     const listed = await this._json(status.baseUrl, '/decisions');
     const pending = Array.isArray(listed?.pending) ? listed.pending : [];
-    const summary = pending[0];
-    if (!summary?.id) return false;
+    const summary = pending.find((p) => p?.id && !this.handled.has(p.id));
+    if (!summary) return false;
 
     this.currentId = summary.id;
     try {
@@ -77,14 +101,63 @@ class ProxyDecisionController {
     return true;
   }
 
+  /** 결정을 엔진에 보낸다. 이미 끝난 건(404/409)도 보낸 것으로 친다. 그 밖의 실패는 다음에 다시. */
+  async _post(baseUrl, id, action) {
+    try {
+      await this._json(baseUrl, `/decisions/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+    } catch (err) {
+      if (err.status !== 404 && err.status !== 409) return false;
+    }
+    const h = this.handled.get(id);
+    if (h) h.posted = true;
+    return true;
+  }
+
+  /** 맥은 대시보드 창에 붙여 띄운다(앱을 막지 않고, signal 로 닫을 수 있다). */
+  _show(options, signal) {
+    const parent = this.platform === 'darwin' ? this.getParentWindow() : null;
+    const opts = { ...options, signal };
+    return parent ? this.dialog.showMessageBox(parent, opts) : this.dialog.showMessageBox(opts);
+  }
+
   async _review(baseUrl, summary) {
+    const id = summary.id;
+    const path = `/decisions/${encodeURIComponent(id)}`;
     let detail = summary;
     try {
-      detail = await this._json(baseUrl, `/decisions/${encodeURIComponent(summary.id)}`);
+      detail = await this._json(baseUrl, path);
     } catch (err) {
       if (err.status === 404 || err.status === 409) return;
     }
 
+    // 창이 떠 있는 동안 판단 건이 엔진에서 사라지면(브라우저가 요청을 버림·시간 초과) 창을 닫는다.
+    const ctrl = new AbortController();
+    let gone = false;
+    const watch = setInterval(() => {
+      this._json(baseUrl, path).catch((err) => {
+        if (err.status === 404 || err.status === 409) { gone = true; ctrl.abort(); }
+      });
+    }, this.watchMs);
+
+    let action;
+    try {
+      action = await this._ask(detail, ctrl.signal);
+    } finally {
+      clearInterval(watch);
+    }
+    if (gone) {
+      this.handled.set(id, { action: 'cancel', at: Date.now(), posted: true });
+      return;
+    }
+    this.handled.set(id, { action, at: Date.now(), posted: false });
+    await this._post(baseUrl, id, action);
+  }
+
+  async _ask(detail, signal) {
     const pii = Number(detail.piiCount || 0);
     const injection = Number(detail.injectionCount || 0);
     const forced = Number(detail.forcedMaskCount || 0);
@@ -111,7 +184,7 @@ class ProxyDecisionController {
       const buttons = hasMandatoryMask
         ? ['마스킹본 전송', '취소']
         : ['마스킹본 전송', '취소', '원본 전송'];
-      const { response } = await this.dialog.showMessageBox({
+      const { response } = await this._show({
         type: 'warning',
         title: 'Campfire 전송 검토',
         message: `${detail.fileName || '파일'}에서 위험 요소를 찾았습니다.`,
@@ -120,12 +193,12 @@ class ProxyDecisionController {
         defaultId: 0,
         cancelId: 1,
         noLink: true,
-      });
+      }, signal);
       action = response === 0 ? 'send_masked'
         : (!hasMandatoryMask && response === 2 ? 'send_original' : 'cancel');
     } else {
       const buttons = hasMandatoryMask ? ['취소', '마스킹본 전송'] : ['취소', '원본 전송'];
-      const { response } = await this.dialog.showMessageBox({
+      const { response } = await this._show({
         type: 'warning',
         title: 'Campfire 검사 미완료',
         message: `${detail.fileName || '파일'}을(를) 완전히 검사하지 못했습니다.`,
@@ -134,12 +207,12 @@ class ProxyDecisionController {
         defaultId: 0,
         cancelId: 0,
         noLink: true,
-      });
+      }, signal);
       action = response === 1 ? (hasMandatoryMask ? 'send_masked' : 'send_original') : 'cancel';
     }
 
-    if (action === 'send_original') {
-      const confirmed = await this.dialog.showMessageBox({
+    if (action === 'send_original' && !signal.aborted) {
+      const confirmed = await this._show({
         type: 'warning',
         title: '원본 전송 확인',
         message: '검출 내용을 마스킹하지 않고 원본을 전송할까요?',
@@ -148,19 +221,10 @@ class ProxyDecisionController {
         defaultId: 0,
         cancelId: 0,
         noLink: true,
-      });
+      }, signal);
       if (confirmed.response !== 1) action = 'cancel';
     }
-
-    try {
-      await this._json(baseUrl, `/decisions/${encodeURIComponent(summary.id)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
-      });
-    } catch (err) {
-      if (err.status !== 404 && err.status !== 409) throw err;
-    }
+    return signal.aborted ? 'cancel' : action;
   }
 }
 

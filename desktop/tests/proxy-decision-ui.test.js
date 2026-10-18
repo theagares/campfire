@@ -81,3 +81,81 @@ test('검사 미완료 결과는 취소를 기본값으로 둔다', async () => 
   assert.equal(shown[0].defaultId, 0);
   assert.deepEqual(posts, [{ action: 'cancel' }]);
 });
+
+// ── 맥 실측: 확인창이 앱을 막고, 끝난 건이 다시 뜨고, "취소" 가 엔진에 안 닿았다 ─────────────
+
+test('결정을 엔진에 못 보내면 창을 다시 띄우지 않고 결정만 다시 보낸다', async () => {
+  const detail = { id: 'r1', fileName: '메시지', host: 'claude.ai', piiCount: 1, scanStatus: 'ok', result: { scanStatus: 'ok' } };
+  const posts = [];
+  const shown = [];
+  let failPost = true;
+  const fetchImpl = async (url, options = {}) => {
+    if (options.method === 'POST') {
+      posts.push(JSON.parse(options.body));
+      if (failPost) throw new Error('엔진 응답 없음');
+      return response({ ok: true });
+    }
+    if (url.endsWith('/decisions')) return response({ pending: [{ id: 'r1' }] }); // 엔진은 아직 목록에 둔다
+    return response(detail);
+  };
+  const ui = new ProxyDecisionController({
+    engineManager: manager(), fetchImpl,
+    dialog: { showMessageBox: async (opts) => { shown.push(opts); return { response: 1 }; } }, // 취소
+  });
+  await ui.checkNow();
+  failPost = false;
+  await ui.checkNow();
+  await ui.checkNow();
+  assert.equal(shown.length, 1, '이미 결정한 건의 창을 다시 띄웠다');
+  assert.deepEqual(posts, [{ action: 'cancel' }, { action: 'cancel' }], '실패한 결정을 다시 보내야 한다(성공 뒤엔 그만)');
+});
+
+test('창이 떠 있는 동안 판단 건이 엔진에서 사라지면 창을 닫고 결정을 보내지 않는다', async () => {
+  let detailCalls = 0;
+  const posts = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (options.method === 'POST') { posts.push(JSON.parse(options.body)); return response({ ok: true }); }
+    if (url.endsWith('/decisions')) return response({ pending: [{ id: 'g1' }] });
+    detailCalls += 1;
+    return detailCalls === 1
+      ? response({ id: 'g1', piiCount: 1, scanStatus: 'ok', result: { scanStatus: 'ok' } })
+      : response({ detail: 'gone' }, 409);
+  };
+  let aborted = false;
+  const ui = new ProxyDecisionController({
+    engineManager: manager(), fetchImpl, watchMs: 5,
+    dialog: {
+      // 사람이 아무것도 누르지 않는다 — signal 로 닫혀야만 끝난다.
+      showMessageBox: (opts) => new Promise((resolve) => {
+        opts.signal.addEventListener('abort', () => { aborted = true; resolve({ response: opts.cancelId }); });
+      }),
+    },
+  });
+  await ui.checkNow();
+  assert.equal(aborted, true, '사라진 판단 건의 창이 닫히지 않았다');
+  assert.deepEqual(posts, [], '사라진 건에 결정을 보냈다');
+  assert.equal(await ui.checkNow(), false, '사라진 건을 다시 띄웠다');
+});
+
+test('맥은 확인창을 대시보드 창에 붙인다(부모 없는 창은 앱 전체를 멈춘다)', async () => {
+  const detail = { id: 'm1', piiCount: 1, scanStatus: 'ok', result: { scanStatus: 'ok' } };
+  const fetchImpl = async (url, options = {}) => {
+    if (options.method === 'POST') return response({ ok: true });
+    if (url.endsWith('/decisions')) return response({ pending: [{ id: 'm1' }] });
+    return response(detail);
+  };
+  const win = { id: 'dashboard' };
+  const calls = [];
+  const dialog = { showMessageBox: async (...args) => { calls.push(args); return { response: 0 }; } };
+  await new ProxyDecisionController({
+    engineManager: manager(), fetchImpl, dialog, platform: 'darwin', getParentWindow: () => win,
+  }).checkNow();
+  assert.equal(calls[0][0], win, '맥에서 부모 창 없이 띄웠다');
+  assert.ok(calls[0][1].signal, '닫을 수 있게 signal 을 넘겨야 한다');
+
+  calls.length = 0;
+  await new ProxyDecisionController({
+    engineManager: manager(), fetchImpl, dialog, platform: 'win32', getParentWindow: () => win,
+  }).checkNow();
+  assert.equal(typeof calls[0][0].message, 'string', 'Windows 는 지금처럼 부모 없이 띄운다');
+});
