@@ -22,6 +22,37 @@ from app import config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("securedoc.engine")
 
+# 앱·확장이 몇 초마다 부르는 상태 확인 요청. 성공 응답까지 접근 로그에 남기면 로그가 분당
+# 수백 줄씩 자란다(앱의 판단 폴링 0.5초, 연결 화면 1.5초, 확장 /health·경로 보고). 실패
+# 응답은 원인 추적에 필요하니 남긴다.
+_QUIET_POLL_PATHS = frozenset({
+    "/health", "/decisions", "/models/status", "/proxy/status", "/proxy/extension-route",
+})
+
+
+class _QuietPollingFilter(logging.Filter):
+    """uvicorn 접근 로그에서 상태 확인 폴링의 성공 응답을 뺀다."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        # uvicorn.access: (client_addr, method, path_with_query, http_version, status_code)
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        path = str(args[2]).split("?", 1)[0]
+        status = args[4]
+        return not (path in _QUIET_POLL_PATHS and isinstance(status, int) and status < 400)
+
+
+def _uvicorn_log_config() -> dict:
+    import copy
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config.setdefault("filters", {})["quiet_polling"] = {"()": _QuietPollingFilter}
+    log_config["loggers"]["uvicorn.access"]["filters"] = ["quiet_polling"]
+    return log_config
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -135,7 +166,7 @@ def main() -> None:
     if config.DEMO_TRACE_ENABLED:
         logger.warning("[engine] 시연 추적 켜짐 — 대시보드 http://%s:%d/demo/dashboard (가린 문장을 메모리에 둠)",
                        config.HOST, port)
-    uvicorn.run(app, host=config.HOST, port=port, log_level="info")
+    uvicorn.run(app, host=config.HOST, port=port, log_level="info", log_config=_uvicorn_log_config())
 
 
 if __name__ == "__main__":

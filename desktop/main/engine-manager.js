@@ -40,6 +40,40 @@ const DEV = process.argv.includes('--dev') || !app?.isPackaged;
 const RECENT_LOG_LINES = 80;
 /** 엔진 로그 파일 상한 — 넘으면 비우고 다시 쓴다(접근 로그가 계속 쌓인다). */
 const ENGINE_LOG_MAX_BYTES = 2 * 1024 * 1024;
+/** 엔진이 로그 파일에 직접 쓸 때 상한을 확인하는 간격. */
+const ENGINE_LOG_CHECK_MS = 60 * 1000;
+
+/** 상한을 넘었으면 비운다. 지우지 않는다 — 엔진이 이 파일을 열어 둔 채 쓰고 있을 수 있다
+ *  (지우면 엔진은 사라진 파일에 계속 써서 다음 재시작까지 로그가 남지 않는다). */
+function capEngineLog(p, maxBytes = ENGINE_LOG_MAX_BYTES) {
+  try {
+    if (fs.statSync(p).size > maxBytes) fs.truncateSync(p, 0);
+  } catch (_) { /* 파일이 아직 없다 */ }
+}
+
+/** 엔진 stdout/stderr 로 넘길 로그 파일 핸들(이어 쓰기). */
+function openEngineLog(p, maxBytes = ENGINE_LOG_MAX_BYTES) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  capEngineLog(p, maxBytes);
+  return fs.openSync(p, 'a');
+}
+
+/** 로그 파일 끝부분의 줄들(비정상 종료 단서용). */
+function readLogTail(p, maxBytes = 16 * 1024) {
+  let fd = null;
+  try {
+    fd = fs.openSync(p, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, maxBytes);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf-8').split('\n');
+  } catch (_) {
+    return [];
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* noop */ }
+  }
+}
 
 /**
  * @typedef {Object} EngineStatus
@@ -212,20 +246,35 @@ class EngineManager extends EventEmitter {
       const cwd = paths.userDataRoot();
       try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) { /* 아래 spawn 이 알려준다 */ }
 
-      this.child = spawn(this.pythonExe, ['-m', 'app.main'], {
-        cwd,
-        env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      // 배포본은 엔진 출력을 로그 파일에 직접 붙인다(파이프가 아니라). 파이프면 이 프로세스가
+      // 비워 줘야 하는데, 맥 키체인 승인 창처럼 메인 프로세스가 멈추는 동안 파이프가 차면
+      // 엔진의 로그 쓰기가 막혀 엔진 전체가 멈췄다(맥 실측: 키체인 창 6분 대기 중 /health 무응답).
+      // 개발 중에는 터미널로 보려고 파이프로 받는다. 파일을 못 열면 예전처럼 파이프로 받는다.
+      let logFd = null;
+      if (!DEV) {
+        try { logFd = openEngineLog(paths.resolveEngineLogPath()); } catch (_) { logFd = null; }
+      }
+      const out = logFd ?? 'pipe';
+      try {
+        this.child = spawn(this.pythonExe, ['-m', 'app.main'], {
+          cwd,
+          env,
+          windowsHide: true,
+          stdio: ['ignore', out, out],
+        });
+      } finally {
+        // 자식은 자기 사본을 물려받았다 — 이쪽 핸들은 닫는다.
+        if (logFd !== null) try { fs.closeSync(logFd); } catch (_) { /* noop */ }
+      }
+      this.logToFile = logFd !== null;
     } catch (err) {
       this.child = null;
       this._setState('error', `엔진 spawn 실패: ${err.message}`);
       return;
     }
 
-    this.child.stdout.on('data', (d) => this._onEngineLog(d));
-    this.child.stderr.on('data', (d) => this._onEngineLog(d));
+    if (this.child.stdout) this.child.stdout.on('data', (d) => this._onEngineLog(d));
+    if (this.child.stderr) this.child.stderr.on('data', (d) => this._onEngineLog(d));
     this.child.on('exit', (code, signal) => this._onExit(code, signal));
     this.child.on('error', (err) => {
       this._setState('error', `엔진 프로세스 오류: ${err.message}`);
@@ -274,9 +323,11 @@ class EngineManager extends EventEmitter {
     }
   }
 
-  /** 비정상 종료를 사용자에게 설명할 때 붙일 마지막 단서. */
+  /** 비정상 종료를 사용자에게 설명할 때 붙일 마지막 단서. 엔진이 파일에 직접 썼으면
+   *  메모리에는 아무것도 없으니 파일 끝에서 읽는다. */
   _lastErrorLines(n = 3) {
-    const meaningful = this.recentLog
+    const lines = this.logToFile ? readLogTail(paths.resolveEngineLogPath()) : this.recentLog;
+    const meaningful = lines
       .map((l) => l.trim())
       .filter(Boolean)
       .filter((l) => !/^INFO:/.test(l)); // 평범한 기동 로그는 단서가 못 된다
@@ -314,6 +365,11 @@ class EngineManager extends EventEmitter {
   _startPolling() {
     this._stopPolling();
     const tick = async () => {
+      // 엔진이 파일에 직접 쓰면 쓸 때마다 상한을 볼 수 없으니 가끔 본다.
+      if (this.logToFile && Date.now() - (this.logCheckedAt || 0) > ENGINE_LOG_CHECK_MS) {
+        this.logCheckedAt = Date.now();
+        capEngineLog(paths.resolveEngineLogPath());
+      }
       const found = await this._scanForEngine();
       if (found) {
         this.restartAttempts = 0; // 정상 응답 확인 → 재시작 카운터 리셋
@@ -580,4 +636,4 @@ class EngineManager extends EventEmitter {
   }
 }
 
-module.exports = { EngineManager };
+module.exports = { EngineManager, openEngineLog, capEngineLog, readLogTail };
