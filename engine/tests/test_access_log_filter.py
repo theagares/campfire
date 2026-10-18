@@ -25,7 +25,6 @@ def test_quiets_successful_polling_but_keeps_everything_else():
     assert not f.filter(_access("/health?ts=1", 200))
     assert f.filter(_access("/health", 500)), "실패 응답은 원인 추적에 필요하다"
     assert f.filter(_access("/jobs/prompt", 200))
-    assert f.filter(_access("/decisions/abc", 200)), "판단 건 상세는 남긴다"
     other = logging.LogRecord("x", logging.INFO, __file__, 1, "plain message", None, None)
     assert f.filter(other)
 
@@ -36,3 +35,11 @@ def test_uvicorn_log_config_applies_the_filter():
     logging.config.dictConfig(cfg)  # 실제로 적용되는 모양인지(잘못되면 예외)
     access = logging.getLogger("uvicorn.access")
     assert any(isinstance(flt, _QuietPollingFilter) for flt in access.filters)
+
+
+def test_quiets_decision_watch_but_keeps_decisions_and_failures():
+    # 판단 창이 떠 있는 동안 앱이 1초마다 보는 GET /decisions/<id> — 한 건에 약 120줄이 쌓였다.
+    f = _QuietPollingFilter()
+    assert not f.filter(_access("/decisions/abc123", 200))
+    assert f.filter(_access("/decisions/abc123", 200, "POST")), "사람의 결정은 남긴다"
+    assert f.filter(_access("/decisions/abc123", 404)), "사라진 건(404)은 남긴다"

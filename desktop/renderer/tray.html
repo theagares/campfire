@@ -64,47 +64,26 @@
          같이 잘려 나가므로 overflow 를 써야 한다 — 그래서 기법이 갈린다. */
       clip-path:inset(0 round 999px);
     }
-    /* mp-dot의 glow는 앱 본체(styles.css)와 완전히 같은 keyframes/구조를 쓴다.
-       중요한 실측 결과(styles.css의 "Ambient Glow" 섹션 주석에 자세히 남겨뒀다 — 다시
-       이 삽질 하지 말 것): box-shadow는 이 환경에서 "값이 바뀌는" 모든 경우(keyframes,
-       ::before, JS로 매 프레임 대입, 심지어 정적 값이어도 그 요소에 opacity<1/transform
-       애니메이션이 걸리기만 해도)에 페인트가 전혀 안 된다. 실측으로 검증된 대안:
-       box-shadow 대신 ::before에 background:radial-gradient() 로 halo를 그리고
-       opacity/transform(scale)만 애니메이션하면 문제없이 그려진다.
-       keyframes/구조는 styles.css의 것과 토씨 하나 안 틀리고 동일해야 한다(별도 파일
-       공유는 이 환경에서 안정적으로 로드 안 되는 문제가 있었음 — 실측). 한쪽만 고치면
-       트레이/앱 glow가 다시 갈리니 항상 같이 수정할 것(ambient-glow-a/b는 여기선 안
-       쓰여서(앱 쪽 mc-dot/ps-dot/dot 전용) 안 넣었다 — mp-dot이 쓰는 ambient-glow-c만
-       있으면 됨). */
-    @keyframes ambient-glow-c {
-      0%, 100% { opacity:.93; transform:translate(-50%,-50%) scale(1); }
-      50% { opacity:1; transform:translate(-50%,-50%) scale(1.035); }
-    }
+    /* mp-dot 의 펄스 링은 앱 본체(styles.css "펄스 링" 섹션)와 같은 구조·값이다 — 그 주석의 실측
+       결과(상태에 따라 색이 바뀌는 층은 이 환경에서 다시 그려지지 않는다, box-shadow 는 값이 바뀌면
+       안 그려진다)를 그대로 따른다. 별도 파일 공유는 이 환경에서 안정적으로 안 불려와(실측) 여기에
+       직접 둔다 — 한쪽만 고치면 트레이/앱이 다시 갈리니 항상 같이 수정할 것. */
     .model-pill .mp-dot {
       position:relative;
       width:6px; height:6px; border-radius:50%; background:var(--ink-mute); flex:0 0 auto;
-      transition:background-color .8s ease-in-out;
     }
-    .model-pill .mp-dot::before {
-      content:''; position:absolute; left:50%; top:50%; width:56px; height:56px;
-      transform:translate(-50%,-50%) scale(1);
-      border-radius:9999px; pointer-events:none;
-      opacity:0; transition:opacity .8s ease-in-out;
-      /* styles.css와 동일하게 반경 축소(140→56px) + 점 근처 강도 상향(실측: 140px는
-         필 테두리를 넘어 밖으로 번져 나갔음). */
-      background:radial-gradient(circle,
-        color-mix(in srgb, currentColor 55%, transparent) 0%,
-        color-mix(in srgb, currentColor 22%, transparent) 25%,
-        color-mix(in srgb, currentColor 6%, transparent) 55%,
-        transparent 80%);
+    .model-pill .mp-dot::after {
+      content:''; position:absolute; inset:0; border-radius:9999px;
+      background:var(--purple); opacity:0; pointer-events:none;
     }
     .model-pill.on { border-color:var(--purple); color:var(--purple); }
-    .model-pill.on .mp-dot { background:var(--purple); color:var(--purple); }
-    .model-pill.on .mp-dot::before {
-      opacity:1;
-      will-change:opacity, transform;
-      animation:ambient-glow-c 6.3s ease-in-out infinite;
+    .model-pill.on .mp-dot { background:var(--purple); }
+    .model-pill.on .mp-dot::after { animation:pulse-ring 2.2s cubic-bezier(.2,.6,.3,1) infinite; }
+    @keyframes pulse-ring {
+      0% { transform:scale(1); opacity:.55; }
+      80%, 100% { transform:scale(3.2); opacity:0; }
     }
+    @media (prefers-reduced-motion: reduce) { .model-pill .mp-dot::after { animation:none !important; } }
     .res-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
     .res-block .rb-head { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
     .res-block .rb-icon { width:14px; height:14px; flex:0 0 14px; display:flex; align-items:center; justify-content:center; }

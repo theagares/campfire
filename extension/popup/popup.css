@@ -1,6 +1,6 @@
 /* popup.css — 데스크탑 앱 트레이 팝업(desktop/renderer/tray.html)과 같은 디자인 언어를
-   쓴다: 유리(glass) 카드 + 블러, 브랜드 퍼플(#584CDC), pill + glow dot, 카드 속 카드.
-   색상 변수/glow keyframes는 tray.html 것과 값을 그대로 맞췄다(다른 값을 쓰면 앱을
+   쓴다: 유리(glass) 카드 + 블러, 브랜드 퍼플(#584CDC), pill + 펄스 링 dot, 카드 속 카드.
+   색상 변수/펄스 링 keyframes는 tray.html 것과 값을 그대로 맞췄다(다른 값을 쓰면 앱을
    오가며 "미묘하게 다른 룩"으로 보임 — tray.html 자체 주석의 경고와 같은 이유). */
 
 :root, [data-theme="light"] {
@@ -58,47 +58,39 @@ body {
 
 .divider { height: 1px; background: var(--line); margin: 10px 0; }
 
-/* 상태 pill — tray.html 의 .sec-pill/.model-pill 과 같은 구조(dot + glow, 배경/글자색
-   전환). 여기 dot 은 currentColor 기반 glow 를 쓰므로 .status-pill.ok/.off 에서
-   color 만 바꾸면 halo 색도 같이 따라온다. */
+/* 상태 pill — 앱(styles.css "펄스 링")·트레이와 같은 표시: 솔리드 점 + 정상(ok)일 때만 퍼지는 링. */
 .status-toggle-wrap { position: relative; display: inline-flex; }
 .status-pill {
   position: relative; z-index: 1;
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
   background: var(--sunken); font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--ink-mute);
-  /* dot 의 glow(::before, 44px)가 필 높이(약 24px)보다 커서 위아래로 새어나갔다 —
-     필 안쪽으로만 번지게 자른다. 이 필은 .row(display:flex) 의 플렉스 아이템이라
-     overflow 로 인한 inline baseline 변화 문제가 없다(트레이 팝오버 쪽은 그게 걸려
-     clip-path 를 쓴다, desktop/renderer/tray.html 참고). */
+  /* 점의 펄스 링이 필 밖으로 새지 않게 자른다. 이 필은 .row(display:flex) 의 플렉스 아이템이라
+     overflow 로 인한 inline baseline 변화 문제가 없다(트레이 팝오버 쪽은 clip-path 를 쓴다). */
   overflow: hidden;
 }
 .status-pill.ok { color: var(--ok); }
 .status-pill.off { color: var(--danger); }
 .status-pill.warn { color: var(--warn); }
 
-@keyframes ambient-glow-c {
-  0%, 100% { opacity: .93; transform: translate(-50%,-50%) scale(1); }
-  50% { opacity: 1; transform: translate(-50%,-50%) scale(1.035); }
+/* 링의 색은 고정하고 켜고 끌 때 애니메이션만 붙였다 뗀다 — 상태에 따라 색이 바뀌는 층은 꺼진 색으로
+   그려진 채 다시 안 그려질 수 있다(앱 맥 실측, styles.css "펄스 링" 주석). */
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: .55; }
+  80%, 100% { transform: scale(3.2); opacity: 0; }
 }
 .status-pill .dot {
   position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-mute);
-  flex: 0 0 auto; transition: background-color .8s ease-in-out;
+  flex: 0 0 auto;
 }
-.status-pill .dot::before {
-  content: ''; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
-  transform: translate(-50%,-50%) scale(1);
-  border-radius: 9999px; pointer-events: none;
-  opacity: 0; transition: opacity .8s ease-in-out;
-  background: radial-gradient(circle,
-    color-mix(in srgb, currentColor 55%, transparent) 0%,
-    color-mix(in srgb, currentColor 22%, transparent) 25%,
-    color-mix(in srgb, currentColor 6%, transparent) 55%,
-    transparent 80%);
+.status-pill .dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 9999px;
+  background: var(--ok); opacity: 0; pointer-events: none;
 }
-.status-pill.ok .dot { background: var(--ok); color: var(--ok); }
-.status-pill.ok .dot::before { opacity: 1; will-change: opacity, transform; animation: ambient-glow-c 6.3s ease-in-out infinite; }
-.status-pill.off .dot { background: var(--danger); color: var(--danger); }
-.status-pill.warn .dot { background:var(--warn); color:var(--warn); }
+.status-pill.ok .dot { background: var(--ok); }
+.status-pill.ok .dot::after { animation: pulse-ring 2.2s cubic-bezier(.2,.6,.3,1) infinite; }
+.status-pill.off .dot { background: var(--danger); }
+.status-pill.warn .dot { background: var(--warn); }
+@media (prefers-reduced-motion: reduce) { .status-pill .dot::after { animation: none !important; } }
 
 .engine-detail { font-size: 10.5px; color: var(--ink-mute); margin: 8px 0 2px; word-break: break-all; }
 
