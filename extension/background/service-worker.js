@@ -89,11 +89,12 @@ async function discoverServer() {
     // 앱은 떠 있는데 규칙을 아직 못 넘겼다 — 맥에서는 새 버전 첫 실행의 키체인 승인 창을
     // 기다리는 경우가 대표적이다. "엔진 없음" 으로 알리면 사용자는 앱만 다시 켠다(맥 실측).
     if (results.some((r) => r?.waiting)) {
-      throw new Error(
+      // code: 팝업이 "엔진 없음" 대신 "키체인 승인 대기" 로 보여 주게 구분한다.
+      throw Object.assign(new Error(
         'Campfire 앱이 사용자 지정 마스킹 규칙을 아직 불러오지 못했습니다. macOS 라면 '
         + "키체인 승인 창('Campfire Safe Storage')에서 로그인 암호를 입력하고 '항상 허용'을 "
         + '누른 뒤 다시 보내 주세요. (검사 없이 전송하지 않습니다)',
-      );
+      ), { code: 'policy-waiting', port: results.find((r) => r?.waiting).port });
     }
     throw new Error(
       '로컬 엔진을 찾을 수 없습니다. Campfire 앱이 실행 중인지 확인하세요. '
@@ -171,6 +172,11 @@ async function checkEngineHealthNow() {
       health: data,
     };
   } catch (err) {
+    // 앱은 떠 있는데 규칙을 아직 못 받았다(맥 키체인 승인 대기). 팝업이 "미연결" 로 보여 주면
+    // 앱이 꺼진 것처럼 읽혔다(맥 실측). 여전히 ok:false 라 검사·전송은 막힌다.
+    if (err.code === 'policy-waiting') {
+      return { ok: false, waiting: true, target: 'local', port: err.port ?? null, error: err.message };
+    }
     return { ok: false, error: err.message };
   }
 }

@@ -40,7 +40,10 @@ class _QuietPollingFilter(logging.Filter):
             return True
         path = str(args[2]).split("?", 1)[0]
         status = args[4]
-        return not (path in _QUIET_POLL_PATHS and isinstance(status, int) and status < 400)
+        # 판단 창이 떠 있는 동안 앱이 1초마다 그 건이 남아 있는지 본다(GET /decisions/<id>) —
+        # 한 건이 만료까지 가면 약 120줄이 쌓였다(맥 실측). 결정(POST)과 실패 응답은 남긴다.
+        polled = path in _QUIET_POLL_PATHS or (args[1] == "GET" and path.startswith("/decisions/"))
+        return not (polled and isinstance(status, int) and status < 400)
 
 
 def _uvicorn_log_config() -> dict:

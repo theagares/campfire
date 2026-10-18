@@ -34,8 +34,10 @@ function render(info) {
   targetEl.textContent = isLocal ? '로컬 (앱 엔진)' : '연결 안 됨';
   portEl.textContent = isLocal && info?.port ? String(info.port) : '해당 없음';
 
-  pill.classList.remove('ok', 'off');
+  pill.classList.remove('ok', 'off', 'warn');
   if (ok) { pill.classList.add('ok'); engineText.textContent = '연결됨'; }
+  // 앱은 떠 있는데 규칙을 아직 못 받았다(맥 키체인 승인 대기) — 꺼진 것과 구분해 보여 준다.
+  else if (info?.waiting) { pill.classList.add('warn'); engineText.textContent = '키체인 승인 대기'; }
   else { pill.classList.add('off'); engineText.textContent = '미연결'; }
 
   if (ok && info?.health) {
@@ -77,14 +79,17 @@ function render(info) {
     routeText.textContent = '확인 불가';
     routeDetail.textContent = '';
   } else {
-    detail.textContent = '';
+    detail.textContent = info?.waiting
+      ? "macOS 키체인 승인 창('Campfire Safe Storage')에서 '항상 허용'을 누르면 연결됩니다. 그동안 검사 없이 전송하지 않습니다."
+      : '';
     routePill.className = 'status-pill off';
     routeText.textContent = '확인 불가';
     routeDetail.textContent = '';
   }
 
-  // 로컬 앱이 연결됐을 때만 대시보드 열기 가능
-  dashBtn.disabled = !(isLocal && ok);
+  // 로컬 앱이 떠 있을 때만 대시보드 열기 가능(키체인 대기 중에도 앱은 떠 있다 — 승인 창이
+  // 다른 창 뒤에 가려졌을 때 앱을 앞으로 꺼내는 데 쓴다)
+  dashBtn.disabled = !(isLocal && (ok || info?.waiting));
 }
 
 function requestInfo(type) {

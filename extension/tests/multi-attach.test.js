@@ -582,6 +582,15 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     assert.ok(none && none.includes('로컬 엔진을 찾을 수 없습니다'), `엔진이 없을 때 문구가 바뀌었다: ${none}`);
     const ready = await discoverError({ service: 'campfire', forcedMask: { managed: true, ready: true } });
     assert.strictEqual(ready, null, '준비된 엔진을 찾지 못했다');
+
+    // 팝업이 "미연결" 대신 "키체인 승인 대기" 로 보이게 연결 정보에 waiting 을 싣는다(검사는 계속 막힘).
+    sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ service: 'campfire', forcedMask: { managed: true, ready: false } }) });
+    delete sessionStore.srv;
+    vm.runInContext('var AbortSignal = { timeout: () => ({}) };', ctx); // 하니스에 없는 전역 대역
+    const info = await vm.runInContext('checkEngineHealthNow()', ctx);
+    assert.strictEqual(info.ok, false, '규칙 대기 중인데 연결됨으로 보고했다');
+    assert.strictEqual(info.waiting, true, '규칙 대기를 연결 정보에 싣지 않았다');
+    assert.strictEqual(info.target, 'local');
   }
 
   console.log('multi-attach.test.js: 16개 블록 통과');
