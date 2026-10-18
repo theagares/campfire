@@ -1091,8 +1091,11 @@
     try {
       this.addEventListener('loadend', function () {
         try {
-          if (this.getResponseHeader && this.getResponseHeader(_PROXY_MARK_HEADER)
-            && _sameHostResponse(this.responseURL)) _noteProxyMark();
+          // 같은 호스트인지 먼저 본다. 다른 출처 응답에 노출 안 된 헤더를 물으면 크롬이
+          // "Refused to get unsafe header" 를 남기고, 확장 카드에 "오류" 배지가 계속 붙는다
+          // (맥 실측). 어차피 다른 호스트 응답은 표식으로 쓰지 않는다.
+          if (_sameHostResponse(this.responseURL) && this.getResponseHeader
+            && this.getResponseHeader(_PROXY_MARK_HEADER)) _noteProxyMark();
         } catch { /* noop */ }
       }, { once: true });
     } catch { /* noop */ }

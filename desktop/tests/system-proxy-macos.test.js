@@ -133,6 +133,39 @@ test('system-proxy는 macOS set-pac에 이미 읽은 상태를 함께 넘긴다'
   }]);
 });
 
+test('관리자 승인 실패는 명령 전체 대신 취소·시간 초과를 알린다', async () => {
+  // 맥 실측: 암호 창을 놓치거나 취소하면 연결 화면에 수백 자짜리 networksetup 명령만 보였다.
+  const services = { platform: 'darwin', services: [{ name: 'Wi-Fi', pacEnabled: false, pacUrl: null }] };
+  async function failWith(err, stderr) {
+    const run = mac.createRunner({
+      execFileImpl: (file, args, _opts, cb) => {
+        if (file === '/usr/bin/osascript') return cb(err, '', stderr);
+        if (args[0] === '-listallnetworkservices') return cb(null, 'Wi-Fi\n', '');
+        return cb(null, 'URL: (null)\nEnabled: No\n', '');
+      },
+    });
+    try {
+      await run('restore', JSON.stringify(services));
+    } catch (e) {
+      return e.message;
+    }
+    throw new Error('실패해야 한다');
+  }
+
+  const cancelled = await failWith(Object.assign(new Error('Command failed'), { code: 1 }),
+    '0:76: execution error: User canceled. (-128)');
+  assert.match(cancelled, /관리자 승인이 취소됐습니다/);
+  assert.doesNotMatch(cancelled, /networksetup/);
+
+  const timedOut = await failWith(Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), '');
+  assert.match(timedOut, /2분 안에 승인되지 않아/);
+  assert.doesNotMatch(timedOut, /networksetup/);
+
+  const other = await failWith(Object.assign(new Error('Command failed'), { code: 4 }),
+    'execution error: ** Error: The parameters were not valid. (4)');
+  assert.match(other, /The parameters were not valid/);
+});
+
 test('셸 인자는 서비스 이름의 메타문자를 데이터로만 취급한다', () => {
   assert.equal(mac.shellQuote("Wi-Fi'; touch /tmp/pwn; '"), "'Wi-Fi'\\''; touch /tmp/pwn; '\\'''" );
 });

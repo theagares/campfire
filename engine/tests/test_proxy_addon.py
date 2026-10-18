@@ -251,7 +251,16 @@ def test_표식을_cross_origin_에서_읽게_노출한다():
     f = _resp_flow()
     a.response(f)
     expose = f.response.headers.get("access-control-expose-headers", "")
-    assert "X-Campfire-Proxy" in expose
+    assert "x-campfire-proxy" in expose.lower()
+
+
+def test_표식_헤더_이름은_소문자다():
+    # HTTP/2 는 대문자 헤더 이름을 허용하지 않는다 — 대문자로 넣으면 mitmproxy 가
+    # 응답마다 경고를 남겨 로그가 불어났다(맥 실측).
+    a = CampfireAddon()
+    f = _resp_flow()
+    a.response(f)
+    assert (b"x-campfire-proxy", b"1") in f.response.headers.fields
 
 
 def test_기존_expose_헤더를_보존한다():
@@ -260,7 +269,7 @@ def test_기존_expose_헤더를_보존한다():
     f.response.headers["access-control-expose-headers"] = "X-Request-Id"
     a.response(f)
     expose = f.response.headers.get("access-control-expose-headers", "")
-    assert "X-Request-Id" in expose and "X-Campfire-Proxy" in expose
+    assert "X-Request-Id" in expose and "x-campfire-proxy" in expose.lower()
 
 
 # ── ChatGPT: PUT 재시도가 통과하지 않는지 ───────────────────────────────────

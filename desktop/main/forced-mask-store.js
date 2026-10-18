@@ -51,6 +51,11 @@ class ForcedMaskStore {
       && this.safeStorage.isEncryptionAvailable();
   }
 
+  /** 읽으려면 복호화(맥은 키체인 접근)가 필요한가. 저장된 단어가 없으면 키체인을 건드리지 않는다. */
+  hasStoredTerms() {
+    return fs.existsSync(this.filePath);
+  }
+
   list() {
     if (!fs.existsSync(this.filePath)) return [];
     if (!this._encryptionAvailable()) {
@@ -58,7 +63,17 @@ class ForcedMaskStore {
     }
     try {
       const encrypted = fs.readFileSync(this.filePath);
-      const plain = this.safeStorage.decryptString(encrypted);
+      let plain;
+      try {
+        plain = this.safeStorage.decryptString(encrypted);
+      } catch (err) {
+        // 맥에서 복호화 실패는 대개 키체인 승인 창에서 "거부" 를 누른 경우다(앱 서명이 바뀐
+        // 뒤 첫 실행). 파일은 멀쩡하므로 새 목록으로 덮어쓰기 전에 다시 승인할 길을 먼저 알린다.
+        if (process.platform !== 'darwin') throw err;
+        throw new ForcedMaskStoreError(
+          `macOS 키체인에서 암호화 키를 받지 못했습니다(${err.message}). 승인 창에서 거부했다면 앱을 종료했다가 다시 열고, 'Campfire Safe Storage' 승인 창에서 로그인 암호를 입력한 뒤 '항상 허용'을 누르세요.`,
+        );
+      }
       const parsed = JSON.parse(plain);
       if (!parsed || parsed.version !== 1) throw new Error('unsupported version');
       return normalizeTerms(parsed.terms);

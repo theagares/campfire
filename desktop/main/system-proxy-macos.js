@@ -18,12 +18,30 @@ function execFileAsync(execFileImpl, file, args, options = {}) {
     execFileImpl(file, args, { timeout: 30000, ...options }, (err, stdout = '', stderr = '') => {
       if (err) {
         const detail = String(stderr || err.message || '').trim();
-        reject(new Error(`${file} 실패: ${detail}`));
+        reject(Object.assign(new Error(`${file} 실패: ${detail}`), {
+          killed: !!err.killed, code: err.code, stderr: String(stderr || ''),
+        }));
         return;
       }
       resolve(String(stdout));
     });
   });
+}
+
+// 관리자 승인(osascript) 실패를 사용자가 할 일로 바꾼다. 원래 메시지는 실행한 networksetup
+// 명령 전체(수백 자)라 취소인지 시간 초과인지 알 수 없었다(맥 실측: 암호 창을 놓쳐 세 번 실패).
+function privilegedFailureMessage(err) {
+  const stderr = String(err.stderr || '');
+  if (/\(-128\)|User cancel/i.test(stderr)) {
+    return '관리자 승인이 취소됐습니다. 다시 하려면 토글을 누르고 macOS 암호 창에서 승인하세요.';
+  }
+  if (err.killed) {
+    return '관리자 암호 창이 2분 안에 승인되지 않아 취소됐습니다. 창이 다른 창 뒤에 가려졌을 수 있습니다 — 토글을 다시 누르고 승인하세요.';
+  }
+  const line = stderr.trim().split(/\r?\n/).filter(Boolean).pop();
+  return line
+    ? `macOS 프록시 설정을 바꾸지 못했습니다: ${line}`
+    : `macOS 프록시 설정을 바꾸지 못했습니다(종료 코드 ${err.code ?? '알 수 없음'})`;
 }
 
 function parseServices(output) {
@@ -115,12 +133,16 @@ function createRunner({ execFileImpl = execFile } = {}) {
       : ['set -e', ...calls.map(networkSetupCommand)].join('; ');
     // argv 로 넘겨 AppleScript 문자열에 값을 삽입하지 않는다. macOS가 관리자 암호나
     // Touch ID 창을 직접 띄우며, 취소하면 이 Promise가 실패한다.
-    await run(OSASCRIPT, [
-      '-e', 'on run argv',
-      '-e', 'do shell script (item 1 of argv) with administrator privileges',
-      '-e', 'end run',
-      command,
-    ], { timeout: 120000 });
+    try {
+      await run(OSASCRIPT, [
+        '-e', 'on run argv',
+        '-e', 'do shell script (item 1 of argv) with administrator privileges',
+        '-e', 'end run',
+        command,
+      ], { timeout: 120000 });
+    } catch (err) {
+      throw new Error(privilegedFailureMessage(err));
+    }
   }
 
   async function setPac(input) {

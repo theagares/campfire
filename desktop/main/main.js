@@ -251,10 +251,11 @@ app.whenReady().then(async () => {
   // 지난 실행이 시스템 프록시를 걸어 둔 채 죽었으면 지금 되돌린다. 엔진보다 먼저 —
   // 아직 PAC 서버가 없으므로 안 되돌리면 브라우저가 없는 PAC 를 찾는다.
   await proxyToggle.recoverOnLaunch();
-  // 엔진이 뜰 때마다: 사용자가 프록시를 켜 뒀으면 다시 건다(이미 걸려 있으면 아무것도 안 한다).
+  // 엔진이 뜰 때마다(재시작 포함): 사용자가 프록시를 켜 뒀으면 다시 건다(이미 걸려 있으면 아무것도 안 한다).
+  // 실패하면(CA 미신뢰·관리자 승인 취소 등) 다음 기동이나 사용자가 토글을 누를 때까지 다시 시도하지 않는다.
   // 라이트 판은 프록시가 없다 — 정식 판에서 켜 둔 설정이 남아 있어도 걸지 않는다(되돌리기는 위에서 한다).
-  engineManager.on('status', (s) => {
-    if (s.state === 'running' && !isLite(app.getVersion())) {
+  engineManager.on('running', () => {
+    if (!isLite(app.getVersion())) {
       proxyToggle.resumeIfDesired().catch((err) => console.error('[main] 프록시 재적용 실패:', err.message));
     }
   });

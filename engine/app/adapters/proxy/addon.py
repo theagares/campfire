@@ -47,7 +47,10 @@ MASKED_MIME = "text/markdown"
 
 # 프록시가 실제로 경로에 있음을 확장에게 알리는 표식. 확장은 이 헤더가 보이는
 # 동안에만 자기 검사를 끈다(프록시·확장 병행 계획). 값은 뭐든 상관없고 존재만 본다.
-PROXY_MARK_HEADER = "X-Campfire-Proxy"
+# 소문자로 둔다 — HTTP/2 는 헤더 이름에 대문자를 허용하지 않아, mitmproxy 가 응답마다
+# "Lowercased 'X-Campfire-Proxy' header ..." 를 로그에 남겼다(맥 실측). 헤더 이름은
+# 대소문자를 가리지 않으므로 확장(interceptor.js 의 'x-campfire-proxy')은 그대로 읽는다.
+PROXY_MARK_HEADER = "x-campfire-proxy"
 
 
 def masked_name_for(original: str) -> str:

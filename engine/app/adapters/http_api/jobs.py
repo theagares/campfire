@@ -67,7 +67,11 @@ async def create_prompt_job(text: str = Form(...)):
     emit = job_registry.make_emit(job_id, activity=True)
 
     try:
-        result = await run_pipeline(text=text, file_name="prompt.txt", emit=emit, wrap_file=False)
+        # 확장이 AI 사이트 입력창에서 가로챈 사용자 본인의 프롬프트다 — 문서처럼 "AI 에게
+        # 내리는 지시 = 인젝션" 으로 보면 평범한 요청이 통째로 가려진다(direct_prompt).
+        result = await run_pipeline(
+            text=text, file_name="prompt.txt", emit=emit, wrap_file=False, direct_prompt=True
+        )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
     await emit({"type": "done", "result": _public(result)})

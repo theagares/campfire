@@ -52,3 +52,20 @@ test('손상된 암호문은 빈 정책으로 조용히 바꾸지 않는다', ()
   fs.writeFileSync(store.filePath, 'broken');
   assert.throws(() => store.list(), ForcedMaskStoreError);
 });
+
+test('맥 키체인 거부로 복호화가 실패하면 덮어쓰기 대신 다시 승인하는 법을 알린다', () => {
+  const dir = tempDir();
+  new ForcedMaskStore(dir, fakeSafeStorage()).replace(['Project Aurora']);
+  const denied = { ...fakeSafeStorage(), decryptString: () => { throw new Error('Error while decrypting'); } };
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try {
+    const store = new ForcedMaskStore(dir, denied);
+    assert.equal(store.hasStoredTerms(), true);
+    assert.throws(() => store.list(), (err) => err instanceof ForcedMaskStoreError
+      && /키체인/.test(err.message) && /항상 허용/.test(err.message));
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+  assert.equal(new ForcedMaskStore(tempDir(), denied).hasStoredTerms(), false, '저장된 단어가 없으면 키체인을 건드리지 않는다');
+});

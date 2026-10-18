@@ -56,6 +56,28 @@ def test_desktop_managed_policy_fails_closed_before_sync():
     assert result["policy"]["forcedMask"]["ready"] is False
 
 
+def test_blocked_result_never_carries_raw_text_as_masked(monkeypatch):
+    # 맥 실측: 규칙을 못 받은 동안(policy_not_ready) maskedText 에 토큰·전화번호 원문이
+    # 그대로 들어 있었다. blocked 를 안 보는 소비자가 "마스킹본" 으로 내보내면 그대로 샌다.
+    from app import config
+
+    raw = "GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a 연락처 010-1234-5678"
+    forced_mask.registry.reset(managed=True)
+    result = asyncio.run(run_pipeline(text=raw))
+    assert result["blocked"] is True
+    assert result["maskedText"] == ""
+    assert result["originalText"] == raw  # 검토 화면 diff 용 원문은 그대로
+
+    # 다른 차단 경로(규칙이 켜진 채 잘린 문서)도 같다 — 함께 온 사용자 프롬프트까지.
+    forced_mask.registry.configure(["secret"])
+    monkeypatch.setattr(config, "MAX_TEXT_CHARS", 5)
+    monkeypatch.setattr(model_status, "all_ready", lambda: False)
+    result = asyncio.run(run_pipeline(text="secret after limit", user_prompt=raw))
+    assert result["blocked"] is True
+    assert result["maskedText"] == ""
+    assert result["userPromptMasked"] == ""
+
+
 def test_file_name_with_forced_term_is_flagged_and_not_reused(monkeypatch):
     # 내용을 가려도 "Aurora_계획_masked.md" 처럼 이름으로 샌다 — 사실만 알리고 이름은 안 쓴다.
     forced_mask.registry.configure(["Aurora"])

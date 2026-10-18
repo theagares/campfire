@@ -916,6 +916,16 @@
     hidePendingBadge();
   }
 
+  // 사용자가 고르지 않은 배치 취소(runMultiScan 의 reason). 이때는 첨부를 버리지 않고
+  // 이유를 알린다 — 전송 가로채기(interceptPromptSubmit)의 취소 처리 참고.
+  const BATCH_CANCEL_REASONS = {
+    timeout: '검토 화면에서 10분 동안 결정이 없어 전송을 멈췄습니다.',
+    'lease-timeout': '다른 검사가 끝나기를 1분 넘게 기다리다 멈췄습니다.',
+    'start-failed': '검사를 시작하지 못했습니다.',
+    'prompt-scan-failed': '프롬프트를 검사하지 못해 전송을 멈췄습니다.',
+    quota: '검토 중인 다른 탭이 많아 검사를 시작하지 못했습니다.',
+  };
+
   const supportedItems = (batch) => (batch?.items || []).filter(i => i.supported);
 
   /** 첨부 이벤트 하나를 통째로 보류한다. 스캔도 base64 도 여기서 하지 않는다.
@@ -1085,6 +1095,13 @@
       }, 10 * 60 * 1000);
       pendingBatchDecisions.set(sessionId, { resolve, timeout });
     });
+    // 아래에서 일찍 끝나는 경로는 결정 대기 타이머를 반드시 거둔다. 남겨 두면 10분 뒤
+    // 타이머가 closeSidePanel() 을 불러, 그때 열려 있는 **다른** 검토 패널을 닫는다.
+    const abandon = (reason) => {
+      const entry = pendingBatchDecisions.get(sessionId);
+      if (entry) { clearTimeout(entry.timeout); pendingBatchDecisions.delete(sessionId); }
+      return { action: 'cancel', reason };
+    };
 
     // lease 대기를 **보내기 전에** 등록한다. grant 는 SW 가 임의 시점에 밀어 넣는
     // 별도 메시지라, 등록이 한 틱이라도 늦으면 그 사이 도착한 grant 가 버려지고
@@ -1099,17 +1116,30 @@
           ({ id, fileName, fileSize, mimeType, supported })),
       },
     });
-    if (!started?.ok) return { action: 'cancel', reason: 'start-failed' };
+    if (!started?.ok) return abandon('start-failed');
 
-    const leaseId = await leasePromise;
-    if (!leaseId) return { action: 'cancel', reason: 'lease-timeout' };
+    // 차례를 기다리는 동안 결정이 먼저 올 수 있다(패널에서 취소, SW 의 quota 거절).
+    // lease 만 기다리면 그 결정을 못 보고 60초를 채운 뒤 lease-timeout 으로 끝났다.
+    const first = await Promise.race([
+      leasePromise.then((leaseId) => ({ leaseId })),
+      decisionPromise.then((decision) => ({ decision })),
+    ]);
+    if (first.decision) return first.decision;
+    const { leaseId } = first;
+    if (!leaseId) {
+      // SW 에도 알린다. 안 알리면 이 세션이 큐에 남았다가 차례가 와서 lease 를 쥐는데,
+      // 받을 쪽이 이미 떠나 아무도 finish 하지 않는다 — 그 뒤로 모든 탭의 다중 첨부
+      // 검사가 lease 를 못 받고 60초마다 실패한다(SW 가 다시 뜰 때까지).
+      sendToSW({ type: 'ABORT_MULTI_SCAN', sessionId });
+      return abandon('lease-timeout');
+    }
 
     // 프롬프트가 맨 먼저다. 프롬프트를 검사해야 엔진이 마스킹된 프롬프트를 만들고,
     // 그래야 파일별 인젝션 2차 판정이 외부 모델에 원문을 보내지 않는다.
     const promptRes = await sendToSW({ type: 'SCAN_MULTI_PROMPT', sessionId, leaseId, text });
     if (!promptRes?.ok || promptRes.prompt?.status === 'error') {
       await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
-      return { action: 'cancel', reason: 'prompt-scan-failed' };
+      return abandon('prompt-scan-failed');
     }
 
     for (const item of items) {
@@ -2589,8 +2619,16 @@
     }
 
     if (!decision || decision.action === 'cancel') {
-      // 취소하면 보류 중이던 첨부도 함께 정리한다(재시도하려면 다시 첨부해야 함).
-      if (staged) clearPendingBatch();
+      // 사용자가 패널에서 취소했으면(reason 없음) 보류 중이던 첨부도 함께 정리한다.
+      // 사용자가 고르지 않은 취소(차례 대기 초과·검사 실패 등)에서 조용히 버리면, 다음
+      // 전송이 프롬프트만 검사하고 첨부는 말없이 사라졌다(맥 실측). 남겨 두고 알린다 —
+      // 다시 보내면 함께 다시 검사한다.
+      const why = staged && decision?.reason && BATCH_CANCEL_REASONS[decision.reason];
+      if (why && pendingBatch === staged) {
+        showBlockedBadge(`⚠️ ${why} 첨부한 파일 ${staged.items.length}개는 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+      } else if (staged) {
+        clearPendingBatch();
+      }
       return;
     }
 

@@ -2733,6 +2733,62 @@ cancelScan(stuckScan);
     if (!held) throw new Error('강제 마스킹이 켜져 있는데 미지원 형식(이미지)이 검토 없이 그대로 나갔다');
   }
 
+  // (38) 차례(lease)를 끝내 못 받은 배치. 맥 실측: 다시 보내니 프롬프트만 검사되고 첨부는
+  //      말없이 사라졌다. ① SW 에 포기를 알린다(안 알리면 떠난 세션이 lease 를 쥐어 뒤 배치가
+  //      전부 막힌다) ② 첨부를 남기고 알린다 ③ 10분 뒤 남은 결정 타이머가 그때 열린 다른
+  //      검토 패널을 닫지 않는다 ④ 다시 보내면 같은 첨부로 다시 검사한다.
+  {
+    await clock.tick(9000);
+    const f38 = new FileStub(['pdf'], 'lease38.pdf', { type: 'application/pdf' });
+    const in38 = new HTMLInputElementStub(f38, 'lease38');
+    dispatchDocumentEvent('change', {
+      target: in38, composedPath: () => [in38, documentStub],
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await flush();
+    const enter = () => dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    const origSend = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = function (message, cb) {
+      // 큐에는 받아 주지만 차례(lease)는 끝내 안 준다.
+      if (message.type === 'START_MULTI_SCAN') { runtimeMessages.push(message); cb?.({ ok: true, queued: true }); return; }
+      return origSend.call(this, message, cb);
+    };
+    promptEditorStub.value = '요약해 줘';
+    documentStub.activeElement = promptEditorStub;
+    const before38 = runtimeMessages.length;
+    enter();
+    await clock.tick(61000);
+    chromeStub.runtime.sendMessage = origSend;
+
+    const after38 = runtimeMessages.slice(before38);
+    const start38 = after38.find(m => m.type === 'START_MULTI_SCAN');
+    if (!start38) throw new Error('(38) 보류 첨부가 있는데 배치 검사가 시작되지 않았다');
+    if (!after38.some(m => m.type === 'ABORT_MULTI_SCAN' && m.sessionId === start38.sessionId)) {
+      throw new Error('(38) 차례를 못 받고 포기했는데 SW 에 알리지 않았다 — 떠난 세션이 lease 를 쥐어 뒤 배치가 막힌다');
+    }
+    const badge38 = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
+    const text38 = badge38 ? (badge38.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
+    if (!text38.includes('그대로 대기 중')) throw new Error(`(38) 첨부를 남겼다는 안내가 없다: ${text38}`);
+
+    const beforeLate = runtimeMessages.length;
+    await clock.tick(10 * 60 * 1000);
+    if (runtimeMessages.slice(beforeLate).some(m => m.type === 'CLOSE_PANEL')) {
+      throw new Error('(38) 포기한 배치의 결정 타이머가 10분 뒤 검토 패널을 닫았다');
+    }
+
+    nextDecision = { action: 'cancel' }; // 이번엔 사용자가 직접 취소 — 그때는 첨부를 버린다
+    const beforeRetry = runtimeMessages.length;
+    enter();
+    await clock.tick(20000);
+    const retry38 = runtimeMessages.slice(beforeRetry).find(m => m.type === 'START_MULTI_SCAN');
+    if (!retry38 || !retry38.payload.items.some(i => i.fileName === 'lease38.pdf')) {
+      throw new Error('(38) 보류 첨부가 사라져 다시 보낸 전송이 프롬프트만 검사했다');
+    }
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
