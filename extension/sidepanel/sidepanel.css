@@ -54,7 +54,7 @@ body {
 /* .view-progress/.view-error 는 display:flex를 직접 지정하므로, 동일 특이도(class 1개)인
    UA 기본 [hidden]{display:none}보다 author 규칙이 항상 이겨 hidden이 무시된다 —
    특이도를 [hidden]+class 조합으로 올려서 확실히 숨긴다. */
-.view[hidden], .footer[hidden] { display: none; }
+.view[hidden], .footer[hidden], .doc-actions[hidden] { display: none; }
 
 /* ── 진행 (Figma AgentCard) ── */
 .view-progress {

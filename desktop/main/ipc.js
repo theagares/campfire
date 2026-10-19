@@ -266,6 +266,17 @@ function register(ctx) {
     return onInstallUpdate ? onInstallUpdate() : false;
   });
 
+  // 트레이 팝오버 버튼(main/tray-preload.js). v0.2.26 에서 "preload 가 노출하지 않는 죽은 핸들러"로 지워졌는데
+  // tray-preload 는 노출하고 있었다 — 그동안 팝오버의 "대시보드에서 더 자세히 보기"·"QUIT Campfire" 가 무반응이었다.
+  ipcMain.handle('window:showDashboard', () => {
+    if (typeof onShowDashboard === 'function') onShowDashboard();
+    return true;
+  });
+  ipcMain.handle('app:quit', () => {
+    if (typeof onQuit === 'function') onQuit();
+    return true;
+  });
+
   ipcMain.handle('external:open', (_e, url) => {
     // http/https 만 허용 (안전)
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
