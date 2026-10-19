@@ -120,6 +120,12 @@ def merge_overlapping(items: list[Item]) -> list[Item]:
         last = merged[-1]
         if cur["start"] < last["end"]:
             mandatory = bool(last.get("mandatory") or cur.get("mandatory"))
+            # 기밀 문장 안의 탐지(PII·사용자 지정 단어)는 문장 자리표시자 하나로 덮는다 — 안쪽 신뢰도가 더
+            # 높아도 문장이 [이름 마스킹] 등으로 바뀌면 안 된다. 강제 여부는 표시로만 남긴다.
+            if last["type"] == "CONFIDENTIAL" and cur["end"] <= last["end"]:
+                if mandatory:
+                    last["mandatory"] = True
+                continue
             # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택
             cur_score = (cur.get("confidence", 0.0), cur["end"] - cur["start"])
             last_score = (last.get("confidence", 0.0), last["end"] - last["start"])

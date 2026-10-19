@@ -21,6 +21,7 @@ from app import config
 from app.core import model_status
 from app.core.detectors import confidential, registry
 from app.core.detectors.confidential import judge, kg, retriever
+from app.core.masker import masker
 
 DOC = "가온연구소는 김하늘이 세운 연구소다. 오로라 출시는 2027년 3월로 정했다. 본사는 서울에 있다."
 NAME = "김하늘"
@@ -137,8 +138,8 @@ def test_솔라로_PII_가_나가지_않고_결과에서_PII_구간을_뺀다(se
     found = {DOC[it["start"]:it["end"]] for it in items}
     assert all(it["type"] == "CONFIDENTIAL" and it["source"] == "llm" for it in items)
     assert "오로라 출시는 2027년 3월로 정했다." in found
-    assert not any(NAME in s for s in found)    # 첫 문장은 이름을 빼고 조각으로
-    assert "가온연구소는" in found and "이 세운 연구소다." in found
+    # 문장 하나 = 기밀 구간 하나. 이름은 기밀에서 빼지 않고 PII 항목으로 그 안에 남는다(자기 토글 유지)
+    assert "가온연구소는 김하늘이 세운 연구소다." in found
     assert not any("서울" in s for s in found)   # 공개 사실(본사 위치) 은 Solar 가 기밀 아니라고 함
 
 
@@ -196,7 +197,9 @@ def test_KG_회사명은_솔라에_보이고_사람_이름은_가린다(setup):
     items = asyncio.run(confidential.detect(DOC, pii))
     body = spy.sent[0]
     assert "(가온연구소, 설립자, [이름 마스킹])" in body and NAME not in body
-    assert items and not any(it["start"] <= DOC.index(org) < it["end"] for it in items)  # 결과에선 기관명 구간을 뺀다
+    assert any(it["start"] <= DOC.index(org) < it["end"] for it in items)  # 기관명은 기밀 문장 안에 들어간다
+    # 화면에선 문장 하나가 자리표시자 하나 — [기관명]·[이름] 으로 쪼개지지 않는다
+    assert masker.apply_masking(DOC, pii + items)["masked_text"].startswith("[기밀 마스킹] 오로라")
 
 
 def test_리트리버가_거른_사실은_솔라로_가지_않는다(setup):

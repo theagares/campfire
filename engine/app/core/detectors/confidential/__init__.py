@@ -6,7 +6,7 @@ app/core/detectors/confidential/__init__.py
   2. retriever   문장 단위 창마다(인코더 길이 제한) 후보 쌍·술어의 여유값(s − s_TH)과 문장별 주의
   3. judge       모든 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 전부 + PII·인젝션을 가린 문서 전체 →
                  Solar 1회로 "어느 문장이 진술했고 기밀인가"
-  4. 고른 문장에서 PII·사용자 지정 구간을 뺀 나머지를 CONFIDENTIAL 로 (PII 는 자기 토글 유지)
+  4. 고른 문장 전체를 CONFIDENTIAL 로 — 안쪽 PII·사용자 지정 구간은 따로 남아 자기 토글을 유지한다
 
 실패 처리: 리트리버를 못 쓰거나(가중치 없음·오류) Solar 를 못 쓰면(키 없음·오류·해석 불가) 근거
 문장을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽. 리트리버 없이 Solar 로 보내지 않는다: 그러면
@@ -249,18 +249,21 @@ async def detect(
     if trace is not None:
         demo_trace.publish(trace, "done", flagged=[[i, *flagged[i]] for i in sorted(flagged)])
 
+    # 문장 하나 = 기밀 구간 하나. 문장 안의 PII·사용자 지정·인젝션 구간은 따로 남아 그 안에 들어간다 —
+    # 화면은 문장을 [기밀 마스킹] 하나로 보이고, 기밀을 풀어도 안쪽은 자기 토글대로 가려진다(masker·확장 mask-segments).
+    # 예전엔 그 구간을 빼고 조각으로 내보내 한 문장이 "[기밀] [기관명] [기밀]" 로 쪼개져 보였다.
     covers = [(int(it["start"]), int(it["end"])) for it in masked_items]
     out: list[Detection] = []
     for i in sorted(flagged):
         conf, source = flagged[i]
-        for a, b in _subtract(*sents[i], covers):
-            piece = text[a:b]
-            if not any(ch.isalnum() for ch in piece):
-                continue
-            ls = len(piece) - len(piece.lstrip())
-            rs = len(piece) - len(piece.rstrip())
-            out.append(Detection(type=CONFIDENTIAL, start=a + ls, end=b - rs, text=piece.strip(),
-                                 confidence=conf, source=source))
+        if not any(ch.isalnum() for a, b in _subtract(*sents[i], covers) for ch in text[a:b]):
+            continue  # 이미 다른 탐지가 전부 가린 문장
+        a, b = sents[i]
+        sent = text[a:b]
+        ls = len(sent) - len(sent.lstrip())
+        rs = len(sent) - len(sent.rstrip())
+        out.append(Detection(type=CONFIDENTIAL, start=a + ls, end=b - rs, text=sent.strip(),
+                             confidence=conf, source=source))
     if emit:
         await emit({"type": "step", "step": 3, "label": f"기밀 탐지 완료 ({len(flagged)}문장)", "done": True})
     return out

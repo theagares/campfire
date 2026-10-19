@@ -189,4 +189,41 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
     '[사용자 지정 마스킹] Aurora');
 }
 
-console.log('mask-segments.test.js: 12개 블록 통과');
+// ── 13) 기밀 문장은 한 덩어리 — 안쪽 PII 는 자기 토글, 필수 단어는 잠긴 채 남는다 ──
+//     예전엔 엔진이 PII 를 뺀 조각으로 보내 "[기밀] [기관명] [기밀]" 처럼 쪼개져 보였다.
+{
+  const { itemSegments } = sandbox;
+  const text = '헥토파이낸셜이 페이온소프트를 420억 원에 인수한다. 투자 메모 써줘.';
+  const at = (s) => [text.indexOf(s), text.indexOf(s) + s.length];
+  const [s0, s1] = at('헥토파이낸셜이 페이온소프트를 420억 원에 인수한다.');
+  const piiItems = [
+    pii(...at('헥토파이낸셜'), 'ORGANIZATION'),          // 문장과 같은 자리에서 시작
+    pii(s0, s1, 'CONFIDENTIAL'),
+    pii(...at('페이온소프트'), 'ORGANIZATION'),
+  ];
+  const forced = [{ ...pii(...at('420억 원'), 'USER_DEFINED_TERM'), mandatory: true }];
+  const segs = buildSegments(text, piiItems, [], 'p', forced);
+  const top = segs.filter(s => s.type === 'item');
+  assert.strictEqual(top.length, 1, '최상위 항목은 기밀 문장 하나');
+  const [conf] = top;
+  assert.strictEqual(conf.cat, 'conf');
+  assert.strictEqual(conf.label, '기밀');
+  const all = itemSegments(segs);
+  assert.strictEqual(all.map(s => s.label).join(','), '기밀,기관명,기관명,사용자 지정');
+  const [, org1, , lock] = all;
+  assert.strictEqual(lock.locked, true);
+
+  assert.strictEqual(buildFinalText(segs, []), '[기밀 마스킹] 투자 메모 써줘.');
+  assert.strictEqual(buildFinalText(segs, [conf.key]),
+    '[기관명 마스킹]이 [기관명 마스킹]를 [사용자 지정 마스킹]에 인수한다. 투자 메모 써줘.',
+    '기밀을 풀어도 안쪽은 자기 상태대로');
+  assert.strictEqual(buildFinalText(segs, all.map(s => s.key)),
+    '헥토파이낸셜이 페이온소프트를 [사용자 지정 마스킹]에 인수한다. 투자 메모 써줘.',
+    '전부 풀어도 필수 단어는 잠김');
+  assert.strictEqual(buildFinalText(segs, [org1.key]), '[기밀 마스킹] 투자 메모 써줘.',
+    '안쪽만 풀어도 기밀 문장이 가려져 있으면 드러나지 않는다');
+  assert.strictEqual(finalTextFrom(text, piiItems, [], 'p', [conf.key], forced),
+    buildFinalText(segs, [conf.key]), 'SW 한 줄 경로도 같은 결과');
+}
+
+console.log('mask-segments.test.js: 13개 블록 통과');
