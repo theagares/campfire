@@ -52,7 +52,12 @@ function create({
   async function restoreSystem() {
     const prev = config.get('proxySystemPrevious');
     if (!prev) return;
-    await systemProxy.restore(prev);
+    // 우리 PAC가 하나도 안 걸려 있으면 되돌릴 게 없다(워치독과 같은 기준). 관리자 승인을
+    // 못 받아 켜기가 실패하면 아무것도 안 바뀌는데, 그래도 복원하면 맥은 암호 창을 또 띄운다
+    // (맥 실측: 켜기 2분 초과 뒤 복원 창이 한 번 더 떴고, 남은 기록 때문에 앱 종료·재실행 때도 뜰 뻔했다).
+    if (systemProxy.isOurs(await systemProxy.query(), pacServer.PAC_PREFIX)) {
+      await systemProxy.restore(prev);
+    }
     config.set({ proxySystemPrevious: null });
   }
 
@@ -101,11 +106,9 @@ function create({
     } catch (err) {
       let restored = false;
       try {
-        // 재적용 중이었다면 current는 이미 우리 PAC다. 디스크에 남아 있는 최초 원본을
-        // 우선해야 우리 PAC를 "원래 값"으로 복원하고 잃어버리는 일이 없다.
-        await systemProxy.restore(config.get('proxySystemPrevious') || current);
+        // 디스크에 남아 있는 최초 원본으로 되돌린다(재적용 중이면 current는 이미 우리 PAC다).
+        await restoreSystem();
         restored = true;
-        config.set({ proxySystemPrevious: null });
       } catch { /* 워치독과 다음 실행 recoverOnLaunch가 다시 복원한다 */ }
       if (!restored) {
         // 일부 서비스만 바뀐 뒤 복원마저 실패했을 수 있다. 이때 엔진/PAC/워치독을

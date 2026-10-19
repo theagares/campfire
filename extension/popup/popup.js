@@ -87,9 +87,9 @@ function render(info) {
     routeDetail.textContent = '';
   }
 
-  // 로컬 앱이 떠 있을 때만 대시보드 열기 가능(키체인 대기 중에도 앱은 떠 있다 — 승인 창이
-  // 다른 창 뒤에 가려졌을 때 앱을 앞으로 꺼내는 데 쓴다)
-  dashBtn.disabled = !(isLocal && (ok || info?.waiting));
+  // 로컬 앱이 연결됐을 때만 대시보드 열기 가능. 키체인 대기 중에는 앱이 승인 창 응답을
+  // 기다리며 멈춰 있어(forced-mask-store.js 동기 복호화) campfire:// 를 열어도 반응하지 않는다.
+  dashBtn.disabled = !(isLocal && ok);
 }
 
 function requestInfo(type) {
