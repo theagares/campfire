@@ -43,6 +43,15 @@
         </button>
       </nav>
 
+      <!-- 받아 둔 업데이트 (main/updater.js) — 앱이 트레이에 남아 종료되지 않으면 설치되지 않아 여기서 알린다 -->
+      <div class="sb-update" id="sb-update" hidden>
+        <div class="sbu-text">
+          <span class="sbu-title">새 버전 <span id="sbu-version"></span></span>
+          <span class="sbu-sub" id="sbu-sub">다시 시작하면 적용됩니다</span>
+        </div>
+        <button class="sbu-btn" id="sbu-btn" title="다시 시작해 업데이트">다시 시작해 업데이트</button>
+      </div>
+
       <!-- 프로필 + 설정(톱니 아이콘만, PLAN §8 — 기존 UX 유지) -->
       <div class="sb-user">
         <div class="avatar">U<span class="status-dot"></span></div>

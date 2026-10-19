@@ -18,6 +18,7 @@ const api = {
   scanCleanup: () => ipcRenderer.invoke('cleanup:scan'),
   getProxyStatus: () => ipcRenderer.invoke('proxy:status'),
   getProxyRouteStatus: () => ipcRenderer.invoke('proxy:routeStatus'),
+  getUpdateState: () => ipcRenderer.invoke('updater:state'),
 
   // 변경/제어
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
@@ -35,6 +36,8 @@ const api = {
   detectMcpClients: () => ipcRenderer.invoke('mcp:detectClients'),
   connectMcpClient: (id) => ipcRenderer.invoke('mcp:connect', id),
   disconnectMcpClient: (id) => ipcRenderer.invoke('mcp:disconnect', id),
+  // 받아 둔 업데이트 설치(확인 창은 메인이 띄운다). 맥은 릴리스 페이지를 연다.
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
 
   // 실시간 push 구독
   onEngineStatus: (cb) => subscribe('engine:status', cb),
@@ -43,6 +46,7 @@ const api = {
   onNavigate: (cb) => subscribe('nav:goto', cb),
   onModelsFetchProgress: (cb) => subscribe('models:fetchProgress', cb),
   onPipelineActivity: (cb) => subscribe('pipeline:activity', cb),
+  onUpdateState: (cb) => subscribe('updater:state', cb),
 };
 
 function subscribe(channel, cb) {

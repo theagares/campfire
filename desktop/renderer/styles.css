@@ -78,7 +78,27 @@ img { display:block; }
 }
 .sb-user .who { flex:1; min-width:0; font-weight:500; font-size:12px; line-height:18px; color:var(--ink-900); white-space:nowrap; }
 
+/* 받아 둔 업데이트 — 사이드바 아래, 프로필 위. 앱 톤(퍼플) */
+.sb-update {
+  display:flex; flex-direction:column; gap:8px; margin:0 12px 12px; padding:12px;
+  border-radius:12px; background:var(--purple-soft); border:1px solid rgba(88,76,220,.25);
+}
+.sb-update[hidden] { display:none; }
+.sbu-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.sbu-title { font-size:12px; font-weight:600; color:var(--ink-900); line-height:18px; }
+.sbu-sub { font-size:11px; color:var(--ink-600); line-height:16px; }
+.sbu-btn {
+  width:100%; padding:7px 10px; border-radius:8px; border:none; background:var(--purple); color:#fff;
+  font-size:12px; font-weight:600; line-height:18px; cursor:pointer;
+}
+.sbu-btn:hover { background:#4a3fc4; }
+.sbu-btn:focus-visible { outline:2px solid var(--purple); outline-offset:2px; }
+
 /* 접힌 상태 — 아이콘만, 64px 폭 (Figma 인터랙션 미확정이라 자체 구현) */
+.sidebar.collapsed .sb-update { margin:0 8px 12px; padding:6px; }
+.sidebar.collapsed .sbu-text { display:none; }
+.sidebar.collapsed .sbu-btn { font-size:0; padding:8px 0; }
+.sidebar.collapsed .sbu-btn::before { content:"↻"; font-size:15px; line-height:1; }
 .sidebar.collapsed .sb-top { justify-content:center; padding:0; }
 .sidebar.collapsed .sb-toggle img { transform:rotate(180deg); }
 .sidebar.collapsed .nav-item { justify-content:center; padding:10px 0; gap:0; }

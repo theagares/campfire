@@ -55,6 +55,7 @@ let forcedMaskStore = null;
 let metricsTimer = null;
 let statsTimer = null;
 let proxyDecisionUi = null;
+let updater = null;
 let isQuitting = false;
 
 function createMainWindow() {
@@ -104,6 +105,31 @@ function showDashboard(view) {
 function quitApp() {
   isQuitting = true;
   cleanup().finally(() => app.quit());
+}
+
+/**
+ * 받아 둔 업데이트를 설치하고 다시 연다(대시보드·트레이의 "다시 시작해 업데이트").
+ * 검사 중일 수 있으니 묻고, 엔진·프록시를 먼저 정리한 뒤 설치한다 — 설치기가 돌기 시작했는데 엔진이
+ * 아직 떠 있으면 엔진 파일을 덮어쓰지 못한다.
+ */
+async function installUpdate() {
+  const s = updater && updater.getState();
+  if (!s || !s.ready) return false;
+  const parent = mainWindow && mainWindow.isVisible() ? mainWindow : undefined;
+  const { response } = await dialog.showMessageBox(parent, {
+    type: 'question',
+    buttons: ['다시 시작', '나중에'],
+    defaultId: 0,
+    cancelId: 1,
+    message: `Campfire ${s.version} 으로 업데이트할까요?`,
+    detail: 'Campfire 를 닫고 업데이트를 설치한 뒤 다시 엽니다. 진행 중인 검사는 멈춥니다.',
+  });
+  if (response !== 0) return false;
+  isQuitting = true;
+  await cleanup();
+  updater.install();
+  setTimeout(() => app.quit(), 5000); // 설치기를 못 띄웠으면 정리된 채 남지 않게 그냥 끈다
+  return true;
 }
 
 async function cleanup() {
@@ -225,6 +251,8 @@ app.whenReady().then(async () => {
     onShowDashboard: () => showDashboard('dashboard'),
     onQuit: quitApp,
     onEnsureModels: ensureModelsAutoDownload,
+    getUpdateState: () => (updater ? updater.getState() : null),
+    onInstallUpdate: installUpdate,
   });
 
   createMainWindow();
@@ -281,7 +309,7 @@ app.whenReady().then(async () => {
   // 설치 직후 자동으로 실 ML 모델(advanced)을 준비 — 엔진 기동과 별도로 백그라운드 진행.
   ensureModelsAutoDownload().catch((err) => console.error('[main] 자동 모델 설치 오류:', err.message));
 
-  initAutoUpdater(app);
+  updater = initAutoUpdater(app, { broadcast: ipc.broadcast });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

@@ -79,7 +79,7 @@ function buildStats(engineManager) {
 }
 
 function register(ctx) {
-  const { engineManager, config, proxyToggle, onShowDashboard, onQuit, onEnsureModels } = ctx;
+  const { engineManager, config, proxyToggle, onShowDashboard, onQuit, onEnsureModels, getUpdateState, onInstallUpdate } = ctx;
   const lite = isLite(app.getVersion());
 
   ipcMain.handle('app:info', () => ({
@@ -253,6 +253,17 @@ function register(ctx) {
   ipcMain.handle('settings:setPipelineLayout', (_e, layout) => {
     config.setPipelineLayout(layout);
     return true;
+  });
+
+  // 자동 업데이트 (main/updater.js) — 받아 둔 업데이트 안내와 설치. 맥은 자동 설치가 안 돼 릴리스 페이지를 연다.
+  ipcMain.handle('updater:state', () => (getUpdateState ? getUpdateState() : null));
+  ipcMain.handle('updater:install', async () => {
+    const s = getUpdateState ? getUpdateState() : null;
+    if (s && s.manual && s.url) {
+      shell.openExternal(s.url);
+      return true;
+    }
+    return onInstallUpdate ? onInstallUpdate() : false;
   });
 
   ipcMain.handle('external:open', (_e, url) => {

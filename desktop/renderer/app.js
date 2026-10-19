@@ -27,6 +27,22 @@ function hideGlobalBanner() {
 }
 $('#global-banner-close').addEventListener('click', hideGlobalBanner);
 
+// ── 받아 둔 업데이트 (main/updater.js) — 사이드바 카드. 공용 배너는 다른 알림이 덮어써서 따로 둔다 ──
+// ready: 받아 둠 → 다시 시작하면 설치 / manual: 맥은 자동 설치가 안 돼 릴리스 페이지에서 받는다
+function paintUpdate(s) {
+  const card = $('#sb-update');
+  if (!s || !(s.ready || s.manual)) { card.hidden = true; return; }
+  $('#sbu-version').textContent = s.version || '';
+  $('#sbu-sub').textContent = s.ready ? '다시 시작하면 적용됩니다' : '내려받아 설치해 주세요';
+  const label = s.ready ? '다시 시작해 업데이트' : '받으러 가기';
+  $('#sbu-btn').textContent = label;
+  $('#sbu-btn').title = label;
+  card.hidden = false;
+}
+$('#sbu-btn').addEventListener('click', () => api.installUpdate());
+api.getUpdateState?.().then(paintUpdate).catch(() => {});
+api.onUpdateState?.(paintUpdate);
+
 // 맥 키체인 승인 대기(main/engine-manager.js _announceKeychainRead). 그동안 메인 프로세스는
 // 멈춰 있지만 이 화면은 별도 프로세스라 타이머가 돈다. 승인 창이 안 뜨는 보통의 실행은 금방
 // 끝나므로 1.5초가 지나도 안 끝났을 때만 띄운다(매 실행 깜빡이지 않게).

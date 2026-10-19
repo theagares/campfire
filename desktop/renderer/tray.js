@@ -61,8 +61,19 @@ function paintMetrics(m) {
   }).join('');
 }
 
+// 받아 둔 업데이트 (main/updater.js) — ready: 다시 시작하면 설치 / manual: 맥은 릴리스 페이지에서 받는다
+function paintUpdate(s) {
+  const btn = $('#t-update');
+  if (!s || !(s.ready || s.manual)) { btn.hidden = true; return; }
+  btn.textContent = s.ready ? `새 버전 ${s.version} — 다시 시작해 업데이트` : `새 버전 ${s.version} — 받으러 가기`;
+  btn.hidden = false;
+}
+
+$('#t-update').addEventListener('click', () => t.installUpdate());
 $('#t-more').addEventListener('click', () => t.openDashboard());
 $('#t-quit').addEventListener('click', () => t.quitApp());
+t.getUpdateState().then(paintUpdate).catch(() => {});
+t.onUpdateState(paintUpdate);
 
 t.onEngineStatus((s) => t.getStats().then((st) => paintEngine(s, st)));
 t.onMetrics((m) => paintMetrics(m));
