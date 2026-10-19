@@ -192,6 +192,15 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }} -- ${{ matrix.build_arg }} --publish ${{ inputs.dry_run && 'never' || 'always' }}
 
+      # dry_run 은 공개하지 않으니 Windows 설치 파일을 올려 둔다 — 설치기 화면(업데이트 진행 창 등)을 직접 확인용
+      - name: Upload Windows installer (dry_run)
+        if: inputs.dry_run && matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: desktop/release/*.exe
+          retention-days: 3
+
       # 빌드가 "성공"해도 번들된 엔진이 실제로 뜨는지는 별개 문제였다(portable Python
       # 전환의 원인이 된 버그) — 설치 파일을 실제로 설치/실행해 /health 를 확인한다.
       - name: Verify installed app can start the bundled engine (Windows)

@@ -14,7 +14,8 @@ function fakeUpdater({ reject = false } = {}) {
     u.checks += 1;
     return reject ? Promise.reject(new Error('offline')) : Promise.resolve(null);
   };
-  u.quitAndInstall = (...args) => u.installs.push(args);
+  u.quitAndInstall = (...args) => u.installs.push(['quitAndInstall', ...args]);
+  u.install = (...args) => u.installs.push(['install', ...args]);
   return u;
 }
 
@@ -52,13 +53,25 @@ test('받기를 마치면 화면에 알리고, 그 뒤로는 다시 확인하지
   assert.equal(autoUpdater.checks, 1); // 이미 받아 둠 — 설치만 남았다
 });
 
-test('받아 둔 게 있을 때만 조용히 설치하고 다시 연다', () => {
+test('받아 둔 게 있을 때만 설치기 진행 창을 띄워 설치하고 다시 연다', () => {
   const { autoUpdater, updater } = setup();
   assert.equal(updater.install(), false);
   assert.deepEqual(autoUpdater.installs, []);
   autoUpdater.emit('update-downloaded', { version: '0.2.41' });
   assert.equal(updater.install(), true);
-  assert.deepEqual(autoUpdater.installs, [[true, true]]);
+  assert.deepEqual(autoUpdater.installs, [['quitAndInstall', false, true]]); // 소리 없이(/S) 아님
+  assert.equal(updater.installOnQuit(), false); // 이어지는 종료에서 설치기를 또 띄우지 않는다
+  assert.equal(autoUpdater.installs.length, 1);
+});
+
+test('앱을 끌 때는 진행 창만 띄워 설치하고 다시 열지 않는다 (electron-updater 의 소리 없는 종료 설치는 끈다)', () => {
+  const { autoUpdater, updater } = setup();
+  assert.equal(autoUpdater.autoInstallOnAppQuit, false);
+  assert.equal(updater.installOnQuit(), false); // 받은 게 없음
+  autoUpdater.emit('update-downloaded', { version: '0.2.41' });
+  assert.equal(updater.installOnQuit(), true);
+  assert.equal(updater.installOnQuit(), false);
+  assert.deepEqual(autoUpdater.installs, [['install', false, false]]);
 });
 
 test('macOS 는 받지 않고 내려받을 페이지를 알린다 (자동 설치가 안 됨)', () => {
