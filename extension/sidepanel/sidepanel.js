@@ -16,7 +16,7 @@
  * — sidepanel.html 의 script 태그에 type="module" 이 필요하다.
  */
 
-import { buildSegments, buildFinalText, labelOf } from '../utils/mask-segments.js';
+import { buildSegments, buildFinalText, itemSegments, labelOf } from '../utils/mask-segments.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -92,16 +92,18 @@ const tipFor = (label, masked, locked = false) => locked
 
 // 마킹된 구간은 그 자체가 버튼이다 — 문서에서 바로 눌러 마스킹을 풀거나 다시 건다.
 // (우측 목록의 토글과 같은 상태를 공유하며, 어느 쪽을 바꿔도 양쪽이 함께 갱신된다.)
+// 기밀 문장은 안쪽 PII 를 품은 채 그린다 — 안쪽 표시를 누르면 그 항목만 바뀐다(클릭은 closest('.mark')).
+const MARK_CLASS = { inj: 'inj', forced: 'forced', conf: 'conf' };
 function segmentsToHtml(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
     const masked = seg.locked || !state.unmasked.has(seg.key);
-    const cls = seg.cat === 'inj' ? 'inj' : (seg.cat === 'forced' ? 'forced' : 'pii');
+    const cls = MARK_CLASS[seg.cat] || 'pii';
     return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
       + (seg.locked
         ? ` aria-disabled="true" title="${esc(tipFor(seg.label, true, true))}"`
         : ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}"`)
-      + `>${esc(seg.original)}</span>`;
+      + `>${seg.children ? segmentsToHtml(seg.children) : esc(seg.original)}</span>`;
   }).join('');
 }
 
@@ -368,7 +370,7 @@ async function showTab(itemId) {
   state.segments = buildSegments(
     item.originalText, item.piiItems, item.injectionItems, itemId, item.forcedMaskItems,
   );
-  for (const seg of state.segments) if (seg.locked) state.unmasked.delete(seg.key);
+  for (const seg of itemSegments(state.segments)) if (seg.locked) state.unmasked.delete(seg.key);
   renderDiff();
   renderItems();
   refreshSummary();
@@ -404,9 +406,9 @@ function renderDiff() {
 
 function allItemSegments() {
   if (state.kind === 'combined') {
-    return [...state.docSegments, ...state.promptSegments].filter(s => s.type === 'item');
+    return itemSegments([...state.docSegments, ...state.promptSegments]);
   }
-  return state.segments.filter(s => s.type === 'item');
+  return itemSegments(state.segments);
 }
 
 /** PII 만 유형(dtype)별로 묶는다. 건수 많은 순.
@@ -903,7 +905,8 @@ el.btnSend.addEventListener('click', async () => {
   }
 
   if (state.kind === 'combined') {
-    const docItems = state.docSegments.filter(s => s.type === 'item');
+    // 기밀 문장 안의 항목까지 — 문장만 풀고 안쪽 PII 는 가려 둔 경우 원본 파일을 그대로 보내면 안 된다
+    const docItems = itemSegments(state.docSegments);
     const docUnmaskedCount = docItems.filter(s => !s.locked && state.unmasked.has(s.key)).length;
     const docHasLocked = docItems.some(s => s.locked);
     const finalPromptText = buildFinalText(state.promptSegments, state.unmasked);

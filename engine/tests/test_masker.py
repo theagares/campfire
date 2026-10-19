@@ -59,3 +59,20 @@ def test_forced_term_overlap_stays_mandatory():
     assert merged[0]["mandatory"] is True
     assert merged[0]["type"] == "USER_DEFINED_TERM"
     assert masker.apply_masking(text, items)["masked_text"] == "[사용자 지정 마스킹]"
+
+
+def test_confidential_sentence_covers_inner_items():
+    # 기밀 문장 안의 PII·사용자 지정 단어는 문장 자리표시자 하나로 — 안쪽 신뢰도가 더 높아도 문장 라벨을 지킨다
+    text = "헥토가 홍길동에게 9001011234568 로 420억 원을 보낸다. 끝."
+    sent = text.index(" 끝.")
+    items = [
+        {"type": "CONFIDENTIAL", "start": 0, "end": sent, "confidence": 0.95, "source": "llm"},
+        {"type": "ORGANIZATION", "start": 0, "end": 2, "confidence": 0.9},
+        {"type": "PERSON_NAME", "start": 4, "end": 7, "confidence": 0.9},
+        {"type": "ID_NUMBER", "start": 10, "end": 23, "confidence": 0.98},
+        {"type": "USER_DEFINED_TERM", "start": 26, "end": 30, "confidence": 1.0, "mandatory": True},
+    ]
+    merged = masker.merge_overlapping(items)
+    assert [(m["type"], m["start"], m["end"]) for m in merged] == [("CONFIDENTIAL", 0, sent)]
+    assert merged[0]["mandatory"] is True
+    assert masker.apply_masking(text, items)["masked_text"] == "[기밀 마스킹] 끝."

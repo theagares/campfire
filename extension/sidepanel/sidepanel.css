@@ -300,6 +300,7 @@ body {
 .lg { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .sw-pii { background: var(--pii); }
+.sw-conf { background: var(--purple); }
 .sw-inj { background: var(--inj); }
 .hint { font-size: 10.5px; font-weight: 400; color: var(--muted-2); margin: 0 2px 8px; line-height: 1.5; }
 
@@ -320,6 +321,9 @@ body {
 .mark:hover { box-shadow: 0 0 0 2px rgba(88, 76, 220, .35); }
 .mark:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--purple); }
 .mark.pii { background: var(--pii); color: #fff; }
+/* 회사 KG 로 찾은 기밀 문장 = Campfire 대표색. 문장 하나가 한 덩어리이고 안쪽 PII 는 제 색으로 그 안에 있다 */
+.mark.conf { background: var(--purple); color: #fff; padding: 2px 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.mark.conf .mark { padding: 1px 4px; }
 .mark.inj { background: var(--inj); color: var(--text); }
 .mark.forced { background: #5c3fbf; color: #fff; cursor: not-allowed; }
 .mark.forced:hover { box-shadow: none; }
@@ -369,6 +373,7 @@ body {
 .group .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; }
 .group .cat.pii { background: var(--pii); }
 .group .cat.inj { background: var(--inj); }
+.group .cat.conf { background: var(--purple); }
 .group .cat.forced { background: #5c3fbf; }
 
 .g-text { flex: 1; min-width: 0; }
@@ -407,6 +412,7 @@ body {
 .solo .cat { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 1px; }
 .solo .cat.pii { background: var(--pii); }
 .solo .cat.inj { background: var(--inj); }
+.solo .cat.conf { background: var(--purple); }
 .solo .cat.forced { background: #5c3fbf; }
 .s-text { flex: 1; min-width: 0; }
 .s-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
