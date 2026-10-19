@@ -335,5 +335,8 @@ app.on('will-quit', (e) => {
       engineManager = null;
       app.quit();
     });
+    return;
   }
+  // 정리가 끝난 마지막 종료 — 받아 둔 업데이트가 있으면 설치기를 띄운다(엔진이 꺼진 뒤라 파일을 덮어쓸 수 있다)
+  if (updater) updater.installOnQuit();
 });
