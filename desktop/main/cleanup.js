@@ -31,7 +31,7 @@ const ITEMS = [
   {
     id: 'models',
     label: '탐지 모델 가중치',
-    hint: '지우면 다음 검사 전에 다시 내려받아야 합니다(약 600MB).',
+    hint: '지우면 다음 검사 전에 다시 내려받아야 합니다(약 500MB).',
     dir: (root) => paths.resolveModelsDir(root),
     overrideEnv: 'SECUREDOC_MODELS_DIR',
     needsEngineStop: true,
