@@ -29,6 +29,7 @@ function harness({
   system = { ...ORIGINAL },
   engineUp = true,
   setPacError = null,
+  setPacApplied = false, // 실패 전에 설정이 이미 바뀌었나(맥: 적용 확인 실패). 기본은 승인 거절 — 아무것도 안 바뀜
   restoreError = null,
 } = {}) {
   const log = [];
@@ -43,8 +44,8 @@ function harness({
     log.push(['system', cmd]);
     if (cmd === 'query') return { ...sys };
     if (cmd === 'set-pac') {
+      if (!setPacError || setPacApplied) sys = { ...sys, flags: 5, pacUrl: arg };
       if (setPacError) throw (typeof setPacError === 'string' ? new Error(setPacError) : setPacError);
-      sys = { ...sys, flags: 5, pacUrl: arg };
       return { ...sys };
     }
     if (cmd === 'restore') {
@@ -175,8 +176,8 @@ test('다시 켜도 원래 값은 처음 것 그대로', async () => {
   assert.deepStrictEqual(h.getSystem(), ORIGINAL);
 });
 
-test('시스템 PAC 적용이 실패하면 원래 설정을 복원하고 엔진도 내린다', async () => {
-  const h = harness({ setPacError: '관리자 승인이 취소됐습니다' });
+test('시스템 PAC 적용이 중간에 실패하면 원래 설정을 복원하고 엔진도 내린다', async () => {
+  const h = harness({ setPacError: '일부 네트워크 서비스에 PAC 설정을 적용하지 않았습니다', setPacApplied: true });
   const r = await h.toggle.set(true);
 
   assert.equal(r.ok, false);
@@ -186,7 +187,34 @@ test('시스템 PAC 적용이 실패하면 원래 설정을 복원하고 엔진�
   assert.ok(steps(h.log, 'engine').includes('POST /proxy/stop'));
   const seq = order(h.log);
   assert.ok(seq.indexOf('watchdog:arm') < seq.indexOf('system:set-pac'));
+  assert.ok(seq.includes('system:restore'), seq.join(' → '));
   assert.ok(seq.indexOf('system:restore') < seq.indexOf('watchdog:disarm'));
+});
+
+test('관리자 승인을 못 받아 켜기가 실패하면 복원 창 없이 정리하고, 종료·재실행 때도 복원하지 않는다', async () => {
+  // 맥 실측(v0.2.39): 암호 창 2분 초과 → 복원용 암호 창이 또 떠 2분 초과 → "복원도 실패"로
+  // 엔진 프록시만 남았다. 승인을 못 받았으면 시스템은 그대로라 되돌릴 게 없다.
+  const h = harness({
+    setPacError: Object.assign(new Error('관리자 암호 창이 2분 안에 승인되지 않아 취소됐습니다.'), { declined: true }),
+  });
+  const r = await h.toggle.set(true);
+
+  assert.equal(r.ok, false);
+  assert.ok(!r.message.includes('복원도 실패'), r.message);
+  assert.ok(!steps(h.log, 'system').includes('restore'), '바뀐 게 없는데 관리자 복원을 시도했다');
+  assert.ok(steps(h.log, 'engine').includes('POST /proxy/stop'), '엔진 프록시만 켜진 채 남았다');
+  assert.ok(steps(h.log, 'pac').includes('stop'));
+  assert.ok(order(h.log).includes('watchdog:disarm'));
+  assert.equal(h.store.proxySystemPrevious, null, '남은 기록 때문에 종료·재실행 때 암호 창이 또 뜬다');
+
+  // 기록이 (이전 버전에서) 남아 있었더라도, 우리 PAC가 없으면 종료·재실행 때 복원하지 않는다.
+  h.store.proxySystemPrevious = { ...ORIGINAL };
+  h.log.length = 0;
+  await h.toggle.suspend();
+  await h.toggle.recoverOnLaunch();
+  assert.ok(!steps(h.log, 'system').includes('restore'));
+  assert.equal(h.store.proxySystemPrevious, null);
+  assert.deepEqual(h.getSystem(), ORIGINAL);
 });
 
 test('끄는 중 시스템 복원이 실패하면 엔진·PAC·워치독을 유지한다', async () => {
