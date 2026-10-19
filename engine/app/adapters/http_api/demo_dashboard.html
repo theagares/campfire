@@ -94,7 +94,6 @@
   .b-secret { background: var(--red-soft); color: var(--red-ink); }
   .b-none { background: var(--mask); color: var(--ink-2); }
   .b-run { background: var(--purple-soft); color: var(--purple); }
-  .b-cache { background: var(--blue-soft); color: var(--purple); }
   .b-fb { background: var(--orange-soft); color: var(--orange-ink); }
 
   /* 문장 */
@@ -281,7 +280,7 @@ async function loadKg() {
 // ── 검사 상태 ─────────────────────────────────────────────────────────────
 function newScan(id, at) {
   return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
-           passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false, cached: false,
+           passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false,
            flagged: [], t: {}, shownAt: {} };
 }
 
@@ -298,7 +297,7 @@ function applyEvent(sc, ev) {
   } else if (ev.stage === "solar") {
     sc.facts = (ev.facts || []).map((t) => K(...t));
   } else if (ev.stage === "verdict") {
-    sc.fallback = !!ev.fallback; sc.cached = !!ev.cached;
+    sc.fallback = !!ev.fallback;
     sc.pairs = (ev.pairs || []).map(([s, t]) => [s, K(...t)]);
     sc.publics = new Set((ev.public || []).map((t) => K(...t)));
   } else if (ev.stage === "done") {
@@ -354,7 +353,7 @@ function renderFunnel(sc) {
   } else if (v) {
     $("#f-secret").textContent = sc.fallback ? "–" : secretFacts.size;
     $("#f-secret-sub").textContent = sc.fallback ? "판정 불가 — 근거 문장을 낮은 신뢰도로 가림"
-      : `공개 ${sc.publics.size} · 진술 안 함 ${sc.facts.length - secretFacts.size - sc.publics.size}` + (sc.cached ? " · 캐시" : "");
+      : `공개 ${sc.publics.size} · 진술 안 함 ${sc.facts.length - secretFacts.size - sc.publics.size}`;
   } else {
     $("#f-secret").textContent = d ? 0 : "–";
     $("#f-secret-sub").textContent = d ? "Solar 로 보낼 사실 없음" : "";
@@ -512,7 +511,6 @@ function renderHistory() {
     else if (sc.fallback) badges += `<span class="badge b-fb">판정 불가 · ${sc.flagged.length}문장</span>`;
     else if (sc.flagged.length) badges += `<span class="badge b-secret">기밀 ${sc.flagged.length}문장</span>`;
     else badges += `<span class="badge b-none">${sc.candidates.length ? "기밀 없음" : "KG 후보 없음"}</span>`;
-    if (sc.cached) badges += '<span class="badge b-cache">캐시</span>';
     return `<div class="scan ${id === selected ? "sel" : ""}" data-id="${id}"><div class="t"><span>#${id}</span><span>${time}</span></div>` +
       `<div class="n" title="${esc(scanTitle(sc))}">${esc(scanTitle(sc))}</div>${badges}</div>`;
   }).join("");
