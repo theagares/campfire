@@ -275,6 +275,8 @@ app.whenReady().then(async () => {
         showDashboard();
         return mainWindow;
       },
+      // 설정 "마스킹본 바로 전송"(기본 켬). 저장 즉시 다음 판단부터 적용된다.
+      autoSendMasked: () => config.get('proxyAutoSendMasked') !== false,
     });
     proxyDecisionUi.start();
   }

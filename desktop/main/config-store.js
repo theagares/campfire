@@ -49,6 +49,9 @@ const DEFAULTS = {
   // **전의** 값이다 — null 이면 안 덮어썼다. 앱이 강제 종료돼도 다음 실행 때 이걸로 되돌린다.
   proxyEnabled: false,
   proxySystemPrevious: null,
+  // 프록시가 위험 요소를 찾았을 때 확인창 없이 마스킹본을 보낸다(proxy-decision-ui.js). 끄면 매번 묻는다.
+  // 검사를 끝내지 못한 건은 이 값과 관계없이 묻는다.
+  proxyAutoSendMasked: true,
 };
 
 class ConfigStore {

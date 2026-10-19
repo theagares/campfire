@@ -12,7 +12,7 @@ function manager() {
   return { getStatus: () => ({ state: 'running', baseUrl: 'http://127.0.0.1:48200' }) };
 }
 
-function fixture(detail, answers = [0]) {
+function fixture(detail, answers = [0], opts = {}) {
   const posts = [];
   const shown = [];
   const fetchImpl = async (url, options = {}) => {
@@ -27,7 +27,8 @@ function fixture(detail, answers = [0]) {
   };
   const ui = new ProxyDecisionController({
     engineManager: manager(), fetchImpl,
-    dialog: { showMessageBox: async (opts) => { shown.push(opts); return { response: answers.shift() ?? 0 }; } },
+    dialog: { showMessageBox: async (o) => { shown.push(o); return { response: answers.shift() ?? 0 }; } },
+    ...opts,
   });
   return { ui, posts, shown };
 }
@@ -79,6 +80,40 @@ test('검사 미완료 결과는 취소를 기본값으로 둔다', async () => 
   await ui.checkNow();
   assert.deepEqual(shown[0].buttons, ['취소', '원본 전송']);
   assert.equal(shown[0].defaultId, 0);
+  assert.deepEqual(posts, [{ action: 'cancel' }]);
+});
+
+test('"마스킹본 바로 전송"을 켜면 창 없이 마스킹본을 보내고, 끄면 바로 다시 묻는다', async () => {
+  let auto = true;
+  let pulled = 0;
+  const detail = {
+    id: 'a1', fileName: '메시지', host: 'claude.ai',
+    piiCount: 1, injectionCount: 0, forcedMaskCount: 0,
+    scanStatus: 'ok', result: { scanStatus: 'ok' },
+  };
+  const { ui, posts, shown } = fixture(detail, [0], {
+    autoSendMasked: () => auto, platform: 'darwin', getParentWindow: () => { pulled += 1; return null; },
+  });
+  await ui.checkNow();
+  assert.equal(shown.length, 0, '켜 뒀는데 확인창을 띄웠다');
+  assert.equal(pulled, 0, '묻지 않는데 대시보드를 앞으로 끌어냈다(맥)');
+  assert.deepEqual(posts, [{ action: 'send_masked' }]);
+
+  auto = false; // 설정에서 끔 — 다음 건부터
+  const off = fixture({ ...detail, id: 'a2' }, [1], { autoSendMasked: () => auto });
+  await off.ui.checkNow();
+  assert.equal(off.shown.length, 1);
+  assert.deepEqual(off.posts, [{ action: 'cancel' }]);
+});
+
+test('"마스킹본 바로 전송"을 켜도 검사를 끝내지 못한 건은 묻는다', async () => {
+  const { ui, posts, shown } = fixture({
+    id: 'a3', fileName: 'big.pdf', host: 'claude.ai',
+    piiCount: 2, injectionCount: 0, forcedMaskCount: 0,
+    scanStatus: 'ok', result: { scanStatus: 'ok', truncated: true },
+  }, [0], { autoSendMasked: () => true }); // 검사 미완료 창의 0 = 취소
+  await ui.checkNow();
+  assert.equal(shown.length, 1, '일부만 검사한 마스킹본을 묻지 않고 보냈다');
   assert.deepEqual(posts, [{ action: 'cancel' }]);
 });
 
