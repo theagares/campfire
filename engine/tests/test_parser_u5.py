@@ -43,9 +43,8 @@ def _make_xlsx_bytes() -> bytes:
     ws = wb.active
     ws.title = "고객목록"
     ws.append(["구분", "메모"])
-    # PERSON_NAME 룰(app/rules/pii_ko.yaml)은 "성명/이름/고객명 : 값" 앵커가
-    # 같은 텍스트 런 안에 있어야 매치되므로, 헤더/값을 별도 셀로 나누지 않고
-    # 한 셀 안에 라벨+값을 함께 넣는다(실제 스프레드시트의 "메모" 컬럼과 유사).
+    # 헤더/값을 별도 셀로 나누지 않고 한 셀 안에 라벨+값을 함께 넣는다
+    # (실제 스프레드시트의 "메모" 컬럼과 유사).
     ws.append(["신규 고객", "성명: 홍길동, 이메일: hong@example.com, 연락처: 010-1234-5678"])
     buf = io.BytesIO()
     wb.save(buf)

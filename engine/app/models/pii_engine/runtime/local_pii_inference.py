@@ -112,12 +112,46 @@ def merge_lc_address(entities: list[dict[str, Any]], sentence: str) -> list[dict
     for entity in entities:
         if entity["label"] == "LC_ADDRESS" and merged and merged[-1]["label"] == "LC_ADDRESS":
             gap = sentence[merged[-1]["end"]:entity["begin"]]
-            if gap and all(ch == " " for ch in gap):
+            if gap and all(ch in " ,(" for ch in gap):  # "…12길 34, 101동 1203호" 처럼 쉼표·괄호로 끊긴 주소도 하나로
                 merged[-1]["end"] = entity["end"]
                 merged[-1]["form"] = sentence[merged[-1]["begin"]:merged[-1]["end"]]
                 continue
         merged.append(entity)
     return merged
+
+
+# 주소 보강 — 모델은 학습 데이터처럼 쉼표·괄호 없는 주소만 잘 잡는다. 실측(2026-10-20):
+#   "…성미산로 12길 34, 101동 1203호" → 동·호를 놓침,  "…12길 34(101동 1203호)" → 주소를 통째로 놓침,
+#   "성미산로12길 34, …" → "서울특별시" · "성미산로12길 34" 로 쪼개져 구·동·호를 놓침.
+# 시/도부터 번지(·동·호)까지 정규식으로 찾아 모델 주소와 합치고, 주소 바로 뒤의 동·호를 붙인다.
+# REGEX_RULES 처럼 모델 결과를 덮어쓰지 않는다 — 모델이 건물명까지 더 넓게 잡았으면 그쪽을 지킨다.
+_UNIT = r"(?:[가-힣A-Za-z]+\s*)?(?:\d+동\s*)?\d+호"
+ADDRESS_TAIL = re.compile(rf"(?:\s*\(\s*{_UNIT}\s*\)|(?:\s*,\s*|\s+){_UNIT})")
+_SIDO = (r"(?:(?:서울|부산|대구|인천|광주|대전|울산|세종)(?:특별시|광역시|특별자치시|시)?"
+         r"|(?:경기|강원|충청북|충청남|전라북|전라남|경상북|경상남|충북|충남|전북|전남|경북|경남|제주)(?:특별자치도|도)?)")
+ADDRESS_RE = re.compile(
+    _SIDO + r"(?:\s?[가-힣]+(?:시|군|구)){1,2}"
+    r"\s?(?:[가-힣0-9]+(?:로|길)(?:\s?\d+번?(?:로|길))?|[가-힣0-9]+(?:동|읍|면|리))\s?\d+(?:-\d+)?"
+    rf"{ADDRESS_TAIL.pattern}?"
+)
+
+
+def address_postprocess(sentence: str, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    addrs = [dict(e) for e in entities if e["label"] == "LC_ADDRESS"]
+    others = [e for e in entities if e["label"] != "LC_ADDRESS"]
+    for m in ADDRESS_RE.finditer(sentence):
+        hit = [a for a in addrs if a["begin"] < m.end() and m.start() < a["end"]]
+        addrs = [a for a in addrs if a not in hit] + [{
+            "label": "LC_ADDRESS",
+            "begin": min([m.start()] + [a["begin"] for a in hit]),
+            "end": max([m.end()] + [a["end"] for a in hit]),
+        }]
+    for a in addrs:
+        tail = ADDRESS_TAIL.match(sentence, a["end"])
+        if tail:
+            a["end"] = tail.end()
+        a["form"] = sentence[a["begin"]:a["end"]]
+    return sorted(others + addrs, key=lambda e: e["begin"])
 
 
 def regex_postprocess(sentence: str, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -271,6 +305,7 @@ class PIIDetector:
 
                 entities = char_bio_to_entities(text, char_labels)
                 entities = merge_lc_address(entities, text)
+                entities = address_postprocess(text, entities)
                 entities = regex_postprocess(text, entities)
                 entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
                 all_entities.append(entities)
@@ -322,6 +357,7 @@ class PIIDetector:
 
             entities = char_bio_to_entities(text, char_labels)
             entities = merge_lc_address(entities, text)
+            entities = address_postprocess(text, entities)
             entities = regex_postprocess(text, entities)
             entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
             all_entities.append(entities)

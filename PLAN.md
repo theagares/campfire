@@ -244,10 +244,10 @@ class Detector(Protocol):
 - 탐지 유형 상수는 기존 파이프라인과 동일하게 유지:
   - PII: `PERSON_NAME / EMAIL / PHONE / ADDRESS / ID_NUMBER / CREDIT_CARD / DATE_OF_BIRTH / ORGANIZATION / BANK_ACCOUNT / OTHER_PII`
   - 인젝션: `INSTRUCTION_OVERRIDE / ROLE_MANIPULATION / SYSTEM_PROMPT_LEAK / JAILBREAK / HIDDEN_COMMAND / DATA_EXFILTRATION / OTHER_INJECTION`
-- 룰베이스 v1: 정규식 룰 테이블(주민번호, 전화, 이메일, 카드번호, 계좌 등 +
-  인젝션 패턴은 `프롬프트_인젝션_공격_유형.md` 기반). 룰은 데이터 파일(YAML/JSON)로
-  분리해두되, (2026-07-23 정정) 대시보드 "룰 관리" UI는 v1 미지원(§8) — on/off·추가는
-  당분간 이 YAML/JSON 파일 직접 편집으로만 가능.
+- ~~룰베이스 v1~~ (2026-08-02 #71 에서 제거): 모델이 없을 때 정규식·키워드로 격하하던 폴백은
+  "뭔가는 막고 있다" 는 착각을 줘서 없앴다. 남은 규칙 데이터(`app/rules/*.yaml`)도 2026-10-20 삭제.
+  지금 정규식은 PII 모델 런타임 안(`models/pii_engine/runtime/local_pii_inference.py` 의
+  번호류 `REGEX_RULES` 와 주소 보강 `ADDRESS_RE`)과 자격증명(`detectors/pii/credentials.py`)뿐이다.
 - **언어 범위: 한국어만 (v1)**. 기존에 준비해둔 한국 PII 룰(주민등록번호 체크섬
   등)을 그대로 가져다 쓰되, 지금 단계는 정교화하지 않고 단순 이식 수준으로
   둔다. 영문권 패턴(국제 전화 형식 등)은 범위 밖 — encoder 교체 시점에
@@ -493,8 +493,7 @@ campfire/
 │  │  │  ├ detectors/{pii,injection}/
 │  │  │  ├ masker/
 │  │  │  └ pipeline/
-│  │  ├ store/             # SQLite, 설정, audit.log
-│  │  └ rules/             # 룰 데이터 (YAML)
+│  │  └ store/             # SQLite, 설정, audit.log
 │  └ tests/
 ├ desktop/                 # Electron
 │  ├ package.json
