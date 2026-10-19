@@ -13,10 +13,13 @@ contextBridge.exposeInMainWorld('tray', {
   setSecurityEnabled: (enabled) => ipcRenderer.invoke('engine:setSecurity', enabled),
   openDashboard: () => ipcRenderer.invoke('window:showDashboard'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
+  getUpdateState: () => ipcRenderer.invoke('updater:state'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
 
   onEngineStatus: (cb) => sub('engine:status', cb),
   onMetrics: (cb) => sub('metrics:tick', cb),
   onStats: (cb) => sub('stats:tick', cb),
+  onUpdateState: (cb) => sub('updater:state', cb),
 });
 
 function sub(channel, cb) {
