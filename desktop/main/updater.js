@@ -15,7 +15,8 @@
  */
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 켜 둔 동안 다시 확인하는 간격
-const RELEASES_URL = 'https://github.com/theagares/campfire/releases/latest';
+// 받을 버전의 릴리스 페이지. releases/latest 는 정식 판만 가리켜, 라이트(Pre-release) 사용자가 정식 판을 받게 된다.
+const RELEASES_URL = 'https://github.com/theagares/campfire/releases/tag/v';
 
 /**
  * 업데이트 상태를 들고 화면에 알린다. electron-updater 는 주입받는다(테스트에서 가짜로 바꾼다).
@@ -34,7 +35,7 @@ function createUpdater({ autoUpdater, platform = process.platform, broadcast = (
   autoUpdater.on('update-not-available', () => console.log('[updater] 최신 버전'));
   autoUpdater.on('update-available', (i) => {
     console.log('[updater] 업데이트 있음:', i.version);
-    if (manual) set({ manual: true, version: i.version, url: RELEASES_URL });
+    if (manual) set({ manual: true, version: i.version, url: RELEASES_URL + i.version });
   });
   autoUpdater.on('update-downloaded', (i) => {
     console.log('[updater] 다운로드 완료:', i.version, '— 다시 시작하면 적용');

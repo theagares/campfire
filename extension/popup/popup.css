@@ -134,10 +134,11 @@ body {
   border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg);
   color: var(--ink); font-weight: 600; font-size: 11px; cursor: pointer;
 }
-.btn:hover { background: var(--sunken); }
+/* hover 는 켜진 버튼에만 — 꺼진 버튼에서도 .btn-primary:hover 의 불투명도가 이겨 진하게 보였다(맥 v0.2.40) */
+.btn:hover:not(:disabled) { background: var(--sunken); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn-primary { background: var(--purple); border-color: var(--purple); color: #fff; }
-.btn-primary:hover { opacity: .9; background: var(--purple); }
+.btn-primary:hover:not(:disabled) { opacity: .9; background: var(--purple); }
 .btn-primary:disabled { background: var(--card-bg); border-color: var(--line); color: var(--ink-mute); }
 
 .footer { font-size: 10px; color: var(--ink-mute); text-align: center; padding: 10px 2px 2px; }
