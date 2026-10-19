@@ -1012,6 +1012,7 @@ function openSettings() {
   $('#upstage-api-key').value = s.upstageApiKey || '';
   $('#mcp-risk-scanner-enabled').checked = !!s.mcpRiskScannerEnabled;
   $('#confidential-enabled').checked = !!s.confidentialEnabled;
+  $('#proxy-auto-send-masked').checked = s.proxyAutoSendMasked !== false;
   $('#kg-path').value = s.kgPath || '';
   $('#settings-port').textContent = (state.engine && state.engine.port) || '자동 관리';
   modal.classList.add('open');
@@ -1166,6 +1167,7 @@ $('#settings-save').addEventListener('click', async () => {
   patch.upstageApiKey = $('#upstage-api-key').value.trim();
   patch.mcpRiskScannerEnabled = $('#mcp-risk-scanner-enabled').checked;
   patch.confidentialEnabled = $('#confidential-enabled').checked;
+  patch.proxyAutoSendMasked = $('#proxy-auto-send-masked').checked;
   patch.kgPath = $('#kg-path').value.trim();
 
   // 탐지 모델은 더 이상 여기서 고를 게 없다(encoder/llm_mcp 고정, 룰베이스 폴백
@@ -1214,7 +1216,7 @@ async function init() {
     state.lite = true;
     document.title = info.dev ? 'Campfire Lite (dev)' : 'Campfire Lite';
     for (const sel of ['#conn-mcp-card', '#conn-proxy-card']) $(sel).style.display = 'none';
-    for (const sel of ['#mcp-risk-scanner-enabled', '#confidential-enabled']) $(sel).closest('.field').style.display = 'none';
+    for (const sel of ['#mcp-risk-scanner-enabled', '#confidential-enabled', '#proxy-auto-send-masked']) $(sel).closest('.field').style.display = 'none';
   }
 
   state.settings = await api.getSettings();

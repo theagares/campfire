@@ -19,7 +19,9 @@ class ProxyDecisionController {
   constructor({
     engineManager, dialog, fetchImpl = globalThis.fetch, pollMs = POLL_MS,
     watchMs = WATCH_MS, getParentWindow = () => null, platform = process.platform,
+    autoSendMasked = () => false, // 설정 "마스킹본 바로 전송" — 켜면 묻지 않고 마스킹본을 보낸다
   }) {
+    this.autoSendMasked = autoSendMasked;
     this.engineManager = engineManager;
     this.dialog = dialog;
     this.fetch = fetchImpl;
@@ -165,6 +167,9 @@ class ProxyDecisionController {
     const result = detail.result || {};
     const complete = detail.scanStatus === 'ok' && !result.truncated;
     const hasMandatoryMask = forced > 0 || (result.forcedMaskItems || []).length > 0;
+    // 다 검사했고 찾은 게 있으면 창 없이 마스킹본을 보낸다. 검사를 끝내지 못한 건은 마스킹본이
+    // 온전하다고 볼 수 없어 설정과 관계없이 아래 확인창으로 묻는다.
+    if (findings > 0 && complete && this.autoSendMasked()) return 'send_masked';
     const lines = [
       `대상: ${detail.host || '알 수 없음'}`,
       `개인정보 ${pii}건 · 프롬프트 인젝션 ${injection}건 · 사용자 지정 ${forced}건`,
