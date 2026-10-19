@@ -65,8 +65,11 @@ test('macOS 는 받지 않고 내려받을 페이지를 알린다 (자동 설치
   const { autoUpdater, updater } = setup({ platform: 'darwin' });
   updater.start();
   assert.equal(autoUpdater.autoDownload, false);
-  autoUpdater.emit('update-available', { version: '0.2.41' });
-  assert.deepEqual(updater.getState(), { ready: false, manual: true, version: '0.2.41', url: RELEASES_URL });
+  autoUpdater.emit('update-available', { version: '0.2.41-lite.1' });
+  // 라이트도 자기 버전 페이지로 — releases/latest 는 정식 판이다
+  assert.deepEqual(updater.getState(),
+    { ready: false, manual: true, version: '0.2.41-lite.1', url: 'https://github.com/theagares/campfire/releases/tag/v0.2.41-lite.1' });
+  assert.ok(updater.getState().url.startsWith(RELEASES_URL));
   assert.equal(updater.install(), false);
 });
 
