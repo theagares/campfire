@@ -32,7 +32,6 @@
   .pill.live .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(9, 174, 75, .2); }
   .pill.down .dot { background: var(--red); }
   .grow { flex: 1; }
-  .meta { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 
   /* 깔때기 */
   .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
@@ -154,8 +153,6 @@
 <header>
   <h1>Campfire <span>기밀 판정 근거</span> 대시보드</h1>
   <span class="pill" id="conn"><span class="dot"></span><span>연결 중</span></span>
-  <span class="grow"></span>
-  <span class="meta" id="kgmeta"></span>
 </header>
 
 <section class="funnel">
@@ -229,7 +226,6 @@ async function loadKg() {
   delta = kg.delta; kgCount = kg.triples.length;
   $("#f-kg").textContent = kgCount;
   $("#f-kg-sub").textContent = `엔티티 ${new Set(kg.triples.flatMap((t) => [t[0], t[2]])).size}개`;
-  $("#kgmeta").textContent = `리트리버 기준 δ ${delta}` + (kg.confidentialEnabled ? "" : " · 기밀 탐지 꺼짐");
   if (!kgCount) {
     $("#cy").innerHTML = '<div class="empty">KG 파일이 설정되지 않았습니다 — 앱 설정에서 KG 경로를 지정하세요</div>';
     return;
