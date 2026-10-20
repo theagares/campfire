@@ -79,6 +79,8 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
           original,
           locked: !!it.mandatory,
         };
+        // 솔라 판정을 못 해 근거 문장을 가린 기밀(엔진 source 'encoder') — 화면은 점선 테두리로 구분한다
+        if (it.cat === 'conf' && it.source === 'encoder') seg.fallback = true;
         if (it.children) seg.children = toSegments(it.children, start, it.end);
         segs.push(seg);
       }

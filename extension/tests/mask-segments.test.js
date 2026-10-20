@@ -250,4 +250,15 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
     buildFinalText(segs, [top[0].key]), 'SW 한 줄 경로도 같은 결과');
 }
 
-console.log('mask-segments.test.js: 14개 블록 통과');
+// ── 15) 솔라 판정을 못 해 가린 기밀 근거(source 'encoder')만 fallback 표시 — 화면은 점선 테두리 ──
+{
+  const text = '가온은 오로라를 3월에 낸다. 본사는 서울이다.';
+  const s1 = text.indexOf(' 본사');
+  const judged = buildSegments(text, [{ start: 0, end: s1, type: 'CONFIDENTIAL', source: 'llm' }], [], 'p');
+  const guessed = buildSegments(text, [{ start: 0, end: s1, type: 'CONFIDENTIAL', source: 'encoder' }], [], 'p');
+  assert.strictEqual(judged.find(x => x.type === 'item').fallback, undefined, '솔라가 판정한 기밀은 실선');
+  assert.strictEqual(guessed.find(x => x.type === 'item').fallback, true, '판정 불가 근거는 점선');
+  assert.strictEqual(buildFinalText(guessed, []), '[기밀 마스킹] 본사는 서울이다.', '가리는 방식은 같다');
+}
+
+console.log('mask-segments.test.js: 15개 블록 통과');
