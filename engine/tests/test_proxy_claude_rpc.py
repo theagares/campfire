@@ -156,6 +156,33 @@ def test_손으로_친_메시지만_프롬프트_기준으로_검사한다(monke
     assert seen == {"세 줄로 요약하고 존댓말로 답해": True, "첨부 파일 본문": False}
 
 
+def test_파일이_앞에_있어도_프롬프트를_먼저_검사한다(monkeypatch):
+    # 확장은 프롬프트를 먼저 검사한다(대시보드에도 먼저 뜬다). 메시지 안에서 파일(2.15)이 프롬프트(2.3)
+    # 앞에 직렬화돼 와도 같은 순서여야 하고, 다시 쓴 메시지의 필드 순서는 그대로여야 한다.
+    import app.core.pipeline.orchestrator as orch
+    order = []
+
+    async def spy(*, text=None, **_kw):
+        order.append(text)
+        return {"maskedText": text + "*", "piiItems": [{"type": "PERSON_NAME", "start": 0, "end": 1}],
+                "injectionItems": [], "blocked": False, "scanStatus": "ok", "truncated": False}
+
+    monkeypatch.setattr(orch, "run_pipeline", spy)
+    from app.adapters.proxy.decision import broker
+
+    async def send(**_kw):
+        return "send_masked"
+
+    monkeypatch.setattr(broker, "wait", send)
+    block = _ld(1, b"a.txt") + _ld(3, b"text/plain") + _ld(4, "첨부 본문".encode())
+    body = _ld(2, _ld(1, b"uuid") + _ld(15, block) + _ld(3, "요약해 줘".encode()))
+    f = _flow(body)
+    _run(asyncio.wait_for(CampfireAddon().request(f), timeout=0.2))
+    assert order == ["요약해 줘", "첨부 본문"]
+    got = [(p, fl.value.decode()) for p, fl in pb.decode(f.request.content).walk() if p in {(2, 3), (2, 15, 4)}]
+    assert got == [((2, 15, 4), "첨부 본문*"), ((2, 3), "요약해 줘*")]
+
+
 def test_필드2_없는_액션은_통과한다():
     # 실제 120바이트 비전송 액션 모양: 1.x + 15.x, 필드 2 없음
     body = _ld(1, _ld(2, b"conv")) + _ld(14, b"ko-KR") + _ld(15, _ld(1, _ld(7, _ld(2, b"claude-opus-5-5"))))
