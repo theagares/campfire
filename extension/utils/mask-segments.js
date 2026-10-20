@@ -96,9 +96,13 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
  * 규칙이 사라지면 해제 토글로 원문을 보낼 수 있기 때문이다.
  * 예외: 기밀 문장 안에 완전히 든 탐지는 합치지 않고 자식으로 둔다 — 기밀을 풀어도 안쪽 PII 는
  * 자기 토글대로, 필수 단어는 잠긴 채로 남는다.
+ * 인젝션 구간도 겹친 PII·필수 단어를 자식으로 품는다. 솔라 없이 잡힌 인젝션은 128토큰 덩어리라 안쪽 항목과
+ * 겹치기 쉬운데, 합치면 덩어리 전체가 그 항목의 색·이름(필수 단어면 잠김)으로 바뀌었다. 덩어리 경계가
+ * PII 가운데를 자르면 부모를 늘려 통째로 품는다(엔진 masker.merge_overlapping 과 같은 규칙).
  */
 function mergeSpans(items) {
   const all = [];
+  const leaf = (cat) => cat === 'pii' || cat === 'forced';
   for (const item of items) {
     const prev = all[all.length - 1];
     if (!prev || item.start >= prev.end) {
@@ -107,6 +111,15 @@ function mergeSpans(items) {
     }
     if (prev.cat === 'conf' && item.end <= prev.end) {
       (prev.children ||= []).push(item);
+      continue;
+    }
+    if (prev.cat === 'inj' && leaf(item.cat)) {
+      prev.end = Math.max(prev.end, item.end);
+      (prev.children ||= []).push(item);
+      continue;
+    }
+    if (item.cat === 'inj' && leaf(prev.cat)) {
+      all[all.length - 1] = { ...item, start: prev.start, end: Math.max(prev.end, item.end), children: [prev] };
       continue;
     }
     prev.end = Math.max(prev.end, item.end);
@@ -133,7 +146,8 @@ export function buildFinalText(segments, unmaskedKeys) {
   const keep = unmaskedKeys instanceof Set ? unmaskedKeys : new Set(unmaskedKeys || []);
   const render = (segs) => (segs || []).map(seg => {
     if (seg.type === 'text') return seg.text;
-    if (seg.locked || !keep.has(seg.key)) return maskTokenFor(seg.label);
+    // 인젝션은 유형과 관계없이 엔진과 같은 [인젝션 마스킹](masker.py INJECTION_LABEL). 목록 이름은 유형별 그대로.
+    if (seg.locked || !keep.has(seg.key)) return maskTokenFor(seg.cat === 'inj' ? '인젝션' : seg.label);
     // 기밀 문장을 풀어도 안쪽 항목은 자기 상태대로
     return seg.children ? render(seg.children) : seg.original;
   }).join('');

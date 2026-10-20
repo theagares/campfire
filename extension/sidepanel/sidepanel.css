@@ -325,6 +325,8 @@ body {
 .mark.conf { background: var(--purple); color: #fff; padding: 2px 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .mark.conf .mark { padding: 1px 4px; }
 .mark.inj { background: var(--inj); color: var(--text); }
+/* 인젝션 구간도 안쪽 PII·필수 단어를 품는다(솔라 없이 잡힌 덩어리) — 안쪽 표시는 제 색으로 */
+.mark.inj .mark { padding: 1px 4px; }
 .mark.forced { background: #5c3fbf; color: #fff; cursor: not-allowed; }
 .mark.forced:hover { box-shadow: none; }
 /* 마스킹을 해제한 구간 — 원문이 그대로 보이는 상태다.
