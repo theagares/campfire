@@ -122,23 +122,35 @@ def merge_overlapping(items: list[Item]) -> list[Item]:
             mandatory = bool(last.get("mandatory") or cur.get("mandatory"))
             # 기밀 문장 안의 탐지(PII·사용자 지정 단어)는 문장 자리표시자 하나로 덮는다 — 안쪽 신뢰도가 더
             # 높아도 문장이 [이름 마스킹] 등으로 바뀌면 안 된다. 강제 여부는 표시로만 남긴다.
-            if last["type"] == "CONFIDENTIAL" and cur["end"] <= last["end"]:
+            # 인젝션 구간도 같다. 솔라 없이 잡힌 인젝션은 128토큰 덩어리라 안쪽 PII·사용자 지정 단어와 겹치기
+            # 쉬운데, 예전엔 덩어리 전체가 [사용자 지정 마스킹] 등 다른 유형으로 바뀌었다.
+            container = last["type"] == "CONFIDENTIAL" or last["type"] in INJECTION_TYPES
+            if container and cur["end"] <= last["end"]:
                 if mandatory:
                     last["mandatory"] = True
                 continue
-            # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택
-            cur_score = (cur.get("confidence", 0.0), cur["end"] - cur["start"])
-            last_score = (last.get("confidence", 0.0), last["end"] - last["start"])
-            if cur_score > last_score:
-                last["type"] = cur["type"]
-                last["confidence"] = cur.get("confidence", last.get("confidence", 0.0))
-                last["source"] = cur.get("source", last.get("source"))
-            # 강제 단어와 다른 탐지가 겹쳐도 사용자가 풀 수 없는 속성을 잃으면 안 된다.
-            # 자리표시자도 일반 PII가 아니라 강제 정책임을 분명히 보여준다.
-            if mandatory:
-                last["mandatory"] = True
-                last["type"] = "USER_DEFINED_TERM"
-                last["source"] = "user_dictionary"
+            if last["type"] in INJECTION_TYPES or cur["type"] in INJECTION_TYPES:
+                # 인젝션과 걸치면(덩어리 경계가 PII 가운데를 자르는 등) 대표는 인젝션, 강제 여부는 표시로만
+                if last["type"] not in INJECTION_TYPES:
+                    last["type"] = cur["type"]
+                    last["confidence"] = cur.get("confidence", last.get("confidence", 0.0))
+                    last["source"] = cur.get("source", last.get("source"))
+                if mandatory:
+                    last["mandatory"] = True
+            else:
+                # 겹침 — 더 높은 우선순위(confidence, 길이) 유형을 대표로 채택
+                cur_score = (cur.get("confidence", 0.0), cur["end"] - cur["start"])
+                last_score = (last.get("confidence", 0.0), last["end"] - last["start"])
+                if cur_score > last_score:
+                    last["type"] = cur["type"]
+                    last["confidence"] = cur.get("confidence", last.get("confidence", 0.0))
+                    last["source"] = cur.get("source", last.get("source"))
+                # 강제 단어와 다른 탐지가 겹쳐도 사용자가 풀 수 없는 속성을 잃으면 안 된다.
+                # 자리표시자도 일반 PII가 아니라 강제 정책임을 분명히 보여준다.
+                if mandatory:
+                    last["mandatory"] = True
+                    last["type"] = "USER_DEFINED_TERM"
+                    last["source"] = "user_dictionary"
             new_end = max(last["end"], cur["end"])
             last["end"] = new_end
             last["text"] = None  # 병합 후 대표 text 는 apply 시 재산출
