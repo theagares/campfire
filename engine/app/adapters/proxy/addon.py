@@ -638,6 +638,9 @@ class CampfireAddon:
         """
         from app.core.pipeline.orchestrator import run_pipeline
 
+        # 확장처럼 프롬프트를 먼저 검사한다 — 메시지 안 필드 순서와 상관없이. 대시보드·검토 화면에도
+        # 프롬프트가 먼저 나온다. (첨부할 때 따로 올라가는 파일은 전송보다 먼저 와서 순서를 바꿀 수 없다)
+        fields = sorted(fields, key=lambda f: not any(f is p for p in prompt_fields))
         per_field = []          # (field, masked_text)
         all_pii, all_inj, all_forced = [], [], []
         orig_parts, masked_parts = [], []
