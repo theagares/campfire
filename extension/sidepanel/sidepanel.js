@@ -99,7 +99,7 @@ function segmentsToHtml(segments) {
     if (seg.type === 'text') return esc(seg.text);
     const masked = seg.locked || !state.unmasked.has(seg.key);
     const cls = MARK_CLASS[seg.cat] || 'pii';
-    return `<span class="mark ${cls}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
+    return `<span class="mark ${cls}${seg.fallback ? ' fallback' : ''}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
       + (seg.locked
         ? ` aria-disabled="true" title="${esc(tipFor(seg.label, true, true))}"`
         : ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}"`)
