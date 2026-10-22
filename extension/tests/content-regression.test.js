@@ -2851,8 +2851,8 @@ cancelScan(stuckScan);
     if (!badgeText().includes('탭을 새로고침')) throw new Error(`(39) 끊긴 탭에 새로고침 안내가 없다: ${badgeText()}`);
   }
 
-  // (40) 프록시 경로여도 프롬프트는 claude.ai 에서만 프록시에 넘긴다. 프록시(addon.py)는 다른
-  //      사이트의 프롬프트를 검사하지 않는다 — 예전엔 표식만 보면 어디서든 손을 떼서, 프록시를
+  // (40) 프록시 경로여도 프롬프트는 프록시가 실제로 검사하는 사이트에서만 넘긴다(PROXY_PROMPT_HOSTS).
+  //      예전엔 표식만 보면 어디서든 손을 뗐는데 프록시는 claude.ai 프롬프트만 봐서, 프록시를
   //      켜면 ChatGPT·Copilot·Perplexity·Grok 에 친 글이 아무 검사 없이 나갔다.
   {
     await clock.tick(9000);
@@ -2882,7 +2882,7 @@ cancelScan(stuckScan);
     if (!contentBridgeToken) throw new Error('(40) content.js 가 MAIN world 에 토큰을 건네지 않았다');
     try {
       // 프록시가 프롬프트를 보는 사이트: 프록시 없으면 확장이 검사(대조군), 프록시 경로면 넘긴다.
-      for (const host of ['claude.ai', 'www.perplexity.ai']) {
+      for (const host of ['claude.ai', 'chatgpt.com', 'www.perplexity.ai', 'grok.com']) {
         await route40('extension');
         if (!(await scans40(host, `프록시 없는 ${host} 요청`))) {
           throw new Error(`(40) 대조군: 프록시가 없는데 ${host} 프롬프트를 검사하지 않았다`);
@@ -2892,9 +2892,10 @@ cancelScan(stuckScan);
           throw new Error(`(40) ${host} 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)`);
         }
       }
+      // 프록시가 프롬프트를 안 보는 사이트(copilot.microsoft.com — 업로드만 프록시)는 프록시 경로여도 확장이 본다.
       await route40('proxy');
-      if (!(await scans40('chatgpt.com', '의뢰인 주민번호 900101-1234567'))) {
-        throw new Error('(40) 프록시 경로의 chatgpt.com 프롬프트를 확장이 검사하지 않았다 — 아무도 안 본다');
+      if (!(await scans40('copilot.microsoft.com', '의뢰인 주민번호 900101-1234567'))) {
+        throw new Error('(40) 프록시가 프롬프트를 안 보는 사이트인데 확장도 검사하지 않았다 — 아무도 안 본다');
       }
     } finally {
       await route40('extension');

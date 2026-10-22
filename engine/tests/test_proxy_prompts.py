@@ -40,10 +40,10 @@ def _flow(host, path, body: str, ctype, method="POST"):
     return f
 
 
-async def _send(addon, f, action="send_masked"):
-    """요청을 보내고, 검토가 뜨면 action 으로 답한다. 뜬 검토 수를 돌려준다."""
+async def _send(addon, f, action="send_masked", hook="request"):
+    """요청(또는 웹소켓 메시지)을 보내고, 검토가 뜨면 action 으로 답한다. 뜬 검토 수를 돌려준다."""
     from app.adapters.proxy.decision import broker
-    task = asyncio.create_task(addon.request(f))
+    task = asyncio.create_task(getattr(addon, hook)(f))
     await asyncio.sleep(0.05)
     pend = broker.list_pending()
     for p in pend:
@@ -126,7 +126,116 @@ def test_Perplexity_해석_못하면_막는다(monkeypatch):
         assert f.response is not None and f.response.status_code == 403, raw
 
 
+CHATGPT_LOGIN = ("chatgpt.com", "/backend-api/f/conversation")
+
+
+def _chatgpt_json(text, action="next", role="user"):
+    msgs = [] if text is None else [{"author": {"role": role}, "content": {"content_type": "text", "parts": [text]},
+                                     "id": "f147b772", "create_time": 1792653454.661}]
+    return json.dumps({"action": action, "model": "auto", "parent_message_id": "client-created-root",
+                       "messages": msgs, "client_prepare_state": "failure"}, ensure_ascii=False)
+
+
+def test_ChatGPT_로그인_전송을_가린다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    calls = []
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline(calls))
+    f = _flow(*CHATGPT_LOGIN, _chatgpt_json(PII), "application/json")
+    assert asyncio.run(_send(CampfireAddon(), f)) == 1
+    sent = json.loads(f.request.get_text())
+    assert sent["messages"][0]["content"]["parts"] == [MASKED]
+    assert sent["messages"][0]["create_time"] == 1792653454.661 and sent["model"] == "auto"
+    assert calls == [(PII, True)] and f.response is None
+
+
+def test_ChatGPT_로그인_새_글_없는_전송은_통과_글_칸_없는_새_전송은_막는다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline([]))
+    regen = _chatgpt_json(None, action="variant")
+    f = _flow(*CHATGPT_LOGIN, regen, "application/json")
+    asyncio.run(_send(CampfireAddon(), f))
+    assert f.response is None and f.request.get_text() == regen
+    f = _flow(*CHATGPT_LOGIN, _chatgpt_json(None), "application/json")
+    asyncio.run(_send(CampfireAddon(), f))
+    assert f.response is not None and f.response.status_code == 403
+
+
+def _ws(host, path, text):
+    from mitmproxy import websocket
+    from wsproto.frame_protocol import Opcode
+    f = tflow.twebsocketflow()
+    f.request.host = host
+    f.request.path = path
+    f.websocket.messages = [websocket.WebSocketMessage(Opcode.TEXT, True, text.encode())]
+    return f
+
+
+GROK_WS = ("grok.com", "/ws/mgw/?uid=91f09ffc")
+
+
+def _grok_msg(text, type_="response.create"):
+    item = {"type": "message", "role": "user", "x_grok": {"client_message_id": "7b01",
+            "input_chunks": [] if text is None else [{"text": {"text": text}}]}}
+    return json.dumps({"session_id": "0d23", "event": {"type": type_, "event_id": "evt_1", "item": item,
+                                                       "castle_request_token": "cNz8|JAB+/="}}, ensure_ascii=False)
+
+
+def test_Grok_웹소켓_전송을_가린다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline([]))
+    f = _ws(*GROK_WS, _grok_msg(PII))
+    assert asyncio.run(_send(CampfireAddon(), f, hook="websocket_message")) == 1
+    msg = f.websocket.messages[-1]
+    sent = json.loads(msg.text)
+    assert sent["event"]["item"]["x_grok"]["input_chunks"][0]["text"]["text"] == MASKED
+    assert sent["event"]["castle_request_token"] == "cNz8|JAB+/=" and not msg.dropped
+
+
+def test_Grok_다른_이벤트는_그대로_글_칸_없거나_취소면_버린다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline([]))
+    ping = _grok_msg(PII, type_="session.ping")
+    f = _ws(*GROK_WS, ping)
+    asyncio.run(_send(CampfireAddon(), f, hook="websocket_message"))
+    assert f.websocket.messages[-1].text == ping and not f.websocket.messages[-1].dropped
+    f = _ws(*GROK_WS, _grok_msg(None))
+    asyncio.run(_send(CampfireAddon(), f, hook="websocket_message"))
+    assert f.websocket.messages[-1].dropped
+    f = _ws(*GROK_WS, _grok_msg(PII))
+    asyncio.run(_send(CampfireAddon(), f, action="cancel", hook="websocket_message"))
+    assert f.websocket.messages[-1].dropped
+
+
+COPILOT_WS = ("substrate.office.com", "/m365Copilot/Chathub/0000@84df?chatsessionid=f99d")
+
+
+def test_Copilot_SignalR_프레임에서_글만_가린다(monkeypatch):
+    import app.core.pipeline.orchestrator as orch
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline([]))
+    chat = {"arguments": [{"source": "officeweb", "message": {"text": PII, "author": "user"}}],
+            "invocationId": "0", "target": "chat", "type": 4}
+    metrics = {"arguments": [{"Timestamps": {"UserInputSubmit": "2026-10-22T07:16:31.935Z"}}],
+               "target": "Metrics", "type": 1}
+    raw = json.dumps(chat, ensure_ascii=False) + "\x1e" + json.dumps(metrics) + "\x1e"
+    f = _ws(*COPILOT_WS, raw)
+    assert asyncio.run(_send(CampfireAddon(), f, hook="websocket_message")) == 1
+    text = f.websocket.messages[-1].text
+    assert text.endswith("\x1e") and text.count("\x1e") == 2
+    frames = [json.loads(x) for x in text.split("\x1e") if x]
+    assert frames[0]["arguments"][0]["message"]["text"] == MASKED
+    assert frames[1] == metrics
+
+
+def test_Copilot_핸드셰이크_핑은_그대로():
+    f = _ws(*COPILOT_WS, '{"protocol":"json","version":1}\x1e')
+    asyncio.run(CampfireAddon().websocket_message(f))
+    assert f.websocket.messages[-1].text == '{"protocol":"json","version":1}\x1e'
+    assert not f.websocket.messages[-1].dropped
+
+
 @pytest.mark.parametrize("host,path,method", [
+    ("chatgpt.com", "/backend-api/f/conversation/prepare", "POST"),
+    ("substrate.office.com", "/search/api/v1/suggestions?setflight=x", "POST"),
     ("grok.com", "/_worker/typeahead?lang=ko&q=%EC%A3%BC%EB%AF%BC", "GET"),
     ("suggest.perplexity.ai", "/suggest/ws", "GET"),
     ("suggest.perplexity.ai", "/search/v2/navigate", "POST"),
@@ -140,4 +249,5 @@ def test_친_글을_싣는_부수_요청은_보내지_않는다(host, path, meth
 
 def test_새_호스트가_PAC_대상에_들어간다():
     exact, _ = intercept_hosts()
-    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com"} <= set(exact)
+    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com",
+            "substrate.office.com"} <= set(exact)
