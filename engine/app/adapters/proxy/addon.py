@@ -8,12 +8,13 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 
 사이트별 코드가 사라지는 건 아니다 — DOM 대신 와이어 포맷을 알아야 한다.
 지금 상태:
-  - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
+  - multipart 로 올리는 곳(Claude/Copilot/Perplexity/Grok)은 한 처리로 덮는다.
   - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다. 흐름이 둘이고 크기 선언 여부가
     다르다 — upload_reservations 쪽은 선언이 없어 패딩도 필요 없다.
   - Gemini 는 push.clients6.google.com 으로 resumable 업로드를 한다. 크기를 먼저
     선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
-  - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
+  - Grok 의 예전 JSON+base64 업로드는 못 다뤄 **차단**한다(UNSUPPORTED_UPLOADS). 지금 쓰는
+    경로는 multipart 라 위 처리로 덮는다.
 
 등록에 파일 이름이 없는 흐름이 둘이라(ChatGPT upload_reservations, Gemini)
 검사 직전에 바이트를 보고 종류를 채운다 — sniff.py 참고.
@@ -69,6 +70,9 @@ MULTIPART_HOSTS = {
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
+    # 2026-10-22 실측: Grok 은 이제 POST /http/upload-file-v2/direct 로 파일 하나(name="file")를
+    # multipart 로 올린다. 예전 JSON+base64 경로(UNSUPPORTED_UPLOADS)만 막고 있어 그대로 나갔다.
+    "grok.com",
     # Gemini 는 여기 없다. 업로드가 같은 오리진이 아니라
     # push.clients6.google.com 으로 가고 multipart 도 아니다(실측) — 전용 처리를
     # 따로 둔다. 여기 넣어 봐야 아무 효과가 없다.
