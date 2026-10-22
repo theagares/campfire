@@ -8,12 +8,13 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 
 사이트별 코드가 사라지는 건 아니다 — DOM 대신 와이어 포맷을 알아야 한다.
 지금 상태:
-  - multipart 로 올리는 곳(Claude/Copilot/Perplexity)은 한 처리로 덮는다.
+  - multipart 로 올리는 곳(Claude/Copilot/Perplexity/Grok)은 한 처리로 덮는다.
   - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다. 흐름이 둘이고 크기 선언 여부가
     다르다 — upload_reservations 쪽은 선언이 없어 패딩도 필요 없다.
   - Gemini 는 push.clients6.google.com 으로 resumable 업로드를 한다. 크기를 먼저
     선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
-  - Grok 은 JSON+base64 라 아직 못 다룬다 → **차단**한다(UNSUPPORTED_UPLOADS).
+  - Grok 의 예전 JSON+base64 업로드는 못 다뤄 **차단**한다(UNSUPPORTED_UPLOADS). 지금 쓰는
+    경로는 multipart 라 위 처리로 덮는다.
 
 등록에 파일 이름이 없는 흐름이 둘이라(ChatGPT upload_reservations, Gemini)
 검사 직전에 바이트를 보고 종류를 채운다 — sniff.py 참고.
@@ -69,6 +70,9 @@ MULTIPART_HOSTS = {
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
+    # 2026-10-22 실측: Grok 은 이제 POST /http/upload-file-v2/direct 로 파일 하나(name="file")를
+    # multipart 로 올린다. 예전 JSON+base64 경로(UNSUPPORTED_UPLOADS)만 막고 있어 그대로 나갔다.
+    "grok.com",
     # Gemini 는 여기 없다. 업로드가 같은 오리진이 아니라
     # push.clients6.google.com 으로 가고 multipart 도 아니다(실측) — 전용 처리를
     # 따로 둔다. 여기 넣어 봐야 아무 효과가 없다.
@@ -120,10 +124,11 @@ UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
 # 메시지 protobuf 에 인라인돼 이 RPC 로 나간다. 손으로 친 프롬프트도 같은 경로다.
 # 즉 파일 업로드 검사를 다 통과해도 텍스트는 여기로 샌다.
 #
-# 지금은 **텍스트가 들어 있으면 차단**한다. protobuf 를 풀어 마스킹하는 것이 목표지만,
-# 그 전까지 fail-open 으로 두면 검사 없이 나간다. content-type 이 application/proto 라
-# (connect+proto 아님) 봉투 없이 바로 protobuf 다 — 그 가정이 깨지면(decode 실패)
-# 통과가 아니라 차단으로 떨어진다.
+# protobuf 를 풀어 사용자 텍스트 필드만 마스킹본으로 바꾸고 다시 싼다(_claude_rpc).
+# content-type 이 application/proto 라(connect+proto 아님) 봉투 없이 바로 protobuf 다 —
+# 그 가정이 깨지면(decode 실패) 통과가 아니라 차단으로 떨어진다.
+# 프롬프트를 검사하는 사이트는 이것뿐이다. 확장(content.js PROXY_PROMPT_HOSTS)은 이 목록에
+# 있는 사이트에서만 프롬프트 검사를 프록시에 넘긴다 — 늘리면 거기도 같이 늘린다.
 CLAUDE_RPC_HOSTS = {"claude.ai"}
 CLAUDE_MESSAGE_RPC_PATHS = (
     "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction",
@@ -135,6 +140,90 @@ CLAUDE_MESSAGE_RPC_PATHS = (
 # 손대지 않는다. 필드 2 가 없는 액션(메타 핑 등)은 사용자 콘텐츠가 없어 통과시킨다.
 CLAUDE_PROMPT_PATH = (2, 3)
 CLAUDE_USER_TEXT_PATHS = {CLAUDE_PROMPT_PATH, (2, 15, 4)}
+
+# ─── 다른 사이트의 프롬프트 전송 ──────────────────────────────────────────────
+#
+# 2026-10-22 실측: 임시 크롬 프로필(비로그인, 이어서 로그인)을 측정용 프록시에 붙여, 표식이 든
+# 문장을 입력·전송하고 그 표식이 실린 요청·웹소켓 메시지를 모두 기록했다(표식은 막았다).
+#   ChatGPT(로그인)    POST /backend-api/f/conversation — JSON messages[*].content.parts[*] (role=user)
+#   ChatGPT(비로그인)  POST /unauth-mweb/conversation/updates — form-urlencoded, 필드 prompt
+#   Perplexity         POST /rest/sse/perplexity_ask — JSON query_str 와 params.dsl_query(같은 글)
+#   Grok               WS   grok.com/ws/mgw/ — event.type=response.create, input_chunks[*].text.text
+# 모두 2턴째에도 새 글만 싣고 앞 턴은 서버가 들고 있다(ChatGPT 비로그인·Perplexity 로 확인).
+#
+# Copilot 은 여기 없다. copilot.com 으로 옮긴 뒤 글은 WS substrate.office.com/m365Copilot/Chathub/,
+# 파일은 graph.microsoft.com createUploadSession → OneDrive(회사 계정은 SharePoint) PUT 으로 간다.
+# 모두 Outlook·Teams·OneDrive 가 같이 쓰는 M365 호스트라, PAC 에 넣으면 그 프로그램들의 통신까지
+# 이 프록시를 지나고 엔진이 재시작하는 동안 끊긴다. Copilot 은 확장이 맡는다(content.js 'copilot.com',
+# 입력 중 자동완성은 rules/typing-leaks.json).
+#
+# 칸 찾기 함수의 약속: None = 이 메시지는 전송이 아니다(통과), [] = 전송인데 글 칸을 못 찾았다
+# (사이트 개편 — 통과가 아니라 차단). 칸은 (담는 dict/list, 키) 쌍이라 그 자리에 마스킹본을 넣는다.
+
+
+def _chatgpt_slots(body):
+    slots = []
+    for m in body.get("messages") or []:
+        if isinstance(m, dict) and (m.get("author") or {}).get("role") == "user":
+            parts = (m.get("content") or {}).get("parts")
+            if isinstance(parts, list):
+                slots += [(parts, i) for i, p in enumerate(parts) if isinstance(p, str)]
+    # 다시 생성(variant) 등은 새 글이 없다. 새 메시지(next)인데 글 칸이 없으면 모르는 모양이다.
+    return slots or ([] if body.get("action") == "next" else None)
+
+
+def _perplexity_slots(body):
+    if not isinstance(body.get("query_str"), str):
+        return []
+    slots = [(body, "query_str")]
+    params = body.get("params")
+    if isinstance(params, dict) and isinstance(params.get("dsl_query"), str):
+        slots.append((params, "dsl_query"))
+    return slots
+
+
+def _grok_slots(msg):
+    event = msg.get("event") if isinstance(msg, dict) else None
+    if not isinstance(event, dict) or event.get("type") != "response.create":
+        return None
+    chunks = (((event.get("item") or {}).get("x_grok") or {}).get("input_chunks")) or []
+    return [(c["text"], "text") for c in chunks
+            if isinstance(c, dict) and isinstance(c.get("text"), dict)
+            and isinstance(c["text"].get("text"), str)]
+
+
+PROMPT_FORM_ENDPOINTS: dict[tuple[str, str], str] = {
+    ("chatgpt.com", "/unauth-mweb/conversation/updates"): "prompt",
+    ("chat.openai.com", "/unauth-mweb/conversation/updates"): "prompt",
+}
+PROMPT_JSON_ENDPOINTS = {
+    ("chatgpt.com", "/backend-api/f/conversation"): _chatgpt_slots,
+    ("chat.openai.com", "/backend-api/f/conversation"): _chatgpt_slots,
+    ("www.perplexity.ai", "/rest/sse/perplexity_ask"): _perplexity_slots,
+    ("perplexity.ai", "/rest/sse/perplexity_ask"): _perplexity_slots,
+}
+# (호스트, 경로 접두사) → 칸 찾기. 메시지 하나가 JSON 하나다.
+PROMPT_WS_ENDPOINTS = {
+    ("grok.com", "/ws/mgw/"): _grok_slots,
+}
+
+# 전송이 아닌데 친 글을 그대로 싣는 요청(같은 실측). 전송을 가려도 원문이 여기로 샌다.
+# 검사할 자리가 아니라(입력 중에 계속 나간다) 아예 보내지 않는다 — 자동완성·분석만 빠진다.
+#   ChatGPT     POST /backend-api/f/conversation/prepare  partial_query(입력 중인 글, 전송 전 미리 보냄)
+#               — 실패해도 전송은 client_prepare_state=failure 로 그대로 나간다(실측).
+#   Grok        GET  /_worker/typeahead?q=<입력 중인 글>
+#   Perplexity  WS   suggest.perplexity.ai/suggest/ws {"q": 입력 중인 글}
+#               POST suggest.perplexity.ai/search/v2/navigate {"query": 글}
+#               POST /rest/event/analytics  event_data.queryStr (질문 제출·실패 이벤트)
+# 확장도 같은 목록을 막는다(extension/rules/typing-leaks.json) — 프록시를 끈 상태를 위해.
+PROMPT_ECHO_HOSTS = {"suggest.perplexity.ai"}
+PROMPT_ECHO_PATHS: dict[str, tuple[str, ...]] = {
+    "chatgpt.com": ("/backend-api/f/conversation/prepare",),
+    "chat.openai.com": ("/backend-api/f/conversation/prepare",),
+    "grok.com": ("/_worker/typeahead",),
+    "www.perplexity.ai": ("/rest/event/analytics",),
+    "perplexity.ai": ("/rest/event/analytics",),
+}
 
 GEMINI_UPLOAD_HOST = "push.clients6.google.com"
 GEMINI_UPLOAD_PATH = "/upload/"
@@ -176,6 +265,11 @@ def intercept_hosts() -> tuple[list[str], list[str]]:
         | CHATGPT_HOSTS
         | {GEMINI_UPLOAD_HOST}
         | set(UNSUPPORTED_UPLOADS)
+        | {h for h, _ in PROMPT_FORM_ENDPOINTS}
+        | {h for h, _ in PROMPT_JSON_ENDPOINTS}
+        | {h for h, _ in PROMPT_WS_ENDPOINTS}
+        | PROMPT_ECHO_HOSTS
+        | set(PROMPT_ECHO_PATHS)
         | config.PROXY_EXTRA_HOSTS
     )
     # 서브도메인이 매번 바뀌는 blob 호스트(sdmntprcentralus.oaiusercontent.com …)
@@ -307,6 +401,15 @@ class CampfireAddon:
         if host in CLAUDE_RPC_HOSTS and key in CLAUDE_MESSAGE_RPC_PATHS:
             await self._claude_rpc(flow)
             return
+        if host in PROMPT_ECHO_HOSTS or key in PROMPT_ECHO_PATHS.get(host, ()):
+            self._swallow(flow)
+            return
+        if flow.request.method == "POST" and (host, key) in PROMPT_FORM_ENDPOINTS:
+            await self._form_prompt(flow, host, PROMPT_FORM_ENDPOINTS[(host, key)])
+            return
+        if flow.request.method == "POST" and (host, key) in PROMPT_JSON_ENDPOINTS:
+            await self._json_prompt(flow, host, PROMPT_JSON_ENDPOINTS[(host, key)])
+            return
         if host in _multipart_hosts() and flow.request.method == "POST":
             await self._multipart(flow, host)
 
@@ -314,7 +417,8 @@ class CampfireAddon:
         host = flow.request.pretty_host
 
         # 확장 프로그램에게 "네 트래픽이 실제로 이 프록시를 지난다"를 알린다.
-        # 확장은 이 헤더가 보일 때만 손을 뗀다(파일 가로채기·프롬프트 게이트 중단).
+        # 확장은 이 헤더가 보일 때만 손을 뗀다(파일 가로채기 중단. 프롬프트는 이 애드온이
+        # 검사하는 claude.ai 에서만 넘긴다 — content.js PROXY_PROMPT_HOSTS).
         # "프록시 프로세스가 떠 있나"(status)로 판단하면, PAC 를 안 따르는 브라우저가
         # 확장까지 끈 채 무방비가 된다 — 실제 경로 증거로만 양보하게 하려는 헤더다.
         # AI 사이트 응답에만 붙으므로 확장 content script(같은 오리진)가 읽을 수 있다.
@@ -406,6 +510,97 @@ class CampfireAddon:
         for fld, new_bytes in masked:
             fld.set_bytes(new_bytes)
         flow.request.content = msg.serialize()
+
+    # ── 다른 사이트의 프롬프트 전송 (form / JSON) ────────────────────────────
+
+    async def _form_prompt(self, flow: http.HTTPFlow, host: str, field: str) -> None:
+        from urllib.parse import parse_qsl, urlencode
+
+        pairs = parse_qsl(flow.request.get_text() or "", keep_blank_values=True)
+        idx = [i for i, (k, _) in enumerate(pairs) if k == field]
+        if not idx:
+            logger.warning("[proxy] 프롬프트 칸(%s)이 없는 전송 — 차단 %s", field, host)
+            self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
+            return
+        replaced = await self._mask_prompt_texts(flow, host, [pairs[i][1] for i in idx])
+        if replaced is None:
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        for i in idx:
+            pairs[i] = (field, replaced.get(pairs[i][1], pairs[i][1]))
+        flow.request.text = urlencode(pairs)
+
+    async def _json_prompt(self, flow: http.HTTPFlow, host: str, find_slots) -> None:
+        try:
+            body = json.loads(flow.request.get_text() or "")
+        except json.JSONDecodeError:
+            body = None
+        slots = find_slots(body) if isinstance(body, dict) else []
+        if slots is None:
+            return  # 새 글이 없는 전송(다시 생성 등)
+        if not await self._mask_slots(flow, host, slots):
+            self._block(flow, "메시지 형식을 해석하지 못했거나 검토 결과 전송하지 않기로 했습니다")
+            return
+        flow.request.text = _dumps(body)
+
+    async def websocket_message(self, flow: http.HTTPFlow) -> None:
+        """웹소켓으로 보내는 프롬프트(Grok). 막을 때는 그 메시지만 버린다."""
+        msg = flow.websocket.messages[-1]
+        if not msg.from_client or not msg.is_text:
+            return
+        key = flow.request.path.split("?")[0]
+        host = flow.request.pretty_host
+        find_slots = next((f for (h, prefix), f in PROMPT_WS_ENDPOINTS.items()
+                           if h == host and key.startswith(prefix)), None)
+        if find_slots is None:
+            return
+        try:
+            try:
+                obj = json.loads(msg.text)
+            except json.JSONDecodeError:
+                return  # 핑처럼 JSON 이 아닌 메시지는 그대로
+            slots = find_slots(obj)
+            if slots is None:
+                return
+            if not await self._mask_slots(flow, host, slots):
+                raise ValueError("글 칸이 없거나 검토 결과 전송하지 않기로 했다")
+            msg.text = _dumps(obj)
+        except Exception as exc:
+            # 통과시키면 원본이 나간다. 그 메시지만 버린다(사이트는 답을 못 받고 멈춘다).
+            logger.warning("[proxy] 웹소켓 프롬프트 차단 %s%s (%s)", host, key, exc)
+            msg.drop()
+
+    async def _mask_slots(self, flow, host, slots) -> bool:
+        """(dict/list, 키) 칸의 글을 검사해 그 자리에 마스킹본을 넣는다. 보내도 되면 True.
+
+        칸이 비었으면(전송인데 글 칸을 못 찾음) False — 모르는 모양은 보내지 않는다.
+        """
+        if not slots:
+            logger.warning("[proxy] 프롬프트 칸이 없는 전송 — 차단 %s", host)
+            return False
+        replaced = await self._mask_prompt_texts(flow, host, [c[k] for c, k in slots])
+        if replaced is None:
+            return False
+        for container, k in slots:
+            container[k] = replaced.get(container[k], container[k])
+        return True
+
+    async def _mask_prompt_texts(self, flow, host, texts) -> dict[str, str] | None:
+        """프롬프트 글들을 검사해 {원문: 마스킹본} 을 돌려준다. 바꿀 게 없으면 {}.
+
+        None 이면 보내지 않는다(사람이 취소했거나 정책 차단). 같은 글이 여러 칸에 있으면
+        (Perplexity query_str·dsl_query) 한 번만 검사해 판단도 한 번만 받는다.
+        """
+        distinct = [t for t in dict.fromkeys(texts) if t.strip()]
+        if not distinct:
+            return {}
+        slots = [_TextSlot(t) for t in distinct]
+        masked = await self._scan_texts_and_decide(slots, host=host, prompt_fields=slots, flow=flow)
+        if masked is None:
+            return None
+        if masked is _ORIGINAL:
+            return {}
+        return {slot.text: new.decode("utf-8") for slot, new in masked}
 
     # ── Gemini 경로 (세션 시작 → 본문) ──────────────────────────────────────
 
@@ -753,10 +948,31 @@ class CampfireAddon:
             {"Content-Type": "application/json; charset=utf-8"},
         )
 
+    def _swallow(self, flow: http.HTTPFlow) -> None:
+        """친 글을 싣는 부수 요청(자동완성·분석)을 보내지 않고 빈 성공으로 끝낸다.
+
+        막는 게 아니라 "결과 없음" 으로 보이게 한다 — 사이트가 오류를 띄우거나 재시도하지 않게.
+        웹소켓 시작 요청이면 연결이 열리지 않아 자동완성만 꺼진다.
+        """
+        flow.response = http.Response.make(204)
+
 
 # "원본을 그대로 보낸다" 를 나타내는 표식. None(보내지 않음)과 구분해야 해서
 # bytes 도 None 도 아닌 고유 객체를 쓴다.
 _ORIGINAL = object()
+
+
+class _TextSlot:
+    """_scan_texts_and_decide 가 받는 칸 — protobuf 필드처럼 value(bytes) 를 가진다."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.value = text.encode("utf-8")
+
+
+def _dumps(obj) -> str:
+    """브라우저 JSON.stringify 와 같은 모양(공백 없음, 한글 그대로)."""
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
 def _client_alive(flow):

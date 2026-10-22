@@ -123,6 +123,30 @@ def test_grok_업로드는_차단된다():
     assert f.request.content == b'{"content":"BASE64"}'
 
 
+def test_grok_지금_업로드는_가린_사본으로_바꿔_보낸다():
+    """2026-10-22 실측: 지금 Grok 은 /http/upload-file-v2/direct 로 파일 하나를 multipart 로 올린다.
+
+    예전 경로만 막고 있어서 이 업로드는 검사 없이 그대로 나갔다.
+    """
+    boundary = "----WebKitFormBoundaryAYopRwrjB7QY9mjb"
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"상담.txt\"\r\n"
+            f"Content-Type: text/plain\r\n\r\n주민번호 900101-1234567\n\r\n--{boundary}--\r\n").encode()
+    f = _req("grok.com", "/http/upload-file-v2/direct", content=body)
+    f.request.headers["content-type"] = f"multipart/form-data; boundary={boundary}"
+    a = CampfireAddon()
+
+    async def fake(**kw):
+        assert kw["data"] == "주민번호 900101-1234567\n".encode()
+        return "주민번호 [주민등록번호 마스킹]\n".encode()
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+    _run(a.request(f))
+    assert f.response is None
+    sent = f.request.content.decode()
+    assert 'filename="상담_masked.md"' in sent and "Content-Type: text/markdown" in sent
+    assert "[주민등록번호 마스킹]" in sent and "900101-1234567" not in sent
+
+
 def test_grok_의_다른_요청은_건드리지_않는다():
     """업로드 엔드포인트만 막는다. 전부 막으면 사이트가 죽는다."""
     a = CampfireAddon()

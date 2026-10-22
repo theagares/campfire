@@ -5,9 +5,16 @@
   "description": "업로드/전송 전 PII와 프롬프트 인젝션을 자동 탐지·마스킹하는 로컬 우선 보안 게이트웨이 (사이드패널 HITL)",
 
   "permissions": [
+    "declarativeNetRequest",
     "sidePanel",
     "storage"
   ],
+
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "typing_leaks", "enabled": true, "path": "rules/typing-leaks.json" }
+    ]
+  },
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
@@ -19,6 +26,8 @@
     "https://*.gemini.google.com/*",
     "https://copilot.microsoft.com/*",
     "https://*.copilot.microsoft.com/*",
+    "https://copilot.com/*",
+    "https://*.copilot.com/*",
     "https://grok.com/*",
     "https://*.grok.com/*",
     "https://perplexity.ai/*",
@@ -41,6 +50,8 @@
         "https://*.gemini.google.com/*",
         "https://copilot.microsoft.com/*",
         "https://*.copilot.microsoft.com/*",
+        "https://copilot.com/*",
+        "https://*.copilot.com/*",
         "https://grok.com/*",
         "https://*.grok.com/*",
         "https://perplexity.ai/*",
@@ -61,6 +72,8 @@
         "https://*.gemini.google.com/*",
         "https://copilot.microsoft.com/*",
         "https://*.copilot.microsoft.com/*",
+        "https://copilot.com/*",
+        "https://*.copilot.com/*",
         "https://grok.com/*",
         "https://*.grok.com/*",
         "https://perplexity.ai/*",
@@ -102,6 +115,8 @@
         "https://*.gemini.google.com/*",
         "https://copilot.microsoft.com/*",
         "https://*.copilot.microsoft.com/*",
+        "https://copilot.com/*",
+        "https://*.copilot.com/*",
         "https://grok.com/*",
         "https://*.grok.com/*",
         "https://perplexity.ai/*",
@@ -119,6 +134,8 @@
         "https://*.gemini.google.com/*",
         "https://copilot.microsoft.com/*",
         "https://*.copilot.microsoft.com/*",
+        "https://copilot.com/*",
+        "https://*.copilot.com/*",
         "https://grok.com/*",
         "https://*.grok.com/*",
         "https://perplexity.ai/*",

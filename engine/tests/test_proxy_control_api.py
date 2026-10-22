@@ -48,7 +48,7 @@ def client(monkeypatch):
 
 def test_상태는_늘_같은_모양이다(client):
     s = client.get("/proxy/status").json()
-    for key in ("supported", "running", "port", "caPath", "caExists", "caTrusted"):
+    for key in ("supported", "running", "port", "caPath", "caExists", "caTrusted", "legacyCa"):
         assert key in s, key
     assert s["running"] is False
     assert s["port"] == PORT
