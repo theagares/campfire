@@ -23,6 +23,10 @@ os.environ.setdefault("SECUREDOC_SKIP_LEGACY_MIGRATION", "1")
 os.environ.setdefault(
     "SECUREDOC_STORE_DIR", str(Path(tempfile.gettempdir()) / "campfire-test-store")
 )
+# 프록시를 띄우는 테스트가 설치된 앱의 진짜 CA(사용자가 신뢰한 것)를 새로 만들어 덮지 않게 한다.
+os.environ.setdefault(
+    "SECUREDOC_PROXY_CA_DIR", str(Path(tempfile.gettempdir()) / "campfire-test-proxy-ca")
+)
 
 
 @pytest.fixture(autouse=True)

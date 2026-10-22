@@ -7,6 +7,26 @@
 ; 새로 설치할 때의 화면은 바꾸지 않는다 — 아래 customFinishPage 는 템플릿(assistedInstaller.nsh)의
 ; 기본 마침 화면을 그대로 옮기고, 업데이트일 때 건너뛰는 PRE 함수만 더했다.
 
+; 앱을 지울 때 프록시용 Campfire CA(engine/app/adapters/proxy/ca.py)를 사용자 신뢰 저장소에서 지우고
+; CA 폴더(개인키)도 지운다. 남겨 두면 앱이 없어도 이 PC 가 그 CA 를 계속 믿는다.
+;   - 업데이트(isUpdated)에도 예전 버전의 제거기가 돈다 — 그때 지우면 업데이트할 때마다 사용자가
+;     CA 를 다시 신뢰해야 하므로 건드리지 않는다.
+;   - 신뢰 저장소에서 지울 때 Windows 가 확인 창을 띄운다. "아니요" 를 눌러도 개인키는 지워지므로
+;     남은 CA 로는 아무것도 서명할 수 없다.
+;   - 한계: 모든 사용자용(관리자) 설치를 지우면 제거를 실행한 계정의 저장소만 본다.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    ExecWait '"$SYSDIR\certutil.exe" -user -delstore Root "Campfire Local Proxy CA"'
+    ${if} $installMode == "all"
+      SetShellVarContext current
+    ${endif}
+    RMDir /r "$LOCALAPPDATA\Campfire\proxy-ca"
+    ${if} $installMode == "all"
+      SetShellVarContext all
+    ${endif}
+  ${endIf}
+!macroend
+
 !macro customInstallMode
   ${if} ${isUpdated}
     ${if} $hasPerUserInstallation == "1"
