@@ -1463,8 +1463,12 @@
   // ══════════════════════════════════════════════════════════════════════════
   const PROMPT_CONFIGS = {
     'chatgpt.com': {
-      editorSel: '#prompt-textarea',
-      sendBtnSel: '[data-testid="send-button"]',
+      // 2026-10-23 실측 정정: #prompt-textarea 와 data-testid="send-button" 이 없어졌다.
+      // 로그인 컴포저는 form[data-chatgpt-composer] 안의 .ProseMirror, 전송 버튼은 같은
+      // form 의 type=submit(aria-label "보내기")이다. 로그아웃 화면은 textarea
+      // #mobile-composer-prompt. 옛 선택자는 되돌아올 때를 대비해 앞에 남겨 둔다.
+      editorSel: '#prompt-textarea, form[data-chatgpt-composer] .ProseMirror[contenteditable="true"], #mobile-composer-prompt',
+      sendBtnSel: '[data-testid="send-button"], form[data-chatgpt-composer] button[type="submit"]',
       editorType: 'prosemirror',
     },
     'claude.ai': {
@@ -1592,8 +1596,13 @@
    *  그래서 순서를 넷으로 둔다: 사이트 선택자 → 포커스된 편집 요소 → 직전에 쓰던 입력창
    *  → 화면에 있는 입력창 탐색. 찾은 것은 기억해 다음에 포커스가 없어도 쓴다. */
   function findEditor(cfg) {
+    // 묶음 선택자는 적힌 순서대로 본다. querySelector 에 통째로 넘기면 문서에서 먼저
+    // 나오는 요소를 골라 "id 를 먼저 본다" 같은 우선순위가 먹지 않는다.
     let bySel = null;
-    try { bySel = cfg?.editorSel ? document.querySelector(cfg.editorSel) : null; } catch (_) { bySel = null; }
+    for (const sel of (cfg?.editorSel || '').split(',')) {
+      try { bySel = document.querySelector(sel.trim()); } catch (_) { bySel = null; }
+      if (bySel) break;
+    }
     if (bySel) { lastKnownEditor = bySel; return bySel; }
 
     const active = document.activeElement;

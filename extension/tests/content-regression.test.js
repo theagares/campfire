@@ -2119,6 +2119,42 @@ cancelScan(stuckScan);
     throw new Error(`입력창에 마스킹본이 들어가지 않았다: ${editor26.value}`);
   }
 
+  // (40) 2026-10 ChatGPT 개편: 옛 선택자는 다 없고 새 컴포저(form[data-chatgpt-composer])만
+  // 있다. 묶음 editorSel 을 적힌 순서대로 찾아야 일반 탐색 없이도 입력창을 잡는다
+  // (querySelector 에 통째로 넘기면 하네스·문서 순서 어느 쪽에서도 첫 선택자에 기대게 된다).
+  {
+    await clock.tick(4000); // 앞 테스트의 promptApproved 해제 대기
+    const composer40 = new HTMLTextAreaElementStub('계좌 110-123-456789 로 보내 줘');
+    composer40.isConnected = true;
+    const send40 = new SendButtonStub();
+    send40.disabled = false;
+    send40.closest = () => send40;
+    const savedAll40 = domBySelectorAll.get('textarea, [contenteditable="true"]');
+    domBySelector.delete('#prompt-textarea');
+    domBySelector.delete('[data-testid="send-button"]');
+    domBySelector.set('form[data-chatgpt-composer] .ProseMirror[contenteditable="true"]', composer40);
+    domBySelector.set('form[data-chatgpt-composer] button[type="submit"]', send40);
+    domBySelectorAll.set('textarea, [contenteditable="true"]', []); // 일반 탐색으로는 못 찾게
+    documentStub.activeElement = send40; // 마우스로 전송 버튼을 눌렀다
+    const before40 = runtimeMessages.filter(isScanStart).length;
+
+    nextDecision = { action: 'masked', maskedText: '계좌 [계좌번호 마스킹] 로 보내 줘' };
+    dispatchDocumentEvent('click', { target: send40, preventDefault() {}, stopImmediatePropagation() {} });
+    await clock.tick(2000);
+
+    if (runtimeMessages.filter(isScanStart).length - before40 !== 1) {
+      throw new Error('(40) 새 ChatGPT 컴포저를 못 찾아 검사를 시작하지 않았다 — 원문이 그대로 나간다');
+    }
+    if (composer40.value !== '계좌 [계좌번호 마스킹] 로 보내 줘') {
+      throw new Error(`(40) 새 컴포저에 마스킹본이 들어가지 않았다: ${composer40.value}`);
+    }
+    if (send40.clicks !== 1) throw new Error(`(40) 새 전송 버튼으로 재전송하지 못했다 (clicks=${send40.clicks})`);
+
+    domBySelector.delete('form[data-chatgpt-composer] .ProseMirror[contenteditable="true"]');
+    domBySelector.delete('form[data-chatgpt-composer] button[type="submit"]');
+    domBySelectorAll.set('textarea, [contenteditable="true"]', savedAll40);
+  }
+
   // (27) 우리가 쏜 첨부를 우리 리스너가 삼키면 안 된다 (passthrough 경로).
   //
   // 배경: 합성 drop/paste 는 document 캡처 단계를 지나가는데 거기 우리 리스너가 앉아
