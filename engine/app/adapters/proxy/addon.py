@@ -120,10 +120,11 @@ UNSUPPORTED_UPLOADS: dict[str, tuple[str, ...]] = {
 # 메시지 protobuf 에 인라인돼 이 RPC 로 나간다. 손으로 친 프롬프트도 같은 경로다.
 # 즉 파일 업로드 검사를 다 통과해도 텍스트는 여기로 샌다.
 #
-# 지금은 **텍스트가 들어 있으면 차단**한다. protobuf 를 풀어 마스킹하는 것이 목표지만,
-# 그 전까지 fail-open 으로 두면 검사 없이 나간다. content-type 이 application/proto 라
-# (connect+proto 아님) 봉투 없이 바로 protobuf 다 — 그 가정이 깨지면(decode 실패)
-# 통과가 아니라 차단으로 떨어진다.
+# protobuf 를 풀어 사용자 텍스트 필드만 마스킹본으로 바꾸고 다시 싼다(_claude_rpc).
+# content-type 이 application/proto 라(connect+proto 아님) 봉투 없이 바로 protobuf 다 —
+# 그 가정이 깨지면(decode 실패) 통과가 아니라 차단으로 떨어진다.
+# 프롬프트를 검사하는 사이트는 이것뿐이다. 확장(content.js PROXY_PROMPT_HOSTS)은 이 목록에
+# 있는 사이트에서만 프롬프트 검사를 프록시에 넘긴다 — 늘리면 거기도 같이 늘린다.
 CLAUDE_RPC_HOSTS = {"claude.ai"}
 CLAUDE_MESSAGE_RPC_PATHS = (
     "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction",
@@ -314,7 +315,8 @@ class CampfireAddon:
         host = flow.request.pretty_host
 
         # 확장 프로그램에게 "네 트래픽이 실제로 이 프록시를 지난다"를 알린다.
-        # 확장은 이 헤더가 보일 때만 손을 뗀다(파일 가로채기·프롬프트 게이트 중단).
+        # 확장은 이 헤더가 보일 때만 손을 뗀다(파일 가로채기 중단. 프롬프트는 이 애드온이
+        # 검사하는 claude.ai 에서만 넘긴다 — content.js PROXY_PROMPT_HOSTS).
         # "프록시 프로세스가 떠 있나"(status)로 판단하면, PAC 를 안 따르는 브라우저가
         # 확장까지 끈 채 무방비가 된다 — 실제 경로 증거로만 양보하게 하려는 헤더다.
         # AI 사이트 응답에만 붙으므로 확장 content script(같은 오리진)가 읽을 수 있다.

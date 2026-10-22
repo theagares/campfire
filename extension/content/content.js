@@ -219,6 +219,14 @@
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
   }
 
+  // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS).
+  // 다른 사이트에서 프록시는 업로드만 보므로, 프록시 경로여도 프롬프트는 확장이 검사한다.
+  // 손을 떼면 ChatGPT·Copilot·Perplexity·Grok 에 친 글이 아무 검사 없이 나간다.
+  const PROXY_PROMPT_HOSTS = ['claude.ai'];
+  function proxyChecksPrompts() {
+    return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
+  }
+
   function isSupportedFile(file) {
     // proxyInPath: 프록시가 실제 경로에 있으면 가로채지 않는다 — 파일을 그대로 사이트로
     // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
@@ -2588,7 +2596,7 @@
     // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
-    if (!protectionEnabled || proxyInPath() || promptApproved) return;
+    if (!protectionEnabled || proxyChecksPrompts() || promptApproved) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;

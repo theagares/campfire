@@ -235,7 +235,8 @@
   });
 
   function isProtectionEnabled() {
-    // 프록시가 실제 경로에 있으면 확장은 전부 손을 뗀다 — 프록시가 단독으로 맡는다.
+    // 프록시가 실제 경로에 있으면 이 MAIN world 훅(업로드 가로채기)은 손을 뗀다 — 업로드는
+    // 프록시가 맡는다. 프롬프트는 content.js 가 따로 정한다(proxyChecksPrompts: claude.ai 만 넘긴다).
     // 관찰(_origFetch/XHR)은 이 값과 무관하게 계속 돌아, 프록시가 빠지면 다시 켜진다.
     return _protectionEnabled && !proxyInPath();
   }

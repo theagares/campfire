@@ -306,6 +306,8 @@ let lastMultiSession = null;
 let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 // SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
 let failNextOpenPanel = false;
+// content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
+let contentBridgeToken = '';
 
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
@@ -327,6 +329,7 @@ const windowStub = {
     return true;
   },
   postMessage(data) {
+    if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
     // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
     if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
       for (const meta of data.files || []) actionLog.push({ kind: 'approve-msg', meta });
@@ -2846,6 +2849,54 @@ cancelScan(stuckScan);
       chromeStub.runtime.id = savedId;
     }
     if (!badgeText().includes('탭을 새로고침')) throw new Error(`(39) 끊긴 탭에 새로고침 안내가 없다: ${badgeText()}`);
+  }
+
+  // (40) 프록시 경로여도 프롬프트는 claude.ai 에서만 프록시에 넘긴다. 프록시(addon.py)는 다른
+  //      사이트의 프롬프트를 검사하지 않는다 — 예전엔 표식만 보면 어디서든 손을 떼서, 프록시를
+  //      켜면 ChatGPT·Copilot·Perplexity·Grok 에 친 글이 아무 검사 없이 나갔다.
+  {
+    await clock.tick(9000);
+    domBySelector.set('#prompt-textarea', promptEditorStub);
+    domBySelector.set('[data-testid="chat-input"]', promptEditorStub);
+    const route40 = (mode) => dispatchWindowMessage({
+      __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', ttlMs: 15000,
+    });
+    // 그 사이트에서 프롬프트를 보내 검사가 시작되는지. 시작됐으면 취소로 끝내 다음 시도를 막지 않는다.
+    const scans40 = async (host, text) => {
+      sandbox.location.hostname = host;
+      promptEditorStub.value = text;
+      documentStub.activeElement = promptEditorStub;
+      nextDecision = { action: 'cancel' };
+      const before = runtimeMessages.length;
+      dispatchDocumentEvent('keydown', {
+        key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+        preventDefault() {}, stopImmediatePropagation() {},
+      });
+      await flush();
+      const started = runtimeMessages.slice(before).some(isScanStart);
+      nextDecision = null;
+      await clock.tick(500);
+      return started;
+    };
+    if (!contentBridgeToken) throw new Error('(40) content.js 가 MAIN world 에 토큰을 건네지 않았다');
+    try {
+      await route40('extension');
+      if (!(await scans40('claude.ai', '프록시 없는 Claude 요청'))) {
+        throw new Error('(40) 대조군: 프록시가 없는데 claude.ai 프롬프트를 검사하지 않았다');
+      }
+      await route40('proxy');
+      if (await scans40('claude.ai', '프록시가 검사하는 Claude 요청')) {
+        throw new Error('(40) claude.ai 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)');
+      }
+      await route40('proxy');
+      if (!(await scans40('chatgpt.com', '의뢰인 주민번호 900101-1234567'))) {
+        throw new Error('(40) 프록시 경로의 chatgpt.com 프롬프트를 확장이 검사하지 않았다 — 아무도 안 본다');
+      }
+    } finally {
+      await route40('extension');
+      sandbox.location.hostname = 'chatgpt.com';
+    }
   }
 
   console.log('content regression ok');
