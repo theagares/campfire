@@ -149,9 +149,13 @@ CLAUDE_USER_TEXT_PATHS = {CLAUDE_PROMPT_PATH, (2, 15, 4)}
 #   ChatGPT(비로그인)  POST /unauth-mweb/conversation/updates — form-urlencoded, 필드 prompt
 #   Perplexity         POST /rest/sse/perplexity_ask — JSON query_str 와 params.dsl_query(같은 글)
 #   Grok               WS   grok.com/ws/mgw/ — event.type=response.create, input_chunks[*].text.text
-#   Copilot            WS   substrate.office.com/m365Copilot/Chathub/ — SignalR(\x1e 로 끊는 JSON),
-#                           arguments[0].message.text. 페이지는 copilot.com 으로 옮겼다(리디렉트).
 # 모두 2턴째에도 새 글만 싣고 앞 턴은 서버가 들고 있다(ChatGPT 비로그인·Perplexity 로 확인).
+#
+# Copilot 은 여기 없다. copilot.com 으로 옮긴 뒤 글은 WS substrate.office.com/m365Copilot/Chathub/,
+# 파일은 graph.microsoft.com createUploadSession → OneDrive(회사 계정은 SharePoint) PUT 으로 간다.
+# 모두 Outlook·Teams·OneDrive 가 같이 쓰는 M365 호스트라, PAC 에 넣으면 그 프로그램들의 통신까지
+# 이 프록시를 지나고 엔진이 재시작하는 동안 끊긴다. Copilot 은 확장이 맡는다(content.js 'copilot.com',
+# 입력 중 자동완성은 rules/typing-leaks.json).
 #
 # 칸 찾기 함수의 약속: None = 이 메시지는 전송이 아니다(통과), [] = 전송인데 글 칸을 못 찾았다
 # (사이트 개편 — 통과가 아니라 차단). 칸은 (담는 dict/list, 키) 쌍이라 그 자리에 마스킹본을 넣는다.
@@ -188,14 +192,6 @@ def _grok_slots(msg):
             and isinstance(c["text"].get("text"), str)]
 
 
-def _copilot_slots(frame):
-    args = frame.get("arguments") if isinstance(frame, dict) else None
-    if not (isinstance(args, list) and args and isinstance(args[0], dict) and "message" in args[0]):
-        return None
-    message = args[0]["message"]
-    return [(message, "text")] if isinstance(message, dict) and isinstance(message.get("text"), str) else []
-
-
 PROMPT_FORM_ENDPOINTS: dict[tuple[str, str], str] = {
     ("chatgpt.com", "/unauth-mweb/conversation/updates"): "prompt",
     ("chat.openai.com", "/unauth-mweb/conversation/updates"): "prompt",
@@ -206,10 +202,9 @@ PROMPT_JSON_ENDPOINTS = {
     ("www.perplexity.ai", "/rest/sse/perplexity_ask"): _perplexity_slots,
     ("perplexity.ai", "/rest/sse/perplexity_ask"): _perplexity_slots,
 }
-# (호스트, 경로 접두사) → (칸 찾기, 메시지 틀). signalr 은 \x1e 로 끝나는 JSON 프레임 여러 개다.
+# (호스트, 경로 접두사) → 칸 찾기. 메시지 하나가 JSON 하나다.
 PROMPT_WS_ENDPOINTS = {
-    ("grok.com", "/ws/mgw/"): (_grok_slots, "json"),
-    ("substrate.office.com", "/m365Copilot/Chathub/"): (_copilot_slots, "signalr"),
+    ("grok.com", "/ws/mgw/"): _grok_slots,
 }
 
 # 전송이 아닌데 친 글을 그대로 싣는 요청(같은 실측). 전송을 가려도 원문이 여기로 샌다.
@@ -220,7 +215,7 @@ PROMPT_WS_ENDPOINTS = {
 #   Perplexity  WS   suggest.perplexity.ai/suggest/ws {"q": 입력 중인 글}
 #               POST suggest.perplexity.ai/search/v2/navigate {"query": 글}
 #               POST /rest/event/analytics  event_data.queryStr (질문 제출·실패 이벤트)
-#   Copilot     POST substrate.office.com/search/api/v1/suggestions  EntityRequests[*].Query.QueryString
+# 확장도 같은 목록을 막는다(extension/rules/typing-leaks.json) — 프록시를 끈 상태를 위해.
 PROMPT_ECHO_HOSTS = {"suggest.perplexity.ai"}
 PROMPT_ECHO_PATHS: dict[str, tuple[str, ...]] = {
     "chatgpt.com": ("/backend-api/f/conversation/prepare",),
@@ -228,7 +223,6 @@ PROMPT_ECHO_PATHS: dict[str, tuple[str, ...]] = {
     "grok.com": ("/_worker/typeahead",),
     "www.perplexity.ai": ("/rest/event/analytics",),
     "perplexity.ai": ("/rest/event/analytics",),
-    "substrate.office.com": ("/search/api/v1/suggestions",),
 }
 
 GEMINI_UPLOAD_HOST = "push.clients6.google.com"
@@ -550,41 +544,27 @@ class CampfireAddon:
         flow.request.text = _dumps(body)
 
     async def websocket_message(self, flow: http.HTTPFlow) -> None:
-        """웹소켓으로 보내는 프롬프트(Grok·Copilot). 막을 때는 그 메시지만 버린다."""
+        """웹소켓으로 보내는 프롬프트(Grok). 막을 때는 그 메시지만 버린다."""
         msg = flow.websocket.messages[-1]
         if not msg.from_client or not msg.is_text:
             return
         key = flow.request.path.split("?")[0]
         host = flow.request.pretty_host
-        endpoint = next((v for (h, prefix), v in PROMPT_WS_ENDPOINTS.items()
-                         if h == host and key.startswith(prefix)), None)
-        if endpoint is None:
+        find_slots = next((f for (h, prefix), f in PROMPT_WS_ENDPOINTS.items()
+                           if h == host and key.startswith(prefix)), None)
+        if find_slots is None:
             return
-        find_slots, framing = endpoint
         try:
-            text = msg.text
-            frames = [f for f in text.split("\x1e") if f] if framing == "signalr" else [text]
-            parsed, slots = [], []
-            for frame in frames:
-                try:
-                    obj = json.loads(frame)
-                except json.JSONDecodeError:
-                    parsed.append(None)  # 핸드셰이크·핑처럼 JSON 이 아닌 조각은 그대로
-                    continue
-                found = find_slots(obj)
-                if found is None:
-                    parsed.append(None)
-                    continue
-                if not found:
-                    raise ValueError("전송 메시지에 글 칸이 없다")
-                parsed.append(obj)
-                slots += found
-            if not slots:
+            try:
+                obj = json.loads(msg.text)
+            except json.JSONDecodeError:
+                return  # 핑처럼 JSON 이 아닌 메시지는 그대로
+            slots = find_slots(obj)
+            if slots is None:
                 return
             if not await self._mask_slots(flow, host, slots):
-                raise ValueError("검토 결과 전송하지 않기로 했다")
-            out = [frame if obj is None else _dumps(obj) for frame, obj in zip(frames, parsed)]
-            msg.text = "".join(f + "\x1e" for f in out) if framing == "signalr" else out[0]
+                raise ValueError("글 칸이 없거나 검토 결과 전송하지 않기로 했다")
+            msg.text = _dumps(obj)
         except Exception as exc:
             # 통과시키면 원본이 나간다. 그 메시지만 버린다(사이트는 답을 못 받고 멈춘다).
             logger.warning("[proxy] 웹소켓 프롬프트 차단 %s%s (%s)", host, key, exc)

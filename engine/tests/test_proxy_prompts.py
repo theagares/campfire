@@ -206,36 +206,14 @@ def test_Grok_다른_이벤트는_그대로_글_칸_없거나_취소면_버린�
     assert f.websocket.messages[-1].dropped
 
 
-COPILOT_WS = ("substrate.office.com", "/m365Copilot/Chathub/0000@84df?chatsessionid=f99d")
-
-
-def test_Copilot_SignalR_프레임에서_글만_가린다(monkeypatch):
-    import app.core.pipeline.orchestrator as orch
-    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline([]))
-    chat = {"arguments": [{"source": "officeweb", "message": {"text": PII, "author": "user"}}],
-            "invocationId": "0", "target": "chat", "type": 4}
-    metrics = {"arguments": [{"Timestamps": {"UserInputSubmit": "2026-10-22T07:16:31.935Z"}}],
-               "target": "Metrics", "type": 1}
-    raw = json.dumps(chat, ensure_ascii=False) + "\x1e" + json.dumps(metrics) + "\x1e"
-    f = _ws(*COPILOT_WS, raw)
-    assert asyncio.run(_send(CampfireAddon(), f, hook="websocket_message")) == 1
-    text = f.websocket.messages[-1].text
-    assert text.endswith("\x1e") and text.count("\x1e") == 2
-    frames = [json.loads(x) for x in text.split("\x1e") if x]
-    assert frames[0]["arguments"][0]["message"]["text"] == MASKED
-    assert frames[1] == metrics
-
-
-def test_Copilot_핸드셰이크_핑은_그대로():
-    f = _ws(*COPILOT_WS, '{"protocol":"json","version":1}\x1e')
+def test_Grok_JSON_아닌_웹소켓_메시지는_그대로():
+    f = _ws(*GROK_WS, "ping")
     asyncio.run(CampfireAddon().websocket_message(f))
-    assert f.websocket.messages[-1].text == '{"protocol":"json","version":1}\x1e'
-    assert not f.websocket.messages[-1].dropped
+    assert f.websocket.messages[-1].text == "ping" and not f.websocket.messages[-1].dropped
 
 
 @pytest.mark.parametrize("host,path,method", [
     ("chatgpt.com", "/backend-api/f/conversation/prepare", "POST"),
-    ("substrate.office.com", "/search/api/v1/suggestions?setflight=x", "POST"),
     ("grok.com", "/_worker/typeahead?lang=ko&q=%EC%A3%BC%EB%AF%BC", "GET"),
     ("suggest.perplexity.ai", "/suggest/ws", "GET"),
     ("suggest.perplexity.ai", "/search/v2/navigate", "POST"),
@@ -249,5 +227,15 @@ def test_친_글을_싣는_부수_요청은_보내지_않는다(host, path, meth
 
 def test_새_호스트가_PAC_대상에_들어간다():
     exact, _ = intercept_hosts()
-    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com",
-            "substrate.office.com"} <= set(exact)
+    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com"} <= set(exact)
+
+
+def test_M365_공용_호스트는_PAC_대상이_아니다():
+    """Copilot(copilot.com)이 쓰는 호스트는 Outlook·Teams·OneDrive 도 같이 쓴다.
+
+    PAC 에 넣으면 그 프로그램들의 통신까지 프록시를 지나고 엔진 재시작 동안 끊긴다 — Copilot 은 확장이 맡는다.
+    """
+    exact, suffixes = intercept_hosts()
+    for host in ("substrate.office.com", "graph.microsoft.com", "my.microsoftpersonalcontent.com"):
+        assert host not in exact
+    assert not any("sharepoint" in s or "office" in s for s in suffixes)

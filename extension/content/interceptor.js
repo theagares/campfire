@@ -563,6 +563,9 @@
     'claude.ai':          { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: true  },
     'gemini.google.com':  { dropMode: 'passthrough-xhr',   uploadLayer: 'xhr-formdata',   multiUpload: false },
     'copilot.microsoft.com': { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: false }, // POST /c/api/attachments (docs: FormData+Blob, images: raw binary → Layer4)
+    // 2026-10-22 실측: copilot.com 은 작업자(worker)에서 graph createUploadSession → OneDrive PUT 으로 올려
+    // 페이지 fetch/XHR 훅이 못 본다. 끌어놓기도 가로채 마스킹본을 다시 놓는다(redispatch).
+    'copilot.com':        { dropMode: 'redispatch',        uploadLayer: null,             multiUpload: false },
     'grok.com':           { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-json',     multiUpload: false }, // POST /rest/app-chat/upload-file JSON+base64 → Layer4 arrayBuffer 인터셉트
     'perplexity.ai':      { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: false },
   };

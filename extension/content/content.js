@@ -1510,6 +1510,15 @@
       sendBtnSel: '[data-testid="submit-button"], button[aria-label*="제출"], button[aria-label*="submit" i]',
       editorType: 'unknown',
     },
+    'copilot.com': {
+      // 2026-10-22 실측: copilot.microsoft.com 이 copilot.com 으로 옮겼다(M365 Copilot 앱).
+      // 입력창은 Lexical(span#m365-chat-editor-target-element), 전송은 submit 버튼("보내기").
+      // 글·파일 요청은 작업자(worker)에서 substrate.office.com·graph.microsoft.com 으로 나가
+      // 네트워크 가로채기는 닿지 않는다 — 전송 버튼·파일 선택을 화면에서 가로채는 것이 방어선이다.
+      editorSel: '#m365-chat-editor-target-element, [data-lexical-editor="true"][role="textbox"]',
+      sendBtnSel: 'button[type="submit"][aria-label="보내기"], button[type="submit"][aria-label="Send"]',
+      editorType: 'lexical',
+    },
   };
 
   function getPromptConfig() {
