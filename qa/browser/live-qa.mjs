@@ -8,7 +8,13 @@ import { isHardFail, statusMark } from './status-classify.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, '..', '..', 'extension');
-const profileDir = path.join(here, '.qa-profile');
+const profileDir = process.argv.find(arg => arg.startsWith('--profile='))?.slice(10) || path.join(here, '.qa-profile');
+// 작업자(worker)에서 나가는 요청은 Playwright request 이벤트에 안 잡힐 수 있다(copilot.com).
+// --proxy=http://127.0.0.1:48290 로 측정 프록시(a문서/프록시측정)를 붙여 실제로 나간 본문을 따로 본다.
+const proxy = process.argv.find(arg => arg.startsWith('--proxy='))?.slice(8);
+// --cdp=http://127.0.0.1:9336 — 이미 떠 있는 QA 브라우저(확장 포함)에 붙는다. 창을 닫았다 열면
+// 세션 쿠키(Microsoft 로그인 등)가 날아가서, 로그인한 창을 그대로 쓰려고 둔다. 끝나도 창은 닫지 않는다.
+const cdpUrl = process.argv.find(arg => arg.startsWith('--cdp='))?.slice(6);
 const resultsDir = path.join(here, 'live-results');
 const command = process.argv[2] || 'preflight';
 const requestedSites = process.argv.find(arg => arg.startsWith('--sites='))?.slice(8)?.split(',');
@@ -23,7 +29,8 @@ const sites = [
   { host: 'chatgpt.com', editor: '#prompt-textarea', send: '[data-testid="send-button"]' },
   { host: 'claude.ai', editor: '[data-testid="chat-input"]', send: 'button[aria-label="Send message"], button[aria-label="메시지 보내기"]' },
   { host: 'gemini.google.com', editor: '.ql-editor[role="textbox"]', send: 'button[aria-label="Send message"], button[aria-label="메시지 보내기"]' },
-  { host: 'copilot.microsoft.com', editor: '[data-testid="composer-input"], #userInput, textarea', send: '[data-testid="submit-button"], button[aria-label*="submit" i], button[aria-label*="제출"]' },
+  // 2026-10-22: copilot.microsoft.com 은 copilot.com 으로 리디렉트된다(M365 Copilot 앱).
+  { host: 'copilot.com', editor: '#m365-chat-editor-target-element', send: 'button[type="submit"][aria-label="보내기"], button[type="submit"][aria-label="Send"]' },
   { host: 'grok.com', editor: '[aria-label="Ask Grok anything"], textarea[aria-label], textarea[placeholder], [contenteditable="true"]', send: '[data-testid="chat-submit"]' },
   { host: 'perplexity.ai', editor: '#ask-input, [data-lexical-editor="true"]', send: 'button[aria-label="Submit"], button[aria-label="제출"]' },
 ].filter(site => !requestedSites || requestedSites.includes(site.host));
@@ -38,6 +45,11 @@ function uploadEndpointOf(rawUrl) {
   if (url.hostname === 'push.clients6.google.com' && url.pathname.startsWith('/upload/')) return `${url.origin}/upload/`;
   if (url.hostname === 'claude.ai' && url.pathname.endsWith('/wiggle/upload-file')) return `${url.origin}/wiggle/upload-file`;
   if (url.hostname === 'copilot.microsoft.com' && url.pathname === '/c/api/attachments') return `${url.origin}/c/api/attachments`;
+  // copilot.com: graph createUploadSession → OneDrive(회사 계정은 SharePoint) PUT
+  if (url.hostname === 'graph.microsoft.com' && url.pathname.endsWith('/createUploadSession')) return `${url.origin}/createUploadSession`;
+  if (/(^|\.)microsoftpersonalcontent\.com$|-my\.sharepoint\.com$/.test(url.hostname) && /\/upload(Session)?$/.test(url.pathname)) {
+    return `${url.origin}/onedrive-upload`;
+  }
   if (url.hostname === 'grok.com' && url.pathname === '/http/upload-file-v2/direct') return `${url.origin}/http/upload-file-v2/direct`;
   if (url.hostname === 'www.perplexity.ai' && url.pathname === '/rest/uploads/batch_create_upload_urls') {
     return `${url.origin}/rest/uploads/batch_create_upload_urls`;
@@ -47,6 +59,7 @@ function uploadEndpointOf(rawUrl) {
 }
 
 async function launch(headless) {
+  if (cdpUrl) return (await chromium.connectOverCDP(cdpUrl)).contexts()[0];
   await mkdir(profileDir, { recursive: true });
   const browserPath = await chromiumExecutable();
   return chromium.launchPersistentContext(profileDir, {
@@ -57,6 +70,7 @@ async function launch(headless) {
       `--disable-extensions-except=${extensionDir}`,
       `--load-extension=${extensionDir}`,
       ...(headed ? ['--start-minimized'] : []),
+      ...(proxy ? [`--proxy-server=${proxy}`] : []),
     ],
   });
 }
@@ -416,7 +430,7 @@ async function runSite(context, worker, site) {
     };
     const uploadOk = allUploadsOk();
     const contentReadOk = files.every(file => body.includes(file.key));
-    const siteUploadOk = ['copilot.microsoft.com', 'grok.com'].includes(site.host)
+    const siteUploadOk = ['copilot.microsoft.com', 'copilot.com', 'grok.com'].includes(site.host)
       && visibleMasked.every(Boolean)
       && outbound.filter(response => response.status >= 200 && response.status < 300
         && !response.endpoint.endsWith('/object-upload')).length >= files.length;
@@ -496,7 +510,8 @@ async function main() {
     if (hardFails.length) console.error(`FAIL: ${hardFails.map(result => `${result.site}=${result.status}`).join(', ')}`);
     if (!health.ok || hardFails.length) process.exitCode = 1;
   } finally {
-    await context.close();
+    if (cdpUrl) await context.browser()?.close();  // 붙은 경우: 연결만 끊고 창(로그인)은 둔다
+    else await context.close();
   }
 }
 

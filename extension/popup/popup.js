@@ -130,6 +130,10 @@ function renderProtection(enabled) {
 // 그 결과 토글을 꺼도 프롬프트는 계속 가로채였다 — 실사용자 리포트.
 function setProtection(enabled) {
   chrome.storage?.local?.set?.({ protectionEnabled: enabled, fileInterceptEnabled: enabled });
+  // 입력 중 친 글을 싣는 자동완성 요청 차단(rules/typing-leaks.json)도 보호와 같이 켜고 끈다.
+  chrome.declarativeNetRequest?.updateEnabledRulesets?.(
+    enabled ? { enableRulesetIds: ['typing_leaks'] } : { disableRulesetIds: ['typing_leaks'] },
+  );
 }
 
 $('protection-toggle').addEventListener('change', (e) => {
