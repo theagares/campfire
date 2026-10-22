@@ -263,7 +263,20 @@ function renderProxy() {
   setLight('#proxy-light-ca', eng && eng.caTrusted === true);
   setLight('#proxy-light-system', applied);
   setRouteLight(eng?.extensionRoute);
-  hint.innerHTML = proxyHintHtml(st, running, applied);
+  hint.innerHTML = proxyHintHtml(st, running, applied) + legacyCaHtml(st);
+}
+/** 예전 버전이 쓰던 이름 제한 없는 CA(~/.mitmproxy)가 아직 신뢰돼 있으면 제거 명령을 보여 준다.
+ *  모든 사이트에 쓸 수 있어 개인키가 새면 이 PC 의 모든 HTTPS 를 위장할 수 있다. 신뢰 저장소를 바꾸는
+ *  일이라 앱이 대신 지우지 않는다 — 지문으로 정확히 그 인증서만 지운다. */
+function legacyCaHtml(st) {
+  const old = st.engine?.legacyCa;
+  if (!old?.sha1) return '';
+  const isMac = st.platform === 'darwin' || st.engine?.platform === 'darwin';
+  const cmd = isMac
+    ? `/usr/bin/security delete-certificate -t -Z ${old.sha1} "$HOME/Library/Keychains/login.keychain-db"`
+    : `certutil -user -delstore Root ${old.sha1}`;
+  return `<div class="hint warn">예전 버전이 쓰던 프록시 인증서(mitmproxy)가 아직 신뢰돼 있습니다. 모든 사이트에 쓸 수 있는 인증서라, 다른 일로 mitmproxy 를 쓰지 않는다면 지우세요${isMac ? '' : '(보안 경고에서 "예")'}.</div>
+      <div class="codeblock-row"><code>${escapeHtml(cmd)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(cmd)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>`;
 }
 function proxyHintHtml(st, running, applied) {
   const err = st.lastError;
