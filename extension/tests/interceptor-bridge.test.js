@@ -347,6 +347,38 @@ async function main() {
     );
   }
 
+  // (16) copilot.com 처럼 일반 입력을 무시하는 Lexical 에는 편집기 상태로 마스킹본을 넣는다.
+  //      노드 모양(글 노드 속성·sentinel)은 지금 상태에서 빌리고, 토큰 없는 요청은 받지 않는다.
+  {
+    const t = withToken();
+    let applied = null;
+    const state = { root: { type: 'root', version: 1, children: [{ type: 'paragraph', version: 1, textFormat: 0, children: [
+      { type: 'text', version: 1, detail: 0, format: 0, mode: 'normal', style: '', text: '주민번호 900101-1234567​‌' },
+      { type: 'sentinel', version: 1, text: '​‌' },
+    ] }] } };
+    const lexical = {
+      getEditorState: () => ({ toJSON: () => JSON.parse(JSON.stringify(state)) }),
+      parseEditorState: (s) => ({ parsed: JSON.parse(s) }),
+      setEditorState: (s) => { applied = s.parsed; },
+    };
+    t.sandbox.document.querySelector = (sel) => (sel === '#m365-chat-editor-target-element' ? { __lexicalEditor: lexical } : null);
+    const ask = (extra) => t.config({ type: 'SECUREDOC_SET_EDITOR_STATE', selector: '#m365-chat-editor-target-element',
+      text: '주민번호 [주민등록번호 마스킹]\n둘째 줄', nonce: 'n1', ...extra });
+
+    ask({ bridgeToken: 'attacker' });
+    assert.strictEqual(applied, null, '토큰 없는 요청으로 입력창을 바꿨다');
+    assert.ok(!t.posted.some((m) => m.type === 'SECUREDOC_SET_EDITOR_STATE_RESULT'));
+
+    ask({ bridgeToken: TOKEN });
+    const kids = applied?.root?.children?.[0]?.children || [];
+    assert.deepStrictEqual(kids.map((n) => [n.type, n.text]), [
+      ['text', '주민번호 [주민등록번호 마스킹]'], ['linebreak', undefined], ['text', '둘째 줄'], ['sentinel', '​‌'],
+    ], '편집기 상태에 마스킹본이 그대로 안 들어갔다');
+    assert.strictEqual(kids[0].mode, 'normal', '글 노드 속성을 지금 상태에서 빌리지 않았다');
+    const res = t.posted.find((m) => m.type === 'SECUREDOC_SET_EDITOR_STATE_RESULT');
+    assert.ok(res && res.ok === true && res.nonce === 'n1' && res.bridgeToken === TOKEN, '결과를 content.js 에 알리지 않았다');
+  }
+
   console.log('interceptor-bridge ok');
   process.exit(0); // interceptor 가 건 타이머 때문에 이벤트 루프가 안 비운다
 }

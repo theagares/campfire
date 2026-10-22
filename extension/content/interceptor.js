@@ -187,6 +187,18 @@
       }
       return;
     }
+    // content.js 가 마스킹본을 입력창에 넣어 달라고 한다 — 일반 입력 수단을 전부 무시하는
+    // Lexical(copilot.com). 편집기 객체(el.__lexicalEditor)는 이 MAIN world 에서만 보인다.
+    if (event.data.type === 'SECUREDOC_SET_EDITOR_STATE') {
+      if (!fromIsolated(event.data)) return;
+      let ok = false;
+      try { ok = _setLexicalText(event.data.selector, String(event.data.text ?? '')); } catch { ok = false; }
+      window.postMessage({
+        __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
+        type: 'SECUREDOC_SET_EDITOR_STATE_RESULT', nonce: event.data.nonce, ok,
+      }, '*');
+      return;
+    }
     // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
     //
     // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅
@@ -233,6 +245,27 @@
     else if (!proxyInPath()) _probeProxyPath();
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
   });
+
+  /** Lexical 편집기 내용을 글 하나로 바꾼다. 성공하면 true.
+   *  노드 모양(문단·글 노드 속성, Copilot 의 sentinel 같은 자체 노드)은 지금 상태에서 빌려 쓴다 —
+   *  모르는 노드를 새로 만들지 않는다. 줄바꿈은 linebreak 노드로 넣는다. */
+  function _setLexicalText(selector, text) {
+    const ed = document.querySelector(selector)?.__lexicalEditor;
+    if (!ed || typeof ed.parseEditorState !== 'function') return false;
+    const json = ed.getEditorState().toJSON();
+    const para = json?.root?.children?.find((n) => n.type === 'paragraph');
+    if (!para) return false;
+    const tmpl = para.children.find((n) => n.type === 'text')
+      || { detail: 0, format: 0, mode: 'normal', style: '', type: 'text', version: 1 };
+    const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak');
+    const children = text.split('\n').flatMap((line, i) => [
+      ...(i ? [{ type: 'linebreak', version: 1 }] : []),
+      ...(line ? [{ ...tmpl, text: line }] : []),
+    ]);
+    json.root.children = [{ ...para, children: [...children, ...keep] }];
+    ed.setEditorState(ed.parseEditorState(JSON.stringify(json)));
+    return true;
+  }
 
   function isProtectionEnabled() {
     // 프록시가 실제 경로에 있으면 이 MAIN world 훅(업로드 가로채기)은 손을 뗀다 — 업로드는

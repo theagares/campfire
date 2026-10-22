@@ -1518,6 +1518,9 @@
       editorSel: '#m365-chat-editor-target-element, [data-lexical-editor="true"][role="textbox"]',
       sendBtnSel: 'button[type="submit"][aria-label="보내기"], button[type="submit"][aria-label="Send"]',
       editorType: 'lexical',
+      // execCommand·합성 paste·DOM 직접 수정을 전부 무시한다(실측: execCommand 는 true 를 돌려주고
+      // 아무것도 안 바뀐다). 편집기 상태를 MAIN world 에서 직접 바꾼다(setViaEditorState).
+      setVia: 'lexical-state',
     },
   };
 
@@ -1669,11 +1672,30 @@
     );
   }
 
+  // 폭 없는 문자. Copilot(copilot.com) 입력창은 글 끝에 ​‌ 를 붙여 둔다 — 그대로 비교하면
+  // 마스킹본을 제대로 넣어도 "다르다" 로 보고, 검사에도 보이지 않는 문자가 섞인다.
+  const stripZeroWidth = (s) => String(s || '').replace(/[​-‍⁠﻿]/g, '');
+
   function getEditorText(cfg) {
     const editor = findEditor(cfg);
     if (!editor) return '';
     if (editor.tagName === 'TEXTAREA') return editor.value.trim();
-    return (editor.innerText || editor.textContent || '').trim();
+    return stripZeroWidth(editor.innerText || editor.textContent || '').trim();
+  }
+
+  /** MAIN world(interceptor.js)에 편집기 상태로 글을 넣어 달라고 한다. 응답이 없으면 false.
+   *  isolated world 에서는 페이지 객체(el.__lexicalEditor)가 보이지 않는다. */
+  const editorStateWaits = new Map();
+  function setViaEditorState(cfg, text) {
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { editorStateWaits.delete(nonce); resolve(false); }, 1500);
+      editorStateWaits.set(nonce, (ok) => { clearTimeout(timer); editorStateWaits.delete(nonce); resolve(ok); });
+      window.postMessage({
+        __campfire_config: true, direction: 'isolated-to-main', type: 'SECUREDOC_SET_EDITOR_STATE',
+        bridgeToken, selector: cfg.editorSel, text, nonce,
+      }, '*');
+    });
   }
 
   async function setEditorText(cfg, text) {
@@ -1709,7 +1731,7 @@
     // 삽입 직전에 반드시 비었는지 확인하고, 비우지 못한 상태에서는 삽입을 한 번까지만
     // 허용한다(선택 영역 대체로 성공하는 에디터를 살리기 위해). 그 한 번이 실패하면
     // 더 넣지 않고 중단한다.
-    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const norm = (s) => stripZeroWidth(s).replace(/\s+/g, ' ').trim();
     const target = norm(text);
     const current = () => norm(editor.innerText || editor.textContent || '');
     const done = () => current() === target;
@@ -1845,6 +1867,14 @@
     // 다른 경우도 같다고 보는데, 마스킹은 PII 를 토큰으로 바꾸는 것이라 공백만 달라질 수
     // 없다 — 공백만 다르다는 건 바뀐 게 없다는 뜻이다.)
     if (done()) return true;
+
+    // 편집기 상태를 직접 바꾸는 사이트(copilot.com). 아래 수단들은 거기서 전부 무시된다.
+    // 결과는 다른 수단과 똑같이 화면 글로 확인한다 — 안 바뀌었으면 아래로 넘어가 실패로 끝난다.
+    if (cfg?.setVia === 'lexical-state') {
+      const before = current();
+      if (await setViaEditorState(cfg, text)) await settle(before);
+      if (done()) return true;
+    }
 
     // ★ "지우고 나서 넣는다" 가 아니라 "전체를 선택한 채로 넣는다".
     //
@@ -2843,6 +2873,12 @@
 
     // MAIN world가 능동 HEAD 요청에서 본 실제 보호 경로를 알린다. 표식이 확인된
     // proxy 모드에서만 확장이 손을 떼고, 나머지는 즉시 확장 보호를 유지한다.
+    if (event.data.type === 'SECUREDOC_SET_EDITOR_STATE_RESULT') {
+      if (event.data.bridgeToken !== bridgeToken) return;
+      editorStateWaits.get(event.data.nonce)?.(event.data.ok === true);
+      return;
+    }
+
     if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
       proxyMarkAt = event.data.mode === 'proxy' ? Date.now() : 0;
