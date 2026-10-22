@@ -2881,13 +2881,16 @@ cancelScan(stuckScan);
     };
     if (!contentBridgeToken) throw new Error('(40) content.js 가 MAIN world 에 토큰을 건네지 않았다');
     try {
-      await route40('extension');
-      if (!(await scans40('claude.ai', '프록시 없는 Claude 요청'))) {
-        throw new Error('(40) 대조군: 프록시가 없는데 claude.ai 프롬프트를 검사하지 않았다');
-      }
-      await route40('proxy');
-      if (await scans40('claude.ai', '프록시가 검사하는 Claude 요청')) {
-        throw new Error('(40) claude.ai 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)');
+      // 프록시가 프롬프트를 보는 사이트: 프록시 없으면 확장이 검사(대조군), 프록시 경로면 넘긴다.
+      for (const host of ['claude.ai', 'www.perplexity.ai']) {
+        await route40('extension');
+        if (!(await scans40(host, `프록시 없는 ${host} 요청`))) {
+          throw new Error(`(40) 대조군: 프록시가 없는데 ${host} 프롬프트를 검사하지 않았다`);
+        }
+        await route40('proxy');
+        if (await scans40(host, `프록시가 검사하는 ${host} 요청`)) {
+          throw new Error(`(40) ${host} 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)`);
+        }
       }
       await route40('proxy');
       if (!(await scans40('chatgpt.com', '의뢰인 주민번호 900101-1234567'))) {

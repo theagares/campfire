@@ -219,10 +219,10 @@
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
   }
 
-  // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS).
-  // 다른 사이트에서 프록시는 업로드만 보므로, 프록시 경로여도 프롬프트는 확장이 검사한다.
-  // 손을 떼면 ChatGPT·Copilot·Perplexity·Grok 에 친 글이 아무 검사 없이 나간다.
-  const PROXY_PROMPT_HOSTS = ['claude.ai'];
+  // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS·
+  // PROMPT_FORM_ENDPOINTS·PROMPT_JSON_ENDPOINTS). 여기 없는 사이트에서 프록시는 업로드만 보므로,
+  // 프록시 경로여도 프롬프트는 확장이 검사한다 — 손을 떼면 친 글이 아무 검사 없이 나간다.
+  const PROXY_PROMPT_HOSTS = ['claude.ai', 'www.perplexity.ai', 'perplexity.ai'];
   function proxyChecksPrompts() {
     return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
   }
