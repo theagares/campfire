@@ -250,6 +250,12 @@ async def start(*, force: bool = False) -> bool:
         # 그러면 caTrusted 가 False 가 되어 앱이 등록 명령을 다시 보여 준다.
         exact, suffixes = intercept_hosts()
         passphrase = ca.ensure(config.PROXY_CA_DIR, ca.constraint_names([*exact, *suffixes]))
+    except Exception:
+        # 포트 문제와 구분되게 따로 남긴다 — 앱에는 "포트를 붙잡지 못했다" 로만 보인다.
+        logger.exception("[proxy] CA 준비 실패(%s) — 프록시 없이 계속한다", config.PROXY_CA_DIR)
+        return False
+
+    try:
         opts = Options(
             listen_host="127.0.0.1",
             listen_port=config.PROXY_PORT,

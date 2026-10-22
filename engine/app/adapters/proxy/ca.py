@@ -48,11 +48,29 @@ def constraint_names(hosts) -> list[str]:
 
 
 def ensure(confdir: Path, names: list[str], now: datetime | None = None) -> bytes:
-    """CA 가 없거나 낡았으면 새로 만든다. mitmproxy 에 넘길 개인키 암호를 돌려준다."""
+    """CA 가 없거나 낡았으면 새로 만든다. mitmproxy 에 넘길 개인키 암호를 돌려준다.
+
+    있는 CA 의 개인키를 그 암호로 열 수 없으면(DPAPI 키가 바뀜 — 관리자가 비밀번호를 강제로 바꾼 경우,
+    다른 계정에서 폴더를 옮겨 옴, 파일 손상) 새로 만든다. 그러지 않으면 프록시가 영영 안 켜진다.
+    새 CA 는 사용자가 한 번 다시 신뢰하면 된다.
+    """
     now = now or datetime.now(timezone.utc)
-    if not _current(confdir, names, now):
-        _create(confdir, names, now)
-    return _read_secret(confdir)
+    if _current(confdir, names, now):
+        try:
+            return _opened_secret(confdir)
+        except (OSError, ValueError, TypeError):
+            pass
+    _create(confdir, names, now)
+    return _opened_secret(confdir)
+
+
+def _opened_secret(confdir: Path) -> bytes:
+    """개인키 암호를 읽고, 그 암호로 개인키가 실제로 열리는지까지 확인한다."""
+    from cryptography.hazmat.primitives import serialization
+
+    passphrase = _read_secret(confdir)
+    serialization.load_pem_private_key((confdir / f"{BASENAME}-ca.pem").read_bytes(), passphrase)
+    return passphrase
 
 
 def _current(confdir: Path, names: list[str], now: datetime) -> bool:

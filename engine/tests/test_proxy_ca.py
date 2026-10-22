@@ -109,6 +109,20 @@ def test_도메인이_바뀌거나_만료가_가까우면_새로_만들고_아�
     assert fp() != again, "개인키 암호를 잃었는데 그 CA 를 계속 쓰려 했다"
 
 
+def test_개인키를_열_수_없으면_새로_만든다(tmp_path):
+    """DPAPI 키가 바뀌었거나(관리자가 비밀번호를 강제로 바꿈) 다른 계정에서 옮겨 온 폴더.
+
+    고치지 않으면 프록시가 영영 안 켜지고, 앱에는 엉뚱한 "포트를 붙잡지 못했다" 만 보인다.
+    """
+    ca.ensure(tmp_path, NAMES)
+    before = json.loads((tmp_path / "campfire-ca.json").read_text(encoding="utf-8"))["sha1"]
+    (tmp_path / "campfire-ca.secret").write_bytes(b"corrupted-or-other-account")
+    passphrase = ca.ensure(tmp_path, NAMES)
+    after = json.loads((tmp_path / "campfire-ca.json").read_text(encoding="utf-8"))["sha1"]
+    assert after != before
+    assert _verifies(_root(tmp_path), _leaf(tmp_path, passphrase, "chatgpt.com"), "chatgpt.com")
+
+
 def test_프록시는_Campfire_CA_로_뜨고_원래_인증서의_이름을_베끼지_않는다(monkeypatch, tmp_path):
     from app import config
     from app.adapters import proxy
