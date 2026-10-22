@@ -350,6 +350,9 @@ class EncoderPiiDetector:
                         text=text[start:end],
                         confidence=_SINGLE_MODEL_CONFIDENCE,
                         source="encoder",
+                        # 모델 라벨 원본 — 다대일 매핑으로 사라지는 구분(회사 전화 QT_PHONE vs 휴대폰
+                        # QT_MOBILE 등)을 keep 점수(detectors/pii/keep.py)가 쓴다.
+                        label=entity["label"],
                     )
                 )
         return detections

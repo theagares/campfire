@@ -333,6 +333,16 @@ PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # 배포됐을 때도 죽지 않고 CPU로 폴백하게 한다.
 PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "auto")
 PII_DTYPE: str = os.environ.get("SECUREDOC_PII_DTYPE", "float16")
+# 회사 연락처처럼 가릴 필요 없는 PII 를 골라 검토 화면에서 미리 풀어 둔다(선택 기능, 데스크톱 설정 토글).
+# 탐지는 그대로 PII 모델이 하고, keep 모델(taehwan joint_masking direct_full)이 개체마다 MASK 확률만 매긴다.
+# maskedText(프록시·MCP 가 쓰는 결과)는 여전히 전부 가린다 — 확장 검토 화면에서 사람이 보고 보낼 때만 풀린다.
+PII_KEEP_ENABLED: bool = os.environ.get("SECUREDOC_PII_KEEP_ENABLED", "0") == "1"
+PII_KEEP_DIR: Path = MODELS_ROOT / "pii_keep"
+PII_KEEP_DEVICE: str = os.environ.get("SECUREDOC_PII_KEEP_DEVICE", "auto")
+# 이 길이를 넘는 문서는 점수를 매기지 않고 전부 가린다(문서 전체를 한 번 더 인코딩하므로).
+PII_KEEP_MAX_CHARS: int = int(os.environ.get("SECUREDOC_PII_KEEP_MAX_CHARS", "20000"))
+# 풀어 줄 수 있는 종류 — 회사 연락처 계열만. 나머지(이름·휴대폰·주민번호·계좌 등)는 점수와 상관없이 가린다.
+PII_KEEP_LABELS: frozenset[str] = frozenset({"OG_WORKPLACE", "OG_DEPARTMENT", "QT_PHONE", "TMI_EMAIL", "LC_ADDRESS"})
 # 직접 400/60 윈도우, CUDA FP16 기준 batch 8보다 p50 10.8% 단축되며
 # 피크 VRAM 증가는 34.7MiB였다(대표 회귀 입력 138윈도우, 각 10회 실측).
 PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "16"))
@@ -453,4 +463,4 @@ PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")
 # 위 설정·환경변수와 상관없이 끈다 — 정식 판에서 켜 둔 설정이 남은 채 라이트로 바꿔 설치해도 켜지지 않게.
 LITE: bool = os.environ.get("SECUREDOC_EDITION", "") == "lite"
 if LITE:
-    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = False
+    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = PII_KEEP_ENABLED = False

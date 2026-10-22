@@ -197,6 +197,8 @@ class EngineManager extends EventEmitter {
       // 기밀 탐지 (engine/app/core/detectors/confidential). 동의 토글이 꺼져 있으면 엔진이 아무것도 안 한다.
       SECUREDOC_CONFIDENTIAL_ENABLED: this.config.get('confidentialEnabled') ? '1' : '0',
       SECUREDOC_KG_PATH: this.config.get('kgPath') || '',
+      // 회사 연락처 풀어 두기 (engine/app/core/detectors/pii/keep.py) — 검토 화면에서만 풀린다.
+      SECUREDOC_PII_KEEP_ENABLED: this.config.get('piiKeepEnabled') ? '1' : '0',
       // MCP 파일 도구(secure_read_file 등)의 작업 루트. 비워 두면 엔진이 홈 디렉터리를
       // 기본값으로 쓴다 — cwd 를 쓰면 안 된다. 아래 cwd 주석대로 우리는 cwd 를 사용자
       // 데이터 폴더로 옮겼고, 엔진이 그걸 경계로 삼으면 사용자 파일을 하나도 못 읽는다
