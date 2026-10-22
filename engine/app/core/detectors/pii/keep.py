@@ -12,6 +12,7 @@ keep 모델(runtime/keep_scorer.py 하위 프로세스)이 PII 개체마다 MASK
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app import config
@@ -45,6 +46,36 @@ class KeepProcess(EncoderPiiDetector):
 
 
 _process: KeepProcess | None = None
+_tasks: set[asyncio.Task] = set()
+
+
+def prewarm() -> None:
+    """켜져 있고 모델이 있으면 엔진 기동 때 미리 띄운다 — 첫 기동이 CPU 약 13초라 첫 프롬프트가 기다리지 않게.
+
+    PII 모델이 다 뜬 뒤에 띄운다. 느린 CPU 에서 두 모델을 같이 올리면 PII 로딩이 시간 상한을 넘긴다
+    (orchestrator 의 Intel mac 주석과 같은 이유).
+    """
+    if not (config.PII_KEEP_ENABLED and model_status.pii_keep_ready()):
+        return
+
+    async def run() -> None:
+        global _process
+        from .. import registry
+        ensure_pii = getattr(registry.get_pii_detector(), "_ensure_process", None)
+        if callable(ensure_pii) and not config.COMBINED_GPU_WORKER_ENABLED:
+            await ensure_pii()
+        if _process is None:
+            _process = KeepProcess()
+        await _process._ensure_process()
+
+    def done(t: asyncio.Task) -> None:
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            log.warning("keep 미리 띄우기 실패(처음 쓸 때 다시 띄운다): %s", t.exception())
+
+    task = asyncio.create_task(run())
+    _tasks.add(task)
+    task.add_done_callback(done)
 
 
 async def annotate(text: str, items: list[Detection]) -> list[Detection]:
