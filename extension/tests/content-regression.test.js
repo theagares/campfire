@@ -2122,7 +2122,7 @@ cancelScan(stuckScan);
     throw new Error(`입력창에 마스킹본이 들어가지 않았다: ${editor26.value}`);
   }
 
-  // (40) 2026-10 ChatGPT 개편: 옛 선택자는 다 없고 새 컴포저(form[data-chatgpt-composer])만
+  // (41) 2026-10 ChatGPT 개편: 옛 선택자는 다 없고 새 컴포저(form[data-chatgpt-composer])만
   // 있다. 묶음 editorSel 을 적힌 순서대로 찾아야 일반 탐색 없이도 입력창을 잡는다
   // (querySelector 에 통째로 넘기면 하네스·문서 순서 어느 쪽에서도 첫 선택자에 기대게 된다).
   {
@@ -2146,12 +2146,12 @@ cancelScan(stuckScan);
     await clock.tick(2000);
 
     if (runtimeMessages.filter(isScanStart).length - before40 !== 1) {
-      throw new Error('(40) 새 ChatGPT 컴포저를 못 찾아 검사를 시작하지 않았다 — 원문이 그대로 나간다');
+      throw new Error('(41) 새 ChatGPT 컴포저를 못 찾아 검사를 시작하지 않았다 — 원문이 그대로 나간다');
     }
     if (composer40.value !== '계좌 [계좌번호 마스킹] 로 보내 줘') {
-      throw new Error(`(40) 새 컴포저에 마스킹본이 들어가지 않았다: ${composer40.value}`);
+      throw new Error(`(41) 새 컴포저에 마스킹본이 들어가지 않았다: ${composer40.value}`);
     }
-    if (send40.clicks !== 1) throw new Error(`(40) 새 전송 버튼으로 재전송하지 못했다 (clicks=${send40.clicks})`);
+    if (send40.clicks !== 1) throw new Error(`(41) 새 전송 버튼으로 재전송하지 못했다 (clicks=${send40.clicks})`);
 
     domBySelector.delete('form[data-chatgpt-composer] .ProseMirror[contenteditable="true"]');
     domBySelector.delete('form[data-chatgpt-composer] button[type="submit"]');
