@@ -49,3 +49,11 @@ def confidential_ready() -> bool:
     없다고 PII·인젝션까지 꺼지면 안 된다. 없으면 Solar 로 보내지 않고 근거 문장을 가린다."""
     model_dir = config.CONFIDENTIAL_ENGINE_DIR / "models"
     return all((model_dir / f).is_file() for f in CONFIDENTIAL_REQUIRED_FILES)
+
+
+PII_KEEP_REQUIRED_FILES = ("keep_model.safetensors", "keep_config.json", "train_gazetteer.json")
+
+
+def pii_keep_ready() -> bool:
+    """문맥 판단 PII 모델(detectors/pii/keep.py). 선택 기능이라 all_ready() 에 넣지 않는다 — 없으면 v2 로 탐지한다."""
+    return all((config.PII_KEEP_DIR / f).is_file() for f in PII_KEEP_REQUIRED_FILES)

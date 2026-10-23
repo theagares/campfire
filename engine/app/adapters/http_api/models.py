@@ -74,6 +74,14 @@ _ASSETS: dict[str, dict[str, Any]] = {
         "extract_to": lambda: config.CONFIDENTIAL_ENGINE_DIR,
         "label": "기밀 탐지 모델",
     },
+    # 문맥 판단 PII 모델 — taehwan joint_masking direct_full(ax_gazetteer_crf seed42, fp32, 압축 501MB).
+    # 선택 기능이라 켠 경우에만 받는다. 맨 위에 파일 3개(keep_model.safetensors·keep_config.json·train_gazetteer.json)
+    "pii_keep": {
+        "url": f"{_RELEASE_BASE}/pii_keep_v1.tar.gz",
+        "sha256": "708f0bbe3cac3d8ab7d48b70e8e26ca287eaf6e80b11a83b691c13100737599d",
+        "extract_to": lambda: config.PII_KEEP_DIR,
+        "label": "문맥 판단 PII 모델",
+    },
 }
 
 # fire-and-forget 백그라운드 태스크가 GC 되지 않도록 참조를 들고 있는다.
@@ -105,6 +113,7 @@ def _status() -> dict[str, Any]:
         },
         # 선택 기능 — enabled 가 아니면 ready 가 거짓이어도 받지 않는다(앱도 enabled 일 때만 기다린다)
         "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
+        "piiKeep": {"enabled": config.PII_KEEP_ENABLED, "ready": model_status.pii_keep_ready()},
     }
 
 
@@ -256,6 +265,8 @@ async def _fetch_job(job_id: str) -> None:
             await _download_backbone(emit)
         if config.CONFIDENTIAL_ENABLED and not model_status.confidential_ready():
             await _download_and_extract("confidential", _ASSETS["confidential"], emit)
+        if config.PII_KEEP_ENABLED and not model_status.pii_keep_ready():
+            await _download_and_extract("pii_keep", _ASSETS["pii_keep"], emit)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})

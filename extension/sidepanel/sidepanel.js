@@ -59,6 +59,7 @@ let state = {
   activeTab: null,      // docId 또는 'prompt'
   loaded: new Map(),    // itemId -> { originalText, piiItems, injectionItems }
   decisions: new Map(), // docId -> 'masked'|'original'|'exclude'
+  keepSeeded: new Set(), // 회사 연락처를 이미 풀어 둔 탭(itemId) — showTab 참고
   multiRevealed: false, // 검사가 끝나 대기 화면에서 탭으로 넘어갔는지 — syncMultiView 참고
 };
 
@@ -190,6 +191,7 @@ function renderMulti(session) {
   state.promptMeta = session.prompt || { status: 'pending', counts: null };
   const draft = session.draft || {};
   state.unmasked = new Set(draft.unmaskedKeys || []);
+  state.keepSeeded = new Set(draft.keepSeeded || []);
   state.loaded = new Map();
   state.decisions = new Map(Object.entries(draft.decisions || {}));
   state.decided = false;
@@ -371,9 +373,20 @@ async function showTab(itemId) {
     item.originalText, item.piiItems, item.injectionItems, itemId, item.forcedMaskItems,
   );
   for (const seg of itemSegments(state.segments)) if (seg.locked) state.unmasked.delete(seg.key);
+  // 회사 연락처는 탭을 처음 열 때 한 번만 풀어 둔다 — 사용자가 다시 가린 것을 덮어쓰지 않게
+  if (!state.keepSeeded.has(itemId)) {
+    state.keepSeeded.add(itemId);
+    seedKeep(itemSegments(state.segments));
+    saveDraft({ unmaskedKeys: [...state.unmasked], keepSeeded: [...state.keepSeeded] });
+  }
   renderDiff();
   renderItems();
   refreshSummary();
+}
+
+/** 엔진이 '회사 연락처라 풀어도 됨' 으로 본 항목을 해제 상태로 둔다(사용자가 다시 가릴 수 있다). */
+function seedKeep(segs) {
+  for (const seg of segs) if (seg.keep && !seg.locked) state.unmasked.add(seg.key);
 }
 
 el.tabs.addEventListener('click', (e) => {
@@ -464,7 +477,7 @@ function renderItems() {
         <div class="group-body"${open ? '' : ' hidden'}>
           ${g.segs.map(s => `
             <div class="item" data-key="${esc(s.key)}">
-              <div class="snip">${esc(trunc(s.original))}</div>
+              <div class="snip">${esc(trunc(s.original))}${s.keep ? '<span class="keep-tag" title="개인이 아닌 회사 연락처로 판단해 풀어 두었습니다">회사 연락처</span>' : ''}</div>
               <label class="switch">
                 <input type="checkbox" class="i-toggle" data-key="${esc(s.key)}" ${state.unmasked.has(s.key) ? '' : 'checked'} ${s.locked ? 'disabled' : ''}>
                 <span class="track"><span class="thumb"></span></span>
@@ -770,6 +783,7 @@ function renderResult(kind, result, meta) {
   }
 
   for (const seg of allItemSegments()) if (seg.locked) state.unmasked.delete(seg.key);
+  seedKeep(allItemSegments());
 
   renderDiff();
   renderItems();

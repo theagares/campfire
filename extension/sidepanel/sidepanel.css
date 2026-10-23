@@ -408,6 +408,11 @@ body {
   flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: .01em;
 }
+/* 회사 연락처로 판단해 미리 풀어 둔 항목 */
+.keep-tag {
+  margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 9.5px;
+  border: 1px solid var(--border); color: var(--text);
+}
 /* 인젝션 — 묶지 않고 한 줄씩. 같은 유형이라도 문구마다 다른 공격이라, 종류로 접으면
    정작 읽고 판단해야 할 내용이 가려진다. 그래서 유형명 아래 실제 문구를 두 줄까지
    그대로 보여준다(PII 스니펫은 한 줄 말줄임). */

@@ -333,6 +333,17 @@ PII_MODEL_SEED: str = os.environ.get("SECUREDOC_PII_MODEL_SEED", "seed42")
 # 배포됐을 때도 죽지 않고 CPU로 폴백하게 한다.
 PII_DEVICE: str = os.environ.get("SECUREDOC_PII_DEVICE", "auto")
 PII_DTYPE: str = os.environ.get("SECUREDOC_PII_DTYPE", "float16")
+# 문맥 판단 PII 모델(taehwan joint_masking direct_full) — 선택 기능, 데스크톱 설정 토글.
+# 켜고 모델이 있으면 PII 탐지 자체를 이 모델이 하고(v2 대신), 개체마다 MASK 확률을 매겨 회사 연락처처럼
+# 가릴 필요 없는 것을 검토 화면에서 미리 풀어 둔다. maskedText(프록시·MCP 가 쓰는 결과)는 그래도 전부 가린다.
+PII_KEEP_ENABLED: bool = os.environ.get("SECUREDOC_PII_KEEP_ENABLED", "0") == "1"
+PII_KEEP_DIR: Path = MODELS_ROOT / "pii_keep"
+PII_KEEP_DEVICE: str = os.environ.get("SECUREDOC_PII_KEEP_DEVICE", "auto")
+# 한 번에 보내는 글자 수 — 줄 경계에서 자른다. 모델은 이 덩어리를 문서 하나로 본다(문서 평균 특징).
+# 학습 문서(서식형)가 이보다 짧고, 요청 하나가 시간 상한(DETECT_INFER_TIMEOUT_SEC) 안에 끝나야 한다.
+PII_KEEP_CHUNK_CHARS: int = int(os.environ.get("SECUREDOC_PII_KEEP_CHUNK_CHARS", "4000"))
+# 풀어 줄 수 있는 종류 — 회사 연락처 계열만. 나머지(이름·휴대폰·주민번호·계좌 등)는 점수와 상관없이 가린다.
+PII_KEEP_LABELS: frozenset[str] = frozenset({"OG_WORKPLACE", "OG_DEPARTMENT", "QT_PHONE", "TMI_EMAIL", "LC_ADDRESS"})
 # 직접 400/60 윈도우, CUDA FP16 기준 batch 8보다 p50 10.8% 단축되며
 # 피크 VRAM 증가는 34.7MiB였다(대표 회귀 입력 138윈도우, 각 10회 실측).
 PII_BATCH_SIZE: int = int(os.environ.get("SECUREDOC_PII_BATCH_SIZE", "16"))
@@ -360,7 +371,8 @@ SUBPROCESS_STREAM_LIMIT: int = 2 ** 26
 # 장치를 cpu 등으로 직접 지정했으면 그 지정이 통합 worker(항상 CUDA)에 무시되지 않게 끈다.
 COMBINED_GPU_WORKER_ENABLED: bool = os.environ.get(
     "SECUREDOC_COMBINED_GPU_WORKER_ENABLED", "0" if sys.platform == "darwin" else "1"
-).strip().lower() in {"1", "true", "yes", "on"} and {PII_DEVICE, INJECTION_DEVICE} <= {"auto", "cuda"}
+).strip().lower() in {"1", "true", "yes", "on"} and {PII_DEVICE, INJECTION_DEVICE} <= {"auto", "cuda"} \
+    and not PII_KEEP_ENABLED  # 문맥 판단 모델이 PII 를 맡으면 통합 worker(v2+EXAONE)는 EXAONE 을 GPU 에 한 번 더 올릴 뿐이다
 # 통합 worker 요청 하나에 담는 양 — PII 와 같은 이유(응답 크기·시간 상한)로 문서를 나눠 보낸다.
 COMBINED_GPU_PII_WINDOWS_PER_REQUEST: int = 64
 COMBINED_GPU_INJECTION_RECORDS_PER_REQUEST: int = 128
@@ -459,4 +471,4 @@ PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")
 # 위 설정·환경변수와 상관없이 끈다 — 정식 판에서 켜 둔 설정이 남은 채 라이트로 바꿔 설치해도 켜지지 않게.
 LITE: bool = os.environ.get("SECUREDOC_EDITION", "") == "lite"
 if LITE:
-    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = False
+    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = PII_KEEP_ENABLED = False

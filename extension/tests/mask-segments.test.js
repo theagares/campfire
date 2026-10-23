@@ -27,7 +27,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'utils', 'mask-segments.j
 
 const sandbox = {};
 vm.runInContext(SRC, vm.createContext(sandbox), { filename: 'mask-segments.js' });
-const { buildSegments, buildFinalText, finalTextFrom } = sandbox;
+const { buildSegments, buildFinalText, finalTextFrom, itemSegments } = sandbox;
 const { labelOf } = sandbox.__exports;
 
 // vm 샌드박스가 돌려주는 배열은 realm 이 달라 deepStrictEqual 이 프로토타입에서 걸린다.
@@ -261,4 +261,24 @@ assert.strictEqual(labelOf('UNKNOWN_TYPE'), 'UNKNOWN_TYPE', '모르는 유형은
   assert.strictEqual(buildFinalText(guessed, []), '[기밀 마스킹] 본사는 서울이다.', '가리는 방식은 같다');
 }
 
-console.log('mask-segments.test.js: 15개 블록 통과');
+// ── 16) 회사 연락처(keep) 표시 — 겹쳐 합쳐지면 모두 keep 일 때만, 필수 단어와 합쳐지면 풀지 않는다 ──
+{
+  const text = '문의 031-676-4069 담당 010-2345-6789 코드 퍼시스본사';
+  const at = (s) => [text.indexOf(s), text.indexOf(s) + s.length];
+  const [a0, a1] = at('031-676-4069');
+  const [m0, m1] = at('010-2345-6789');
+  const [c0, c1] = at('퍼시스본사');
+  const segs = buildSegments(text, [
+    { start: a0, end: a1, type: 'PHONE', keep: true },
+    { start: m0, end: m1, type: 'PHONE', keep: false },
+    { start: m0 + 4, end: m1, type: 'PHONE', keep: true },   // keep 아닌 것과 겹침 → 합친 구간은 keep 아님
+    { start: c0, end: c1, type: 'ORGANIZATION', keep: true },
+  ], [], 'p', [{ start: c0, end: c0 + 3, type: 'USER_DEFINED_TERM' }]);
+  const items = itemSegments(segs);
+  assert.deepStrictEqual(Array.from(items, s => !!s.keep), [true, false, false], '회사 전화만 keep');
+  assert.strictEqual(items[2].locked, true, '필수 단어와 합쳐지면 잠김');
+  assert.strictEqual(buildFinalText(segs, [items[0].key]),
+    '문의 031-676-4069 담당 [전화번호 마스킹] 코드 [사용자 지정 마스킹]', '풀어 둔 키만 원문');
+}
+
+console.log('mask-segments.test.js: 16개 블록 통과');

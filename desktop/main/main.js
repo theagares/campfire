@@ -199,12 +199,15 @@ async function ensureModelsAutoDownload() {
     const coreReady = !!(status.pii?.ready && status.injection?.ready);
     // 기밀 탐지 리트리버는 사용자가 기밀 탐지를 켠 경우에만 받는다(선택 기능, 약 330MB)
     const confidentialReady = !status.confidential?.enabled || !!status.confidential?.ready;
-    if (coreReady && confidentialReady) return; // 이미 준비된 상태 — 재다운로드 불필요
+    const keepReady = !status.piiKeep?.enabled || !!status.piiKeep?.ready; // 문맥 판단 PII 모델(선택, 약 500MB)
+    if (coreReady && confidentialReady && keepReady) return; // 이미 준비된 상태 — 재다운로드 불필요
 
     ipc.broadcast('models:fetchProgress', {
       type: 'progress',
       // 필수 = PII 476MB + 인젝션 헤드 36MB + EXAONE 백본 약 2.4GB(engine/app/adapters/http_api/models.py). 백본이 이미 있으면 덜 받는다.
-      label: coreReady ? '기밀 탐지 모델(약 330MB)을 준비하는 중...' : '필수 보안 모델(최대 약 3GB)을 준비하는 중...',
+      label: !coreReady ? '필수 보안 모델(최대 약 3GB)을 준비하는 중...'
+        : !confidentialReady ? '기밀 탐지 모델(약 330MB)을 준비하는 중...'
+        : '문맥 판단 PII 모델(약 500MB)을 준비하는 중...',
     });
     await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));
   } catch (err) {

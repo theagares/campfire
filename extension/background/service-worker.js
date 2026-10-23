@@ -1153,6 +1153,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (Array.isArray(message.unmaskedKeys)) draft.unmaskedKeys = message.unmaskedKeys;
       if (message.decisions) draft.decisions = message.decisions;
       if (message.activeTab != null) draft.activeTab = message.activeTab;
+      if (Array.isArray(message.keepSeeded)) draft.keepSeeded = message.keepSeeded;
       session.draft = draft;
       persistSessions();
       sendResponse({ ok: true });

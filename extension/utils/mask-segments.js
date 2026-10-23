@@ -81,6 +81,8 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
         };
         // 솔라 판정을 못 해 근거 문장을 가린 기밀(엔진 source 'encoder') — 화면은 점선 테두리로 구분한다
         if (it.cat === 'conf' && it.source === 'encoder') seg.fallback = true;
+        // 회사 연락처로 판단돼 풀어도 되는 PII(엔진 keep, 설정 '회사 연락처는 풀어 두기') — 패널이 미리 풀어 둔다
+        if (it.cat === 'pii' && it.keep && !it.mandatory) seg.keep = true;
         if (it.children) seg.children = toSegments(it.children, start, it.end);
         segs.push(seg);
       }
@@ -125,6 +127,7 @@ function mergeSpans(items) {
       continue;
     }
     prev.end = Math.max(prev.end, item.end);
+    if (!item.keep) prev.keep = false; // 합쳐진 구간은 모두 풀어도 될 때만 풀어 둔다
     if (item.mandatory) {
       prev.mandatory = true;
       prev.cat = 'forced';
