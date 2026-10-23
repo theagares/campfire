@@ -121,11 +121,18 @@ def test_split_sentences_and_bio_decode():
 def test_viterbi_respects_bio_constraints():
     import torch
     start, trans = ks._crf_constraints()
-    em = torch.zeros(2, ks.BIO_SIZE)
-    em[0, ks.BIO.index("I-EMAIL")] = 5.0  # I- 로 시작하는 경로는 막혀 있다
-    em[1, ks.BIO.index("I-EMAIL")] = 5.0
-    path = ks._viterbi(em, start, torch.zeros(ks.BIO_SIZE), trans)
-    assert ks.BIO[path[0]] != "I-EMAIL"
+    em = torch.zeros(2, 3, ks.BIO_SIZE)
+    em[:, :, ks.BIO.index("I-EMAIL")] = 5.0  # I- 로 시작하는 경로는 막혀 있다
+    em[1, 2] = 0.0
+    em[1, 2, ks.BIO.index("B-NAME")] = 9.0   # mask 밖 — 무시돼야 한다
+    mask = torch.tensor([[True, True, True], [True, True, False]])
+    paths = ks._viterbi(em, mask, start, torch.zeros(ks.BIO_SIZE), trans).tolist()
+    assert ks.BIO[paths[0][0]] != "I-EMAIL" and ks.BIO[paths[1][0]] != "I-EMAIL"
+    assert paths[1][2] == 0  # mask 밖은 0
+    # 묶음으로 돌려도 한 줄씩 돌린 것과 같다
+    for j, n in ((0, 3), (1, 2)):
+        one = ks._viterbi(em[j:j + 1, :n], mask[j:j + 1, :n], start, torch.zeros(ks.BIO_SIZE), trans).tolist()[0]
+        assert one == paths[j][:n]
 
 
 def test_load_weights_reads_tensors_into_modules_strictly(tmp_path):

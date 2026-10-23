@@ -19,6 +19,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import transformers
 from torch import nn
@@ -106,19 +107,33 @@ def _crf_constraints() -> tuple[torch.Tensor, torch.Tensor]:
     return start, trans
 
 
-def _viterbi(em: torch.Tensor, start: torch.Tensor, end: torch.Tensor, trans: torch.Tensor) -> list[int]:
-    """한 문장 창의 최적 BIO 경로(원본 stagea.crf.viterbi 의 배치 1 판)."""
-    score, history = start + em[0], []
-    for t in range(1, len(em)):
-        nxt, idx = (score[:, None] + trans).max(0)
-        score = nxt + em[t]
-        history.append(idx)
-    best = int((score + end).argmax())
-    path = [best]
-    for idx in reversed(history):
-        best = int(idx[best])
-        path.append(best)
-    return path[::-1]
+def _viterbi(em: torch.Tensor, mask: torch.Tensor, start: torch.Tensor, end: torch.Tensor,
+             trans: torch.Tensor) -> torch.Tensor:
+    """묶음 전체의 최적 BIO 경로 [B, T] — 원본 stagea.crf.viterbi 와 같은 계산을 numpy 로. mask 밖은 0.
+
+    토큰마다 아주 작은 연산(묶음×39×39)을 이어 하는 구조라 GPU 는 연산을 띄우는 고정 비용만 쌓인다.
+    16창×60토큰 실측: torch-cuda 9.6ms, torch-cpu 4.2ms, numpy 2.6ms(세 결과 같음). 예전엔 창마다 따로 돌렸다.
+    """
+    em, mask, start, end, trans = (x.detach().cpu().numpy() for x in (em, mask, start, end, trans))
+    b, n, k = em.shape
+    score = start[None, :] + em[:, 0]
+    history = np.zeros((n, b, k), dtype=np.int64)
+    for t in range(1, n):
+        cand = score[:, :, None] + trans[None, :, :]
+        index = cand.argmax(axis=1)
+        nxt = np.take_along_axis(cand, index[:, None, :], axis=1)[:, 0, :] + em[:, t]
+        score = np.where(mask[:, t, None], nxt, score)
+        history[t] = index
+    current = (score + end[None, :]).argmax(axis=1)
+    lengths = mask.sum(1)
+    paths = np.zeros((b, n), dtype=np.int64)
+    rows = np.arange(b)
+    for t in range(n - 1, -1, -1):
+        valid = t < lengths
+        paths[:, t] = np.where(valid, current, 0)
+        if t > 0:
+            current = np.where(valid, history[t][rows, current], current)
+    return torch.from_numpy(paths)
 
 
 def _decode_bio(offsets: list[tuple[int, int]], tags: list[int]) -> list[dict]:
@@ -166,7 +181,6 @@ def _no_init_weights():
 
 
 _CRF_PREFIX = "stage_a.crf."
-_BATCH = 8  # 한 번에 넣는 창 수(원본과 같다) — _encode 주석의 실측 참고
 
 
 _ST_DTYPES = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}
@@ -229,6 +243,9 @@ class KeepScorer:
         self.stride = int(cfg.get("stride", 64))
         self.tokenizer = tokenizer
         self.device = device
+        # 한 번에 넣는 창 수(원본 8). 실측(2만 자, 길이순): CPU 는 8 이 가장 빠르고(16·32·64 는 더 느리고 메모리만 늚),
+        # CUDA(RTX 5070)는 16 이 줄바꿈 있는 글·없는 글 모두 고르게 빨랐다(32 는 한쪽만 빠르고 메모리 2배).
+        self.batch = 16 if str(device).startswith("cuda") else 8
         self.gaz = _Gazetteer(json.loads((keep_dir / "train_gazetteer.json").read_text(encoding="utf-8")))
 
         arch = AutoConfig.from_pretrained(str(backbone_config_dir), trust_remote_code=True)
@@ -254,7 +271,7 @@ class KeepScorer:
         for module, _ in modules:
             module.to(device=device, dtype=torch.float32).eval()
         start_c, trans_c = _crf_constraints()
-        self.crf = (crf["start_transitions"] + start_c, crf["end_transitions"], crf["transitions"] + trans_c)
+        self.crf = (crf["start_transitions"] + start_c, crf["end_transitions"], crf["transitions"] + trans_c)  # CPU(_viterbi)
 
     @torch.inference_mode()
     def _encode(self, sentences: list[tuple[Any, str]], decode: bool = False):
@@ -285,32 +302,48 @@ class KeepScorer:
         total = torch.zeros(len(keys), self.feature_dim, device=self.device)
         count = torch.zeros(len(keys), 1, device=self.device)
         pad = self.tokenizer.pad_token_id
-        # 길이순으로 8개씩 묶는다 — 문장 길이가 제각각이라 순서대로 묶으면 짧은 문장이 긴 문장 길이만큼 패딩된다.
-        # 결과는 토큰 자리별로 모으므로 순서와 무관하다. 설치본 CPU 실측(2만 자): 정렬 없음 10.9초 → 8.1초,
-        # 처리 중 메모리 +164 → +132MB. 묶음을 16·32·64 로 키우면 정렬해도 더 느리고 메모리만 늘었다.
+        # 길이순으로 묶는다 — 문장 길이가 제각각이라 순서대로 묶으면 짧은 문장이 긴 문장 길이만큼 패딩된다.
+        # 결과는 토큰 자리별로 모으므로 순서와 무관하다. 묶음 크기는 __init__ 의 실측 참고.
         windows.sort(key=lambda w: len(w[0]))
-        for start in range(0, len(windows), _BATCH):
-            batch = windows[start:start + _BATCH]
+        for start in range(0, len(windows), self.batch):
+            batch = windows[start:start + self.batch]
+            # 묶음 입력은 CPU 에서 다 만든 뒤 한 번에 보낸다 — 창마다 보내면 GPU 에서 그 전송이 가장 큰 단일 비용이었다
             width = max(len(w[0]) for w in batch)
-            ids = torch.full((len(batch), width), pad, dtype=torch.long, device=self.device)
-            att = torch.zeros_like(ids)
-            gaz = torch.zeros(len(batch), width, len(TYPES), device=self.device)
-            for j, (wid, _, _, g, _, _) in enumerate(batch):
-                ids[j, :len(wid)] = torch.tensor(wid, device=self.device)
+            ids = np.full((len(batch), width), pad, dtype=np.int64)
+            att = np.zeros((len(batch), width), dtype=np.int64)
+            gaz = np.zeros((len(batch), width, len(TYPES)), dtype=np.float32)
+            rows, cols, slot, glob = [], [], [], []  # 실제 토큰: 묶음 안 (행, 열), 앞으로 모은 자리, 문서 토큰 번호
+            for j, (wid, real, g_idx, g, _, _) in enumerate(batch):
+                ids[j, :len(wid)] = wid
                 att[j, :len(wid)] = 1
-                gaz[j, :len(wid)] = torch.tensor(g, device=self.device)
-            h = self.backbone(input_ids=ids, attention_mask=att).last_hidden_state.float()
-            feats = torch.cat((h, self.gaz_proj(gaz)), -1)
+                gaz[j, :len(wid)] = g
+                rows += [j] * len(real)
+                cols += real
+                slot += range(len(real))
+                glob += g_idx
+            h = self.backbone(input_ids=torch.from_numpy(ids).to(self.device),
+                              attention_mask=torch.from_numpy(att).to(self.device)).last_hidden_state.float()
+            feats = torch.cat((h, self.gaz_proj(torch.from_numpy(gaz).to(self.device))), -1)
             logits = self.classifier(feats)
             joined = torch.cat((feats, logits.softmax(-1)), -1)
-            for j, (_, real, glob, _, sid, offsets) in enumerate(batch):
-                idx = torch.tensor(glob, device=self.device)
-                total.index_add_(0, idx, joined[j, real])
-                count.index_add_(0, idx, torch.ones(len(glob), 1, device=self.device))
-                if not decode:
-                    continue
+            r = torch.tensor(rows, device=self.device)
+            c = torch.tensor(cols, device=self.device)
+            idx = torch.tensor(glob, device=self.device)
+            total.index_add_(0, idx, joined[r, c])
+            count.index_add_(0, idx, torch.ones(len(glob), 1, device=self.device))
+            if not decode:
+                continue
+            # 실제 토큰만 앞으로 모아 묶음 전체를 한 번에 디코딩한다(원본은 창마다 실제 토큰만 넣었다)
+            longest = max(len(w[1]) for w in batch)
+            s = torch.tensor(slot, device=self.device)
+            em = torch.zeros(len(batch), longest, BIO_SIZE, device=self.device)
+            mask = torch.zeros(len(batch), longest, dtype=torch.bool, device=self.device)
+            em[r, s] = logits[r, c]
+            mask[r, s] = True
+            paths = _viterbi(em, mask, *self.crf).tolist()
+            for j, (_, real, _, _, sid, offsets) in enumerate(batch):
                 tags = [0] * len(offsets)
-                for i, t in zip(real, _viterbi(logits[j, real].cpu(), *self.crf)):
+                for i, t in zip(real, paths[j]):
                     tags[i] = t
                 bucket = buckets.setdefault(sid, {})
                 for s in _decode_bio(offsets, tags):
@@ -347,10 +380,13 @@ class KeepScorer:
         if h is None or not entities:
             return [None] * len(entities)
         domains = domains or DOMAINS
+        by_sent: dict[Any, list[tuple[int, int, int]]] = {}  # 문장별 토큰만 본다 — 예전엔 개체마다 문서의 모든 토큰을 훑었다
+        for i, (sid, a, b) in enumerate(keys):
+            by_sent.setdefault(sid, []).append((a, b, i))
         rows, slots = [], []
         for n, e in enumerate(entities):
-            sel = [i for i, (sid, a, b) in enumerate(keys)
-                   if any(sid == m["sent_idx"] and a < m["end"] and m["begin"] < b for m in e["mentions"])]
+            sel = sorted({i for m in e["mentions"] for a, b, i in by_sent.get(m["sent_idx"], ())
+                          if a < m["end"] and m["begin"] < b})
             if sel and e["entity_type"] in TYPES:
                 rows.append((h[sel].mean(0), TYPES.index(e["entity_type"])))
                 slots.append(n)
