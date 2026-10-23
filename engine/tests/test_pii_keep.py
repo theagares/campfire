@@ -123,6 +123,24 @@ def test_viterbi_respects_bio_constraints():
     assert ks.BIO[path[0]] != "I-EMAIL"
 
 
+def test_load_weights_reads_tensors_into_modules_strictly(tmp_path):
+    import torch
+    from safetensors.torch import save_file
+    src = torch.nn.Linear(3, 2)
+    path = tmp_path / "w.safetensors"
+    crf = torch.arange(4, dtype=torch.float32)
+    save_file({"m.weight": src.weight.detach().contiguous(), "m.bias": src.bias.detach(),
+               "stage_a.crf.transitions": crf}, str(path))
+    dst = torch.nn.Linear(3, 2)
+    out = ks._load_weights(path, ((dst, "m."),))
+    assert torch.equal(dst.weight, src.weight) and torch.equal(dst.bias, src.bias)
+    assert torch.equal(out["transitions"], crf)
+    with pytest.raises(RuntimeError, match="키 불일치"):
+        ks._load_weights(path, ((torch.nn.Linear(3, 2, bias=False), "m."),))  # 파일에 남는 키(m.bias)
+    with pytest.raises(RuntimeError, match="모양 불일치"):
+        ks._load_weights(path, ((torch.nn.Linear(4, 2), "m."),))
+
+
 def test_type_maps_round_trip():
     assert set(ks.TYPE_TO_APP) == set(ks.TYPES) and set(ks.TYPE_TO_APP.values()) <= set(encoder.LABEL_MAP)
     assert config.PII_KEEP_LABELS <= set(encoder.LABEL_MAP)

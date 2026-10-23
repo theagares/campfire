@@ -21,7 +21,6 @@ from typing import Any
 
 import torch
 from torch import nn
-from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModel
 
 TYPES = ["NAME", "ADDRESS", "WORKPLACE", "DEPARTMENT", "POSITION", "SCHOOL", "MOBILE_PHONE",
@@ -154,6 +153,64 @@ def _flat_spans(cands: list[dict]) -> list[dict]:
     return sorted(sols[-1], key=lambda x: (x["begin"], x["end"]))
 
 
+def _no_init_weights():
+    """transformers 의 무작위 초기화 끄기 — 5.x 는 initialization, 4.x(Intel mac) 는 modeling_utils 에 있다."""
+    import contextlib
+    for module in ("transformers.initialization", "transformers.modeling_utils"):
+        try:
+            return getattr(__import__(module, fromlist=["no_init_weights"]), "no_init_weights")()
+        except (ImportError, AttributeError):
+            continue
+    return contextlib.nullcontext()
+
+
+_CRF_PREFIX = "stage_a.crf."
+
+
+_ST_DTYPES = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}
+
+
+@torch.no_grad()
+def _load_weights(path: Path, modules) -> dict[str, torch.Tensor]:
+    """가중치를 텐서 하나씩 읽어 바로 모듈에 복사한다(load_state_dict(strict=True) 와 같은 검사).
+
+    기동 순간 메모리 최고점을 v2 수준으로 — 파일 전체(약 600MB)를 한 번에 읽으면 막 만든 모델과 합쳐 두 벌이
+    올라갔다(최고점 1.94GB, v2 1.52GB). safetensors.safe_open 도 메모리 매핑이라 읽은 페이지가 프로세스에 잡혀
+    마찬가지였다. 그래서 형식(8바이트 헤더 길이 + JSON 헤더 + 원시 데이터)을 직접 읽어 텐서 하나씩 복사한다 —
+    더 드는 건 가장 큰 텐서(임베딩 약 150MB) 하나뿐이다. CRF 전이(모듈 밖)는 따로 돌려준다.
+    """
+    targets = {prefix + name: t for module, prefix in modules for name, t in module.state_dict().items()}
+    with open(path, "rb") as f:
+        header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
+        header.pop("__metadata__", None)
+        base = f.tell()
+        crf_keys = {k for k in header if k.startswith(_CRF_PREFIX)}
+        missing, unexpected = set(targets) - set(header), set(header) - set(targets) - crf_keys
+        if missing or unexpected:
+            raise RuntimeError(f"keep 가중치 키 불일치: 없음 {sorted(missing)[:5]}, 남음 {sorted(unexpected)[:5]}")
+
+        def read(key: str) -> torch.Tensor:
+            meta = header[key]
+            begin, end = meta["data_offsets"]
+            f.seek(base + begin)
+            buf = bytearray(f.read(end - begin))
+            return torch.frombuffer(buf, dtype=_ST_DTYPES[meta["dtype"]]).reshape(meta["shape"])
+
+        for k, t in targets.items():
+            meta = header[k]
+            if list(t.shape) != meta["shape"]:
+                raise RuntimeError(f"keep 가중치 모양 불일치: {k} {meta['shape']} != {list(t.shape)}")
+            if _ST_DTYPES[meta["dtype"]] == t.dtype and t.is_contiguous() and t.device.type == "cpu":
+                # 모듈 텐서 메모리로 바로 읽는다 — 중간 버퍼 없음
+                begin, end = meta["data_offsets"]
+                f.seek(base + begin)
+                if f.readinto(memoryview(t.numpy()).cast("B")) != end - begin:
+                    raise RuntimeError(f"keep 가중치 파일이 잘렸다: {k}")
+            else:
+                t.copy_(read(k))
+        return {k[len(_CRF_PREFIX):]: read(k).float().clone() for k in crf_keys}
+
+
 def _mlp(width: int) -> nn.Sequential:
     """원본 masking.heads.make_mlp(width, [512, 256], 1, .15)."""
     return nn.Sequential(nn.Linear(width, 512), nn.GELU(), nn.LayerNorm(512), nn.Dropout(.15),
@@ -175,24 +232,31 @@ class KeepScorer:
         arch = AutoConfig.from_pretrained(str(backbone_config_dir), trust_remote_code=True)
         if arch.model_type == "modernbert":
             arch.reference_compile = False
-        self.backbone = AutoModel.from_config(arch, trust_remote_code=True)
+        # 백본 설정에 dtype bfloat16 이 적혀 있어 transformers 5.20 의 from_config 는 bf16 으로 만든다(5.14 는 fp32).
+        # 그대로 fp32 가중치를 복사하면 bf16 으로 반올림돼 원본과 달라진다 — fp32 로 만든다(4.x 는 torch_dtype).
+        for attr in ("dtype", "torch_dtype"):
+            try:
+                setattr(arch, attr, torch.float32)
+            except (AttributeError, TypeError):
+                pass
+        # 무작위 초기화는 건너뛴다 — 곧 덮어쓰고, 초기화하는 동안 잠깐 약 500MB 를 더 썼다(기동 최고점).
+        with _no_init_weights():
+            self.backbone = AutoModel.from_config(arch, trust_remote_code=True)
+        if next(self.backbone.parameters()).dtype != torch.float32:
+            self.backbone = self.backbone.float()
         hidden = arch.hidden_size
         self.gaz_proj = nn.Sequential(nn.Linear(len(TYPES), 32), nn.GELU())
         self.classifier = nn.Linear(hidden + 32, BIO_SIZE)
         self.feature_dim = hidden + 32 + BIO_SIZE
         self.mask_head = _mlp(2 * self.feature_dim + len(TYPES) + len(DOMAINS))
 
-        state = load_file(str(keep_dir / "keep_model.safetensors"))
-        for module, prefix in ((self.backbone, "stage_a.backbone."), (self.gaz_proj, "stage_a.gazetteer_projection."),
-                               (self.classifier, "stage_a.classifier."), (self.mask_head, "heads.mask.")):
-            module.load_state_dict({k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}, strict=True)
+        modules = ((self.backbone, "stage_a.backbone."), (self.gaz_proj, "stage_a.gazetteer_projection."),
+                   (self.classifier, "stage_a.classifier."), (self.mask_head, "heads.mask."))
+        crf = _load_weights(keep_dir / "keep_model.safetensors", modules)
+        for module, _ in modules:
             module.to(device=device, dtype=torch.float32).eval()
         start_c, trans_c = _crf_constraints()
-        # clone — 파일에서 읽은 텐서를 그대로 들고 있으면 그 텐서가 가중치 버퍼 전체(약 600MB)를 붙잡는다
-        self.crf = (state["stage_a.crf.start_transitions"].float() + start_c,
-                    state["stage_a.crf.end_transitions"].float().clone(),
-                    state["stage_a.crf.transitions"].float() + trans_c)
-        del state
+        self.crf = (crf["start_transitions"] + start_c, crf["end_transitions"], crf["transitions"] + trans_c)
 
     @torch.inference_mode()
     def _encode(self, sentences: list[tuple[Any, str]], decode: bool = False):
