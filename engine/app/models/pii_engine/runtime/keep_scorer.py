@@ -188,9 +188,11 @@ class KeepScorer:
             module.load_state_dict({k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}, strict=True)
             module.to(device=device, dtype=torch.float32).eval()
         start_c, trans_c = _crf_constraints()
+        # clone — 파일에서 읽은 텐서를 그대로 들고 있으면 그 텐서가 가중치 버퍼 전체(약 600MB)를 붙잡는다
         self.crf = (state["stage_a.crf.start_transitions"].float() + start_c,
-                    state["stage_a.crf.end_transitions"].float(),
+                    state["stage_a.crf.end_transitions"].float().clone(),
                     state["stage_a.crf.transitions"].float() + trans_c)
+        del state
 
     @torch.inference_mode()
     def _encode(self, sentences: list[tuple[Any, str]], decode: bool = False):
