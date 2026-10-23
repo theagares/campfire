@@ -59,8 +59,15 @@ def split_sentences(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+_TYPE_BITS = np.arange(len(TYPES))
+
+
 class _Gazetteer:
-    """원본 stagea.base_modeling.GazetteerTrie.features — 글자마다 가장 긴 사전 일치의 종류를 켠다."""
+    """원본 stagea.base_modeling.GazetteerTrie.features — 글자마다 가장 긴 사전 일치의 종류를 켠다.
+
+    종류 집합을 정수 비트(종류 i → 1 << i)로 들고, 글자 검사는 문장마다 한 번만 한다(char_masks).
+    긴 문장이 여러 창으로 나뉘어도 창마다 다시 검사하지 않는다 — 결과는 원본과 같은 0/1 벡터다.
+    """
 
     def __init__(self, entries: dict[str, list[str]]):
         self.root: dict = {}
@@ -71,10 +78,10 @@ class _Gazetteer:
                 node = self.root
                 for ch in form:
                     node = node.setdefault(ch, {})
-                node.setdefault(None, set()).add(TYPES.index(label))
+                node[None] = node.get(None, 0) | (1 << TYPES.index(label))
 
-    def features(self, text: str, offsets: list[tuple[int, int]]) -> list[list[float]]:
-        char_labels = [set() for _ in text]
+    def char_masks(self, text: str) -> list[int]:
+        masks = [0] * len(text)
         for start in range(len(text)):
             node, cursor, best = self.root, start, None
             while cursor < len(text) and text[cursor] in node:
@@ -84,15 +91,20 @@ class _Gazetteer:
                     best = (cursor, node[None])
             if best:
                 for pos in range(start, best[0]):
-                    char_labels[pos].update(best[1])
-        rows = []
-        for begin, end in offsets:
-            vec = [0.0] * len(TYPES)
-            for pos in range(max(0, begin), min(len(text), end)):
-                for i in char_labels[pos]:
-                    vec[i] = 1.0
-            rows.append(vec)
-        return rows
+                    masks[pos] |= best[1]
+        return masks
+
+    @staticmethod
+    def token_features(masks: list[int], offsets: list[tuple[int, int]]) -> np.ndarray:
+        """토큰마다 [종류 수] 0/1 — 토큰이 덮는 글자들의 종류를 합친다."""
+        n = len(masks)
+        bits = np.zeros(len(offsets), dtype=np.int64)
+        for t, (begin, end) in enumerate(offsets):
+            m = 0
+            for pos in range(max(0, begin), min(n, end)):
+                m |= masks[pos]
+            bits[t] = m
+        return ((bits[:, None] >> _TYPE_BITS) & 1).astype(np.float32)
 
 
 def _crf_constraints() -> tuple[torch.Tensor, torch.Tensor]:
@@ -280,22 +292,28 @@ class KeepScorer:
         decode=True 면 이 모델 탐지부의 개체도 돌려준다(원본 Integrated.encode(predict=True) + registry).
         """
         windows, keys, lookup = [], [], {}
-        for sid, text in sentences:
-            tok = self.tokenizer(text, truncation=True, max_length=self.max_length, stride=self.stride,
-                                 return_overflowing_tokens=True, return_offsets_mapping=True)
-            for ids, offsets in zip(tok["input_ids"], tok["offset_mapping"]):
-                offsets = [tuple(x) for x in offsets]
-                real = [i for i, (a, b) in enumerate(offsets) if b > a]
-                if not real:
-                    continue
-                glob = []
-                for i in real:
-                    key = (sid, *offsets[i])
-                    if key not in lookup:
-                        lookup[key] = len(keys)
-                        keys.append(key)
-                    glob.append(lookup[key])
-                windows.append((ids, real, glob, self.gaz.features(text, offsets), sid, offsets))
+        if not sentences:
+            return [], None, []
+        # 문장들을 한 번에 토큰화한다(문장마다 부르던 것과 창이 같다 — 창마다 어느 문장 것인지 대응표가 온다)
+        tok = self.tokenizer([text for _, text in sentences], truncation=True, max_length=self.max_length,
+                             stride=self.stride, return_overflowing_tokens=True, return_offsets_mapping=True)
+        masks: dict[int, list[int]] = {}
+        for ids, offsets, n in zip(tok["input_ids"], tok["offset_mapping"], tok["overflow_to_sample_mapping"]):
+            sid, text = sentences[n]
+            offsets = [tuple(x) for x in offsets]
+            real = [i for i, (a, b) in enumerate(offsets) if b > a]
+            if not real:
+                continue
+            glob = []
+            for i in real:
+                key = (sid, *offsets[i])
+                if key not in lookup:
+                    lookup[key] = len(keys)
+                    keys.append(key)
+                glob.append(lookup[key])
+            if n not in masks:
+                masks[n] = self.gaz.char_masks(text)
+            windows.append((ids, real, glob, self.gaz.token_features(masks[n], offsets), sid, offsets))
         if not keys:
             return [], None, []
         buckets: dict[Any, dict] = {}
