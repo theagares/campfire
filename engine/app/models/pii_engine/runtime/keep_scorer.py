@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import transformers
 from torch import nn
 from transformers import AutoConfig, AutoModel
 
@@ -165,6 +166,7 @@ def _no_init_weights():
 
 
 _CRF_PREFIX = "stage_a.crf."
+_BATCH = 8  # 한 번에 넣는 창 수(원본과 같다) — _encode 주석의 실측 참고
 
 
 _ST_DTYPES = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}
@@ -234,11 +236,7 @@ class KeepScorer:
             arch.reference_compile = False
         # 백본 설정에 dtype bfloat16 이 적혀 있어 transformers 5.20 의 from_config 는 bf16 으로 만든다(5.14 는 fp32).
         # 그대로 fp32 가중치를 복사하면 bf16 으로 반올림돼 원본과 달라진다 — fp32 로 만든다(4.x 는 torch_dtype).
-        for attr in ("dtype", "torch_dtype"):
-            try:
-                setattr(arch, attr, torch.float32)
-            except (AttributeError, TypeError):
-                pass
+        setattr(arch, "dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype", torch.float32)
         # 무작위 초기화는 건너뛴다 — 곧 덮어쓰고, 초기화하는 동안 잠깐 약 500MB 를 더 썼다(기동 최고점).
         with _no_init_weights():
             self.backbone = AutoModel.from_config(arch, trust_remote_code=True)
@@ -287,8 +285,12 @@ class KeepScorer:
         total = torch.zeros(len(keys), self.feature_dim, device=self.device)
         count = torch.zeros(len(keys), 1, device=self.device)
         pad = self.tokenizer.pad_token_id
-        for start in range(0, len(windows), 8):
-            batch = windows[start:start + 8]
+        # 길이순으로 8개씩 묶는다 — 문장 길이가 제각각이라 순서대로 묶으면 짧은 문장이 긴 문장 길이만큼 패딩된다.
+        # 결과는 토큰 자리별로 모으므로 순서와 무관하다. 설치본 CPU 실측(2만 자): 정렬 없음 10.9초 → 8.1초,
+        # 처리 중 메모리 +164 → +132MB. 묶음을 16·32·64 로 키우면 정렬해도 더 느리고 메모리만 늘었다.
+        windows.sort(key=lambda w: len(w[0]))
+        for start in range(0, len(windows), _BATCH):
+            batch = windows[start:start + _BATCH]
             width = max(len(w[0]) for w in batch)
             ids = torch.full((len(batch), width), pad, dtype=torch.long, device=self.device)
             att = torch.zeros_like(ids)
