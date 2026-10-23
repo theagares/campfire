@@ -74,13 +74,13 @@ _ASSETS: dict[str, dict[str, Any]] = {
         "extract_to": lambda: config.CONFIDENTIAL_ENGINE_DIR,
         "label": "기밀 탐지 모델",
     },
-    # 회사 연락처 풀어 두기(keep) 모델 — taehwan joint_masking direct_full(ax_gazetteer_crf seed42, fp32, 압축 501MB).
+    # 문맥 판단 PII 모델 — taehwan joint_masking direct_full(ax_gazetteer_crf seed42, fp32, 압축 501MB).
     # 선택 기능이라 켠 경우에만 받는다. 맨 위에 파일 3개(keep_model.safetensors·keep_config.json·train_gazetteer.json)
     "pii_keep": {
         "url": f"{_RELEASE_BASE}/pii_keep_v1.tar.gz",
         "sha256": "708f0bbe3cac3d8ab7d48b70e8e26ca287eaf6e80b11a83b691c13100737599d",
         "extract_to": lambda: config.PII_KEEP_DIR,
-        "label": "회사 연락처 판별 모델",
+        "label": "문맥 판단 PII 모델",
     },
 }
 

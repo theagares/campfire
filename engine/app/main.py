@@ -69,8 +69,6 @@ async def lifespan(app: FastAPI):
     # 서브프로세스를 띄울 수 있다(models_sync 모듈 docstring 참고).
     sync_bundled_model_files()
     registry.load_detectors()
-    from app.core.detectors.pii import keep
-    keep.prewarm()  # 회사 연락처 판별(선택 기능) — 켜져 있을 때만
     db.init_db()
     logger.info(
         "[engine] 기동 완료 — detectors=%s, policy=%s, port=%s, edition=%s",

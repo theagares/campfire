@@ -356,12 +356,12 @@
           <input type="text" id="kg-path" placeholder="C:\company\kg.jsonl" autocomplete="off" />
         </div>
 
-        <!-- 회사 연락처 풀어 두기 — engine/app/core/detectors/pii/keep.py. 기본 OFF. -->
+        <!-- 문맥 판단 PII 모델 — engine/app/core/detectors/pii/keep.py. 기본 OFF. -->
         <div class="field">
           <div class="setting-row">
             <div>
-              <label for="pii-keep-enabled">회사 연락처는 풀어 두기</label>
-              <div class="hint">직장·부서·회사 전화·이메일·주소 중 개인이 아닌 회사 연락처로 판단된 항목을 확장 프로그램 검토 화면에서 미리 풀어 둡니다(다시 가릴 수 있음). 이름·휴대폰·주민번호 같은 항목은 항상 가립니다. 프록시·MCP 결과는 그대로 전부 가립니다. 켜면 판별 모델(약 500MB)을 받습니다. 변경 시 엔진이 재시작됩니다.</div>
+              <label for="pii-keep-enabled">문맥 판단 PII 모델 (회사 연락처 풀어 두기)</label>
+              <div class="hint">PII 탐지를 문맥까지 보는 모델(A.X 기반)로 바꿉니다. 이 모델이 개인정보를 찾고, 직장·부서·회사 전화·이메일·주소 중 개인이 아닌 회사 연락처로 판단한 항목은 확장 프로그램 검토 화면에서 미리 풀어 둡니다(다시 가릴 수 있음). 이름·휴대폰·주민번호 같은 항목은 항상 가립니다. 프록시·MCP 결과는 그대로 전부 가립니다. 켜면 모델(약 500MB)을 받고, 받는 동안은 기본 PII 모델을 씁니다. 변경 시 엔진이 재시작됩니다.</div>
             </div>
             <input type="checkbox" id="pii-keep-enabled" />
           </div>

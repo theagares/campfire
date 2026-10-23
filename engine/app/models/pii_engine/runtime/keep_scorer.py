@@ -1,15 +1,12 @@
-"""탐지된 PII 개체마다 "가려야 하는가(MASK)" 확률을 매긴다 — 회사 연락처처럼 가릴 필요 없는 개체를 골라내기 위함.
+"""문맥 판단 PII 모델 — PII 를 찾고, 개체마다 "가려야 하는가(MASK)" 확률을 매긴다.
 
-taehwan 의 joint_masking direct_full(ax_gazetteer_crf seed42) 추론부를 옮겼다.
-원본: /data/upsecurity00/members/taehwan/joint_masking/network.py (Integrated.encode / contextual).
-- 무엇을 가릴지(탐지)는 앱 v2 모델이 정한다. 같은 KDPII 시험셋(겹침 기준)에서 v2 F1 0.988,
-  이 모델의 탐지부 0.872 라 탐지는 v2 가 낫다. 이 모델은 "가리지 않아도 되는가" 만 거든다.
-- 점수는 이 모델 자신의 탐지부(CRF)가 찾은 개체에 매긴다 — 학습·평가 때와 같은 조건이다.
-  v2 개체는 같은 종류로 겹치는 그 개체의 점수를 빌린다. 짝이 없으면 점수 없음(=가림).
-  v2 경계를 그대로 넣으면 안 된다: v2 는 조사까지 잡는데('시디즈의') MLP 는 경계에 민감해
-  '시디즈' 1.0 → '시디즈의' 0.003 으로 뒤집혔다(시험 문서 5개에서 가려야 할 개체 6% 가 풀림).
+taehwan 의 joint_masking direct_full(ax_gazetteer_crf seed42) 추론부를 그대로 옮겼다(탐지기 포함).
+원본: /data/upsecurity00/members/taehwan/joint_masking/network.py (Integrated.encode(predict=True) / contextual).
 - 문장마다 토큰화(256 토큰, stride 64) → 인코더 특징 + 사전 특징 + 탐지 확률(evidence)을 토큰별로 평균
+  → CRF 로 개체를 찾고(창 가장자리에서 먼 쪽을 믿음), 같은 종류·같은 글자끼리 묶는다(registry)
   → 개체 평균 + 문서 평균 + 종류·분야 one-hot → MLP → sigmoid.
+- MLP 는 경계에 민감하다. 다른 탐지기(앱 v2, 조사까지 잡음)의 개체를 넣으면 '시디즈' 1.0 →
+  '시디즈의' 0.003 처럼 뒤집혀 가려야 할 개체가 풀렸다 — 이 모델이 찾은 개체에만 점수를 매긴다.
 - 학습 데이터는 분야 6종 중 하나를 알려 줬지만 앱은 분야를 모른다. 6종 모두 넣어 보고 가장 높은(가장 가리자는)
   확률을 쓴다 — 어느 분야로 보든 KEEP 일 때만 KEEP 이 된다.
 """
@@ -36,7 +33,8 @@ APP_TO_TYPE = dict(zip(
      "QT_PHONE", "QT_RESIDENT_NUMBER", "QT_ALIEN_NUMBER", "QT_DRIVER_NUMBER", "QT_PLATE_NUMBER",
      "QT_ACCOUNT_NUMBER", "QT_CARD_NUMBER", "TMI_EMAIL", "QT_PASSPORT_NUMBER", "QT_AGE", "DT_BIRTH", "FD_MAJOR"],
     TYPES))
-DOMAINS = ["career_education", "contract", "financial", "legal", "medical", "support"]
+TYPE_TO_APP = {v: k for k, v in APP_TO_TYPE.items()}
+DOMAINS =["career_education", "contract", "financial", "legal", "medical", "support"]
 BIO = ["O", *("B-" + t for t in TYPES), *("I-" + t for t in TYPES)]
 BIO_SIZE = len(BIO)
 
@@ -301,27 +299,17 @@ class KeepScorer:
                 out[n] = {**(out[n] or {}), d: value}
         return out
 
-    def score_text(self, text: str, entities: list[dict]) -> list[float | None]:
-        """앱용: 원문 하나와 v2 개체([{begin, end, label}])를 받아 개체마다 MASK 확률(분야 6종 중 최댓값)을 준다.
-
-        v2 개체와 같은 종류로 겹치는 이 모델 개체의 확률을 빌린다(여럿이면 가장 높은 값).
-        짝이 없거나 모르는 라벨이면 None — 호출 쪽에서 가린다.
-        """
+    def detect_text(self, text: str) -> list[dict]:
+        """앱용: 원문 하나 → 언급마다 {begin, end, label(앱 v2 라벨), maskProb(분야 6종 중 최댓값 | None)}."""
         sentences = split_sentences(text)
         own, probs = self.analyze([(n, text[a:b]) for n, (a, b) in enumerate(sentences)])
-        mentions = []  # (원문 시작, 원문 끝, 종류, 확률)
+        out = []
         for e, p in zip(own, probs):
-            if p is None:
-                continue
             for m in e["mentions"]:
                 base = sentences[m["sent_idx"]][0]
-                mentions.append((base + m["begin"], base + m["end"], e["entity_type"], max(p.values())))
-        out: list[float | None] = []
-        for e in entities:
-            kind = APP_TO_TYPE.get(e["label"])
-            hits = [p for a, b, t, p in mentions if t == kind and a < e["end"] and e["begin"] < b]
-            out.append(max(hits) if hits else None)
-        return out
+                out.append({"begin": base + m["begin"], "end": base + m["end"], "label": TYPE_TO_APP[e["entity_type"]],
+                            "maskProb": None if p is None else round(max(p.values()), 4)})
+        return sorted(out, key=lambda x: (x["begin"], x["end"]))
 
 
 def _load_tokenizer(model_dir: str):
@@ -338,7 +326,8 @@ def _load_tokenizer(model_dir: str):
 def main() -> None:
     """python keep_scorer.py --keep-dir <keep 모델> --pii-model-dir <PII 번들 seed 폴더> --stdio
 
-    요청 한 줄: {"id", "text", "entities": [{begin, end, label}]} → {"id", "probs": [MASK 확률 | null], "threshold"}
+    요청 한 줄: {"id", "text"} 또는 {"id", "texts": [...]}
+    → {"id", "entities": [[{begin, end, label, maskProb}]...], "threshold"}  (texts 순서대로)
     """
     import argparse
     import sys
@@ -363,9 +352,8 @@ def main() -> None:
         try:
             req = json.loads(line)
             req_id = req.get("id")
-            probs = scorer.score_text(req["text"], req["entities"])
-            out = {"id": req_id, "probs": [None if p is None else round(p, 4) for p in probs],
-                   "threshold": scorer.threshold}
+            texts = req["texts"] if "texts" in req else [req["text"]]
+            out = {"id": req_id, "entities": [scorer.detect_text(t) for t in texts], "threshold": scorer.threshold}
         except Exception as e:  # noqa: BLE001 - 한 요청의 실패로 프로세스를 죽이지 않는다
             out = {"id": req_id, "error": f"{type(e).__name__}: {e}"}
         print(json.dumps(out, ensure_ascii=False), flush=True)

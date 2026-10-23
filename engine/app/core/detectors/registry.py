@@ -19,11 +19,13 @@ import contextlib
 from typing import Any
 
 from app import config
+from app.core import model_status
 
 from . import combined_gpu
 from .base import Detector
 from .injection import llm_mcp as injection_llm_mcp
 from .pii import encoder as pii_encoder
+from .pii import keep as pii_keep
 
 # 이름→빌더 조회표는 없앴다. 룰베이스 폴백이 사라진 뒤로 종류별 구현이 하나씩뿐이라,
 # dict 도 _build() 의 이름 검증도 존재하지 않는 대안을 위한 장치였다. 종류가 늘면
@@ -52,9 +54,19 @@ def load_detectors() -> None:
 
 
 def get_pii_detector() -> Detector:
+    """v2(encoder) 가 기본. 문맥 판단 모델(pii/keep.py)을 켰고 가중치가 있으면 그쪽을 쓴다.
+
+    켠 직후엔 가중치를 받는 중이라 v2 로 시작한다 — 다 받은 뒤 첫 호출에서 바꾼다.
+    """
     global _pii_detector
-    if _pii_detector is None:
-        _pii_detector = pii_encoder.build()
+    want_keep = config.PII_KEEP_ENABLED and model_status.pii_keep_ready()
+    if _pii_detector is None or (want_keep and not isinstance(_pii_detector, pii_keep.KeepPiiDetector)):
+        old = _pii_detector
+        _pii_detector = pii_keep.build() if want_keep else pii_encoder.build()
+        proc = getattr(old, "_process", None)
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(Exception):
+                proc.terminate()  # 바뀐 뒤 쓰지 않는 v2 프로세스
     return _pii_detector
 
 

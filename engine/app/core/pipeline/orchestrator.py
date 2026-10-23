@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable
 from app import config
 from app.core import forced_mask, model_status
 from app.core.detectors import combined_gpu, confidential, registry
-from app.core.detectors.pii import credentials, keep
+from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_OK, STATUS_TIMEOUT, parse_document
@@ -660,10 +660,6 @@ async def run_pipeline(
             await asyncio.gather(*running_tasks, return_exceptions=True)
             raise
 
-    # 회사 연락처 등 풀어도 되는 PII 표시(선택 기능). 두 탐지 경로(통합 GPU worker·개별 sidecar)가 여기서 만난다.
-    pii_items = await keep.annotate(text, list(pii_items))
-    if user_prompt:
-        user_prompt_pii_items = await keep.annotate(user_prompt, list(user_prompt_pii_items))
     await emit({
         "type": "step",
         "step": 2,

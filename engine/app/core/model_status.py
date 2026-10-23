@@ -55,5 +55,5 @@ PII_KEEP_REQUIRED_FILES = ("keep_model.safetensors", "keep_config.json", "train_
 
 
 def pii_keep_ready() -> bool:
-    """keep 모델(회사 연락처 풀어 두기). 선택 기능이라 all_ready() 에 넣지 않는다 — 없으면 전부 가린다."""
+    """문맥 판단 PII 모델(detectors/pii/keep.py). 선택 기능이라 all_ready() 에 넣지 않는다 — 없으면 v2 로 탐지한다."""
     return all((config.PII_KEEP_DIR / f).is_file() for f in PII_KEEP_REQUIRED_FILES)

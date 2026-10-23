@@ -153,7 +153,7 @@ function register(ctx) {
         const fetchModels = (confidentialChanged && next.confidentialEnabled) || (keepChanged && next.piiKeepEnabled);
         engineManager
           .restart()
-          // 기밀 탐지·회사 연락처 판별을 켰으면 그 가중치를 받는다 (없으면 ensureModels 가 바로 돌아온다)
+          // 기밀 탐지·문맥 판단 PII 모델을 켰으면 그 가중치를 받는다 (없으면 ensureModels 가 바로 돌아온다)
           .then(() => fetchModels && onEnsureModels && onEnsureModels())
           .catch((err) => console.error('[ipc] restart 실패:', err.message));
       }

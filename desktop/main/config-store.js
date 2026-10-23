@@ -43,7 +43,7 @@ const DEFAULTS = {
   // 기밀 탐지(회사 KG + Solar). 켜면 PII 를 가린 문서가 Solar 로 나가므로 기본 OFF — 사용자 동의 토글.
   confidentialEnabled: false,
   kgPath: '', // 회사 KG JSONL 경로. 엔진이 스캔마다 수정 시각을 보고 바뀌면 다시 읽는다.
-  // 회사 연락처(직장·부서·회사 전화·이메일·주소)를 검토 화면에서 미리 풀어 두기. 켜면 모델(약 500MB)을 받는다.
+  // 문맥 판단 PII 모델 — PII 탐지를 이 모델로 바꾸고 회사 연락처를 검토 화면에서 미리 풀어 둔다. 켜면 모델(약 500MB)을 받는다.
   piiKeepEnabled: false,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
