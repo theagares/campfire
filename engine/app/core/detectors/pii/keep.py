@@ -12,22 +12,35 @@ MASK 확률을 이 모델 하나가 낸다(runtime/keep_scorer.py 하위 프로�
 
 from __future__ import annotations
 
+import re
+
 from app import config
 
 from ..base import Detection
 from .encoder import _SINGLE_MODEL_CONFIDENCE, LABEL_MAP, OTHER_PII, EncoderPiiDetector
 
 
+_SENTENCE_END = re.compile(r"[.!?。]\s")
+
+
 def split_chunks(text: str, size: int) -> list[tuple[str, int]]:
-    """줄 경계에서 size 글자 이하로 자른다(한 줄이 더 길면 그 줄은 통째로). (덩어리, 시작 오프셋) 목록."""
+    """size 글자 이하로 자른다 — 줄바꿈, 없으면 문장 끝, 그것도 없으면 공백, 그것도 없으면 size 에서.
+
+    예전엔 줄바꿈에서만 잘라 줄바꿈 없는 2만 자 글이 통째로 한 덩어리(= 학습 문서의 다섯 배 길이 문서)가 됐다.
+    문장 끝을 공백보다 먼저 보는 건 여러 어절짜리 개체(주소 등)가 덩어리 경계에서 잘리지 않게 하려는 것이다.
+    (덩어리, 시작 오프셋) 목록.
+    """
     chunks, start = [], 0
     while start < len(text):
         end = min(len(text), start + size)
         if end < len(text):
-            cut = text.rfind("\n", start, end)
-            if cut < start:
-                cut = text.find("\n", end)
-            end = cut + 1 if cut >= 0 else len(text)
+            window = text[start:end]
+            cut = window.rfind("\n") + 1
+            if not cut:
+                ends = [m.end() for m in _SENTENCE_END.finditer(window)]
+                cut = ends[-1] if ends else window.rfind(" ") + 1
+            if cut:
+                end = start + cut
         if text[start:end].strip():
             chunks.append((text[start:end], start))
         start = end

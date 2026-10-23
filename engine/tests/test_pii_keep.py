@@ -66,22 +66,27 @@ def test_keep_only_for_company_contact_labels_under_threshold(monkeypatch):
     assert all(i["source"] == "encoder" for i in items)
 
 
-def test_long_text_is_sent_in_line_chunks_with_offsets(monkeypatch):
+def test_long_text_is_sent_in_chunks_with_offsets(monkeypatch):
     monkeypatch.setattr(config, "PII_KEEP_CHUNK_CHARS", 12)
     text = "가나다라마바\n김민수 입니다\n\n끝줄은 아주 길어서 한 줄이 덩어리보다 길다\n"
     det, seen = _detector(monkeypatch, lambda t: [{"begin": 0, "end": 2, "label": "PS_NAME", "maskProb": 0.9}])
     items = asyncio.run(det.detect(text))
-    assert "".join(seen) == text
-    for chunk in seen:
-        assert len(chunk) <= 12 or "\n" not in chunk.rstrip("\n")  # 줄 하나가 더 길 때만 넘친다
+    assert "".join(seen) == text and all(len(c) <= 12 for c in seen)
     assert [i["text"] for i in items] == [c[:2] for c in seen]  # 덩어리 시작 오프셋이 원문 좌표로 돌아온다
 
 
-def test_split_chunks_covers_text():
-    text = "a\nbb\nccc\n" * 50
-    chunks = keep.split_chunks(text, 20)
-    assert "".join(c for c, _ in chunks) == text
-    assert all(text[o:o + len(c)] == c for c, o in chunks)
+def test_split_chunks_cut_order_newline_sentence_space_hard():
+    def parts(text, size):
+        chunks = keep.split_chunks(text, size)
+        assert "".join(c for c, _ in chunks) == text
+        assert all(text[o:o + len(c)] == c for c, o in chunks)
+        assert all(len(c) <= size for c, _ in chunks)
+        return [c for c, _ in chunks]
+
+    assert parts("a\nbb\nccc\n" * 50, 20)[0] == "a\nbb\nccc\n" * 2 + "a\n"           # 줄바꿈
+    assert parts("첫 문장이다. 둘째 문장 서울특별시 강남구", 20)[0] == "첫 문장이다. "      # 줄바꿈 없으면 문장 끝
+    assert parts("주소는 서울특별시 강남구 테헤란로", 12)[0] == "주소는 서울특별시 "        # 문장 끝도 없으면 공백
+    assert parts("가" * 30, 12) == ["가" * 12, "가" * 12, "가" * 6]                    # 공백도 없으면 size
     assert keep.split_chunks("  \n \n", 20) == []
 
 
