@@ -306,6 +306,8 @@ let lastMultiSession = null;
 let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 // SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
 let failNextOpenPanel = false;
+// content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
+let contentBridgeToken = '';
 
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
@@ -327,6 +329,7 @@ const windowStub = {
     return true;
   },
   postMessage(data) {
+    if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
     // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
     if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
       for (const meta of data.files || []) actionLog.push({ kind: 'approve-msg', meta });
@@ -2119,6 +2122,42 @@ cancelScan(stuckScan);
     throw new Error(`입력창에 마스킹본이 들어가지 않았다: ${editor26.value}`);
   }
 
+  // (41) 2026-10 ChatGPT 개편: 옛 선택자는 다 없고 새 컴포저(form[data-chatgpt-composer])만
+  // 있다. 묶음 editorSel 을 적힌 순서대로 찾아야 일반 탐색 없이도 입력창을 잡는다
+  // (querySelector 에 통째로 넘기면 하네스·문서 순서 어느 쪽에서도 첫 선택자에 기대게 된다).
+  {
+    await clock.tick(4000); // 앞 테스트의 promptApproved 해제 대기
+    const composer40 = new HTMLTextAreaElementStub('계좌 110-123-456789 로 보내 줘');
+    composer40.isConnected = true;
+    const send40 = new SendButtonStub();
+    send40.disabled = false;
+    send40.closest = () => send40;
+    const savedAll40 = domBySelectorAll.get('textarea, [contenteditable="true"]');
+    domBySelector.delete('#prompt-textarea');
+    domBySelector.delete('[data-testid="send-button"]');
+    domBySelector.set('form[data-chatgpt-composer] .ProseMirror[contenteditable="true"]', composer40);
+    domBySelector.set('form[data-chatgpt-composer] button[type="submit"]', send40);
+    domBySelectorAll.set('textarea, [contenteditable="true"]', []); // 일반 탐색으로는 못 찾게
+    documentStub.activeElement = send40; // 마우스로 전송 버튼을 눌렀다
+    const before40 = runtimeMessages.filter(isScanStart).length;
+
+    nextDecision = { action: 'masked', maskedText: '계좌 [계좌번호 마스킹] 로 보내 줘' };
+    dispatchDocumentEvent('click', { target: send40, preventDefault() {}, stopImmediatePropagation() {} });
+    await clock.tick(2000);
+
+    if (runtimeMessages.filter(isScanStart).length - before40 !== 1) {
+      throw new Error('(41) 새 ChatGPT 컴포저를 못 찾아 검사를 시작하지 않았다 — 원문이 그대로 나간다');
+    }
+    if (composer40.value !== '계좌 [계좌번호 마스킹] 로 보내 줘') {
+      throw new Error(`(41) 새 컴포저에 마스킹본이 들어가지 않았다: ${composer40.value}`);
+    }
+    if (send40.clicks !== 1) throw new Error(`(41) 새 전송 버튼으로 재전송하지 못했다 (clicks=${send40.clicks})`);
+
+    domBySelector.delete('form[data-chatgpt-composer] .ProseMirror[contenteditable="true"]');
+    domBySelector.delete('form[data-chatgpt-composer] button[type="submit"]');
+    domBySelectorAll.set('textarea, [contenteditable="true"]', savedAll40);
+  }
+
   // (27) 우리가 쏜 첨부를 우리 리스너가 삼키면 안 된다 (passthrough 경로).
   //
   // 배경: 합성 drop/paste 는 document 캡처 단계를 지나가는데 거기 우리 리스너가 앉아
@@ -2846,6 +2885,58 @@ cancelScan(stuckScan);
       chromeStub.runtime.id = savedId;
     }
     if (!badgeText().includes('탭을 새로고침')) throw new Error(`(39) 끊긴 탭에 새로고침 안내가 없다: ${badgeText()}`);
+  }
+
+  // (40) 프록시 경로여도 프롬프트는 프록시가 실제로 검사하는 사이트에서만 넘긴다(PROXY_PROMPT_HOSTS).
+  //      예전엔 표식만 보면 어디서든 손을 뗐는데 프록시는 claude.ai 프롬프트만 봐서, 프록시를
+  //      켜면 ChatGPT·Copilot·Perplexity·Grok 에 친 글이 아무 검사 없이 나갔다.
+  {
+    await clock.tick(9000);
+    domBySelector.set('#prompt-textarea', promptEditorStub);
+    domBySelector.set('[data-testid="chat-input"]', promptEditorStub);
+    const route40 = (mode) => dispatchWindowMessage({
+      __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', ttlMs: 15000,
+    });
+    // 그 사이트에서 프롬프트를 보내 검사가 시작되는지. 시작됐으면 취소로 끝내 다음 시도를 막지 않는다.
+    const scans40 = async (host, text) => {
+      sandbox.location.hostname = host;
+      promptEditorStub.value = text;
+      documentStub.activeElement = promptEditorStub;
+      nextDecision = { action: 'cancel' };
+      const before = runtimeMessages.length;
+      dispatchDocumentEvent('keydown', {
+        key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+        preventDefault() {}, stopImmediatePropagation() {},
+      });
+      await flush();
+      const started = runtimeMessages.slice(before).some(isScanStart);
+      nextDecision = null;
+      await clock.tick(500);
+      return started;
+    };
+    if (!contentBridgeToken) throw new Error('(40) content.js 가 MAIN world 에 토큰을 건네지 않았다');
+    try {
+      // 프록시가 프롬프트를 보는 사이트: 프록시 없으면 확장이 검사(대조군), 프록시 경로면 넘긴다.
+      for (const host of ['claude.ai', 'chatgpt.com', 'www.perplexity.ai', 'grok.com']) {
+        await route40('extension');
+        if (!(await scans40(host, `프록시 없는 ${host} 요청`))) {
+          throw new Error(`(40) 대조군: 프록시가 없는데 ${host} 프롬프트를 검사하지 않았다`);
+        }
+        await route40('proxy');
+        if (await scans40(host, `프록시가 검사하는 ${host} 요청`)) {
+          throw new Error(`(40) ${host} 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)`);
+        }
+      }
+      // 프록시가 프롬프트를 안 보는 사이트(copilot.microsoft.com — 업로드만 프록시)는 프록시 경로여도 확장이 본다.
+      await route40('proxy');
+      if (!(await scans40('copilot.microsoft.com', '의뢰인 주민번호 900101-1234567'))) {
+        throw new Error('(40) 프록시가 프롬프트를 안 보는 사이트인데 확장도 검사하지 않았다 — 아무도 안 본다');
+      }
+    } finally {
+      await route40('extension');
+      sandbox.location.hostname = 'chatgpt.com';
+    }
   }
 
   console.log('content regression ok');

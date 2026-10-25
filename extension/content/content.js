@@ -219,6 +219,16 @@
     return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
   }
 
+  // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS·
+  // PROMPT_FORM/JSON/WS_ENDPOINTS). 여기 없는 사이트에서 프록시는 업로드만 보므로,
+  // 프록시 경로여도 프롬프트는 확장이 검사한다 — 손을 떼면 친 글이 아무 검사 없이 나간다.
+  const PROXY_PROMPT_HOSTS = [
+    'claude.ai', 'chatgpt.com', 'chat.openai.com', 'www.perplexity.ai', 'perplexity.ai', 'grok.com',
+  ];
+  function proxyChecksPrompts() {
+    return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
+  }
+
   function isSupportedFile(file) {
     // proxyInPath: 프록시가 실제 경로에 있으면 가로채지 않는다 — 파일을 그대로 사이트로
     // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
@@ -1463,8 +1473,12 @@
   // ══════════════════════════════════════════════════════════════════════════
   const PROMPT_CONFIGS = {
     'chatgpt.com': {
-      editorSel: '#prompt-textarea',
-      sendBtnSel: '[data-testid="send-button"]',
+      // 2026-10-23 실측 정정: #prompt-textarea 와 data-testid="send-button" 이 없어졌다.
+      // 로그인 컴포저는 form[data-chatgpt-composer] 안의 .ProseMirror, 전송 버튼은 같은
+      // form 의 type=submit(aria-label "보내기")이다. 로그아웃 화면은 textarea
+      // #mobile-composer-prompt. 옛 선택자는 되돌아올 때를 대비해 앞에 남겨 둔다.
+      editorSel: '#prompt-textarea, form[data-chatgpt-composer] .ProseMirror[contenteditable="true"], #mobile-composer-prompt',
+      sendBtnSel: '[data-testid="send-button"], form[data-chatgpt-composer] button[type="submit"]',
       editorType: 'prosemirror',
     },
     'claude.ai': {
@@ -1499,6 +1513,18 @@
       editorSel: '[data-testid="composer-input"], #userInput, textarea, [contenteditable="true"]',
       sendBtnSel: '[data-testid="submit-button"], button[aria-label*="제출"], button[aria-label*="submit" i]',
       editorType: 'unknown',
+    },
+    'copilot.com': {
+      // 2026-10-22 실측: copilot.microsoft.com 이 copilot.com 으로 옮겼다(M365 Copilot 앱).
+      // 입력창은 Lexical(span#m365-chat-editor-target-element), 전송은 submit 버튼("보내기").
+      // 글·파일 요청은 작업자(worker)에서 substrate.office.com·graph.microsoft.com 으로 나가
+      // 네트워크 가로채기는 닿지 않는다 — 전송 버튼·파일 선택을 화면에서 가로채는 것이 방어선이다.
+      editorSel: '#m365-chat-editor-target-element, [data-lexical-editor="true"][role="textbox"]',
+      sendBtnSel: 'button[type="submit"][aria-label="보내기"], button[type="submit"][aria-label="Send"]',
+      editorType: 'lexical',
+      // execCommand·합성 paste·DOM 직접 수정을 전부 무시한다(실측: execCommand 는 true 를 돌려주고
+      // 아무것도 안 바뀐다). 편집기 상태를 MAIN world 에서 직접 바꾼다(setViaEditorState).
+      setVia: 'lexical-state',
     },
   };
 
@@ -1592,8 +1618,13 @@
    *  그래서 순서를 넷으로 둔다: 사이트 선택자 → 포커스된 편집 요소 → 직전에 쓰던 입력창
    *  → 화면에 있는 입력창 탐색. 찾은 것은 기억해 다음에 포커스가 없어도 쓴다. */
   function findEditor(cfg) {
+    // 묶음 선택자는 적힌 순서대로 본다. querySelector 에 통째로 넘기면 문서에서 먼저
+    // 나오는 요소를 골라 "id 를 먼저 본다" 같은 우선순위가 먹지 않는다.
     let bySel = null;
-    try { bySel = cfg?.editorSel ? document.querySelector(cfg.editorSel) : null; } catch (_) { bySel = null; }
+    for (const sel of (cfg?.editorSel || '').split(',')) {
+      try { bySel = document.querySelector(sel.trim()); } catch (_) { bySel = null; }
+      if (bySel) break;
+    }
     if (bySel) { lastKnownEditor = bySel; return bySel; }
 
     const active = document.activeElement;
@@ -1650,11 +1681,30 @@
     );
   }
 
+  // 폭 없는 문자. Copilot(copilot.com) 입력창은 글 끝에 ​‌ 를 붙여 둔다 — 그대로 비교하면
+  // 마스킹본을 제대로 넣어도 "다르다" 로 보고, 검사에도 보이지 않는 문자가 섞인다.
+  const stripZeroWidth = (s) => String(s || '').replace(/[​-‍⁠﻿]/g, '');
+
   function getEditorText(cfg) {
     const editor = findEditor(cfg);
     if (!editor) return '';
     if (editor.tagName === 'TEXTAREA') return editor.value.trim();
-    return (editor.innerText || editor.textContent || '').trim();
+    return stripZeroWidth(editor.innerText || editor.textContent || '').trim();
+  }
+
+  /** MAIN world(interceptor.js)에 편집기 상태로 글을 넣어 달라고 한다. 응답이 없으면 false.
+   *  isolated world 에서는 페이지 객체(el.__lexicalEditor)가 보이지 않는다. */
+  const editorStateWaits = new Map();
+  function setViaEditorState(cfg, text) {
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { editorStateWaits.delete(nonce); resolve(false); }, 1500);
+      editorStateWaits.set(nonce, (ok) => { clearTimeout(timer); editorStateWaits.delete(nonce); resolve(ok); });
+      window.postMessage({
+        __campfire_config: true, direction: 'isolated-to-main', type: 'SECUREDOC_SET_EDITOR_STATE',
+        bridgeToken, selector: cfg.editorSel, text, nonce,
+      }, '*');
+    });
   }
 
   async function setEditorText(cfg, text) {
@@ -1690,7 +1740,7 @@
     // 삽입 직전에 반드시 비었는지 확인하고, 비우지 못한 상태에서는 삽입을 한 번까지만
     // 허용한다(선택 영역 대체로 성공하는 에디터를 살리기 위해). 그 한 번이 실패하면
     // 더 넣지 않고 중단한다.
-    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const norm = (s) => stripZeroWidth(s).replace(/\s+/g, ' ').trim();
     const target = norm(text);
     const current = () => norm(editor.innerText || editor.textContent || '');
     const done = () => current() === target;
@@ -1826,6 +1876,14 @@
     // 다른 경우도 같다고 보는데, 마스킹은 PII 를 토큰으로 바꾸는 것이라 공백만 달라질 수
     // 없다 — 공백만 다르다는 건 바뀐 게 없다는 뜻이다.)
     if (done()) return true;
+
+    // 편집기 상태를 직접 바꾸는 사이트(copilot.com). 아래 수단들은 거기서 전부 무시된다.
+    // 결과는 다른 수단과 똑같이 화면 글로 확인한다 — 안 바뀌었으면 아래로 넘어가 실패로 끝난다.
+    if (cfg?.setVia === 'lexical-state') {
+      const before = current();
+      if (await setViaEditorState(cfg, text)) await settle(before);
+      if (done()) return true;
+    }
 
     // ★ "지우고 나서 넣는다" 가 아니라 "전체를 선택한 채로 넣는다".
     //
@@ -2588,7 +2646,7 @@
     // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
-    if (!protectionEnabled || proxyInPath() || promptApproved) return;
+    if (!protectionEnabled || proxyChecksPrompts() || promptApproved) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
@@ -2824,6 +2882,12 @@
 
     // MAIN world가 능동 HEAD 요청에서 본 실제 보호 경로를 알린다. 표식이 확인된
     // proxy 모드에서만 확장이 손을 떼고, 나머지는 즉시 확장 보호를 유지한다.
+    if (event.data.type === 'SECUREDOC_SET_EDITOR_STATE_RESULT') {
+      if (event.data.bridgeToken !== bridgeToken) return;
+      editorStateWaits.get(event.data.nonce)?.(event.data.ok === true);
+      return;
+    }
+
     if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
       proxyMarkAt = event.data.mode === 'proxy' ? Date.now() : 0;

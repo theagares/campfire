@@ -53,7 +53,7 @@ const CONFIGS = readConfigs();
 // 6개 사이트가 전부 있어야 한다 — 하나라도 빠지면 그 사이트는 무방비다.
 const SITES = [
   'chatgpt.com', 'claude.ai', 'gemini.google.com',
-  'grok.com', 'perplexity.ai', 'copilot.microsoft.com',
+  'grok.com', 'perplexity.ai', 'copilot.microsoft.com', 'copilot.com',
 ];
 
 for (const host of SITES) {
@@ -99,6 +99,17 @@ for (const host of SITES) {
     !/aria-label="제출"/.test(sendBtnSel) || /aria-label\*="제출"/.test(sendBtnSel),
     'copilot: aria-label="제출" 정확일치는 실제 라벨("메시지 제출")을 놓친다',
   );
+}
+
+// ── copilot.com — 2026-10-22 실측(copilot.microsoft.com 에서 옮김) ────────────────
+{
+  const { editorSel, sendBtnSel } = CONFIGS['copilot.com'];
+  assert.ok(editorSel.includes('#m365-chat-editor-target-element'), 'copilot.com: 실측된 입력창 id 가 editorSel 에서 빠졌다');
+  assert.ok(sendBtnSel.includes('type="submit"'), 'copilot.com: 실측된 submit 전송 버튼이 sendBtnSel 에서 빠졌다');
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
+  for (const cs of manifest.content_scripts) {
+    assert.ok(cs.matches.includes('https://copilot.com/*'), 'copilot.com 에 content script 가 안 붙는다 — 확장이 아예 안 돈다');
+  }
 }
 
 // ── 언어 의존 선택자를 쓰는 사이트는 영어/한국어 양쪽을 담아야 한다 ──────────

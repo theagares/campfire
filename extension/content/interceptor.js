@@ -187,6 +187,18 @@
       }
       return;
     }
+    // content.js 가 마스킹본을 입력창에 넣어 달라고 한다 — 일반 입력 수단을 전부 무시하는
+    // Lexical(copilot.com). 편집기 객체(el.__lexicalEditor)는 이 MAIN world 에서만 보인다.
+    if (event.data.type === 'SECUREDOC_SET_EDITOR_STATE') {
+      if (!fromIsolated(event.data)) return;
+      let ok = false;
+      try { ok = _setLexicalText(event.data.selector, String(event.data.text ?? '')); } catch { ok = false; }
+      window.postMessage({
+        __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
+        type: 'SECUREDOC_SET_EDITOR_STATE_RESULT', nonce: event.data.nonce, ok,
+      }, '*');
+      return;
+    }
     // 배치 승인 — 여러 파일을 한 번에 등록하고, 끝나면 반드시 회수한다.
     //
     // 이 메시지가 하는 일이 곧 "검사 면제" 다 — 여기 등록된 파일은 업로드 훅
@@ -234,8 +246,30 @@
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
   });
 
+  /** Lexical 편집기 내용을 글 하나로 바꾼다. 성공하면 true.
+   *  노드 모양(문단·글 노드 속성, Copilot 의 sentinel 같은 자체 노드)은 지금 상태에서 빌려 쓴다 —
+   *  모르는 노드를 새로 만들지 않는다. 줄바꿈은 linebreak 노드로 넣는다. */
+  function _setLexicalText(selector, text) {
+    const ed = document.querySelector(selector)?.__lexicalEditor;
+    if (!ed || typeof ed.parseEditorState !== 'function') return false;
+    const json = ed.getEditorState().toJSON();
+    const para = json?.root?.children?.find((n) => n.type === 'paragraph');
+    if (!para) return false;
+    const tmpl = para.children.find((n) => n.type === 'text')
+      || { detail: 0, format: 0, mode: 'normal', style: '', type: 'text', version: 1 };
+    const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak');
+    const children = text.split('\n').flatMap((line, i) => [
+      ...(i ? [{ type: 'linebreak', version: 1 }] : []),
+      ...(line ? [{ ...tmpl, text: line }] : []),
+    ]);
+    json.root.children = [{ ...para, children: [...children, ...keep] }];
+    ed.setEditorState(ed.parseEditorState(JSON.stringify(json)));
+    return true;
+  }
+
   function isProtectionEnabled() {
-    // 프록시가 실제 경로에 있으면 확장은 전부 손을 뗀다 — 프록시가 단독으로 맡는다.
+    // 프록시가 실제 경로에 있으면 이 MAIN world 훅(업로드 가로채기)은 손을 뗀다 — 업로드는
+    // 프록시가 맡는다. 프롬프트는 content.js 가 따로 정한다(proxyChecksPrompts: claude.ai 만 넘긴다).
     // 관찰(_origFetch/XHR)은 이 값과 무관하게 계속 돌아, 프록시가 빠지면 다시 켜진다.
     return _protectionEnabled && !proxyInPath();
   }
@@ -562,6 +596,9 @@
     'claude.ai':          { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: true  },
     'gemini.google.com':  { dropMode: 'passthrough-xhr',   uploadLayer: 'xhr-formdata',   multiUpload: false },
     'copilot.microsoft.com': { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: false }, // POST /c/api/attachments (docs: FormData+Blob, images: raw binary → Layer4)
+    // 2026-10-22 실측: copilot.com 은 작업자(worker)에서 graph createUploadSession → OneDrive PUT 으로 올려
+    // 페이지 fetch/XHR 훅이 못 본다. 끌어놓기도 가로채 마스킹본을 다시 놓는다(redispatch).
+    'copilot.com':        { dropMode: 'redispatch',        uploadLayer: null,             multiUpload: false },
     'grok.com':           { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-json',     multiUpload: false }, // POST /rest/app-chat/upload-file JSON+base64 → Layer4 arrayBuffer 인터셉트
     'perplexity.ai':      { dropMode: 'passthrough-fetch', uploadLayer: 'fetch-formdata', multiUpload: false },
   };

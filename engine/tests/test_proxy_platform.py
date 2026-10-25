@@ -57,7 +57,7 @@ def test_macos_ca_trust_is_cached_briefly(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(proxy.sys, "platform", "darwin")
     monkeypatch.setattr(proxy, "ca_cert_path", lambda: str(cert))
-    monkeypatch.setattr(proxy, "_ca_trust_cache", None)
+    monkeypatch.setattr(proxy, "_ca_trust_cache", {})
     monkeypatch.setattr(proxy, "_macos_ca_trusted", lambda p: calls.append(p) or True)
     assert proxy.ca_trusted() is True and proxy.ca_trusted() is True
     assert len(calls) == 1

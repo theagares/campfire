@@ -439,6 +439,12 @@ UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
 PROXY_ENABLED: bool = os.environ.get("SECUREDOC_PROXY_ENABLED", "0") == "1"
 PROXY_PORT: int = int(os.environ.get("SECUREDOC_PROXY_PORT", "48210"))
 
+# 프록시가 쓰는 Campfire 전용 루트 CA(adapters/proxy/ca.py) — 검사 대상 AI 도메인으로 이름이 제한된다.
+# mitmproxy 기본 위치(~/.mitmproxy)에 알아서 만드는 CA 는 모든 사이트에 쓸 수 있어 쓰지 않는다.
+PROXY_CA_DIR: Path = Path(
+    os.environ.get("SECUREDOC_PROXY_CA_DIR", str(_models_base() / "Campfire" / "proxy-ca"))
+)
+
 # 사람이 검토하는 동안 요청을 붙들고 있는 최대 시간.
 #
 # 길게 잡고 싶어지는 값이지만 상한은 우리가 정하는 게 아니다 — 사이트 JS 의 abort

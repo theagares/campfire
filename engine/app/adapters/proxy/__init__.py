@@ -32,7 +32,8 @@ logger = logging.getLogger("securedoc.proxy")
 # 부르는데 그때마다 띄우면 프록시와 같은 이벤트 루프가 멎는다.
 # ponytail: 5초 캐시 — CA 를 막 설치했으면 최대 5초 늦게 보인다. 더 빨라야 하면 설치 직후 무효화.
 _CA_TRUST_TTL_SEC = 5.0
-_ca_trust_cache: tuple[str, float, bool] | None = None
+# 경로 → (시각, 신뢰 여부). 지금 CA 와 예전 CA(legacy_ca) 를 같이 보므로 경로별로 둔다.
+_ca_trust_cache: dict[str, tuple[float, bool]] = {}
 
 _task: asyncio.Task | None = None
 _master = None
@@ -63,13 +64,35 @@ def is_running() -> bool:
 
 
 def ca_cert_path() -> str:
-    """mitmproxy 가 만든 CA 인증서 경로. 처음 한 번 기동해야 파일이 생긴다."""
+    """Campfire 전용 CA 인증서 경로(ca.py). 처음 한 번 기동해야 파일이 생긴다.
+
+    security(1)는 PEM/DER 둘 다 받지만, macOS에서 사용자가 직접 설치할 때 형식이
+    드러나는 cert.pem을 보여 주는 편이 명확하다. Windows certutil에는 .cer를 쓴다.
+    """
+    from app.adapters.proxy import ca
+
+    return str(ca.cert_file(config.PROXY_CA_DIR))
+
+
+def _legacy_ca_path():
+    """예전 버전이 쓰던 CA — mitmproxy 가 ~/.mitmproxy 에 알아서 만든 것. 이름 제한이 없다."""
     from pathlib import Path
 
-    # security(1)는 PEM/DER 둘 다 받지만, macOS에서 사용자가 직접 설치할 때 형식이
-    # 드러나는 cert.pem을 보여 주는 편이 명확하다. Windows certutil에는 .cer를 쓴다.
     name = "mitmproxy-ca-cert.pem" if sys.platform == "darwin" else "mitmproxy-ca-cert.cer"
-    return str(Path.home() / ".mitmproxy" / name)
+    return Path.home() / ".mitmproxy" / name
+
+
+def legacy_ca() -> dict | None:
+    """예전 CA 가 아직 신뢰돼 있으면 그 지문을 돌려준다. 앱이 제거 명령을 보여 준다.
+
+    모든 사이트에 쓸 수 있는 CA 라 개인키가 새면 이 PC 의 모든 HTTPS 를 위장할 수 있다.
+    자동으로 지우지는 않는다 — 사용자가 다른 일로 mitmproxy 를 쓸 수도 있고, 지우기도
+    보안 경고 창을 거친다.
+    """
+    path = _legacy_ca_path()
+    if not path.exists() or _trusted(path) is not True:
+        return None
+    return {"path": str(path), "sha1": _cert_sha1(path)}
 
 
 def _cert_sha1(path) -> str | None:
@@ -136,19 +159,24 @@ def ca_trusted() -> bool | None:
     ssl.enum_certificates 는 CurrentUser 저장소까지 본다(사용자가 관리자 권한 없이
     certutil -user 로 넣은 것도 잡힌다 — 실측).
     """
-    import ssl
     from pathlib import Path
 
-    p = Path(ca_cert_path())
+    return _trusted(Path(ca_cert_path()))
+
+
+def _trusted(p) -> bool | None:
+    """이 인증서 파일이 OS 신뢰 저장소에 있는가. 판단할 수 없으면 None."""
+    import ssl
+
     if not p.exists():
         return False
     if sys.platform == "darwin":
-        global _ca_trust_cache
         now = time.monotonic()
-        if _ca_trust_cache and _ca_trust_cache[0] == str(p) and now - _ca_trust_cache[1] < _CA_TRUST_TTL_SEC:
-            return _ca_trust_cache[2]
+        hit = _ca_trust_cache.get(str(p))
+        if hit and now - hit[0] < _CA_TRUST_TTL_SEC:
+            return hit[1]
         trusted = _macos_ca_trusted(p)
-        _ca_trust_cache = (str(p), now, trusted)
+        _ca_trust_cache[str(p)] = (now, trusted)
         return trusted
     if not hasattr(ssl, "enum_certificates"):
         return None
@@ -182,6 +210,8 @@ def status() -> dict:
         "caPath": ca_cert_path(),
         "caExists": os.path.exists(ca_cert_path()),
         "caTrusted": ca_trusted(),
+        # 예전 버전의 이름 제한 없는 CA 가 아직 신뢰돼 있으면 {path, sha1}. 앱이 제거를 권한다.
+        "legacyCa": legacy_ca(),
     }
 
 
@@ -209,13 +239,34 @@ async def start(*, force: bool = False) -> bool:
         from mitmproxy.master import Master
         from mitmproxy.options import Options
 
-        from app.adapters.proxy.addon import CampfireAddon, intercept_host_patterns
+        from app.adapters.proxy import ca
+        from app.adapters.proxy.addon import CampfireAddon, intercept_host_patterns, intercept_hosts
     except ImportError:
         logger.info('[proxy] mitmproxy 미설치 — 프록시 비활성. pip install -e ".[proxy]"')
         return False
 
     try:
-        opts = Options(listen_host="127.0.0.1", listen_port=config.PROXY_PORT)
+        # 검사 대상 도메인으로 이름이 제한된 Campfire CA(ca.py). 도메인이 바뀌면 새로 만들어지고,
+        # 그러면 caTrusted 가 False 가 되어 앱이 등록 명령을 다시 보여 준다.
+        exact, suffixes = intercept_hosts()
+        passphrase = ca.ensure(config.PROXY_CA_DIR, ca.constraint_names([*exact, *suffixes]))
+    except Exception:
+        # 포트 문제와 구분되게 따로 남긴다 — 앱에는 "포트를 붙잡지 못했다" 로만 보인다.
+        logger.exception("[proxy] CA 준비 실패(%s) — 프록시 없이 계속한다", config.PROXY_CA_DIR)
+        return False
+
+    try:
+        opts = Options(
+            listen_host="127.0.0.1",
+            listen_port=config.PROXY_PORT,
+            confdir=str(config.PROXY_CA_DIR),
+            # 프로세스 안에서 넘긴다 — 명령줄로 넘기면 프로세스 목록에 보인다.
+            cert_passphrase=passphrase.decode("ascii"),
+            # 가짜 인증서에 원래 서버 인증서의 다른 이름(SAN)을 베끼지 않는다. 베끼면 이름 제한 밖
+            # 이름이 섞여 브라우저가 그 사이트를 통째로 거부한다(push.clients6.google.com 의 진짜
+            # 인증서에는 google 이름이 여럿 들어 있다). 가짜 인증서에는 접속한 이름 하나만 넣는다.
+            upstream_cert=False,
+        )
         _master = Master(opts, event_loop=asyncio.get_running_loop())
         _master.addons.add(*default_addons())
         # 아래 두 옵션은 기본 애드온이 등록하는 것이라 Options() 생성 시점엔 아직 없다
