@@ -25,7 +25,10 @@ import transformers
 from torch import nn
 from transformers import AutoConfig, AutoModel
 
-TYPES = ["NAME", "ADDRESS", "WORKPLACE", "DEPARTMENT", "POSITION", "SCHOOL", "MOBILE_PHONE",
+# v2 런타임과 같은 후처리(같은 runtime 폴더) — 원래 Campfire eval_baseline.py 의 정규식·주소 병합에 10-20 주소 보강을 더한 것
+from local_pii_inference import address_postprocess, merge_lc_address, regex_postprocess
+
+TYPES =["NAME", "ADDRESS", "WORKPLACE", "DEPARTMENT", "POSITION", "SCHOOL", "MOBILE_PHONE",
          "TELEPHONE", "RRN", "ALIEN_REGISTRATION_NUMBER", "DRIVER_LICENSE_NUMBER", "VEHICLE_NUMBER",
          "BANK_ACCOUNT_NUMBER", "CARD_NUMBER", "EMAIL", "PASSPORT_NUMBER", "AGE", "DATE_OF_BIRTH", "MAJOR"]
 # 앱 v2 모델 라벨 → 이 모델의 종류(같은 KDPII-19, 순서도 같다)
@@ -57,6 +60,34 @@ def split_sentences(text: str) -> list[tuple[int, int]]:
     if text[start:].strip():
         spans.append((start, len(text)))
     return spans
+
+
+def postprocess(sentence: str, ents: list[dict]) -> list[dict]:
+    """v2 런타임 후처리를 이 모델에 맞춰 — 주소 잇기 → 주소 보강은 v2 그대로, 정규식은 '더하기만'.
+
+    v2 의 regex_postprocess 는 겹치는 모델 개체를 지우고 정규식 구간으로 바꾼다. 이 모델에 그대로 붙이면 시험 문서
+    404개에서 누출이 89 → 139 로 늘었다 — 3-4-4-2 계좌의 끝 두 자리가 잘리고(46), 차량번호 정규식이 줄바꿈을 넘어
+    '051호\\n1976' 에 걸려 주소·생년월일을 지웠다(3). 모델이 놓친 걸 정규식이 새로 찾은 건 0건이었다.
+    그래서 구간은 줄이지 않는다: 겹치면 합집합, 라벨이 다르면 점수를 지워 항상 가리고(전화로 잘못 본 계좌를 KEEP 으로
+    풀지 않게), 아무것과도 안 겹치는 일치만 점수 없이 새로 더한다.
+    점수: 같은 라벨로 겹치는 모델 개체들의 최댓값(하나라도 없으면 없음) — 주소를 합쳐도 KEEP 쪽으로 가지 않는다.
+    ents: [{begin, end, label(앱 라벨), maskProb}] — 문장 안 오프셋.
+    """
+    work = [{**e, "form": sentence[e["begin"]:e["end"]]} for e in sorted(ents, key=lambda e: (e["begin"], e["end"]))]
+    out = []
+    for d in address_postprocess(sentence, merge_lc_address(work, sentence)):
+        src = [e["maskProb"] for e in ents if e["label"] == d["label"] and e["begin"] < d["end"] and d["begin"] < e["end"]]
+        out.append({"begin": d["begin"], "end": d["end"], "label": d["label"],
+                    "maskProb": None if not src or None in src else max(src)})
+    for h in regex_postprocess(sentence, []):  # 정규식 일치만 (v2 의 순서·먼저 잡은 것 우선 그대로)
+        hit = [o for o in out if o["begin"] < h["end"] and h["begin"] < o["end"]]
+        if not hit:
+            out.append({"begin": h["begin"], "end": h["end"], "label": h["label"], "maskProb": None})
+        for o in hit:
+            o["begin"], o["end"] = min(o["begin"], h["begin"]), max(o["end"], h["end"])
+            if o["label"] != h["label"]:
+                o["maskProb"] = None
+    return sorted(out, key=lambda d: (d["begin"], d["end"]))
 
 
 _TYPE_BITS = np.arange(len(TYPES))
@@ -422,15 +453,18 @@ class KeepScorer:
         return out
 
     def detect_text(self, text: str) -> list[dict]:
-        """앱용: 원문 하나 → 언급마다 {begin, end, label(앱 v2 라벨), maskProb(분야 6종 중 최댓값 | None)}."""
+        """앱용: 원문 하나 → 언급마다 {begin, end, label(앱 v2 라벨), maskProb(분야 6종 중 최댓값 | None)}.
+        문장마다 v2 와 같은 후처리(postprocess)를 거친다 — 모델이 못 찾은 문장의 정규식 일치도 잡는다."""
         sentences = split_sentences(text)
         own, probs = self.analyze([(n, text[a:b]) for n, (a, b) in enumerate(sentences)])
-        out = []
+        per: list[list[dict]] = [[] for _ in sentences]
         for e, p in zip(own, probs):
             for m in e["mentions"]:
-                base = sentences[m["sent_idx"]][0]
-                out.append({"begin": base + m["begin"], "end": base + m["end"], "label": TYPE_TO_APP[e["entity_type"]],
-                            "maskProb": None if p is None else round(max(p.values()), 4)})
+                per[m["sent_idx"]].append({"begin": m["begin"], "end": m["end"], "label": TYPE_TO_APP[e["entity_type"]],
+                                           "maskProb": None if p is None else round(max(p.values()), 4)})
+        out = []
+        for (a, b), ents in zip(sentences, per):
+            out += [{**x, "begin": a + x["begin"], "end": a + x["end"]} for x in postprocess(text[a:b], ents)]
         return sorted(out, key=lambda x: (x["begin"], x["end"]))
 
 

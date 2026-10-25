@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,11 +18,15 @@ _RUNTIME_DIR = Path(__file__).resolve().parents[1] / "app" / "models" / "pii_eng
 
 
 def _load_scorer():
-    spec = importlib.util.spec_from_file_location("_pii_keep_scorer", _RUNTIME_DIR / "keep_scorer.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    sys.path.insert(0, str(_RUNTIME_DIR))  # keep_scorer 가 같은 폴더의 local_pii_inference(후처리)를 가져온다
+    try:
+        spec = importlib.util.spec_from_file_location("_pii_keep_scorer", _RUNTIME_DIR / "keep_scorer.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(_RUNTIME_DIR))
 
 
 ks = _load_scorer()
@@ -151,6 +156,27 @@ def test_load_weights_reads_tensors_into_modules_strictly(tmp_path):
         ks._load_weights(path, ((torch.nn.Linear(3, 2, bias=False), "m."),))  # 파일에 남는 키(m.bias)
     with pytest.raises(RuntimeError, match="모양 불일치"):
         ks._load_weights(path, ((torch.nn.Linear(4, 2), "m."),))
+
+
+def test_postprocess_regex_only_adds_or_widens_never_shrinks():
+    s = "회사 대표번호 031-676-4069, 주민번호 900101-1234567, 휴대폰 010-2345-6789, 계좌 446-1283-1190-29"
+    phone, mobile, acct = s.index("031"), s.index("010-2345"), s.index("446")
+    ents = [{"begin": phone, "end": phone + 11, "label": "QT_PHONE", "maskProb": 0.2},  # 끝 숫자 하나 빠진 구간, KEEP 점수
+            {"begin": mobile, "end": mobile + 13, "label": "QT_PHONE", "maskProb": 0.1},  # 휴대폰을 일반 전화로 잘못
+            {"begin": acct, "end": acct + 16, "label": "QT_ACCOUNT_NUMBER", "maskProb": 0.9}]  # 정규식은 끝 '-29' 를 못 잡는다
+    out = {s[e["begin"]:e["end"]]: (e["label"], e["maskProb"]) for e in ks.postprocess(s, ents)}
+    assert out == {
+        "031-676-4069": ("QT_PHONE", 0.2),  # 같은 라벨 — 구간은 합집합으로 넓히고 점수는 모델 (KEEP 이 산다)
+        "900101-1234567": ("QT_RESIDENT_NUMBER", None),  # 모델이 놓친 것 — 점수 없이 더함 → 항상 가림
+        "010-2345-6789": ("QT_PHONE", None),  # 라벨이 다름 — 점수를 지워 항상 가림
+        "446-1283-1190-29": ("QT_ACCOUNT_NUMBER", 0.9),  # 정규식 구간이 더 짧아도 모델 구간을 줄이지 않는다
+    }
+
+    s2 = "주소: 서울특별시 마포구 성미산로 12길 34, 101동 1203호"
+    a, c = s2.index("서울"), s2.index("101동")
+    ents2 = [{"begin": a, "end": s2.index("34") + 2, "label": "LC_ADDRESS", "maskProb": 0.3},
+             {"begin": c, "end": len(s2), "label": "LC_ADDRESS", "maskProb": 0.7}]
+    assert [(s2[e["begin"]:e["end"]], e["maskProb"]) for e in ks.postprocess(s2, ents2)] == [(s2[a:], 0.7)]  # 합치면 최댓값
 
 
 def test_type_maps_round_trip():

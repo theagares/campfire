@@ -6,8 +6,10 @@ app/core/detectors/pii/keep.py
 MASK 확률을 이 모델 하나가 낸다(runtime/keep_scorer.py 하위 프로세스).
 - maskProb 를 모든 탐지에 싣고, 풀어 줄 수 있는 종류(config.PII_KEEP_LABELS)이면서 임계값 미만이면 keep 을 단다.
   keep 은 확장 검토 화면이 해당 항목을 미리 풀어 두는 데만 쓴다 — maskedText 는 그대로 전부 가린다.
-- v2 런타임의 정규식·주소 보강은 쓰지 않는다(모델 그대로). 자격증명 정규식과 사용자 지정 강제 마스킹은
-  PII 모델과 별개 계층이라 그대로 돈다(orchestrator).
+- 문장마다 v2 런타임의 후처리(주소 잇기 → 주소 보강 → 정규식)를 거친다(keep_scorer.postprocess). 다만 정규식은
+  모델 구간을 줄이거나 지우지 않고 넓히거나 더하기만 한다 — v2 처럼 덮어쓰면 계좌 끝자리가 잘려 누출이 늘었다.
+  라벨이 다르거나 정규식만 찾은 것은 점수 없이 항상 가린다.
+  자격증명 정규식과 사용자 지정 강제 마스킹은 PII 모델과 별개 계층이라 그대로 돈다(orchestrator).
 """
 
 from __future__ import annotations
