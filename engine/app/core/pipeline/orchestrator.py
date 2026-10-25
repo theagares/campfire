@@ -84,6 +84,35 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
     return out
 
 
+def _prefer_injection_for_nested_pii(
+    pii_items: list[Detection],
+    injection_items: list[Detection],
+) -> list[Detection]:
+    """Drop PII spans fully covered by an injection span.
+
+    The injection item already masks the entire covered range.  Keeping a nested
+    PII item would make the same text appear in both result categories and could
+    let the masker/UI select the PII label instead.  Partial overlaps stay in the
+    PII result because the injection does not cover the complete sensitive span.
+    """
+    if not pii_items or not injection_items:
+        return pii_items
+
+    injection_spans = [
+        (item["start"], item["end"])
+        for item in injection_items
+    ]
+    return [
+        item
+        for item in pii_items
+        if not any(
+            injection_start <= item["start"]
+            and item["end"] <= injection_end
+            for injection_start, injection_end in injection_spans
+        )
+    ]
+
+
 async def _detect_pii(text: str) -> list[Detection]:
     """PII 탐지 = 모델 탐지 + 자격증명 정규식.
 
@@ -721,6 +750,7 @@ async def run_pipeline(
         injection_items = masker.merge_overlapping(injection_items)
         for item in injection_items:
             item["text"] = text[item["start"] : item["end"]]
+        pii_items = _prefer_injection_for_nested_pii(pii_items, injection_items)
         await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
