@@ -1,7 +1,7 @@
 """
 app/adapters/http_api/jobs.py
 POST /jobs        — 파일 업로드 → 마스킹 결과
-POST /jobs/prompt — 텍스트(프롬프트) → 마스킹 텍스트
+POST /jobs/prompt — 텍스트(프롬프트) → PII/강제 마스킹 텍스트
 
 기존 EC2 계약 호환: 응답에 jobId 포함. 룰베이스 v1 은 즉시 처리되므로
 결과(result)도 인라인으로 함께 반환한다(curl 한 방으로 마스킹 결과 확인 가능,
@@ -58,6 +58,7 @@ def _record(job_id: str, *, file_name: str, source: str, result: dict) -> None:
 
 @router.post("/jobs/prompt")
 async def create_prompt_job(text: str = Form(...)):
+    """사용자 프롬프트는 PII와 강제 규칙만 검사하고 인젝션 검사는 하지 않는다."""
     if len(text) > config.MAX_PROMPT_CHARS:
         raise HTTPException(status_code=413, detail="prompt too long")
 
@@ -68,9 +69,15 @@ async def create_prompt_job(text: str = Form(...)):
 
     try:
         # 확장이 AI 사이트 입력창에서 가로챈 사용자 본인의 프롬프트다 — 문서처럼 "AI 에게
-        # 내리는 지시 = 인젝션" 으로 보면 평범한 요청이 통째로 가려진다(direct_prompt).
+        # 내리는 지시 = 인젝션" 으로 보면 평범한 요청이 통째로 가려진다. 이 경로는
+        # 인젝션 검사를 생략하고 PII·자격증명·강제 마스킹만 수행한다.
         result = await run_pipeline(
-            text=text, file_name="prompt.txt", emit=emit, wrap_file=False, direct_prompt=True
+            text=text,
+            file_name="prompt.txt",
+            emit=emit,
+            wrap_file=False,
+            direct_prompt=True,
+            scan_injection=False,
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)

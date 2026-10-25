@@ -84,6 +84,35 @@ def _dedupe(items: list[Detection]) -> list[Detection]:
     return out
 
 
+def _prefer_injection_for_nested_pii(
+    pii_items: list[Detection],
+    injection_items: list[Detection],
+) -> list[Detection]:
+    """Drop PII spans fully covered by an injection span.
+
+    The injection item already masks the entire covered range.  Keeping a nested
+    PII item would make the same text appear in both result categories and could
+    let the masker/UI select the PII label instead.  Partial overlaps stay in the
+    PII result because the injection does not cover the complete sensitive span.
+    """
+    if not pii_items or not injection_items:
+        return pii_items
+
+    injection_spans = [
+        (item["start"], item["end"])
+        for item in injection_items
+    ]
+    return [
+        item
+        for item in pii_items
+        if not any(
+            injection_start <= item["start"]
+            and item["end"] <= injection_end
+            for injection_start, injection_end in injection_spans
+        )
+    ]
+
+
 async def _detect_pii(text: str) -> list[Detection]:
     """PII 탐지 = 모델 탐지 + 자격증명 정규식.
 
@@ -424,6 +453,7 @@ async def run_pipeline(
     wrap_file: bool = False,
     user_prompt: str | None = None,
     direct_prompt: bool = False,
+    scan_injection: bool = True,
 ) -> dict[str, Any]:
     """텍스트(prompt) 또는 파일 파이프라인 공통 실행기.
 
@@ -440,6 +470,10 @@ async def run_pipeline(
     주어지면 인젝션 탐지가 이 문자열을 실제 user_prompt 로 사용해(§base.ChunkMeta
     .user_prompt) placeholder 대신 실제 정렬 판단 근거로 삼는다. 프롬프트 자체도
     PII 스캔해 결과에 함께 포함한다(아래 _build_result 의 userPrompt* 필드).
+
+    scan_injection: False 이면 입력 본문에 대한 인젝션 탐지를 전부 생략한다. 확장
+    프로그램의 사용자 프롬프트 전용 경로가 사용하며 PII·자격증명·강제 마스킹은
+    그대로 수행한다. 파일/MCP 등 일반 텍스트 검사는 기본값 True 를 유지한다.
     """
     emit = emit or _noop_emit
     scan_status = STATUS_OK
@@ -539,11 +573,15 @@ async def run_pipeline(
     # 예외로 죽는다. 파싱은 이미 끝났으니(원문은 그대로 확보) 탐지만 생략하고 위와
     # 같은 미검사 통과 경로로 넘긴다 — "모델이 없으면 조용히 룰베이스로 격하"가 아니라
     # "모델이 없으면 아예 검사하지 않는다"는 게 이번 변경의 핵심이다.
-    if not model_status.all_ready():
+    required_models_ready = (
+        model_status.all_ready() if scan_injection else model_status.pii_ready()
+    )
+    if not required_models_ready:
+        missing_models = "PII/인젝션" if scan_injection else "PII"
         await emit({
             "type": "warning",
             "scanStatus": MODELS_NOT_READY,
-            "reason": "PII/인젝션 모델이 아직 준비되지 않았습니다",
+            "reason": f"{missing_models} 모델이 아직 준비되지 않았습니다",
         })
         # 다만 자격증명은 여기서도 잡는다. credentials.detect 는 가중치가 필요 없는
         # 정규식이라(모듈 docstring) 모델 상태와 무관하게 돈다. 오히려 이 창(설치
@@ -564,7 +602,7 @@ async def run_pipeline(
             injection_items=[],
             forced_mask_items=forced_items,
             scan_status=MODELS_NOT_READY,
-            reason="PII/인젝션 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
+            reason=f"{missing_models} 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
             blocked=forced_snapshot.active and truncated,
             masked_file=None,
             truncated=truncated,
@@ -576,10 +614,10 @@ async def run_pipeline(
             forced_policy=forced_policy,
         )
 
-    # ── Step 2~4: PII + 로컬 인젝션 병렬 탐지 ────────────────────────────────
-    # EXAONE의 로컬 분류는 원문을 보며 외부로 아무것도 보내지 않으므로 PII와 동시에
-    # 실행해도 안전하다. 두 결과가 모두 끝난 뒤에만 PII 좌표를 meta에 넣고 Solar
-    # 위치 확인을 시작한다. 따라서 외부 API에는 이전과 똑같이 마스킹된 텍스트만 간다.
+    # ── Step 2~4: PII + 선택적 로컬 인젝션 병렬 탐지 ─────────────────────────
+    # 사용자 프롬프트 전용 HTTP 경로는 scan_injection=False 로 들어온다. 이때는 PII만
+    # 검사하며 injection detector/토크나이저/Solar를 전혀 건드리지 않는다. 파일·MCP
+    # 경로는 기본값 True라 기존 문서 인젝션 검사를 그대로 수행한다.
     await emit({
         "type": "step",
         "step": 2,
@@ -588,77 +626,85 @@ async def run_pipeline(
             f"{config.PII_WINDOW_OVERLAP}자 겹침)..."
         ),
     })
-    await emit({"type": "step", "step": 4, "label": "인젝션 토큰 청킹 중..."})
-    pii_detector = registry.get_pii_detector()
-    injection_detector = registry.get_injection_detector()
-    staged_injection = _supports_staged_injection(injection_detector)
-    injection_chunks = await asyncio.to_thread(
-        injection_chunker.split_injection_chunks, text
-    )
-    await emit({
-        "type": "step",
-        "step": 4,
-        "label": (
-            f"인젝션 로컬 탐지 중 (총 {len(injection_chunks)}개, "
-            f"{config.INJECTION_CHUNK_TOKENS}토큰/"
-            f"{config.INJECTION_CHUNK_OVERLAP_TOKENS}토큰 겹침)..."
-        ),
-    })
-
-    combined_result = await _try_combined_local_inference(
-        pii_detector,
-        injection_detector,
-        text,
-        injection_chunks,
-        user_prompt=user_prompt,
-    )
     classified: list[tuple[dict, dict[str, Any]]] | None = None
-    if combined_result is not None:
-        pii_items, user_prompt_pii_items, classified = combined_result
+    injection_detector: Any | None = None
+    injection_chunks: list[dict] = []
+    if not scan_injection:
+        pii_items = await _detect_pii(text)
+        user_prompt_pii_items = await _detect_pii(user_prompt) if user_prompt else []
+        injection_items: list[Detection] = []
     else:
-        # CUDA가 없거나 통합 worker가 실패하면 검증된 개별 sidecar 경로를 그대로 쓴다.
-        # 두 로컬 모델은 서로 다른 프로세스지만 기존처럼 동시에 실행한다.
-        # 다만 처음 띄울 때는 PII 모델부터 올린다. 두 모델(PII, EXAONE 2.4GB)을 동시에 올리면
-        # 느린 CPU 에서 서로 느려져 PII 로딩이 시간 상한(PII_LOAD_TIMEOUT_SEC)을 넘겼다(Intel mac
-        # 설치본 E2E). 이미 떠 있으면 바로 지나가므로 추론 병렬화는 그대로다.
-        ensure_pii = getattr(pii_detector, "_ensure_process", None)
-        if callable(ensure_pii):
-            await ensure_pii()
-        classified_task: asyncio.Task[
-            list[tuple[dict, dict[str, Any]]]
-        ] | None = None
-        user_pii_task: asyncio.Task[list[Detection]] | None = None
-        pii_task = asyncio.create_task(_detect_pii(text))
-        running_tasks: list[asyncio.Task[Any]] = [pii_task]
-        if user_prompt:
-            user_pii_task = asyncio.create_task(_detect_pii(user_prompt))
-            running_tasks.append(user_pii_task)
-        if staged_injection:
-            classified_task = asyncio.create_task(
-                _classify_injection_locally(
-                    injection_detector,
-                    injection_chunks,
-                    user_prompt=user_prompt,
-                )
-            )
-            running_tasks.append(classified_task)
+        # EXAONE의 로컬 분류는 원문을 보며 외부로 아무것도 보내지 않으므로 PII와
+        # 동시에 실행한다. 둘 다 끝난 뒤에만 마스킹 좌표와 함께 Solar 위치 확인을 한다.
+        await emit({"type": "step", "step": 4, "label": "인젝션 토큰 청킹 중..."})
+        pii_detector = registry.get_pii_detector()
+        injection_detector = registry.get_injection_detector()
+        staged_injection = _supports_staged_injection(injection_detector)
+        injection_chunks = await asyncio.to_thread(
+            injection_chunker.split_injection_chunks, text
+        )
+        await emit({
+            "type": "step",
+            "step": 4,
+            "label": (
+                f"인젝션 로컬 탐지 중 (총 {len(injection_chunks)}개, "
+                f"{config.INJECTION_CHUNK_TOKENS}토큰/"
+                f"{config.INJECTION_CHUNK_OVERLAP_TOKENS}토큰 겹침)..."
+            ),
+        })
 
-        try:
-            pii_items = await pii_task
-            if user_pii_task is not None:
-                user_prompt_pii_items = await user_pii_task
-            else:
-                user_prompt_pii_items = []
-            if classified_task is not None:
-                classified = await classified_task
-        except BaseException:
-            # 한 단계가 실패하거나 요청이 취소되면 다른 sidecar 요청을 백그라운드에
-            # 남기지 않는다. gather와 달리 원래 예외 형식도 ExceptionGroup으로 바뀌지 않는다.
-            for task in running_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*running_tasks, return_exceptions=True)
-            raise
+        combined_result = await _try_combined_local_inference(
+            pii_detector,
+            injection_detector,
+            text,
+            injection_chunks,
+            user_prompt=user_prompt,
+        )
+        if combined_result is not None:
+            pii_items, user_prompt_pii_items, classified = combined_result
+        else:
+            # CUDA가 없거나 통합 worker가 실패하면 검증된 개별 sidecar 경로를 그대로 쓴다.
+            # 두 로컬 모델은 서로 다른 프로세스지만 기존처럼 동시에 실행한다.
+            # 처음 띄울 때는 PII부터 올려 느린 CPU에서 두 모델의 동시 로딩으로 PII
+            # 기동 시간 상한을 넘기지 않게 한다. 이미 떠 있으면 즉시 지나간다.
+            ensure_pii = getattr(pii_detector, "_ensure_process", None)
+            if callable(ensure_pii):
+                await ensure_pii()
+            classified_task: asyncio.Task[
+                list[tuple[dict, dict[str, Any]]]
+            ] | None = None
+            user_pii_task: asyncio.Task[list[Detection]] | None = None
+            pii_task = asyncio.create_task(_detect_pii(text))
+            running_tasks: list[asyncio.Task[Any]] = [pii_task]
+            if user_prompt:
+                user_pii_task = asyncio.create_task(_detect_pii(user_prompt))
+                running_tasks.append(user_pii_task)
+            if staged_injection:
+                classified_task = asyncio.create_task(
+                    _classify_injection_locally(
+                        injection_detector,
+                        injection_chunks,
+                        user_prompt=user_prompt,
+                    )
+                )
+                running_tasks.append(classified_task)
+
+            try:
+                pii_items = await pii_task
+                if user_pii_task is not None:
+                    user_prompt_pii_items = await user_pii_task
+                else:
+                    user_prompt_pii_items = []
+                if classified_task is not None:
+                    classified = await classified_task
+            except BaseException:
+                # 한 단계가 실패하거나 요청이 취소되면 다른 sidecar 요청을 백그라운드에
+                # 남기지 않는다. gather와 달리 원래 예외 형식도 ExceptionGroup으로 바뀌지 않는다.
+                for task in running_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*running_tasks, return_exceptions=True)
+                raise
 
     await emit({
         "type": "step",
@@ -674,35 +720,38 @@ async def run_pipeline(
             user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
         )["masked_text"]
 
-    if classified is not None:
-        # 여기까지 오면 문서와 사용자 프롬프트의 PII 스캔이 모두 끝났다. 이제부터만
-        # 외부 Solar를 호출할 수 있으며, 각 청크의 PII 좌표를 함께 전달한다.
-        injection_items = await _finalize_staged_injection(
-            injection_detector,
-            text,
-            classified,
-            user_prompt=user_prompt,
-            user_prompt_masked=user_prompt_masked,
-            pii_items=list(pii_items) + list(forced_items),
-            direct_prompt=direct_prompt,
-        )
-    else:
-        # 테스트/대체 detector가 단계 분리를 지원하지 않으면 기존 순차 계약을 유지한다.
-        injection_items = await _detect_all(
-            injection_detector,
-            text,
-            injection_chunks,
-            user_prompt=user_prompt,
-            user_prompt_masked=user_prompt_masked,
-            pii_items=list(pii_items) + list(forced_items),
-            direct_prompt=direct_prompt,
-        )
-    # Solar가 꺼져 있으면 양성 윈도우 전체를 fail-safe로 반환하므로 인접 윈도우가
-    # 겹친다. 문서 단위 OR 결과는 유지하되 API/통계에는 하나의 연속 구간으로 보인다.
-    injection_items = masker.merge_overlapping(injection_items)
-    for item in injection_items:
-        item["text"] = text[item["start"] : item["end"]]
-    await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
+    if scan_injection:
+        assert injection_detector is not None
+        if classified is not None:
+            # 여기까지 오면 문서와 사용자 프롬프트의 PII 스캔이 모두 끝났다. 이제부터만
+            # 외부 Solar를 호출할 수 있으며, 각 청크의 PII 좌표를 함께 전달한다.
+            injection_items = await _finalize_staged_injection(
+                injection_detector,
+                text,
+                classified,
+                user_prompt=user_prompt,
+                user_prompt_masked=user_prompt_masked,
+                pii_items=list(pii_items) + list(forced_items),
+                direct_prompt=direct_prompt,
+            )
+        else:
+            # 테스트/대체 detector가 단계 분리를 지원하지 않으면 기존 순차 계약을 유지한다.
+            injection_items = await _detect_all(
+                injection_detector,
+                text,
+                injection_chunks,
+                user_prompt=user_prompt,
+                user_prompt_masked=user_prompt_masked,
+                pii_items=list(pii_items) + list(forced_items),
+                direct_prompt=direct_prompt,
+            )
+        # Solar가 꺼져 있으면 양성 윈도우 전체를 fail-safe로 반환하므로 인접 윈도우가
+        # 겹친다. 문서 단위 OR 결과는 유지하되 API/통계에는 하나의 연속 구간으로 보인다.
+        injection_items = masker.merge_overlapping(injection_items)
+        for item in injection_items:
+            item["text"] = text[item["start"] : item["end"]]
+        pii_items = _prefer_injection_for_nested_pii(pii_items, injection_items)
+        await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
 
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
     # PII·인젝션 다음 — Solar 로 보내는 문서에서 PII·사용자 지정 단어·인젝션 구간을 가린다.
