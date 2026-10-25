@@ -27,6 +27,12 @@ os.environ.setdefault(
 os.environ.setdefault(
     "SECUREDOC_PROXY_CA_DIR", str(Path(tempfile.gettempdir()) / "campfire-test-proxy-ca")
 )
+# lifespan 의 models_sync 가 체크아웃의 runtime/ 을 모델 보관 위치로 복사한다 — 그냥 두면 설치된
+# 앱의 PII 런타임이 체크아웃 코드로 바뀌어, 가중치와 버전이 어긋난 앱이 PII 검사를 못 한다.
+# 실제 모델로 돌리는 테스트는 SECUREDOC_MODELS_DIR 를 직접 지정한다.
+os.environ.setdefault(
+    "SECUREDOC_MODELS_DIR", str(Path(tempfile.gettempdir()) / "campfire-test-models")
+)
 
 
 @pytest.fixture(autouse=True)

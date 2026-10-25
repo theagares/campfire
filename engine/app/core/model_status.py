@@ -15,8 +15,9 @@ from app import config
 from app.core.detectors.injection import backbone
 
 PII_REQUIRED_FILES = (
-    "model.safetensors", "config.json", "label_map.json",
-    "gazetteer.json", "tokenizer.json", "tokenizer_config.json",
+    "config.json", "checkpoint/best.safetensors", "checkpoint/status.json",
+    "assets/backbone/config.json", "assets/backbone/tokenizer.json",
+    "assets/stage_a/config.json", "assets/stage_a/char_vocab.json", "assets/stage_a/train_gazetteer.json",
 )
 INJECTION_REQUIRED_FILES = ("model.pt", "calibration.json", "norm_stats.pt")
 

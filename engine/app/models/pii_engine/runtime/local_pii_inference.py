@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Local-app PII inference entrypoint for the SKT + Gaz + CRF model.
+"""Local-app PII inference entrypoint for ax_char_boundary/direct_full
+(A.X encoder + Gazetteer + CRF + 문자 경계 MLP + 개체별 MASK/KEEP head, seed42).
 
 Modes:
   python local_pii_inference.py --model-dir ./model --text "홍길동 010-1234-5678"
@@ -8,26 +9,35 @@ Modes:
 STDIO mode accepts one JSON object per line:
   {"id":"1","text":"홍길동 010-1234-5678"}
   {"id":"2","texts":["문장1","문장2"]}
+
+응답은 예전 모델과 같은 모양이다(KDPII 코드 label·begin·end·form) — gateway 라벨 매핑
+(encoder.LABEL_MAP)과 아래 주소·정규식 보정을 그대로 쓰려고 번들 라벨(NAME…)을 코드로 되돌린다.
+달라진 점:
+  - 모델이 KEEP(가리지 않아도 됨)으로 판정한 개체는 내지 않는다.
+  - score 는 MASK 확률이다. 도메인을 앱이 모르므로 번들의 6개 도메인 모두로 판정하고 최댓값을
+    쓴다(하나라도 가리라고 하면 가린다). 인코더는 한 번만 돌고 판정 head 만 6번 돈다.
+  - 정규식·주소 보정으로 더한 개체에는 score 가 없다 — 항상 가린다.
+  - 번들은 CPU FP32 로만 검증됐다. FP16·MPS 는 CRF·문자 경계 수치가 달라질 수 있어 쓰지 않는다.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
-from transformers import AutoTokenizer
-
-from gazetteer import GazetteerTrie, aggregate_to_tokens, load_gazetteer
-from pii_model import TokenClassifierForPII
 
 
+# 이메일은 이 모델이 중간에서 자르는 일이 잦다(시연 문서 실측: "doyoon.kim@…" → "kim@…",
+# "billing-check@paymint-support.com" → "paymint-support.com") — 앞부분이 그대로 나가므로 정규식이
+# 전체를 잡는다. 다른 규칙과 겹치면 먼저 차지하도록 맨 앞에 둔다.
 REGEX_RULES = [
+    ("TMI_EMAIL", re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])")),
     ("QT_DRIVER_NUMBER", re.compile(r"(?<!\d)\d{2}-\d{2}-\d{6}-\d{2}(?!\d)")),
     ("QT_CARD_NUMBER", re.compile(r"(?<!\d)\d{4}[\-\s]\d{4}[\-\s]\d{4}[\-\s]\d{4}(?!\d)")),
     ("QT_RESIDENT_NUMBER", re.compile(r"(?<!\d)\d{6}-[1-4]\d{6}(?!\d)")),
@@ -46,65 +56,6 @@ REGEX_RULES = [
     ),
     ("QT_ACCOUNT_NUMBER", re.compile(r"(?<!\d)\d{3,4}[\-]\d{3,4}[\-]\d{3,6}(?!\d)")),
 ]
-
-
-def build_label_mask(
-    word_ids_list: list[list[int | None]],
-    offset_mapping: list[list[tuple[int, int]]],
-) -> torch.Tensor:
-    """CRF가 판정할 각 word의 첫 유효 토큰을 CPU bool 텐서로 만든다.
-
-    CUDA 텐서에 Python에서 원소별로 쓰면 작은 GPU 작업이 토큰 수만큼 발생한다.
-    동일한 first-seen 규칙을 Python bool 행렬에 적용한 뒤 torch.tensor를 한 번만
-    호출하면 비연속으로 반복되는 word id까지 기존 의미를 그대로 유지하면서 그
-    호출 비용을 없앨 수 있다.
-    """
-    rows: list[list[bool]] = []
-    for word_ids, offsets in zip(word_ids_list, offset_mapping, strict=True):
-        seen_words: set[int] = set()
-        row: list[bool] = []
-        for word_id, (_, char_end) in zip(word_ids, offsets, strict=True):
-            selected = (
-                word_id is not None
-                and char_end != 0
-                and word_id not in seen_words
-            )
-            row.append(selected)
-            if selected:
-                seen_words.add(word_id)
-        rows.append(row)
-    return torch.tensor(rows, dtype=torch.bool)
-
-
-def char_bio_to_entities(sentence: str, char_labels: list[str]) -> list[dict[str, Any]]:
-    entities = []
-    start = cur_label = None
-    i = 0
-    while i < len(char_labels):
-        tag = char_labels[i]
-        if tag.startswith("B-"):
-            if start is not None:
-                entities.append({"form": sentence[start:i], "label": cur_label, "begin": start, "end": i})
-            start, cur_label = i, tag[2:]
-        elif tag.startswith("I-") and cur_label == tag[2:]:
-            pass
-        elif tag == "O" and cur_label and i < len(sentence) and sentence[i] == " ":
-            j = i + 1
-            while j < len(char_labels) and char_labels[j] == "O" and j < len(sentence) and sentence[j] == " ":
-                j += 1
-            if j < len(char_labels) and char_labels[j] == f"I-{cur_label}":
-                i = j
-                continue
-            entities.append({"form": sentence[start:i], "label": cur_label, "begin": start, "end": i})
-            start = cur_label = None
-        else:
-            if start is not None:
-                entities.append({"form": sentence[start:i], "label": cur_label, "begin": start, "end": i})
-            start = cur_label = None
-        i += 1
-    if start is not None:
-        entities.append({"form": sentence[start:], "label": cur_label, "begin": start, "end": len(char_labels)})
-    return entities
 
 
 def merge_lc_address(entities: list[dict[str, Any]], sentence: str) -> list[dict[str, Any]]:
@@ -179,189 +130,100 @@ def regex_postprocess(sentence: str, entities: list[dict[str, Any]]) -> list[dic
 
 
 class PIIDetector:
+    """batch_size·max_length 는 예전 CLI 와 맞추려고 받기만 한다 — 번들이 자기 config(256토큰·64 stride·8창)를 쓴다."""
+
     def __init__(
         self,
         model_dir: str | Path,
         device: str = "auto",
-        dtype: str = "float16",
+        dtype: str = "float32",
         batch_size: int = 8,
         max_length: int = 256,
     ):
         self.model_dir = Path(model_dir)
         self.batch_size = batch_size
-        self.max_length = max_length
         self.device = self._resolve_device(device)
         self.dtype = self._resolve_dtype(dtype, self.device)
-        self.label_map = json.loads((self.model_dir / "label_map.json").read_text(encoding="utf-8"))
-        self.target_labels = self.label_map["target_labels"]
-        self.id2label = {int(k): v for k, v in self.label_map["id2label"].items()}
 
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir), trust_remote_code=True, use_fast=True)
-        except ValueError as exc:
-            # 모델은 transformers 5 로 저장돼 tokenizer_config.json 의 tokenizer_class 가
-            # "TokenizersBackend"(5.x 전용 이름)다. Intel Mac 은 torch 2.2 때문에
-            # transformers 4.x 를 쓰는데, 4.x 의 AutoTokenizer 는 그 이름을 몰라 여기서 죽는다.
-            # 토크나이저 동작은 tokenizer.json 에 다 들어 있으므로 fast 토크나이저로 바로 연다
-            # (5.14 결과와 토큰 id·오프셋·특수토큰이 같음을 확인).
-            if "TokenizersBackend" not in str(exc):
-                raise
-            from transformers import PreTrainedTokenizerFast
-            self.tokenizer = PreTrainedTokenizerFast.from_pretrained(str(self.model_dir))
-        if not self.tokenizer.is_fast:
-            raise RuntimeError("Fast tokenizer is required for offset mapping.")
+        # network.py 가 members/ 아래 패키지를 sys.path 앞에 붙여 불러온다(번들 원본 그대로).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import network
+        from safetensors.torch import load_file
+        from stagea.kdpii import LABEL_MAP
 
-        self.model = TokenClassifierForPII.from_pretrained(str(self.model_dir), trust_remote_code=True)
-        self.model = self.model.to(device=self.device, dtype=self.dtype)
-        self.model.eval()
-
-        self.gaz_trie = None
-        if self.label_map.get("use_gazetteer"):
-            self.gaz_trie = GazetteerTrie(load_gazetteer(str(self.model_dir / "gazetteer.json")), self.target_labels)
+        self.domains = list(network.DOMAINS)
+        self.codes = {name: code for code, name in LABEL_MAP.items()}
+        cfg = json.loads((self.model_dir / "config.json").read_text(encoding="utf-8"))
+        if (cfg.get("model"), cfg.get("condition")) != ("ax_char_boundary", "direct_full") or cfg["domains"] != self.domains:
+            raise ValueError("Unsupported PII bundle: expected ax_char_boundary/direct_full with the trained domain order")
+        self.threshold = float(cfg["mask_threshold"])
+        checkpoint = self.model_dir / cfg["checkpoint"]
+        expected = json.loads((self.model_dir / cfg["checkpoint_status"]).read_text(encoding="utf-8"))["checkpoint_sha256"]
+        with checkpoint.open("rb") as handle:
+            if hashlib.file_digest(handle, "sha256").hexdigest() != expected:
+                raise ValueError("PII checkpoint SHA-256 mismatch")
+        stage_a = dict(cfg["stage_a"])
+        for key in ("run_dir", "backbone_path"):
+            stage_a[key] = str(self.model_dir / stage_a[key])
+        self.model = network.Integrated({**cfg, "stage_a": stage_a}, [], "direct_full", device="cpu")
+        self.model.load_state_dict(load_file(str(checkpoint), device="cpu"), strict=True)
+        self.model.requires_grad_(False).eval().to(self.device)
 
     @staticmethod
     def _resolve_device(device: str) -> str:
-        if device != "auto":
-            return device
-        if torch.cuda.is_available():
-            return "cuda"
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+        if device == "auto":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if device not in {"cpu", "cuda"}:
+            raise ValueError(f"Unsupported PII device: {device} (cpu, cuda, auto)")
+        return device
 
     @staticmethod
     def _resolve_dtype(dtype: str, device: str) -> "torch.dtype":
-        """CUDA 에서만 요청 dtype 을 쓰고 그 밖(CPU·MPS)은 FP32 로 둔다.
-
-        FP16 결과가 기존과 같다는 확인은 CUDA 에서만 했다. Apple Silicon(MPS) FP16 은 검증한 적이 없다.
-        """
+        """요청과 무관하게 FP32 — 번들은 FP32 로만 검증됐다(값 검사는 예전 설정 호환용)."""
         if dtype not in {"float16", "float32"}:
             raise ValueError(f"Unsupported PII dtype: {dtype}")
-        if device != "cuda":
-            return torch.float32
-        return getattr(torch, dtype)
+        return torch.float32
+
+    def _mask_probabilities(self, hidden: "torch.Tensor", data: dict, entities: list[dict]) -> list[float]:
+        if not entities:
+            return []
+        best = None
+        for domain in self.domains:
+            output, _ = self.model.contextual(hidden, data, entities, domain)
+            prob = output.float().sigmoid()
+            best = prob if best is None else torch.maximum(best, prob)
+        return best.tolist()
 
     @torch.inference_mode()
     def predict(self, texts: list[str]) -> list[list[dict[str, Any]]]:
-        all_entities: list[list[dict[str, Any]]] = []
-        for start in range(0, len(texts), self.batch_size):
-            batch_texts = texts[start:start + self.batch_size]
-            encoded = self.tokenizer(
-                batch_texts,
-                truncation=True,
-                max_length=self.max_length,
-                padding=True,
-                return_offsets_mapping=True,
-                return_tensors="pt",
-            )
-            offset_mapping = encoded.pop("offset_mapping").tolist()
-            word_ids_list = [encoded.word_ids(i) for i in range(len(batch_texts))]
-            # 토큰화 결과와 label mask를 CPU에서 완성한 뒤 배치 단위로 GPU에
-            # 전송한다. CUDA bool 텐서에 원소별로 기록하던 수천 번의 작은 작업을
-            # 없애면서 모델이 받는 값은 그대로 유지한다.
-            label_mask = build_label_mask(word_ids_list, offset_mapping)
-            input_ids = encoded["input_ids"].to(self.device)
-            attention_mask = encoded["attention_mask"].to(self.device)
-            label_mask = label_mask.to(self.device)
-
-            gaz_features = None
-            if self.gaz_trie is not None:
-                gaz_array = np.zeros(
-                    (len(batch_texts), input_ids.shape[1], len(self.target_labels)),
-                    dtype=np.float32,
-                )
-                for batch_idx, text in enumerate(batch_texts):
-                    char_features = self.gaz_trie.match_sentence(text)
-                    token_features = aggregate_to_tokens(char_features, offset_mapping[batch_idx])
-                    gaz_array[batch_idx, : token_features.shape[0]] = token_features
-                gaz_features = torch.tensor(gaz_array, device=self.device)
-
-            decoded = self.model.predict_tags(input_ids, attention_mask, label_mask, gaz_features=gaz_features)
-
-            for batch_idx, text in enumerate(batch_texts):
-                word_span: dict[int, list[int]] = {}
-                word_order = []
-                for word_id, (char_start, char_end) in zip(word_ids_list[batch_idx], offset_mapping[batch_idx]):
-                    if word_id is None or char_end == 0:
-                        continue
-                    if word_id not in word_span:
-                        word_span[word_id] = [char_start, char_end]
-                        word_order.append(word_id)
-                    else:
-                        word_span[word_id][0] = min(word_span[word_id][0], char_start)
-                        word_span[word_id][1] = max(word_span[word_id][1], char_end)
-
-                char_labels = ["O"] * len(text)
-                for idx, word_id in enumerate(word_order):
-                    if idx >= len(decoded[batch_idx]):
-                        break
-                    tag = self.id2label.get(decoded[batch_idx][idx], "O")
-                    if tag == "O":
-                        continue
-                    word_start, word_end = word_span[word_id]
-                    cont_tag = "I-" + tag[2:] if tag.startswith("B-") else tag
-                    for pos, char_idx in enumerate(range(word_start, min(word_end, len(text)))):
-                        char_labels[char_idx] = tag if pos == 0 else cont_tag
-
-                entities = char_bio_to_entities(text, char_labels)
-                entities = merge_lc_address(entities, text)
-                entities = address_postprocess(text, entities)
-                entities = regex_postprocess(text, entities)
-                entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
-                all_entities.append(entities)
-        return all_entities
-
-    @torch.inference_mode()
-    def predict_prepared(
-        self,
-        batch_texts: list[str],
-        input_ids: "torch.Tensor",
-        attention_mask: "torch.Tensor",
-        label_mask: "torch.Tensor",
-        offset_mapping: list[list[tuple[int, int]]],
-        word_ids_list: list[list[int | None]],
-        gaz_features: "torch.Tensor | None",
-    ) -> list[list[dict[str, Any]]]:
-        """이미 토크나이즈 + 가제티어 계산이 끝난 입력으로 모델 forward/CRF decode/후처리만
-        수행한다. 앙상블(EnsemblePIIDetector)이 동일한 tokenizer/gazetteer 를 쓰는 여러
-        seed 모델에 걸쳐 토크나이즈·가제티어 계산을 한 번만 하고 공유할 때 쓴다 —
-        가제티어 트라이 매칭이 seed 개수만큼 중복 계산되던 것을 없애 전체 시간을
-        크게 줄인다(실측: 전체 PII 시간의 ~72%가 가제티어 계산이었음).
-        """
-        decoded = self.model.predict_tags(input_ids, attention_mask, label_mask, gaz_features=gaz_features)
-        all_entities: list[list[dict[str, Any]]] = []
-        for batch_idx, text in enumerate(batch_texts):
-            word_span: dict[int, list[int]] = {}
-            word_order = []
-            for word_id, (char_start, char_end) in zip(word_ids_list[batch_idx], offset_mapping[batch_idx]):
-                if word_id is None or char_end == 0:
-                    continue
-                if word_id not in word_span:
-                    word_span[word_id] = [char_start, char_end]
-                    word_order.append(word_id)
-                else:
-                    word_span[word_id][0] = min(word_span[word_id][0], char_start)
-                    word_span[word_id][1] = max(word_span[word_id][1], char_end)
-
-            char_labels = ["O"] * len(text)
-            for idx, word_id in enumerate(word_order):
-                if idx >= len(decoded[batch_idx]):
-                    break
-                tag = self.id2label.get(decoded[batch_idx][idx], "O")
-                if tag == "O":
-                    continue
-                word_start, word_end = word_span[word_id]
-                cont_tag = "I-" + tag[2:] if tag.startswith("B-") else tag
-                for pos, char_idx in enumerate(range(word_start, min(word_end, len(text)))):
-                    char_labels[char_idx] = tag if pos == 0 else cont_tag
-
-            entities = char_bio_to_entities(text, char_labels)
-            entities = merge_lc_address(entities, text)
+        """texts 를 한 문서의 문장들로 넘긴다 — 같은 개체가 여러 창에 나오면 한 개체로 묶여 같은 판정을 받는다."""
+        found: list[list[dict[str, Any]]] = [[] for _ in texts]
+        rows = [{"sent_idx": str(i), "sentence": t} for i, t in enumerate(texts) if t.strip()]
+        if rows:
+            try:
+                data = self.model.tokenize({"sentences": rows})
+            except ValueError as exc:
+                if "no tokens" not in str(exc):
+                    raise
+                data = None
+            if data is not None:
+                hidden, entities, _ = self.model.encode(data, predict=True)
+                for entity, score in zip(entities, self._mask_probabilities(hidden, data, entities), strict=True):
+                    if score < self.threshold:
+                        continue  # KEEP
+                    for m in entity["mentions"]:
+                        found[int(m["sent_idx"])].append({
+                            "form": m["form"], "label": self.codes[entity["entity_type"]],
+                            "begin": m["begin"], "end": m["end"], "score": score,
+                        })
+        results = []
+        for text, entities in zip(texts, found, strict=True):
+            entities = merge_lc_address(sorted(entities, key=lambda e: (e["begin"], e["end"])), text)
             entities = address_postprocess(text, entities)
             entities = regex_postprocess(text, entities)
             entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
-            all_entities.append(entities)
-        return all_entities
+            results.append(entities)
+        return results
 
 
 def write_response(payload: dict[str, Any]) -> None:
@@ -398,7 +260,7 @@ def main() -> None:
     parser.add_argument("--texts-json")
     parser.add_argument("--stdio", action="store_true")
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--dtype", default="float16", choices=["float16", "float32"])
+    parser.add_argument("--dtype", default="float32", choices=["float16", "float32"])
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=256)
     args = parser.parse_args()

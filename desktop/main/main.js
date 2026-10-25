@@ -203,7 +203,7 @@ async function ensureModelsAutoDownload() {
 
     ipc.broadcast('models:fetchProgress', {
       type: 'progress',
-      // 필수 = PII 476MB + 인젝션 헤드 36MB + EXAONE 백본 약 2.4GB(engine/app/adapters/http_api/models.py). 백본이 이미 있으면 덜 받는다.
+      // 필수 = PII 502MB + 인젝션 헤드 36MB + EXAONE 백본 약 2.4GB(engine/app/adapters/http_api/models.py). 백본이 이미 있으면 덜 받는다.
       label: coreReady ? '기밀 탐지 모델(약 330MB)을 준비하는 중...' : '필수 보안 모델(최대 약 3GB)을 준비하는 중...',
     });
     await models.fetchModels(engineManager, (ev) => ipc.broadcast('models:fetchProgress', ev));

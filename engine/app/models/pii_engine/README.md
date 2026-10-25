@@ -1,158 +1,34 @@
-# PII Local Engine Handoff: SKT CRF+Gaz x3 Mix-all
+# PII 엔진 (pii_direct_char_boundary_seed42)
 
-This bundle is the deployable local-app PII detector.
+A.X-Encoder 백본에 Gazetteer·CRF·문자 경계 MLP를 붙여 개체를 찾고, 개체마다 MASK/KEEP 확률을 내는 direct head로 가릴지 정한다(`ax_char_boundary / direct_full / seed42`). 관계 추론은 하지 않는다.
 
-It is **not** the previous single `seed44` handoff. This package uses the final `SKT CRF+Gaz x3` Mix-all ensemble:
-
-- `seed42`
-- `seed43`
-- `seed44`
-
-The runtime loads all three single checkpoints and applies entity-level majority voting. A PII span is accepted when at least 2 of 3 models detect the same label on an overlapping character span.
-
-## Model Identity
-
-- Task: Korean PII entity detection
-- Backbone: `skt/A.X-Encoder-base`
-- Architecture: encoder token classifier + gazetteer features + CRF decoding
-- Ensemble: 3 independently saved seed checkpoints
-- Default voting: `min_votes=2`
-- Training recipe: `SKT CRF+Gaz x3`, `Mix-all`
-- Training data: KDPII + clean synthetic Mix-all split used by the real pipeline
-
-Verified evaluation metrics from the experiment artifacts:
-
-| Evaluation split | Precision | Recall | F1 |
-|---|---:|---:|---:|
-| Combined full19 | 99.21 | 95.74 | 97.45 |
-| KDPII full19 | 97.46 | 95.32 | 96.38 |
-| Synthetic full19 | 99.58 | 95.83 | 97.67 |
-
-## Bundle Layout
+## 구성
 
 ```text
 pii_engine/
   manifest.json
-  README.md
-  models/
-    seed42/
-  runtime/
-    local_pii_inference.py
-    pii_model.py
-    crf_bio.py
-    gazetteer.py
-    requirements.txt
+  models/direct_char_boundary_seed42/   # 릴리스 에셋 pii_engine_v3.tar.gz (가중치·토크나이저·Gazetteer)
+    config.json  checkpoint/  assets/backbone/  assets/stage_a/
+  runtime/                              # 앱과 함께 배포 (번들 원본 추론 코드 + 감싸는 진입점)
+    local_pii_inference.py              # Campfire stdio sidecar 진입점
+    network.py  members/  repo/         # 번들 runtime/ 그대로 (원본 대비 바꾼 점: RUNTIME_CHANGES.json)
 ```
 
-The seed folder contains its tokenizer, weights, PII config, label map, gazetteer, and bundled backbone config.
+## 앱과의 약속 (local_pii_inference.py)
 
-> This bundle originally shipped a seed42/43/44 ensemble. The three seeds turned out to be
-> byte-identical weights (hardlinked at packaging time), so the ensemble gave no diversity
-> benefit — only 3x the compute and VRAM. It was switched to the single seed42 model in
-> commit `155c9bd`, and the release asset (`pii_engine_v2.tar.gz`) now ships seed42 only.
-> The metrics above were measured in the 3-seed era; since the weights were identical, they
-> apply unchanged to the single model.
+- stdio JSONL, 요청 `{"id","text"}` 또는 `{"id","texts":[...]}`, 응답 `{"id","entities":[{"form","label","begin","end","score"?}]}`. 첫 줄은 `{"ready":true,"device","dtype"}`.
+- `label` 은 KDPII 19종 코드(`PS_NAME`, `QT_MOBILE` …) — 번들 라벨(`NAME` …)을 되돌린 것이다.
+- `texts` 는 한 문서의 문장들로 넘긴다. 같은 개체가 여러 창에 나오면 한 개체로 묶여 같은 판정을 받는다.
+- MASK 확률은 6개 도메인 모두로 계산해 최댓값을 쓴다. 0.1 미만(KEEP)인 개체는 내지 않는다. 인코더는 한 번만 돈다.
+- 주소 보강·정규식(이메일·전화·주민번호·외국인번호·면허·카드·계좌·차량번호)은 모델 결과 위에 덧붙이고 항상 가린다(`score` 없음).
+- CPU 또는 CUDA, 항상 FP32. 번들 검증이 FP32 뿐이라 FP16·MPS 는 쓰지 않는다.
+- 위치는 Python 코드포인트 기준, `end` 는 포함하지 않는다.
 
-## Install
+## 검증 (manifest.json `verified_environments`)
 
-Use Python 3.10+ when possible.
+엔진과 같은 버전(Python 3.11, torch 2.14.1, transformers 5.20.2)과 Intel Mac 버전(torch 2.2.2, transformers 4.57.6, numpy 1.26)에서 번들 `verify_bundle.py` 를 통과했다(원본 대비 확률 차이 0). 두 조합에서 이 래퍼의 시연 문서 결과도 스팬이 모두 같았다.
 
 ```bash
 cd pii_engine/runtime
-python3 -m pip install -r requirements.txt
+python local_pii_inference.py --model-dir ../models/direct_char_boundary_seed42 --device cpu --text "홍길동 고객님의 연락처는 010-1234-5678 입니다."
 ```
-
-For a CPU-only app environment, install a CPU build of PyTorch appropriate for the target OS before installing the requirements.
-
-## One-shot Inference
-
-```bash
-cd pii_engine/runtime
-python3 local_pii_inference.py \
-  --model-dir ../models/seed42 \
-  --device cpu \
-  --text "홍길동 고객님의 연락처는 010-1234-5678 입니다."
-```
-
-Output:
-
-```json
-{
-  "entities": [
-    {"form": "홍길동", "label": "PS_NAME", "begin": 0, "end": 3},
-    {"form": "010-1234-5678", "label": "QT_MOBILE", "begin": 14, "end": 27}
-  ]
-}
-```
-
-## Long-running App Mode
-
-Start the detector once:
-
-```bash
-cd pii_engine/runtime
-python3 local_pii_inference.py --model-dir ../models/seed42 --device cpu --stdio
-```
-
-Send one JSON object per line:
-
-```json
-{"id":"req-1","text":"홍길동 고객님의 연락처는 010-1234-5678 입니다."}
-{"id":"req-2","texts":["김민수입니다.","서울특별시 강남구 테헤란로 123"]}
-```
-
-Receive one JSON object per line:
-
-```json
-{"id":"req-1","entities":[{"form":"홍길동","label":"PS_NAME","begin":0,"end":3},{"form":"010-1234-5678","label":"QT_MOBILE","begin":14,"end":27}]}
-{"id":"req-2","entities":[[{"form":"김민수","label":"PS_NAME","begin":0,"end":3}],[{"form":"서울특별시 강남구 테헤란로 123","label":"LC_ADDRESS","begin":0,"end":20}]]}
-```
-
-## Integration Contract
-
-The engine should call the Python sidecar in `--stdio` mode and keep the process alive.
-
-Input schema:
-
-```json
-{"id":"string-request-id","text":"single text"}
-```
-
-or:
-
-```json
-{"id":"string-request-id","texts":["text 1","text 2"]}
-```
-
-Output schema:
-
-```json
-{"id":"string-request-id","entities":[{"form":"string","label":"PII_LABEL","begin":0,"end":3}]}
-```
-
-For batched input, `entities` is a list of entity lists in the same order as `texts`.
-
-Character offsets are Python string offsets. Treat `begin` as inclusive and `end` as exclusive.
-
-## Recommended Local-app Defaults
-
-- Use `--device cpu` for maximum portability.
-- Use `--batch-size 4` or lower for low-memory machines.
-- Use `--max-length 256` unless the product regularly sends longer text chunks.
-- Chunk long documents before inference and map offsets back to the original document.
-- Redact or mask only the returned spans; do not transform the whole text with regex alone.
-
-## Notes for the Implementing LLM
-
-Implement a small adapter around `local_pii_inference.py --stdio`.
-
-The adapter should:
-
-1. Start the Python process when the app or service starts.
-2. Wait for the first `{"ready": true, ...}` line.
-3. Send requests as JSON Lines.
-4. Parse `entities`.
-5. Replace spans from right to left so offsets remain valid.
-6. Restart the sidecar if it exits unexpectedly.
-
-Do not retrain the model in the local app. The model files in `models/seed42`, `models/seed43`, and `models/seed44` are the deployable artifacts.
