@@ -16,9 +16,9 @@ from app.core.detectors import registry
 from app.main import app
 from app.store import db
 
-_needs_models = pytest.mark.skipif(
-    not model_status.all_ready(),
-    reason="PII/인젝션 모델 가중치가 로컬에 없어 실 모델 경로를 검증할 수 없음",
+_needs_pii = pytest.mark.skipif(
+    not model_status.pii_ready(),
+    reason="PII 모델 가중치가 로컬에 없어 프롬프트 검사 경로를 검증할 수 없음",
 )
 
 
@@ -45,9 +45,9 @@ def test_activity_idle_when_nothing_running(client):
     assert r.json() == {"active": [], "busy": False}
 
 
-@_needs_models
+@_needs_pii
 def test_job_publishes_stages_and_clears(client):
-    """실제 job 을 돌리면 단계가 방송되고, 끝나면 진행 목록이 비어야 한다."""
+    """프롬프트 job 은 PII만 방송하고, 끝나면 진행 목록이 비어야 한다."""
     events: list[dict] = []
     q = activity_bus.subscribe()
 
@@ -64,7 +64,7 @@ def test_job_publishes_stages_and_clears(client):
     assert phases[0] == "start" and stages[0] == "receive", "job 시작이 먼저 방송돼야 한다"
     assert "parse" in stages, "파싱 단계가 방송돼야 한다"
     assert "pii" in stages, "PII 탐지 단계가 방송돼야 한다"
-    assert "injection" in stages, "인젝션 탐지 단계가 방송돼야 한다"
+    assert "injection" not in stages, "사용자 프롬프트는 인젝션 탐지를 실행하면 안 된다"
     assert phases[-1] == "finish", "마지막은 완료 방송이어야 한다"
     assert events[-1]["ok"] is True
 
