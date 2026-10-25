@@ -5,7 +5,7 @@ GET  /models/status  — PII/인젝션 실 모델(encoder/llm_mcp) 가중치가 
 POST /models/fetch   — models-v1 GitHub Release에서 가중치를 내려받아 압축 해제(백그라운드
                        job, 기존 job_registry/`/jobs/{id}/events` 패턴 재사용해 진행 상황 폴링).
 
-우리가 직접 학습/이식한 작은 아티팩트(PII 인코더 568MB, 인젝션 MLP 헤드 36MB)는 우리
+우리가 직접 학습/이식한 작은 아티팩트(PII 모델 압축 502MB, 인젝션 MLP 헤드 36MB)는 우리
 GitHub 릴리스(models-v1)에서 받고, 추론 백본(EXAONE-4.0-1.2B, 약 2.4GB)은 HuggingFace
 에서 받는다 — model.safetensors 하나가 2.4GB 라 GitHub 릴리스 에셋 상한(2 GiB)을 넘어
 우리가 직접 호스팅할 수 없기 때문이다.
@@ -45,16 +45,14 @@ router = APIRouter()
 
 _RELEASE_BASE = "https://github.com/theagares/campfire/releases/download/models-v1"
 
-# v2 는 seed42 하나만 담는다. v1 은 seed42/43/44 를 담고 있었는데, 세 seed 가 실제로는
-# 동일한 가중치라 tar 안에서 하드링크로 묶여 있었다 — 그래서 압축본은 476MB 로 작았지만
-# Windows 에서 풀면 하드링크가 실제 복사본으로 펼쳐져 디스크에 1.7GB 를 차지했다(실측).
-# 어차피 단일 seed 전환(155c9bd) 이후 읽는 건 seed42 뿐이라, 나머지 둘은 순수 낭비였다.
-# 다운로드 크기는 v1 과 같고(476MB), 압축 해제 후 디스크 사용량만 1.7GB → 569MB 로 준다.
-# v1 은 지우지 않고 남겨둔다 — 이미 배포된 구버전 앱이 그 URL/체크섬을 그대로 쓴다.
+# v3 는 direct MASK/KEEP 모델(pii_direct_char_boundary_seed42)의 가중치·자산만 담는다
+# (models/direct_char_boundary_seed42/, 압축 502MB → 해제 602MB). 추론 코드는 앱의
+# runtime/ 에 있다. 풀 때 models/ 를 통째로 바꾸므로 예전 models/seed42 는 같이 지워진다.
+# v1·v2 는 지우지 않고 남겨둔다 — 이미 배포된 구버전 앱이 그 URL/체크섬을 그대로 쓴다.
 _ASSETS: dict[str, dict[str, Any]] = {
     "pii": {
-        "url": f"{_RELEASE_BASE}/pii_engine_v2.tar.gz",
-        "sha256": "1cc79978799d1d6c3a7b1737bed4e407ebfe3a6fc0925e73c7d18da21a1d3032",
+        "url": f"{_RELEASE_BASE}/pii_engine_v3.tar.gz",
+        "sha256": "bc15e54b3f529ec93d84e9c29ae2b8ab72c157d4cd6c12c7b01ee013b44f66fd",
         "extract_to": lambda: config.PII_ENGINE_DIR,
         # seed 이름은 내부 학습 아티팩트 식별자라 사용자에겐 의미가 없다(단일 seed 전환
         # 이후로는 고를 것도 없다). 다운로드 진행 표시에 그대로 노출되던 걸 뺀다.

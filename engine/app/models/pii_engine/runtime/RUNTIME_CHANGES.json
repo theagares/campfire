@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "scope": "Portable inference runtime for ax_char_boundary/direct_full only. The caller must strictly load the complete final checkpoint before inference.",
+  "entry_point": "runtime.network.Integrated",
+  "unchanged_inference": [
+    "tokenization and overlapping windows",
+    "Gazetteer features",
+    "BIO/CRF decoding",
+    "character-boundary refinement",
+    "entity registry",
+    "contextual entity features and direct MASK head",
+    "MASK threshold comparison"
+  ],
+  "files": [
+    {
+      "packaged_path": "network.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/joint_masking/network.py",
+      "original_sha256": "0a5ee4b3525680c4dcad65b448f974fe5be9990dde31261398814b9cdb306be0",
+      "packaged_sha256": "132d8beae54c55ad9669fcfacb7748b9da0731a2c3f72023311f4b8ab481e501",
+      "adaptations": [
+        "Resolve bundled source packages relative to this runtime.",
+        "Remove the unused relation-schema import for the direct-only runtime.",
+        "Reject architectures and conditions not included in this deployment bundle.",
+        "Use the caller-supplied local backbone config/tokenizer directory instead of the original training path.",
+        "Skip loading redundant initial detector weights; the full final checkpoint supplies every learned tensor.",
+        "Direct inference does not read the relation schema or require relation_reference.txt."
+      ]
+    },
+    {
+      "packaged_path": "members/stage_a_char_boundary/boundary.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_char_boundary/boundary.py",
+      "original_sha256": "020c244d4d30657fc57380568c45274ffbae4e932da9603f432cfec84f6161b6",
+      "packaged_sha256": "398a83826ea055ef4a3e217ebfa42838a5c2008ba38d8b4ffb921032861e55a1",
+      "adaptations": [
+        "Resolve legacy character-boundary dependencies relative to the bundled runtime."
+      ]
+    },
+    {
+      "packaged_path": "members/stage_a_sota/src/stagea/__init__.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_sota/src/stagea/__init__.py",
+      "original_sha256": "4ca41da3d990b47e42fcacaa49f930478373fbdbb581a8d2c36ec950edce6ee4",
+      "packaged_sha256": "4ca41da3d990b47e42fcacaa49f930478373fbdbb581a8d2c36ec950edce6ee4",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/stage_a_sota/src/stagea/models.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_sota/src/stagea/models.py",
+      "original_sha256": "fa7de6a0becada41ee7af58751f9127fd73ac5171cf1de868c2c9b3576fee0de",
+      "packaged_sha256": "fa7de6a0becada41ee7af58751f9127fd73ac5171cf1de868c2c9b3576fee0de",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/stage_a_sota/src/stagea/kdpii.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_sota/src/stagea/kdpii.py",
+      "original_sha256": "e2685db7edfd0dca01dc3360d235cd02a09652430851d3c9a460d9beec736af7",
+      "packaged_sha256": "c9e38f28a1855bb0e2dd2996de4cc701d95660473606cf81adfe44f891a3c696",
+      "adaptations": [
+        "Rebase unused training-data constants to the package tree; inference does not read datasets."
+      ]
+    },
+    {
+      "packaged_path": "members/stage_a_sota/src/stagea/base_modeling.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_sota/src/stagea/base_modeling.py",
+      "original_sha256": "a62781a95d37722e57f8647a0f6e13ba565547ef9da8d0dce4474c2c067bf9b9",
+      "packaged_sha256": "14756eb7a97a658e484991e6b6c5c49255e4f2e8f3c0265080b99c6eb0100a2b",
+      "adaptations": [
+        "Instantiate the identical encoder architecture from its local config with explicit float32, matching the original from_pretrained default and preserving full-checkpoint precision. No redundant pretrained backbone weights are loaded; the caller strictly loads the complete final checkpoint."
+      ]
+    },
+    {
+      "packaged_path": "members/stage_a_sota/src/stagea/crf.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/stage_a_sota/src/stagea/crf.py",
+      "original_sha256": "0bbf5a5db95cf04446bc738327740c1558d1504936a0e0a8b43a60bd3e9e61e5",
+      "packaged_sha256": "0bbf5a5db95cf04446bc738327740c1558d1504936a0e0a8b43a60bd3e9e61e5",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/__init__.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/__init__.py",
+      "original_sha256": "055561611c70db35ce628317df318c90b0602835d4591b9e1a2eddf762fe4bd5",
+      "packaged_sha256": "055561611c70db35ce628317df318c90b0602835d4591b9e1a2eddf762fe4bd5",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/common.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/common.py",
+      "original_sha256": "1381a4ae0ef41628af9fc6229512baa24ffade0de0c2620e7eaac6264aae7bf0",
+      "packaged_sha256": "1381a4ae0ef41628af9fc6229512baa24ffade0de0c2620e7eaac6264aae7bf0",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/candidates.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/candidates.py",
+      "original_sha256": "d9569b4cedaefacb398e6fb3e3436305806054fe1991e9bea7b50e4db3383e06",
+      "packaged_sha256": "d9569b4cedaefacb398e6fb3e3436305806054fe1991e9bea7b50e4db3383e06",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/heads.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/heads.py",
+      "original_sha256": "afda7f2a7d031a662435aa94e7d926cb5b8b00ca4472a1f2b1127aa8cfca6ecf",
+      "packaged_sha256": "afda7f2a7d031a662435aa94e7d926cb5b8b00ca4472a1f2b1127aa8cfca6ecf",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/direct.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/direct.py",
+      "original_sha256": "550ec64c0f0984bb0585e1f9543355865085be2d47f125a14068745c57ebbd68",
+      "packaged_sha256": "550ec64c0f0984bb0585e1f9543355865085be2d47f125a14068745c57ebbd68",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "members/downstream_masking/src/masking/metrics.py",
+      "original_path": "/home/upsecurity00/data/members/taehwan/downstream_masking/src/masking/metrics.py",
+      "original_sha256": "f858dc84c364d90e71e8caf398ef5032fd353d1fb49c16fb56a477d5ea90bf5b",
+      "packaged_sha256": "f858dc84c364d90e71e8caf398ef5032fd353d1fb49c16fb56a477d5ea90bf5b",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "repo/members/taehwan/submit_experiments/KDPII_SOTA/src/train.py",
+      "original_path": "/home/upsecurity00/ai_rookie/members/taehwan/submit_experiments/KDPII_SOTA/src/train.py",
+      "original_sha256": "515f3c12cdf809405f71a75a017927a2c118bb90d6e2973aebb9318dac18ee33",
+      "packaged_sha256": "515f3c12cdf809405f71a75a017927a2c118bb90d6e2973aebb9318dac18ee33",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "repo/members/taehwan/submit_experiments/KDPII_SOTA/src/modeling.py",
+      "original_path": "/home/upsecurity00/ai_rookie/members/taehwan/submit_experiments/KDPII_SOTA/src/modeling.py",
+      "original_sha256": "1aaf5095b5b34d13b3a2d654b70f55ef33140fbe976ff8782e063eb1720dc7ca",
+      "packaged_sha256": "3336db86b702230e119c896e56b4ff108af154919b6798327d57ebe16dc28b5f",
+      "adaptations": [
+        "Instantiate the identical encoder architecture from its local config with explicit float32, matching the original from_pretrained default and preserving full-checkpoint precision. No redundant pretrained backbone weights are loaded; the caller strictly loads the complete final checkpoint."
+      ]
+    },
+    {
+      "packaged_path": "repo/members/taehwan/submit_experiments/KDPII_SOTA/src/kdpii.py",
+      "original_path": "/home/upsecurity00/ai_rookie/members/taehwan/submit_experiments/KDPII_SOTA/src/kdpii.py",
+      "original_sha256": "83cedbd50203405324a6f15c8f984adf9d91fab868cec6a33339241cd5293214",
+      "packaged_sha256": "83cedbd50203405324a6f15c8f984adf9d91fab868cec6a33339241cd5293214",
+      "adaptations": []
+    },
+    {
+      "packaged_path": "repo/members/taehwan/submit_experiments/KDPII_SOTA/src/crf.py",
+      "original_path": "/home/upsecurity00/ai_rookie/members/taehwan/submit_experiments/KDPII_SOTA/src/crf.py",
+      "original_sha256": "808bbfbece5c5de48780af71cb864fb234ed2fa16179e37d5ea5a4f02e9736b7",
+      "packaged_sha256": "808bbfbece5c5de48780af71cb864fb234ed2fa16179e37d5ea5a4f02e9736b7",
+      "adaptations": []
+    }
+  ],
+  "generated_files": [
+    {
+      "packaged_path": "__init__.py",
+      "packaged_sha256": "9e55738a4d7376eea5aa300fe5544c4ec2552840dd146d795699b6e9c270ac8a",
+      "purpose": "Make the runtime importable as a package."
+    }
+  ]
+}

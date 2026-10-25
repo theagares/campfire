@@ -1,115 +1,37 @@
 {
-  "bundle_name": "pii_skt_crf_gaz_mix_all_x3_local_app",
-  "created_at": "2026-07-26T15:56:26Z",
-  "source_model_root": "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all",
+  "bundle_name": "pii_direct_char_boundary_seed42",
+  "packaging_date": "2026-10-25",
+  "model": "ax_char_boundary",
+  "condition": "direct_full",
+  "seed": 42,
   "base_model": "skt/A.X-Encoder-base",
-  "training_recipe": "SKT CRF+Gaz x3, Mix-all",
-  "training_data": "KDPII + clean synthetic Mix-all training split used by real pipeline",
+  "architecture": "A.X encoder + Gazetteer + CRF + character-boundary MLP + entity-level direct MASK/KEEP head",
   "runtime": "python-sidecar-stdio",
-  "single_model": true,
-  "ensemble": false,
-  "ensemble_note": "원래 seed42/43/44 3-seed 앙상블로 패키징했으나, 세 seed 가 실제로는 완전히 동일한 가중치(하드링크)로 묶여 있어 앙상블의 다양성 이득이 전혀 없었다. 단일 seed(seed42)로 전환했고(커밋 155c9bd), 배포 에셋도 seed42 만 담는다(pii_engine_v2.tar.gz). 아래 evaluation 항목은 3-seed 시절에 측정한 기록 그대로 남겨둔다 — 동일 가중치였으므로 수치 자체는 단일 seed 와 같다.",
   "entrypoint": "runtime/local_pii_inference.py",
-  "model_dirs": [
-    "models/seed42"
-  ],
+  "model_dirs": ["models/direct_char_boundary_seed42"],
+  "release_asset": "pii_engine_v3.tar.gz",
+  "checkpoint_sha256": "a1808b199b768e91bc3d81a065f772a5602a7feba8c20ea6fe37402244beb1c0",
   "target_labels": [
-    "PS_NAME",
-    "LC_ADDRESS",
-    "OG_WORKPLACE",
-    "OG_DEPARTMENT",
-    "CV_POSITION",
-    "OGG_EDUCATION",
-    "QT_MOBILE",
-    "QT_PHONE",
-    "QT_RESIDENT_NUMBER",
-    "QT_ALIEN_NUMBER",
-    "QT_DRIVER_NUMBER",
-    "QT_PLATE_NUMBER",
-    "QT_ACCOUNT_NUMBER",
-    "QT_CARD_NUMBER",
-    "TMI_EMAIL",
-    "QT_PASSPORT_NUMBER",
-    "QT_AGE",
-    "DT_BIRTH",
-    "FD_MAJOR"
+    "PS_NAME", "LC_ADDRESS", "OG_WORKPLACE", "OG_DEPARTMENT", "CV_POSITION", "OGG_EDUCATION",
+    "QT_MOBILE", "QT_PHONE", "QT_RESIDENT_NUMBER", "QT_ALIEN_NUMBER", "QT_DRIVER_NUMBER",
+    "QT_PLATE_NUMBER", "QT_ACCOUNT_NUMBER", "QT_CARD_NUMBER", "TMI_EMAIL", "QT_PASSPORT_NUMBER",
+    "QT_AGE", "DT_BIRTH", "FD_MAJOR"
   ],
-  "seeds": [
-    {
-      "seed": "seed42",
-      "source_model_dir": "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed42",
-      "base_model": "skt/A.X-Encoder-base",
-      "run_tag": "real_skt_crf_gaz_mix_syn_all_seed42",
-      "use_crf": true,
-      "use_gazetteer": true,
-      "use_kd": false,
-      "use_rdrop": true,
-      "use_fgm": true
-    },
-    {
-      "seed": "seed43",
-      "source_model_dir": "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed43",
-      "base_model": "skt/A.X-Encoder-base",
-      "run_tag": "real_skt_crf_gaz_mix_syn_all_seed42",
-      "use_crf": true,
-      "use_gazetteer": true,
-      "use_kd": false,
-      "use_rdrop": true,
-      "use_fgm": true
-    },
-    {
-      "seed": "seed44",
-      "source_model_dir": "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed44",
-      "base_model": "skt/A.X-Encoder-base",
-      "run_tag": "real_skt_crf_gaz_mix_syn_all_seed42",
-      "use_crf": true,
-      "use_gazetteer": true,
-      "use_kd": false,
-      "use_rdrop": true,
-      "use_fgm": true
-    }
-  ],
-  "metrics": {
-    "combined_full19": {
-      "precision": 0.992103185048697,
-      "recall": 0.9574495109869173,
-      "f1": 0.9744683601577144,
-      "tp": 7538,
-      "fp": 60,
-      "fn": 335,
-      "model_dirs": [
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed42",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed43",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed44"
-      ]
-    },
-    "kdpii_full19": {
-      "precision": 0.9745889387144993,
-      "recall": 0.9532163742690059,
-      "f1": 0.9637841832963784,
-      "tp": 1304,
-      "fp": 34,
-      "fn": 64,
-      "model_dirs": [
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed42",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed43",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed44"
-      ]
-    },
-    "synthetic_full19": {
-      "precision": 0.9958466453674122,
-      "recall": 0.9583397386625673,
-      "f1": 0.9767332549941247,
-      "tp": 6234,
-      "fp": 26,
-      "fn": 271,
-      "model_dirs": [
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed42",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed43",
-        "/data/team/hwan/real/models/skt_crf_gaz_x3/mix_syn_all/seed44"
-      ]
-    }
+  "mask_threshold": 0.1,
+  "domains": ["career_education", "contract", "financial", "legal", "medical", "support"],
+  "domain_policy": "max mask probability over all domains (app does not know the domain)",
+  "precision": "float32",
+  "selection_metrics_valid": {
+    "mask_support": 5660,
+    "leaked": 67,
+    "leakage_rate": 0.011837455830388692,
+    "keep_support": 858,
+    "overmasked": 1,
+    "overmask_rate": 0.0011655011655011655,
+    "exact_mask_span_type_f1": 0.9851485148514851
   },
-  "torch_version_at_packaging": "2.5.1+cu121",
-  "transformers_version_at_packaging": "5.12.1"
+  "verified_environments": [
+    {"python": "3.11.16", "torch": "2.14.1+cpu", "transformers": "5.20.2", "numpy": "2.4.6", "result": "verify_bundle passed, max probability difference 0.0"},
+    {"python": "3.11.16", "torch": "2.2.2+cpu", "transformers": "4.57.6", "numpy": "1.26.4", "result": "verify_bundle passed, max probability difference 0.0 (Intel Mac pins)"}
+  ]
 }

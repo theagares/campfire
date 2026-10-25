@@ -1,20 +1,15 @@
 """
 app/core/detectors/pii/encoder.py
-PII 인코더 슬롯 실 구현 — skt/A.X-Encoder-base 백본 + CRF + gazetteer 단일 모델
-(config.PII_MODEL_SEED, 기본 seed42). hwan님이 준비한
-pii_skt_crf_gaz_mix_all_x3_local_app 번들을 app/models/pii_engine/ 에 이식.
-평가 지표(실 라벨셋 PII_dataset, 3,524문장 기준): Precision 99.71% / Recall 96.13% /
-F1 97.89%.
-
-원래 seed42/43/44 3-seed 앙상블(동일 라벨·겹치는 스팬 과반 투표 min_votes=2)로
-구동했으나, 번들의 세 seed 디렉터리가 실제로는 완전히 동일한 가중치(하드링크)로
-패키징된 버그가 확인되어 앙상블의 다양성 이득이 전혀 없었다 — 연산량/VRAM 3배
-낭비만 있고 실질 효과는 없었으므로 단일 모델로 전환하기로 결정.
+PII 인코더 슬롯 실 구현 — A.X-Encoder + Gazetteer + CRF + 문자 경계 MLP + 개체별
+MASK/KEEP head (pii_direct_char_boundary_seed42 번들, config.PII_MODEL_SEED).
+번들 검증(valid): 가려야 할 개체 5,660개 중 누출 67(1.18%), 남겨도 되는 858개 중
+과잉 마스킹 1(0.12%), 정확 스팬·유형 F1 98.5%. 런타임이 KEEP 개체를 빼고 MASK 확률을
+score 로 준다(6개 도메인 중 최댓값 — runtime/local_pii_inference.py 참고).
 
 로컬 서브프로세스(runtime/local_pii_inference.py --stdio)를 GPU 상주
 정책의 "always_on"에 대응시킨다:
-    - CUDA에서는 FP16으로 상주시켜 추론 시간과 VRAM을 줄이고, 가속기가 없는
-      환경에서는 FP32 CPU로 안전하게 폴백한다. 앱 기동 시(build() 호출 시점에
+    - CUDA가 있으면 CUDA, 없으면 CPU에서 돌고 dtype 은 항상 FP32 다(번들 검증 범위).
+      앱 기동 시(build() 호출 시점에
       실행 중인 이벤트 루프가 있으면) 백그라운드로
       즉시 로딩을 시작한다(pre-warm). 이벤트 루프가 없으면(예: 단순 스크립트에서
       직접 build() 호출) 첫 detect() 호출 시 지연 로딩된다.
@@ -29,14 +24,13 @@ gateway 파이프라인은 원문 전체를 한 번에 넘긴다 — 그대로 �
 (PII_WINDOW_SIZE/PII_WINDOW_OVERLAP)로 청크를 잘라 한 번에 배치 추론하고,
 윈도우 겹침으로 중복 탐지된 엔터티는 (type, start, end) 기준으로 both dedupe한다.
 
-라벨 매핑: 실 모델의 19종 BIO 엔터티 라벨(PS_NAME, QT_MOBILE, ...)을 gateway 의
+라벨 매핑: 런타임이 주는 KDPII 19종 코드(PS_NAME, QT_MOBILE, ...)를 gateway 의
 PII_TYPES 상수(PERSON_NAME, PHONE, ...)로 매핑한다(다대일). 대응하는 gateway
 상수가 없는 라벨(CV_POSITION, OGG_EDUCATION, QT_PLATE_NUMBER, QT_AGE, FD_MAJOR)은
 OTHER_PII 로 묶는다.
 
-신뢰도: 단일 모델(CRF decode)은 엔터티별 확률을 따로 주지 않으므로, 모든 탐지에
-고정 신뢰도(_SINGLE_MODEL_CONFIDENCE)를 부여한다 — 실 라벨셋 기준 P 99.71%로
-정밀도가 매우 높아 고정값으로도 과도한 과신은 아니라고 판단.
+신뢰도: 모델 개체는 MASK 확률(score), 정규식·주소 보정으로 더한 개체는 확률이 없어
+고정값(_RULE_CONFIDENCE)을 준다. 신뢰도는 표시용이고 마스킹 여부를 바꾸지 않는다.
 """
 
 from __future__ import annotations
@@ -89,7 +83,7 @@ LABEL_MAP: dict[str, str] = {
     "FD_MAJOR": OTHER_PII,
 }
 
-_SINGLE_MODEL_CONFIDENCE = 0.9
+_RULE_CONFIDENCE = 0.9
 
 # 모델 로딩 직후 첫 forward pass 가 CUDA 커널 선택/캐싱 1회성 비용을 떠안는
 # 문제(injection_llm_mcp 와 동일 이슈, 실측: 콜당 ~0.3s → ~0.07s)를 피하려고,
@@ -348,7 +342,7 @@ class EncoderPiiDetector:
                         start=start,
                         end=end,
                         text=text[start:end],
-                        confidence=_SINGLE_MODEL_CONFIDENCE,
+                        confidence=float(entity.get("score", _RULE_CONFIDENCE)),
                         source="encoder",
                     )
                 )
