@@ -105,9 +105,10 @@ def _status() -> dict[str, Any]:
         },
         # 선택 기능 — enabled 가 아니면 ready 가 거짓이어도 받지 않는다(앱도 enabled 일 때만 기다린다)
         "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
-        # gpu 가 거짓이면 받을 것이 없다(앱도 기다리지 않는다) — 그림이 든 입력은 막힌다
+        # gpu 는 기존 클라이언트 호환용 이름이고 CUDA·Intel XPU·Apple MPS를 모두 뜻한다.
         "imageOcr": {"enabled": config.IMAGE_OCR_ENABLED, "ready": model_status.image_ocr_ready(),
-                     "gpu": model_status.image_ocr_gpu()},
+                     "gpu": model_status.image_ocr_gpu(),
+                     "accelerator": model_status.image_ocr_accelerator()},
     }
 
 
@@ -308,42 +309,63 @@ async def _download_image_ocr(emit: Callable) -> None:
     await emit({"type": "progress", "asset": "image_ocr", "label": f"{label} 완료", "pct": 100.0})
 
 
-# GPU 실행 환경 — 설치본 torch 는 CPU 빌드라 VARCO 사이드카용 CUDA torch 를 따로 깐다(엔진·다른 탐지기는 그대로 CPU 판).
-# 판은 VARCO 를 실측한 환경과 같고, torchvision 은 transformers 의 LLaVA-OneVision 처리기가 요구한다. 의존 패키지(numpy·
-# transformers 등)는 앱 파이썬 것을 쓴다(--no-deps). 휠 태그 cp311·win_amd64 는 release.yml 의 `uv python install 3.11`
-# 과 맞아야 한다 — 다르면 pip 가 거부해 설치가 실패한다(조용히 깨지지 않는다).
-_GPU_TORCH_BASE = "https://download-r2.pytorch.org/whl/cu130/"
-_GPU_TORCH_WHEELS = (  # (파일 이름, sha256) — 작은 것부터 받아 진행률이 긴 휠에서 끝나게
-    ("torchvision-0.29.1+cu130-cp311-cp311-win_amd64.whl",
-     "08f02295d26ccb2054cafc8c21feacf9022384d5a0cd006fbbf1d59623af7522"),
-    ("torch-2.14.1+cu130-cp311-cp311-win_amd64.whl",
-     "e98711737150b5a6451cbbfdb425abd5d1bea77f4a1a5d29c48d5ec41cd54949"),
-)
+# Windows 설치본 torch는 CPU 빌드라 VARCO 사이드카용 GPU torch를 따로 깐다(앱 본체·다른 탐지기는 그대로).
+# torchvision은 transformers의 LLaVA-OneVision 처리기가 요구한다. 주 휠은 버전·sha256을 고정한다. CUDA 휠은 필요한
+# 런타임이 안에 들어 있어 --no-deps로 깔고, XPU 휠은 Intel SYCL/oneMKL 런타임 의존성을 공식 XPU 인덱스에서 함께 받는다.
+# Apple Silicon은 pyproject.toml로 앱에 번들된 arm64 torch/torchvision을 쓰므로 이 설치기를 거치지 않는다.
+_GPU_TORCH_SPECS = {
+    "cuda": {
+        "label": "NVIDIA GPU 실행 환경(약 2GB)",
+        "base": "https://download-r2.pytorch.org/whl/cu130/",
+        "wheels": (
+            ("torchvision-0.29.1+cu130-cp311-cp311-win_amd64.whl",
+             "08f02295d26ccb2054cafc8c21feacf9022384d5a0cd006fbbf1d59623af7522"),
+            ("torch-2.14.1+cu130-cp311-cp311-win_amd64.whl",
+             "e98711737150b5a6451cbbfdb425abd5d1bea77f4a1a5d29c48d5ec41cd54949"),
+        ),
+        "pip": ("--no-index", "--no-deps"),
+    },
+    "xpu": {
+        "label": "Intel Arc GPU 실행 환경",
+        "base": "https://download-r2.pytorch.org/whl/xpu/",
+        "wheels": (
+            ("torchvision-0.29.1+xpu-cp311-cp311-win_amd64.whl",
+             "83cc862c91181eeb1a5ecf2c83ace6f3093ccd7b31add570b795762880afdb1f"),
+            ("torch-2.14.1+xpu-cp311-cp311-win_amd64.whl",
+             "3d086d377ba74ffdf464c8e17991307203d9664029b1e7ee545260f35cc3ccd7"),
+        ),
+        "pip": ("--index-url", "https://download.pytorch.org/whl/xpu", "--only-binary=:all:"),
+    },
+}
 
 
-async def _install_gpu_torch(emit: Callable) -> None:
-    """CUDA torch 휠을 받아 해시를 확인하고 앱 파이썬의 pip 로 GPU_TORCH_DIR 에 깐다(임시 폴더에 깔고 이름을 바꿔 넣는다)."""
-    label = "GPU 실행 환경(약 2GB)"
+async def _install_gpu_torch(emit: Callable, accelerator: str) -> None:
+    """CUDA/XPU torch를 임시 폴더에 완전히 설치한 뒤 원자적으로 GPU_TORCH_DIR에 넣는다."""
+    if accelerator not in _GPU_TORCH_SPECS:
+        raise ValueError(f"지원하지 않는 이미지 검사 가속기: {accelerator}")
+    spec = _GPU_TORCH_SPECS[accelerator]
+    label = spec["label"]
     dest = config.IMAGE_OCR_GPU_TORCH_DIR
     partial = dest.with_name(dest.name + ".partial")
     shutil.rmtree(partial, ignore_errors=True)  # pip --target 은 있는 폴더에 깔지 않는다 — 지난번 실패분은 지우고 새로
     wheel_dir = Path(tempfile.mkdtemp(prefix="securedoc_gpu_torch_"))
     try:
         wheels = []
-        for name, sha in _GPU_TORCH_WHEELS:
+        for name, sha in spec["wheels"]:
             path = wheel_dir / name  # pip 는 파일 이름으로 휠을 알아본다 — 이름을 그대로 둔다
-            await _download("gpu_torch", label, _GPU_TORCH_BASE + quote(name), sha, path, emit)
+            await _download("gpu_torch", label, spec["base"] + quote(name), sha, path, emit)
             wheels.append(str(path))
         # 2GB 휠을 푸느라 몇 분 걸린다(실측 약 2분 30초) — 그동안 진행률이 멈춰 보이지 않게 문구로 알린다
         await emit({"type": "progress", "asset": "gpu_torch", "label": f"{label} 설치 중 — 몇 분 걸립니다...", "pct": 100.0})
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "--disable-pip-version-check",
+            sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *spec["pip"],
             "--target", str(partial), *wheels,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
         out, _ = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"{label} 설치 실패: {out.decode('utf-8', 'replace')[-500:]}")
+        (partial / "accelerator.txt").write_text(accelerator, encoding="ascii")
         if dest.exists():
             shutil.rmtree(dest)
         partial.rename(dest)
@@ -364,11 +386,15 @@ async def _fetch_job(job_id: str) -> None:
             await _download_backbone(emit)
         if config.CONFIDENTIAL_ENABLED and not model_status.confidential_ready():
             await _download_and_extract("confidential", _ASSETS["confidential"], emit)
-        if config.IMAGE_OCR_ENABLED and model_status.image_ocr_gpu():  # GPU 가 없으면 받지 않는다 — 그림이 든 입력은 막힌다
+        accelerator = model_status.image_ocr_accelerator()
+        if config.IMAGE_OCR_ENABLED and accelerator:  # 지원 GPU가 없으면 받지 않는다 — 그림이 든 입력은 막힌다
+            if accelerator == "mps" and not model_status.image_ocr_runtime_ready():
+                # 4.3GB 가중치를 다 받은 다음 번들 누락을 알리는 낭비를 피한다.
+                raise RuntimeError("Apple GPU 실행 환경(torch/torchvision)이 앱에 포함되지 않았습니다. 앱을 다시 설치해 주세요.")
             if not model_status.image_ocr_weights_ready():
                 await _download_image_ocr(emit)
             if not model_status.image_ocr_runtime_ready():
-                await _install_gpu_torch(emit)
+                await _install_gpu_torch(emit, accelerator)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})

@@ -199,11 +199,11 @@ async function ensureModelsAutoDownload() {
     const coreReady = !!(status.pii?.ready && status.injection?.ready);
     // 기밀 탐지 리트리버는 사용자가 기밀 탐지를 켠 경우에만 받는다(선택 기능, 약 330MB)
     const confidentialReady = !status.confidential?.enabled || !!status.confidential?.ready;
-    // 이미지 속 글자 검사(VARCO 4.3GB + GPU 실행 환경 2GB)도 켠 경우에만. NVIDIA GPU 가 없으면(gpu:false) 엔진이 받지 않는다.
+    // 이미지 속 글자 검사도 켠 경우에만. CUDA·Intel XPU·Apple MPS가 없으면(gpu:false) 엔진이 받지 않는다.
     const imageOcrReady = !status.imageOcr?.enabled || !!status.imageOcr?.ready || status.imageOcr?.gpu === false;
     if (coreReady && confidentialReady && imageOcrReady) return; // 이미 준비된 상태 — 재다운로드 불필요
 
-    const optional = [!confidentialReady && '기밀 탐지 모델(약 330MB)', !imageOcrReady && '이미지 검사 모델·GPU 실행 환경(최대 약 6.3GB)']
+    const optional = [!confidentialReady && '기밀 탐지 모델(약 330MB)', !imageOcrReady && '이미지 검사 모델(VARCO 약 4.3GB)·GPU 실행 환경']
       .filter(Boolean)
       .join('·');
     ipc.broadcast('models:fetchProgress', {

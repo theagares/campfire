@@ -337,6 +337,14 @@ jobs:
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             echo "$APP_FILE" | grep -q arm64
             echo "$PY_FILE" | grep -q arm64
+            # 이미지 OCR은 Apple Silicon에서 별도 CUDA 폴더가 아니라 이 번들 런타임의
+            # MPS torch/torchvision을 쓴다. 누락·잘못된 아키텍처를 릴리스 전에 잡는다.
+            "$RES/.venv/bin/python" - <<'PY'
+          import torch
+          import torchvision
+          assert torch.backends.mps.is_built(), "번들 torch에 MPS 지원이 없습니다"
+          print("MPS OCR runtime:", torch.__version__, torchvision.__version__)
+          PY
           else
             echo "$APP_FILE" | grep -Eq 'x86_64|x86-64'
             echo "$PY_FILE" | grep -Eq 'x86_64|x86-64'

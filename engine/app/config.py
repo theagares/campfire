@@ -423,9 +423,10 @@ UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
 # ── 이미지 속 글자 검사 (선택 기능, core/detectors/image_ocr.py) ──────────────────
 # 이미지 파일(화면 캡처)과 DOCX·PPTX 속 그림을 NCSOFT VARCO-VISION-2.0-1.7B(CC BY-NC 4.0)로 읽어 본문의 그 자리에 넣고
 # 기존 탐지를 그대로 돌린다. 사진으로 찍은 문서는 대상이 아니다(화면 캡처 기준으로 맞춤).
-# GPU(CUDA) 에서만 돈다 — 사이드카가 GPU 를 못 찾으면 글자 검사 대상 이미지가 든 입력은 막는다(보내지 않는다).
-# Windows 설치본의 torch 는 CPU 빌드라, NVIDIA GPU 가 있으면 모델 받기 때 CUDA torch 를 GPU_TORCH_DIR 에 따로 깔고
-# 사이드카에만 앞세운다(PYTHONPATH, adapters/http_api/models.py). SECUREDOC_IMAGE_OCR_PYTHON 을 주면 그 파이썬을 그대로 쓴다.
+# NVIDIA CUDA·Intel Arc XPU·Apple Silicon MPS에서 돈다. 사이드카가 지원 GPU를 못 찾으면 글자 검사 대상 이미지가 든
+# 입력은 막는다(보내지 않는다). Windows 설치본의 torch는 CPU 빌드라, 모델 받기 때 감지한 CUDA/XPU torch를
+# GPU_TORCH_DIR에 따로 깔아 사이드카에만 앞세운다(PYTHONPATH, adapters/http_api/models.py). Apple Silicon은 앱에
+# 번들된 arm64 torch를 그대로 쓴다. SECUREDOC_IMAGE_OCR_PYTHON을 주면 그 파이썬을 그대로 쓴다.
 IMAGE_OCR_ENABLED: bool = os.environ.get("SECUREDOC_IMAGE_OCR_ENABLED", "0") == "1"
 IMAGE_OCR_ENGINE_DIR: Path = MODELS_ROOT / "varco_ocr"
 IMAGE_OCR_GPU_TORCH_DIR: Path = IMAGE_OCR_ENGINE_DIR / "gpu_torch"
