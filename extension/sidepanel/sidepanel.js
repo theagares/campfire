@@ -27,7 +27,7 @@ const el = {
   docName: $('doc-name'), docType: $('doc-type'), diff: $('diff'), items: $('items'),
   errTitle: $('err-title'), errMsg: $('err-msg'),
   footer: $('footer'), maskSummary: $('mask-summary'),
-  btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
+  btnCancel: $('btn-cancel'), btnSend: $('btn-send'),
   tabs: $('tabs'), docActions: $('doc-actions'),
   confidentialPill: $('confidential-pill'),
   liveProgress: $('live-progress'), liveProgressText: $('live-progress-text'),
@@ -912,7 +912,7 @@ function renderStaleDecision() {
 }
 
 function sendDecision(decision) {
-  // 만료 안내가 떠 있는 상태에서 [취소]/[닫기]를 누르면 닫히기만 하면 된다.
+  // 만료 안내가 떠 있는 상태에서 [취소]를 누르면 닫히기만 하면 된다.
   if (state.stale) { closeSelf(); return; }
   if (state.decided) return;
   state.decided = true;
@@ -980,9 +980,6 @@ function blockingReason() {
 }
 
 el.btnCancel.addEventListener('click', () => (
-  state.kind === 'multi' ? sendMultiDecision({ action: 'cancel' }) : sendDecision({ action: 'cancel' })
-));
-el.btnClose.addEventListener('click', () => (
   state.kind === 'multi' ? sendMultiDecision({ action: 'cancel' }) : sendDecision({ action: 'cancel' })
 ));
 

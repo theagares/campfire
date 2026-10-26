@@ -46,6 +46,11 @@ assert.match(
   /id="live-progress"[^>]*role="status"[^>]*aria-live="polite"[^>]*hidden/s,
   '첫 결과 뒤 남은 검사를 알릴 라이브 진행 영역이 없거나 기본 숨김 상태가 아니다',
 );
+assert.doesNotMatch(
+  PANEL_HTML,
+  /id="btn-close"|class="close-btn"/,
+  '결정 없이 패널만 닫아 이전 문서가 남는 우측 상단 X 버튼이 다시 생겼다',
+);
 
 /** sidepanel.js 를 스텁 DOM 위에 올리고 조작 손잡이를 돌려준다. */
 function loadPanel(opts = {}) {
