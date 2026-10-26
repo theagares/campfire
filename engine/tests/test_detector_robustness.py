@@ -345,3 +345,43 @@ def test_sidecar_path_loads_pii_before_injection(monkeypatch):
 
     asyncio.run(orchestrator.run_pipeline(text="평범한 문서입니다."))
     assert order.index("pii_load") < order.index("injection_classify")
+
+
+def test_pii_respawns_when_warmup_kills_process(monkeypatch):
+    # 예열 중 sidecar 가 죽으면 _rpc 가 버리고(_process=None) 예외는 삼켜진다. 그대로 준비 완료로 두면
+    # 첫 실요청이 죽은 프로세스에 써서 "Connection lost" 로 /jobs 500 (v0.2.49 Windows 릴리스 E2E).
+    detector = object.__new__(EncoderPiiDetector)
+    detector._process, detector._process_ready, detector._proc_lock = None, False, asyncio.Lock()
+    spawned = []
+
+    async def spawn():
+        spawned.append(1)
+        detector._process = _FakeProc()
+
+    async def dying_warmup(texts):
+        detector._process = None
+        raise RuntimeError("서브프로세스가 응답 없이 종료됨")
+
+    monkeypatch.setattr(detector, "_spawn_process", spawn)
+    monkeypatch.setattr(detector, "_infer_batch", dying_warmup)
+    asyncio.run(detector._ensure_process())
+    assert len(spawned) == 2 and detector._process is not None and detector._process_ready
+
+
+def test_pii_write_to_dead_sidecar_reports_stderr_and_discards():
+    class _Dead(_FakeProc):
+        def __init__(self):
+            super().__init__()
+            self.stdout = self.stderr = self
+
+        async def drain(self):
+            raise ConnectionResetError("Connection lost")
+
+        async def read(self):
+            return b"Traceback (most recent call last): ... MemoryError"
+
+    detector = object.__new__(EncoderPiiDetector)
+    detector._next_id, detector._request_lock, detector._process = 0, asyncio.Lock(), _Dead()
+    with pytest.raises(RuntimeError, match="이미 종료됨.*MemoryError"):
+        asyncio.run(detector._rpc({"texts": ["x"]}))
+    assert detector._process is None  # 다음 요청이 새로 띄운다

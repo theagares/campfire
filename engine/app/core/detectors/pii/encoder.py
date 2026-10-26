@@ -257,6 +257,11 @@ class EncoderPiiDetector:
             self._process_ready = False
             await self._spawn_process()
             await self._warmup()
+            if self._process is None or self._process.returncode is not None:
+                # 예열 중 프로세스가 죽었다(예열 실패는 삼킨다 — _rpc 가 정리해 둔다). 그대로 준비 완료로
+                # 두면 첫 실요청이 죽은 프로세스에 써서 "Connection lost" 로 검사 전체가 실패했다
+                # (v0.2.49 Windows 릴리스 E2E). 인젝션 탐지기와 같이 한 번 다시 띄운다.
+                await self._spawn_process()
             self._process_ready = True
 
     async def _warmup(self) -> None:
@@ -276,8 +281,13 @@ class EncoderPiiDetector:
             proc = self._process
             assert proc is not None and proc.stdin is not None and proc.stdout is not None
             line = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
-            proc.stdin.write(line)
-            await proc.stdin.drain()
+            try:
+                proc.stdin.write(line)
+                await proc.stdin.drain()
+            except OSError as exc:  # 이미 죽은 프로세스 — asyncio 가 아직 종료를 못 봤다
+                raise RuntimeError(
+                    f"{self.name}: 서브프로세스가 이미 종료됨({exc}): {await self._discard_dead(proc)}"
+                ) from exc
             # 응답 대기 상한 — 인젝션 쪽(_infer)과 같은 이유다. 이 대기는
             # _request_lock 안이라, 멎으면 뒤에 줄 선 청크가 전부 함께 멎는다.
             loop = asyncio.get_running_loop()
@@ -296,11 +306,8 @@ class EncoderPiiDetector:
                 except asyncio.TimeoutError:
                     continue  # 다음 루프에서 remaining<=0 으로 걸려 위 분기로 간다
                 if not out_line:
-                    stderr = b""
-                    if proc.stderr is not None:
-                        stderr = await proc.stderr.read()
                     raise RuntimeError(
-                        f"{self.name}: 서브프로세스가 응답 없이 종료됨: {stderr.decode(errors='replace')[-2000:]}"
+                        f"{self.name}: 서브프로세스가 응답 없이 종료됨: {await self._discard_dead(proc)}"
                     )
                 try:
                     result = json.loads(out_line.decode())
@@ -309,6 +316,15 @@ class EncoderPiiDetector:
         if "error" in result:
             raise RuntimeError(f"{self.name}: 추론 오류: {result['error']}")
         return result
+
+    async def _discard_dead(self, proc: asyncio.subprocess.Process) -> str:
+        """죽은 서브프로세스의 stderr 끝부분을 돌려주고 버린다 — 다음 요청이 새로 띄운다."""
+        stderr = b""
+        if proc.stderr is not None:
+            with contextlib.suppress(Exception):
+                stderr = await asyncio.wait_for(proc.stderr.read(), timeout=5.0)
+        await self._kill_process()
+        return stderr.decode(errors="replace")[-2000:]
 
     def prepare_windows(self, text: str) -> list[tuple[str, int]]:
         """통합 worker와 개별 sidecar가 동일한 400/60 윈도우를 쓰게 한다."""

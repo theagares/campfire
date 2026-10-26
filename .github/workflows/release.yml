@@ -291,12 +291,23 @@ jobs:
             }
             if (-not $modelsReady) { Start-Sleep -Seconds 10 }
           }
-          if (-not $modelsReady) { Write-Error "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1 }
+          # macOS 단계의 dump_engine_log 와 같다 — 사이드카가 죽은 이유는 엔진 로그에만 남는다.
+          function Show-EngineLog {
+            $log = Join-Path $env:LOCALAPPDATA 'Campfire\logs\engine.log'
+            Write-Output "--- engine.log (마지막 200줄) ---"
+            if (Test-Path $log) { Get-Content $log -Tail 200 -Encoding utf8 } else { Write-Output "(없음: $log)" }
+          }
+          if (-not $modelsReady) { Show-EngineLog; Write-Error "PII/인젝션 모델이 30분 안에 준비되지 않았습니다"; exit 1 }
 
           # 실재하지 않는 테스트 전용 토큰이다. credential detector가 반드시 가리고,
           # scanStatus=ok는 모델 미준비 시의 무검사 통과가 아니었음을 보장한다.
           $rawSecret = 'ghp_16C7e42F292c6912E7710c838347Ae178B4a'
-          $result = Invoke-RestMethod "http://127.0.0.1:$port/jobs/prompt" -Method Post -Body @{ text = "GITHUB_TOKEN=$rawSecret" } -TimeoutSec 420 -UseBasicParsing
+          try {
+            $result = Invoke-RestMethod "http://127.0.0.1:$port/jobs/prompt" -Method Post -Body @{ text = "GITHUB_TOKEN=$rawSecret" } -TimeoutSec 420 -UseBasicParsing
+          } catch {
+            Show-EngineLog
+            throw
+          }
           if (-not $result.done -or $result.result.scanStatus -ne 'ok') {
             throw "실제 스캔이 완료되지 않았습니다: $($result | ConvertTo-Json -Depth 10)"
           }
