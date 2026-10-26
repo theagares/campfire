@@ -29,10 +29,13 @@ const el = {
   footer: $('footer'), maskSummary: $('mask-summary'),
   btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
   tabs: $('tabs'), docActions: $('doc-actions'),
+  confidentialPill: $('confidential-pill'),
 };
 
-// 진행 단계 순서(2번째 인젝션 탐지가 3이 아닌 4인 것은 SW 쪽 단계 정의를 따름)
-const PROGRESS_STEP_ORDER = [1, 2, 4, 5];
+// 기밀 탐지는 인젝션 뒤에 실행된다. 엔진 단계 번호는 3이지만 실제 실행 순서에 맞춰
+// 1 → 2 → 4 → 3 → 5 로 표시한다. 기능을 끄면 기존 네 단계 진행률을 그대로 쓴다.
+const BASE_PROGRESS_STEP_ORDER = [1, 2, 4, 5];
+const CONFIDENTIAL_PROGRESS_STEP_ORDER = [1, 2, 4, 3, 5];
 
 let state = {
   sessionId: null,
@@ -49,6 +52,7 @@ let state = {
   expanded: new Set(),   // 펼쳐진 그룹의 dtype
   decided: false,
   stale: false,   // 결정이 만료돼 적용되지 못한 상태 — 아래 renderStaleDecision 참고
+  confidentialEnabled: false,
 
   // ── 다중 첨부 ──
   // docs 는 SW 가 보내온 **메타**만 담는다. 본문(originalText/탐지 항목)은 활성 탭을
@@ -673,6 +677,21 @@ function showView(name) {
   el.footer.hidden = name !== 'result';
 }
 
+function setConfidentialEnabled(enabled) {
+  state.confidentialEnabled = Boolean(enabled);
+  el.confidentialPill.hidden = !state.confidentialEnabled;
+}
+
+/** 앱과 같은 /health 값을 써서 선택 기능 표시를 맞춘다. 패널은 스캔 사이에도 살아 있을
+ * 수 있으므로 로드 때뿐 아니라 새 검사 시작 때도 다시 읽는다. 연결 실패 시에는 이전에
+ * 확인한 상태를 유지해 진행 중인 표시가 갑자기 사라지지 않게 한다. */
+function refreshCapabilities() {
+  chrome.runtime.sendMessage({ type: 'GET_CONNECTION_INFO' }, (res) => {
+    if (chrome.runtime.lastError || !res?.ok) return;
+    setConfidentialEnabled(res.health?.confidential?.enabled);
+  });
+}
+
 function applyProgress(event) {
   if (!event) return;
   if (event.type === 'warning') {
@@ -685,9 +704,14 @@ function applyProgress(event) {
     return;
   }
   if (event.type !== 'step') return;
-  const order = PROGRESS_STEP_ORDER.indexOf(event.step);
+  // 상태 조회보다 진행 이벤트가 먼저 도착해도 실제로 실행 중인 기밀 단계를 숨기지 않는다.
+  if (event.step === 3) setConfidentialEnabled(true);
+  const stepOrder = state.confidentialEnabled
+    ? CONFIDENTIAL_PROGRESS_STEP_ORDER
+    : BASE_PROGRESS_STEP_ORDER;
+  const order = stepOrder.indexOf(event.step);
   if (order >= 0) {
-    const pct = ((order + (event.done ? 1 : 0.5)) / PROGRESS_STEP_ORDER.length) * 100;
+    const pct = ((order + (event.done ? 1 : 0.5)) / stepOrder.length) * 100;
     el.progressFill.style.width = `${Math.max(8, Math.min(100, pct))}%`;
   }
   if (event.label) el.progressTitle.textContent = event.label;
@@ -993,6 +1017,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   // ── 다중 첨부 ──
   // 여기로 오는 건 전부 메타다. 본문은 활성 탭이 GET_PANEL_ITEM_RESULT 로 끌어온다.
   if (msg.type === 'PANEL_SCAN_INIT') {
+    refreshCapabilities();
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
     renderMulti({ docs: msg.docs, prompt: { status: 'pending', counts: null } });
@@ -1025,6 +1050,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.type === 'PANEL_PROGRESS') {
+    if (msg.sessionId && msg.sessionId !== state.sessionId) refreshCapabilities();
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
     // itemId 가 붙어 오면 다중 검사의 한 항목이다 — 막대를 항목 단계로 덮지 않는다.
@@ -1064,4 +1090,5 @@ function pullSnapshot() {
 }
 
 renderProgress(null);
+refreshCapabilities();
 pullSnapshot();
