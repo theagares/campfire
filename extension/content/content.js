@@ -2655,7 +2655,11 @@
     // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
-    if (!protectionEnabled || proxyChecksPrompts() || promptApproved) return;
+    if (!protectionEnabled || promptApproved) return;
+    // 프록시가 프롬프트를 보는 사이트라도 확장이 붙들어 둔 첨부가 있으면 함께 검사한다 — Perplexity 는 파일은
+    // 확장(PROXY_FILE_HOSTS 에 없음), 프롬프트는 프록시가 맡아, 여기서 돌아가면 첨부가 검사도 전송도 안 된 채
+    // 프롬프트만 나간다. 확장이 가린 프롬프트는 프록시를 깨끗한 글로 지난다.
+    if (proxyChecksPrompts() && !pendingBatch) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
