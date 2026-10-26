@@ -54,6 +54,7 @@ let state = {
   decided: false,
   stale: false,   // 결정이 만료돼 적용되지 못한 상태 — 아래 renderStaleDecision 참고
   confidentialEnabled: false,
+  confidentialRunIn: undefined,  // 기밀 탐지(3단계)가 실제로 돈 세션 — 지금 세션일 때만 불을 켠다
 
   // ── 다중 첨부 ──
   // docs 는 SW 가 보내온 **메타**만 담는다. 본문(originalText/탐지 항목)은 활성 탭을
@@ -195,6 +196,8 @@ function renderMulti(session) {
   state.docs = session.docs || [];
   state.promptMeta = session.prompt || { status: 'pending', counts: null };
   state.multiCurrent = session.current || null;
+  if (state.multiCurrent?.step === 3) markConfidentialRun();
+  else syncConfidentialPill();
   const draft = session.draft || {};
   state.unmasked = new Set(draft.unmaskedKeys || []);
   state.loaded = new Map();
@@ -296,7 +299,8 @@ function syncMultiView() {
  * 파일이 바뀔 때 막대가 뒤로 튀지 않게 한다. 제목은 지금 단계, 부제는 현재 파일이다. */
 function applyMultiProgress(event, itemId) {
   if (!event || (event.type !== 'step' && event.type !== 'status')) return;
-  if (event.step === 3) setConfidentialEnabled(true);
+  if (event.step === 3) markConfidentialRun();
+  else syncConfidentialPill();
   state.multiCurrent = { ...event, phase: event.phase || 'scanning', itemId };
   syncMultiProgressDisplay();
 }
@@ -743,6 +747,19 @@ function showView(name) {
 function setConfidentialEnabled(enabled) {
   state.confidentialEnabled = Boolean(enabled);
   el.confidentialPill.hidden = !state.confidentialEnabled;
+  syncConfidentialPill();
+}
+
+/** 줄은 설정이 켜지면 보이고(앱 홈과 같다), 불은 이 세션에서 기밀 탐지가 실제로 돌았을 때만 켠다.
+ * 엔진은 KG 후보가 있는 글에서만 3단계를 보낸다 — KG 와 관계없는 글·프롬프트, KG·모델이 준비 안 된
+ * 엔진에서는 설정이 켜져 있어도 탐지가 돌지 않는데 예전엔 검사 내내 켜진 모양이었다. */
+function markConfidentialRun() {
+  state.confidentialRunIn = state.sessionId;
+  setConfidentialEnabled(true);
+}
+
+function syncConfidentialPill() {
+  el.confidentialPill.classList.toggle('off', state.confidentialRunIn !== state.sessionId);
 }
 
 /** 앱과 같은 /health 값을 써서 선택 기능 표시를 맞춘다. 패널은 스캔 사이에도 살아 있을
@@ -773,7 +790,8 @@ function applyProgress(event) {
   }
   if (event.type !== 'step') return;
   // 상태 조회보다 진행 이벤트가 먼저 도착해도 실제로 실행 중인 기밀 단계를 숨기지 않는다.
-  if (event.step === 3) setConfidentialEnabled(true);
+  if (event.step === 3) markConfidentialRun();
+  else syncConfidentialPill();
   const stepOrder = state.confidentialEnabled
     ? CONFIDENTIAL_PROGRESS_STEP_ORDER
     : BASE_PROGRESS_STEP_ORDER;
@@ -788,6 +806,7 @@ function applyProgress(event) {
 function renderProgress(session) {
   showView('progress');
   el.liveProgress.hidden = true;
+  syncConfidentialPill();  // 새 세션이면 끈 채로 시작 — 아래에서 다시 그리는 3단계가 켠다
   el.counts.textContent = session ? '검사 중…' : '준비 중…';
   el.progressTitle.textContent = session ? '문서 보안 분석 중…' : '검사 준비 중…';
   el.progressSub.textContent = session ? '' : '검사 요청을 준비하고 있습니다';
