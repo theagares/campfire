@@ -6,6 +6,7 @@
   - 리트리버는 창마다 여러 번, Solar 는 문서당 1회 (문서 전체 문장 + 모든 창의 통과 사실)
   - 결과 문장에서 PII 구간을 빼서 내보낸다 (PII 는 자기 토글 유지)
   - 리트리버가 거른 사실은 Solar 로 가지 않는다
+  - Solar 판정 결과 캐시는 최근 1만 건 LRU 로 유지한다
   - Solar 를 못 쓰면 근거 문장을 낮은 신뢰도로 가린다 (막는 쪽)
   - 파이프라인에서 piiItems 에 CONFIDENTIAL 로 실려 [기밀 마스킹] 된다
 """
@@ -381,6 +382,33 @@ def test_판정_답은_공개를_빼고_읽고_사실을_빠뜨리면_다시_묻
     assert judge.parse('{"공개": [], "진술": {"T1": [3]}}', 5, 2) is None       # T2 를 건너뜀
     assert judge.parse('{"공개": [], "진술": {"T1": [9]}}', 5, 1) is None       # 문장 번호를 못 맞춤
     assert judge.parse('{"기밀": [{"s": 3, "t": 1}]}', 5, 1) is None           # 예전 형식
+
+
+def test_기밀_판정_캐시는_최근_1만개_LRU(monkeypatch):
+    assert judge._CACHE_MAX == 10_000
+    monkeypatch.setattr(config, "UPSTAGE_API_KEY", "test-key", raising=False)
+    spy = _SpySolar({"기밀"})
+    monkeypatch.setattr(judge, "_client", spy)
+    judge._cache.clear()
+    # 실제 상한까지 API 가짜 호출을 1만 번 돌리지 않고, 같은 제거 로직을 작은 경계로 검증한다.
+    monkeypatch.setattr(judge, "_CACHE_MAX", 3)
+
+    async def scenario():
+        def args(i: int):
+            return [f"회사{i}의 값은 값{i}이다."], [(f"회사{i}", "기밀", f"값{i}")]
+
+        for i in range(3):
+            await judge.judge(*args(i))
+        await judge.judge(*args(0))  # 첫 항목을 최근 사용으로 올린다
+        await judge.judge(*args(3))  # 이제 가장 오래된 1번이 제거된다
+        await judge.judge(*args(1))  # 제거됐으므로 API 를 다시 부른다
+
+    try:
+        asyncio.run(scenario())
+        assert len(judge._cache) == 3
+        assert len(spy.sent) == 5  # 최초 3 + 새 항목 1 + 제거된 항목 재호출 1
+    finally:
+        judge._cache.clear()
 
 
 def test_시연_추적은_켰을_때만_KG_사실과_가린_문장의_연결을_싣는다(setup, monkeypatch):
