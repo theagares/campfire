@@ -123,6 +123,26 @@ def test_같은_그림은_한_번만_읽는다(monkeypatch):
     assert len(calls) == 1 and [i["status"] for i in infos] == ["read", "read"] and text.count("로고 아님") == 2
 
 
+def test_VARCO_는_같은_줄을_되풀이하면_상한까지_가지_않고_멈춘다():
+    """로고 조각이 "VARCO-VISION\\n"(6토큰)을 2048토큰까지 뽑아 그림 한 장이 77초 걸렸다(서버 실측)."""
+    import importlib.util
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from pathlib import Path
+
+    runtime = Path(__file__).resolve().parents[1] / "app" / "models" / "varco_ocr" / "runtime" / "varco_ocr_inference.py"
+    spec = importlib.util.spec_from_file_location("varco_rt", runtime)
+    rt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rt)
+    n_in = 10
+    stop = rt._stopper(torch.tensor([2048]), n_in)[0]
+    line = [11, 12, 13, 14, 15, 99]  # 한 줄 + 줄바꿈
+    assert stop(torch.tensor([[1] * n_in + line * 17]), None).item()               # 96토큰 넘게 같은 줄 → 멈춤
+    assert not stop(torch.tensor([[1] * n_in + line * 5 + list(range(100, 170))]), None).item()  # 다른 글이 이어지면 계속
+    assert not stop(torch.tensor([[1] * n_in + list(range(100, 230))]), None).item()
+
+
 def test_GPU_가_없다고_한_번_보면_다시_띄우지_않는다(monkeypatch):
     proc = image_ocr.VarcoOcrProcess()
     monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)

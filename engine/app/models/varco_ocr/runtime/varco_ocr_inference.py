@@ -232,7 +232,9 @@ def _stopper(limits: torch.Tensor, n_in: int):
     from transformers import StoppingCriteria, StoppingCriteriaList
 
     class Stop(StoppingCriteria):
-        """되풀이(같은 토큰 12번, 마지막 32토큰이 2~4토큰 주기)거나 조각별 상한에 닿은 줄만 멈춘다."""
+        """되풀이(같은 토큰 12번, 마지막 32토큰이 2~4토큰 주기, 마지막 96토큰이 5~16토큰 주기)거나 조각별 상한에
+        닿은 줄만 멈춘다. 긴 주기는 같은 줄의 되풀이다 — 로고 조각이 "VARCO-VISION\\n"(6토큰)을 상한 2048토큰까지
+        뽑아 그림 한 장이 77초 걸렸다(줄은 clean 이 지워 글에는 안 남는다). 정상 글이 같은 줄을 6번 넘게 잇는 일은 드물다."""
 
         def __call__(self, input_ids, scores, **kwargs):
             t = input_ids[:, -12:]
@@ -240,6 +242,10 @@ def _stopper(limits: torch.Tensor, n_in: int):
             if input_ids.shape[1] >= 32:
                 w = input_ids[:, -32:]
                 for p in (2, 3, 4):
+                    stop |= (w[:, p:] == w[:, :-p]).all(dim=1)
+            if input_ids.shape[1] - n_in >= 96:
+                w = input_ids[:, -96:]
+                for p in range(5, 17):
                     stop |= (w[:, p:] == w[:, :-p]).all(dim=1)
             return stop | ((input_ids.shape[1] - n_in) >= limits.to(input_ids.device))
 
