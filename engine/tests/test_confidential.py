@@ -3,7 +3,8 @@
 지키는 것:
   - 사전 매칭: 단어 중간 매칭 버림, 겹치면 긴 것, 주어·목적어 둘 다 나온 트리플만 후보
   - Solar 로 원문 PII 가 나가지 않는다 (문장과 사실 문장 모두)
-  - 리트리버는 창마다 여러 번, Solar 는 문서당 1회 (문서 전체 문장 + 모든 창의 통과 사실)
+  - 리트리버는 창마다, Solar 는 사실이 걸린 창마다 1회 (그 창 ± 문장 하나 + 그 창의 통과 사실만)
+  - Solar 가 사실마다 문장 하나만 답해도 같은 사실의 다른 진술·줄바꿈에 쪼개진 반쪽을 가린다
   - 결과 문장에서 PII 구간을 빼서 내보낸다 (PII 는 자기 토글 유지)
   - 리트리버가 거른 사실은 Solar 로 가지 않는다
   - Solar 판정 결과 캐시는 최근 1만 건 LRU 로 유지한다
@@ -144,20 +145,94 @@ def test_솔라로_PII_가_나가지_않고_결과에서_PII_구간을_뺀다(se
     assert not any("서울" in s for s in found)   # 공개 사실(본사 위치) 은 Solar 가 기밀 아니라고 함
 
 
-def test_창이_여러_개여도_솔라는_문서_전체로_한_번(setup, monkeypatch):
+def test_솔라는_사실이_걸린_창마다_그_창의_사실만_묻는다(setup, monkeypatch):
     monkeypatch.setattr(config, "CONFIDENTIAL_WINDOW_CHARS", 25)  # 문장마다 창 하나
     fake, spy = _FakeRetriever(), _SpySolar({"설립자", "출시 시기"})
     setup(fake, spy)
     items = asyncio.run(confidential.detect(DOC, PII))
 
     assert len(fake.requests) == 2              # 설립자 창 · 출시 시기 창 (본사 위치는 주어·목적어가 다른 창)
-    assert len(spy.sent) == 1
-    msg = spy.sent[0]
-    assert sum(ln.startswith("[S") for ln in msg.splitlines()) == len(confidential.split_sentences(DOC))
-    assert "본사는 서울에 있다." in msg            # 사실이 안 걸린 문장도 문맥으로 간다
-    assert {"(오로라, 출시 시기, 2027년 3월)", "(가온연구소, 설립자, [이름 마스킹])"} <= {
-        ln.split("] ", 1)[1] for ln in msg.splitlines() if ln.startswith("[T")}
-    assert "오로라 출시는 2027년 3월로 정했다." in {DOC[it["start"]:it["end"]] for it in items}
+    assert len(spy.sent) == 2                   # 사실이 걸린 창마다 1회
+    facts = [{ln.split("] ", 1)[1] for ln in m.splitlines() if ln.startswith("[T")} for m in spy.sent]
+    assert sorted(map(sorted, facts)) == [["(가온연구소, 설립자, [이름 마스킹])"], ["(오로라, 출시 시기, 2027년 3월)"]]
+    founder = spy.sent[[("설립자" in m) for m in spy.sent].index(True)]
+    assert "오로라 출시는" in founder and "본사는 서울에 있다." not in founder  # 앞뒤 문장 하나까지만 문맥으로
+    found = {DOC[it["start"]:it["end"]] for it in items}
+    assert {"오로라 출시는 2027년 3월로 정했다.", "가온연구소는 김하늘이 세운 연구소다."} <= found
+
+
+REPEAT = ("오로라 출시는 2027년 3월로 정했다. 영업팀은 이 일정을 제안서에 넣는다. "
+          "고객에게도 오로라는 2027년 3월에 나온다고 안내한다. 본사는 서울에 있다.")
+
+
+def test_솔라가_문장_하나만_답해도_같은_사실의_다른_진술을_가린다(setup):
+    fake, spy = _FakeRetriever(), _SpySolar({"출시 시기"})  # 사실마다 목적어가 처음 나온 문장 하나만 답한다
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(REPEAT, []))
+    found = {REPEAT[it["start"]:it["end"]] for it in items}
+    assert {"오로라 출시는 2027년 3월로 정했다.", "고객에게도 오로라는 2027년 3월에 나온다고 안내한다."} <= found
+    assert not any("서울" in s or "영업팀" in s for s in found)
+
+
+class _PickyRetriever(_FakeRetriever):
+    """창 글에 marker 가 있으면 모든 사실을 거른다 — 같은 사실을 창마다 다르게 보는 실제 리트리버처럼."""
+
+    def __init__(self, marker: str) -> None:
+        super().__init__()
+        self.marker = marker
+
+    async def score(self, req: dict) -> list[dict]:
+        out = await super().score(req)
+        if self.marker in req["text"]:
+            for r in out:
+                r["margins"] = [-10.0] * len(r["margins"])
+        return out
+
+
+def test_한_창에서만_통과한_사실도_다른_창의_진술까지_묻는다(setup, monkeypatch):
+    monkeypatch.setattr(config, "CONFIDENTIAL_WINDOW_CHARS", 25)  # 문장마다 창 하나
+    doc = "오로라 출시는 2027년 3월로 정했다. 본사는 서울에 있다. 다시 말해 오로라는 2027년 3월에 나온다."
+    fake, spy = _PickyRetriever("다시 말해"), _SpySolar({"출시 시기"})
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(doc, []))
+    found = {doc[it["start"]:it["end"]] for it in items}
+    assert {"오로라 출시는 2027년 3월로 정했다.", "다시 말해 오로라는 2027년 3월에 나온다."} <= found
+    assert len(spy.sent) == 2
+
+
+def test_줄바꿈에_쪼개진_진술은_옆_문장까지_가린다(setup):
+    doc = "입사 후 오로라 프로젝트의 출시 일정 업무에 배치하며 일정은\n2027년 3월로 확정되었다. 본사는 서울에 있다."
+    fake, spy = _FakeRetriever(), _SpySolar({"출시 시기"})  # 목적어가 든 둘째 줄만 답한다
+    setup(fake, spy)
+    items = asyncio.run(confidential.detect(doc, []))
+    found = {doc[it["start"]:it["end"]] for it in items}
+    assert "입사 후 오로라 프로젝트의 출시 일정 업무에 배치하며 일정은" in found  # 주어(별칭)만 있는 앞줄
+    assert "2027년 3월로 확정되었다." in found
+
+
+class _FailFor(_SpySolar):
+    """본문에 marker 가 든 묶음만 호출 실패."""
+
+    def __init__(self, secret_predicates: set[str], marker: str) -> None:
+        super().__init__(secret_predicates)
+        self.marker = marker
+
+    async def post(self, _url, headers=None, json=None):  # noqa: A002
+        if self.marker in json["messages"][1]["content"]:
+            self.sent.append(json["messages"][1]["content"])
+            raise RuntimeError("timeout")
+        return await super().post(_url, headers=headers, json=json)
+
+
+def test_한_창의_솔라가_실패해도_그_창만_낮은_신뢰도로(setup, monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(judge.asyncio, "sleep", lambda _s: real_sleep(0))
+    monkeypatch.setattr(config, "CONFIDENTIAL_WINDOW_CHARS", 25)
+    fake, spy = _FakeRetriever(), _FailFor({"설립자", "출시 시기"}, "설립자")
+    setup(fake, spy)
+    items = {DOC[it["start"]:it["end"]]: it for it in asyncio.run(confidential.detect(DOC, PII))}
+    assert items["가온연구소는 김하늘이 세운 연구소다."]["confidence"] == 0.5     # 실패한 창은 근거 문장을 낮게
+    assert items["오로라 출시는 2027년 3월로 정했다."]["source"] == "llm"        # 다른 창은 Solar 판정대로
 
 
 class _FlakySolar(_SpySolar):
