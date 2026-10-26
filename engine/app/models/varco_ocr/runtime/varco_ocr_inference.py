@@ -35,9 +35,16 @@ PROMPT = ("이 이미지의 글자를 마크다운으로 빠짐없이 원문 그
 NO_TEXT = re.compile(r"(글자|텍스트|문자)[가는이]?\s*(없|보이지)")
 SELF_NAME = re.compile(r"^\W*VARCO[\s-]*VISION\W*$", re.I)  # 빈 곳·아이콘 조각에 모델이 자기 이름을 지어낸다
 DRAWING = re.compile(r"\\(begin|end)\{|\\(draw|node|path|fill|includegraphics)\b")  # 차트·도형을 그림 코드로 옮긴 줄
+# 줄 전체가 LaTeX 명령뿐 — 로고·도형 조각을 '\circle' 처럼 옮긴 것. 'C:\Users\이름' 같은 경로는 앞에 다른 글이 있어 남는다
+ONLY_LATEX = re.compile(r"^\s*(\\[A-Za-z]+(\{[^{}]*\})*\s*)+$")
+CIRCLED = re.compile(r"\\(?:textcircled|circled)\{(\d{1,2})\}")  # 번호 목록의 ①② 를 이렇게 옮긴다
+# 글자를 감싼 명령은 안의 글자만 남긴다 — 차트 범례가 '\red{선} \blue{원}' 으로 왔다. 그림 코드(\begin·\end)는 DRAWING 이 거르게 둔다
+COLORED = re.compile(r"\\textcolor\{[^{}]*\}\{([^{}]*)\}")
+WRAPPED = re.compile(r"\\(?!begin\b|end\b)[A-Za-z]+\{([^{}\\]*[^\W\d_][^{}\\]*)\}")
 LATEX = {"cdot": "·", "rightarrow": "→", "to": "→", "leftarrow": "←", "hookrightarrow": "↪", "Rightarrow": "⇒",
          "longrightarrow": "→", "leftrightarrow": "↔", "geq": "≥", "leq": "≤", "star": "★",
-         "times": "×", "pm": "±", "sim": "~", "checkmark": "✓"}
+         "times": "×", "pm": "±", "sim": "~", "checkmark": "✓", "mid": "|", "bullet": "•", "hline": ""}
+SHAPE = re.compile(r"\\(?:circle|square|triangle)\b(?:\{[^{}]*\})?")  # 아이콘 도형('\circle{blue}') — 글자가 아니다
 MAX_NEW = 2048  # 조각 하나의 출력 상한 — 실제로는 조각 넓이로 더 작게 잡는다(tile_budget)
 
 
@@ -113,6 +120,10 @@ def _has_text(line: str) -> bool:
     return len(kinds) > 1 or (len(kinds) == 1 and len(line.strip()) <= 2)
 
 
+def _circled(n: int) -> str:
+    return "⓪" if n == 0 else chr(0x2460 + n - 1) if n <= 20 else f"({n})"
+
+
 def clean(raw: str) -> str:
     """마크다운 출력 → 글. 정해 둔 LaTeX 명령만 바꾼다(아무 '\\단어' 나 지우면 화면 속 'C:\\Users\\이름' 경로가 사라진다)."""
     s = re.sub(r"<\|[^>]+\|>", "", raw)
@@ -121,10 +132,13 @@ def clean(raw: str) -> str:
     s = s.replace("**", "").replace("|", " ")
     s = re.sub(r"\\[\[\]()]", " ", s)
     s = re.sub(r"\\text\{([^{}]*)\}", r"\1", s)
+    s = CIRCLED.sub(lambda m: _circled(int(m.group(1))), s)
+    s = WRAPPED.sub(r"\1", COLORED.sub(r"\1", SHAPE.sub("", s)))
     s = re.sub(r"\\(" + "|".join(LATEX) + r")\b", lambda m: LATEX[m.group(1)], s)
     s = re.sub(r"\$\s*([^\w\s$]{1,3})\s*\$", r"\1", s)  # 기호 하나를 감싼 수식 '$→$' — '$5' 같은 돈 표시는 그대로
     return "\n".join(l.strip() for l in s.splitlines()
-                     if _has_text(l) and not NO_TEXT.search(l) and not SELF_NAME.match(l) and not DRAWING.search(l))
+                     if _has_text(l) and not NO_TEXT.search(l) and not SELF_NAME.match(l) and not DRAWING.search(l)
+                     and not ONLY_LATEX.match(l))
 
 
 def join_blocks(pieces: list[str], boxes) -> tuple[str, list[tuple[int, int, int]]]:
