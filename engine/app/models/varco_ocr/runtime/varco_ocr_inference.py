@@ -1,7 +1,8 @@
 """이미지 속 글자 읽기 — NCSOFT VARCO-VISION-2.0-1.7B (일반 모델, CC BY-NC 4.0).
 
 엔진이 하위 프로세스로 띄운다(stdio JSON 한 줄씩).
-    준비: {"ready": true, "device": "cuda"}  |  GPU 가 없으면 {"ready": false, "error": "no_gpu"} 후 끝낸다
+    준비: {"ready": true, "device": "cuda|xpu|mps"}  |  지원 GPU가 없으면
+          {"ready": false, "error": "no_accelerator"} 후 끝낸다
     요청: {"id", "images": ["<base64 PNG/JPEG>", ...]}
     응답: {"id", "results": [{"text", "tiles": [{"box": [x0, y0, x1, y1], "start", "end"}], "secs"}]}
           start/end 는 text 안에서 그 조각 글이 있는 위치(엔진은 지금 text 만 쓴다 — 이미지도 글로 판정·출력).
@@ -180,16 +181,55 @@ def join_blocks(pieces: list[str], boxes) -> tuple[str, list[tuple[int, int, int
 
 
 # ── 모델 ───────────────────────────────────────────────────────────────────────
+def resolve_device() -> str | None:
+    """이 사이드카에 설치된 torch가 실제로 쓸 수 있는 GPU를 고른다."""
+    if torch.cuda.is_available():
+        return "cuda"
+    xpu = getattr(torch, "xpu", None)
+    if xpu is not None and xpu.is_available():
+        return "xpu"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return None
+
+
+def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int, int]:
+    """VRAM/통합 메모리가 작은 GPU에서 묶음만 줄인다. 출력 상한·모델·정밀도는 바꾸지 않는다."""
+    total = None
+    try:
+        if device == "xpu":
+            total = torch.xpu.get_device_properties(0).total_memory
+        elif device == "mps":
+            mps = getattr(torch, "mps", None)
+            if mps is not None and hasattr(mps, "recommended_max_memory"):
+                total = mps.recommended_max_memory()
+    except (AttributeError, RuntimeError):
+        pass
+    if total is not None and total < 10 * 1024**3:
+        return min(batch, 2), min(token_budget, 1500)
+    if total is not None and total < 16 * 1024**3:
+        return min(batch, 4), min(token_budget, 3000)
+    return batch, token_budget
+
+
+def _empty_cache(device: str) -> None:
+    backend = getattr(torch, device, None)
+    empty = getattr(backend, "empty_cache", None)
+    if empty is not None:
+        empty()
+
+
 @torch.no_grad()
-def load_model(model_dir: Path):
-    """가중치를 텐서 하나씩 읽어 바로 GPU 로. from_pretrained 는 Windows 에서 파일 크기(4.3GB)만큼 커밋을 잡아,
+def load_model(model_dir: Path, device: str):
+    """가중치를 텐서 하나씩 읽어 바로 가속기로. from_pretrained 는 Windows 에서 파일 크기(4.3GB)만큼 커밋을 잡아,
     다른 모델이 떠 있으면 '페이징 파일이 너무 작습니다'(1455)로 실패했다(실측)."""
     from transformers import AutoConfig, LlavaOnevisionForConditionalGeneration
     try:
         from transformers.initialization import no_init_weights
     except ImportError:  # transformers 4.x
         from transformers.modeling_utils import no_init_weights
-    with torch.device("cuda"), no_init_weights():
+    with torch.device(device), no_init_weights():
         model = LlavaOnevisionForConditionalGeneration._from_config(AutoConfig.from_pretrained(model_dir),
                                                                      dtype=torch.float16, attn_implementation="sdpa")
     targets = model.state_dict()
@@ -247,12 +287,13 @@ def _stopper(limits: torch.Tensor, n_in: int):
 
 
 class Reader:
-    def __init__(self, model_dir: Path, batch: int, token_budget: int):
+    def __init__(self, model_dir: Path, batch: int, token_budget: int, device: str):
         from transformers import AutoProcessor
-        self.model = load_model(model_dir)
+        self.device = device
+        self.model = load_model(model_dir, device)
         self.proc = AutoProcessor.from_pretrained(model_dir)
         self.proc.tokenizer.padding_side = "left"
-        self.batch, self.budget = batch, token_budget
+        self.batch, self.budget = _memory_safe_limits(device, batch, token_budget)
         self.eos = self.proc.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.pad = self.proc.tokenizer.pad_token_id
 
@@ -278,7 +319,7 @@ class Reader:
             groups.append(cur)
         raws = [""] * len(crops)
         for idx in groups:
-            inputs = self._encode([crops[i] for i in idx]).to("cuda", torch.float16)
+            inputs = self._encode([crops[i] for i in idx]).to(self.device, torch.float16)
             n_in = inputs["input_ids"].shape[1]
             limits = torch.tensor([_tile_budget(boxes[i][1], MAX_NEW) for i in idx])
             gen = self.model.generate(**inputs, max_new_tokens=int(limits.max()), do_sample=False,
@@ -307,11 +348,12 @@ def main() -> None:
     warnings.filterwarnings("ignore")
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
-    if not torch.cuda.is_available():  # GPU 없는 PC 는 이미지를 검사하지 않는다 — 엔진이 이미지를 막는다
-        print(json.dumps({"ready": False, "error": "no_gpu"}), flush=True)
+    device = resolve_device()
+    if device is None:  # 지원 GPU 없는 PC는 이미지를 검사하지 않는다 — 엔진이 이미지를 막는다
+        print(json.dumps({"ready": False, "error": "no_accelerator"}), flush=True)
         return
-    reader = Reader(Path(args.model_dir), args.batch, args.token_budget)
-    print(json.dumps({"ready": True, "device": "cuda"}), flush=True)
+    reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device)
+    print(json.dumps({"ready": True, "device": device}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -324,7 +366,7 @@ def main() -> None:
             for b64 in req["images"]:
                 img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
                 results.append(reader.read(img))
-                torch.cuda.empty_cache()
+                _empty_cache(device)
             out = {"id": req_id, "results": results}
         except Exception as e:  # noqa: BLE001 - 한 요청의 실패로 프로세스를 죽이지 않는다
             out = {"id": req_id, "error": f"{type(e).__name__}: {e}"}

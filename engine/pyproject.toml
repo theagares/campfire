@@ -36,6 +36,9 @@ dependencies = [
     # dtype= 인자와 EXAONE-4.0 지원) + numpy 1.x(torch 2.2 휠이 numpy 1 로 빌드됨)로 간다.
     "torch>=2.3 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torch>=2.2,<2.3 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # Apple Silicon의 선택 이미지 OCR(VARCO/LLaVA-OneVision) 처리기가 요구한다. Windows는
+    # GPU 종류(CUDA/XPU)를 모델 받기 때 판별해 맞는 torchvision을 별도 사이드카 폴더에 설치한다.
+    "torchvision>=0.18 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "transformers>=4.51 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "transformers>=4.56,<5 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "accelerate>=0.30",

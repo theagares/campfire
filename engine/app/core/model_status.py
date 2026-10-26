@@ -11,8 +11,12 @@ PII/인젝션 실 모델(encoder/llm_mcp) 가중치가 로컬에 준비됐는지
 
 from __future__ import annotations
 
+import importlib.util
+import platform
 import shutil
+import subprocess
 import sys
+from functools import lru_cache
 
 from app import config
 from app.core.detectors.injection import backbone
@@ -69,18 +73,89 @@ def image_ocr_weights_ready() -> bool:
 
 
 def image_ocr_runtime_ready() -> bool:
-    """GPU 실행 환경 — 따로 지정한 파이썬이 있거나, 모델 받기가 CUDA torch 를 깔았다(이름을 바꿔 넣어 반쯤 깔린 상태는 없다)."""
-    return bool(config.IMAGE_OCR_PYTHON_OVERRIDE) or (config.IMAGE_OCR_GPU_TORCH_DIR / "torch" / "__init__.py").is_file()
+    """선택된 가속기에서 VARCO 사이드카를 띄울 실행 환경이 준비됐는가.
+
+    Apple Silicon은 앱에 번들된 arm64 torch/torchvision의 MPS를 그대로 쓴다. Windows의
+    CUDA/XPU는 앱 본체의 CPU torch를 바꾸지 않고 모델 받기가 별도 폴더에 설치한다.
+    """
+    if config.IMAGE_OCR_PYTHON_OVERRIDE:
+        return True
+    accelerator = image_ocr_accelerator()
+    if accelerator == "mps":
+        return importlib.util.find_spec("torch") is not None and importlib.util.find_spec("torchvision") is not None
+    if not (config.IMAGE_OCR_GPU_TORCH_DIR / "torch" / "__init__.py").is_file():
+        return False
+    marker = config.IMAGE_OCR_GPU_TORCH_DIR / "accelerator.txt"
+    if marker.is_file():
+        try:
+            return marker.read_text(encoding="ascii").strip() == accelerator
+        except OSError:
+            return False
+    # v0.2.50이 설치한 기존 폴더에는 표식이 없다. 당시 유일한 별도 런타임은 CUDA였다.
+    return accelerator == "cuda"
+
+
+@lru_cache(maxsize=1)
+def _intel_arc_present() -> bool:
+    """Windows 디스플레이 장치 이름으로 Intel Arc를 찾는다.
+
+    앱의 기본 torch는 CPU 빌드라 XPU 런타임을 받기 전에는 ``torch.xpu``로 하드웨어를
+    찾을 수 없다. CIM은 별도 런타임 없이 Windows가 알고 있는 실제 어댑터를 돌려준다.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+                "(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue).Name",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    names = proc.stdout.casefold()
+    return proc.returncode == 0 and "intel" in names and "arc" in names
+
+
+def _mps_available() -> bool:
+    if sys.platform != "darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        return False
+    try:
+        import torch
+    except (ImportError, OSError):
+        return False
+    backend = getattr(torch.backends, "mps", None)
+    return bool(backend and backend.is_available())
+
+
+def image_ocr_accelerator() -> str | None:
+    """VARCO가 사용할 가속기. 우선순위는 NVIDIA CUDA → Intel XPU → Apple MPS다."""
+    if config.IMAGE_OCR_PYTHON_OVERRIDE:
+        return "external"
+    if sys.platform == "win32":
+        if shutil.which("nvidia-smi") is not None:
+            return "cuda"
+        if _intel_arc_present():
+            return "xpu"
+    if _mps_available():
+        return "mps"
+    return None
 
 
 def image_ocr_gpu() -> bool:
-    """CUDA 를 쓸 수 있을 법한 PC 인가. 아니면 모델·실행 환경을 받지 않는다(그림이 든 입력은 막힌다)."""
-    # ponytail: nvidia-smi 유무만 본다 — 드라이버가 cu130 하한(580)보다 낮거나 GPU 가 너무 오래되면 다 받은 뒤
-    # 사이드카가 no_gpu 로 막는다. 드라이버 판 확인을 넣으면 받기 전에 거를 수 있다.
-    return bool(config.IMAGE_OCR_PYTHON_OVERRIDE) or (sys.platform == "win32" and shutil.which("nvidia-smi") is not None)
+    """지원 GPU(CUDA/XPU/MPS)를 쓸 수 있을 법한 PC인가. 기존 API 필드 이름은 호환을 위해 유지한다."""
+    return image_ocr_accelerator() is not None
 
 
 def image_ocr_ready() -> bool:
     """이미지 속 글자 검사 모델 + GPU 실행 환경. all_ready() 에 넣지 않는다 — 선택 기능이라 없다고 PII·인젝션까지
     꺼지면 안 된다. 없으면 글자 검사 대상 이미지가 든 입력은 막는다(core/detectors/image_ocr.py)."""
-    return image_ocr_weights_ready() and image_ocr_runtime_ready()
+    return image_ocr_gpu() and image_ocr_weights_ready() and image_ocr_runtime_ready()

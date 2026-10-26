@@ -5,7 +5,8 @@ app/core/detectors/image_ocr.py
 파서가 본문에 남긴 이미지 표시(parser/images.py)를 VARCO-VISION-2.0-1.7B 로 읽은 글로 바꾼다 — 그 뒤의 PII·인젝션·
 기밀 탐지가 다른 글과 함께 한 번에 판정하고, 이미지 파일(화면 캡처)도 다른 문서처럼 가린 글로 내보낸다(사용자 결정).
 - 사이드카(models/varco_ocr/runtime/varco_ocr_inference.py)는 이미지가 든 입력에서만 띄우고, 쓰지 않으면 내린다.
-- GPU 가 없거나 모델·실행 환경이 없어 글자 검사 대상 이미지를 못 읽으면 'unchecked' — orchestrator 가 입력을 막는다.
+- 지원 GPU(CUDA·Intel XPU·Apple MPS)가 없거나 모델·실행 환경이 없어 글자 검사 대상 이미지를 못 읽으면
+  'unchecked' — orchestrator 가 입력을 막는다.
 - 작은 이미지(아이콘·로고)와 열 수 없는 그림 형식(EMF 등)은 글자 검사 대상이 아니라 건너뛴다.
 """
 
@@ -56,11 +57,17 @@ class VarcoOcrProcess(EncoderPiiDetector):
         ]
 
     def _spawn_env(self) -> dict[str, str]:
-        """앱 파이썬(CPU torch)에 모델 받기가 깐 CUDA torch 를 앞세운다 — 이 사이드카에만. 따로 지정한 파이썬이면 그대로."""
+        """Windows는 별도 CUDA/XPU torch를 앞세우고, Apple Silicon은 번들 torch의 MPS를 쓴다."""
         if config.IMAGE_OCR_PYTHON_OVERRIDE:
             return {}
-        return {"PYTHONPATH": os.pathsep.join(filter(None, [str(config.IMAGE_OCR_GPU_TORCH_DIR),
-                                                              os.environ.get("PYTHONPATH")]))}
+        if model_status.image_ocr_accelerator() == "mps":
+            # 일부 비전 연산이 MPS 커널을 제공하지 않아도 해당 연산만 CPU로 내려 전체 요청을 실패시키지 않는다.
+            return {"PYTORCH_ENABLE_MPS_FALLBACK": "1"}
+        return {
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, [str(config.IMAGE_OCR_GPU_TORCH_DIR), os.environ.get("PYTHONPATH")])
+            )
+        }
 
     async def _warmup(self) -> None:
         return None
@@ -76,7 +83,7 @@ class VarcoOcrProcess(EncoderPiiDetector):
         try:
             await self._ensure_process()
         except RuntimeError as exc:
-            if "no_gpu" in str(exc):
+            if "no_gpu" in str(exc) or "no_accelerator" in str(exc):
                 self.no_gpu = True
             return None
         try:
@@ -123,8 +130,9 @@ def status() -> dict[str, Any]:
     return {
         "enabled": config.IMAGE_OCR_ENABLED,
         "ready": model_status.image_ocr_ready(),
-        "gpu": model_status.image_ocr_gpu(),  # NVIDIA GPU 가 보이는가(없으면 모델·실행 환경을 받지 않는다)
-        "noGpu": _process.no_gpu if _process is not None else None,  # 사이드카가 CUDA 를 못 썼다 — 한 번 띄워 봐야 안다
+        "gpu": model_status.image_ocr_gpu(),  # 기존 API 이름: CUDA·Intel XPU·Apple MPS 중 하나가 보이는가
+        "accelerator": model_status.image_ocr_accelerator(),
+        "noGpu": _process.no_gpu if _process is not None else None,  # 사이드카가 가속기를 못 썼다 — 한 번 띄워 봐야 안다
     }
 
 

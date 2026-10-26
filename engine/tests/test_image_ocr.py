@@ -140,10 +140,17 @@ def test_GPU_가_없다고_한_번_보면_다시_띄우지_않는다(monkeypatch
 def test_GPU_torch_는_이미지_검사_사이드카에만_앞세우고_따로_지정한_파이썬이면_그대로(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "IMAGE_OCR_GPU_TORCH_DIR", tmp_path / "gpu_torch")
     monkeypatch.setattr(config, "IMAGE_OCR_PYTHON_OVERRIDE", "")
+    monkeypatch.setattr(image_ocr.model_status, "image_ocr_accelerator", lambda: "cuda")
     monkeypatch.delenv("PYTHONPATH", raising=False)
     assert image_ocr.VarcoOcrProcess()._spawn_env() == {"PYTHONPATH": str(tmp_path / "gpu_torch")}
     monkeypatch.setattr(config, "IMAGE_OCR_PYTHON_OVERRIDE", r"C:\cuda\python.exe")
     assert image_ocr.VarcoOcrProcess()._spawn_env() == {}
+
+
+def test_Apple_MPS는_번들_torch를_쓰고_지원안되는_연산만_CPU로_폴백한다(monkeypatch):
+    monkeypatch.setattr(config, "IMAGE_OCR_PYTHON_OVERRIDE", "")
+    monkeypatch.setattr(image_ocr.model_status, "image_ocr_accelerator", lambda: "mps")
+    assert image_ocr.VarcoOcrProcess()._spawn_env() == {"PYTORCH_ENABLE_MPS_FALLBACK": "1"}
 
 
 @pytest.mark.parametrize("enabled", [False, True])
