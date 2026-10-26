@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from app import config
 from app.core import forced_mask, model_status
-from app.core.detectors import combined_gpu, confidential, registry
+from app.core.detectors import combined_gpu, confidential, image_ocr, registry
 from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
@@ -35,7 +35,9 @@ async def _noop_emit(_event: dict) -> None:
     return None
 
 
-async def _parse_off_loop(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[str, str, str | None]:
+async def _parse_off_loop(
+    file_bytes: bytes, mime_type: str, file_name: str, images: list[bytes] | None = None,
+) -> tuple[str, str, str | None]:
     """파싱을 이벤트 루프 밖에서 돌리고 상한을 건다.
 
     parse_document 는 동기 함수인데 예전엔 async 안에서 그대로 불렀다. pdfplumber 가
@@ -48,7 +50,7 @@ async def _parse_off_loop(file_bytes: bytes, mime_type: str, file_name: str) -> 
     """
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(parse_document, file_bytes, mime_type, file_name),
+            asyncio.to_thread(parse_document, file_bytes, mime_type, file_name, images),
             timeout=config.PARSE_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
@@ -482,8 +484,17 @@ async def run_pipeline(
 
     # ── Step 1: 파싱 ──────────────────────────────────────────────────────────
     await emit({"type": "step", "step": 1, "label": "입력 파싱 중..."})
+    # 이미지 속 글자 검사(선택 기능): 파서가 이미지 파일·DOCX·PPTX 속 그림을 담고 본문에 표시를 남기면, 여기서 VARCO 로
+    # 읽어 그 자리에 넣는다(파싱 스레드 안에서는 사이드카를 부를 수 없다). 꺼져 있으면 images=None — 파서 결과가 그대로다.
+    images: list[bytes] | None = None
+    image_infos: list[dict[str, Any]] = []
     if text is None:
-        text, scan_status, reason = await _parse_off_loop(file_bytes or b"", mime_type, file_name)
+        images = [] if config.IMAGE_OCR_ENABLED else None
+        text, scan_status, reason = await _parse_off_loop(file_bytes or b"", mime_type, file_name, images)
+        if images and scan_status == STATUS_OK:
+            text, image_infos = await image_ocr.fill(text, images, emit)
+    images_unchecked = any(i["status"] == "unchecked" for i in image_infos)
+    images_read = [i for i in image_infos if i["status"] == "read"]
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
 
     # 추출된 텍스트의 상한. 업로드는 바이트로 막지만 "풀린 길이" 는 아무도 안 봤다 —
@@ -762,6 +773,12 @@ async def run_pipeline(
     blocked = (
         bool(injection_items) and config.INJECTION_POLICY == "block"
     ) or (forced_snapshot.active and truncated)
+    # 이미지 속 글자 검사가 켜졌는데 글자 검사 대상 이미지를 못 읽었으면(GPU·모델 없음, 실패) 보내지 않는다(사용자 결정).
+    # 이미지 글이 든 문서가 잘렸으면 이미지 글 일부가 검사 밖이라 같은 이유로 막는다.
+    if images_unchecked or (truncated and images_read):
+        blocked = True
+        reason = reason or (image_ocr.UNCHECKED_REASON if images_unchecked
+                            else "문서가 길어 이미지 속 글자 일부를 검사하지 못해 보내지 않습니다")
     confidential_items = [] if blocked else await confidential.detect(
         text, list(pii_items) + list(forced_items) + list(injection_items), emit, forced_snapshot)
     if confidential_items:
@@ -775,7 +792,7 @@ async def run_pipeline(
     masked_text = masked["masked_text"]
 
     masked_file = None
-    if wrap_file and not blocked:
+    if wrap_file and not blocked:  # 이미지 파일(캡처)도 읽은 글을 가린 문서로 낸다 — 다른 문서와 같은 길(사용자 결정)
         wrap_name = "document" + os.path.splitext(file_name)[1] if name_forced else file_name
         wrapped = docwrapper.wrap_masked_file(masked_text, wrap_name)
         masked_file = {
@@ -802,6 +819,7 @@ async def run_pipeline(
         user_prompt_pii_items=user_prompt_pii_items,
         user_prompt_forced_mask_items=user_prompt_forced_items,
         forced_policy=forced_policy,
+        images=image_infos,
     )
 
 
@@ -823,6 +841,7 @@ def _build_result(
     user_prompt_pii_items: list[Detection] | None = None,
     user_prompt_forced_mask_items: list[Detection] | None = None,
     forced_policy: dict[str, Any] | None = None,
+    images: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
@@ -862,6 +881,8 @@ def _build_result(
     }
     if masked_file is not None:
         result["maskedFile"] = masked_file
+    if images:  # 이미지 속 글자 검사: 이미지마다 읽음/건너뜀/미검사와 본문 속 위치(화면에 "이미지에서 읽은 글" 표시용)
+        result["images"] = images
     if user_prompt is not None:
         # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
         # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.

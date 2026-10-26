@@ -146,12 +146,16 @@ function register(ctx) {
       patch &&
       ((patch.confidentialEnabled !== undefined && !!patch.confidentialEnabled !== !!prev.confidentialEnabled) ||
         (patch.kgPath !== undefined && patch.kgPath !== prev.kgPath));
-    if (policyChanged || apiKeyChanged || riskScannerChanged || confidentialChanged) {
+    const imageOcrChanged =
+      patch && patch.imageOcrEnabled !== undefined && !!patch.imageOcrEnabled !== !!prev.imageOcrEnabled;
+    if (policyChanged || apiKeyChanged || riskScannerChanged || confidentialChanged || imageOcrChanged) {
       if (config.get('securityEnabled')) {
+        const fetchModels =
+          (confidentialChanged && next.confidentialEnabled) || (imageOcrChanged && next.imageOcrEnabled);
         engineManager
           .restart()
-          // 기밀 탐지를 켰으면 리트리버 가중치를 받는다 (없으면 ensureModels 가 바로 돌아온다)
-          .then(() => confidentialChanged && next.confidentialEnabled && onEnsureModels && onEnsureModels())
+          // 기밀 탐지·이미지 검사를 켰으면 그 가중치를 받는다 (이미 있으면 ensureModels 가 바로 돌아온다)
+          .then(() => fetchModels && onEnsureModels && onEnsureModels())
           .catch((err) => console.error('[ipc] restart 실패:', err.message));
       }
     }

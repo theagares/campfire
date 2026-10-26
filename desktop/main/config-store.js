@@ -43,6 +43,8 @@ const DEFAULTS = {
   // 기밀 탐지(회사 KG + Solar). 켜면 PII 를 가린 문서가 Solar 로 나가므로 기본 OFF — 사용자 동의 토글.
   confidentialEnabled: false,
   kgPath: '', // 회사 KG JSONL 경로. 엔진이 스캔마다 수정 시각을 보고 바뀌면 다시 읽는다.
+  // 이미지 속 글자 검사(VARCO OCR, 약 4.3GB, GPU 필요). 끄면 지금처럼 이미지 파일은 미지원·문서 속 그림은 검사 안 함.
+  imageOcrEnabled: false,
   pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
   // 프록시 토글(proxy-toggle.js). proxySystemPrevious 는 우리가 시스템 프록시를 덮어쓰기

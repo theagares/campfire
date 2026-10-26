@@ -1,0 +1,186 @@
+"""
+app/core/detectors/image_ocr.py
+이미지 속 글자 검사 (선택 기능, config.IMAGE_OCR_ENABLED).
+
+파서가 본문에 남긴 이미지 표시(parser/images.py)를 VARCO-VISION-2.0-1.7B 로 읽은 글로 바꾼다 — 그 뒤의 PII·인젝션·
+기밀 탐지가 다른 글과 함께 한 번에 판정하고, 이미지 파일(화면 캡처)도 다른 문서처럼 가린 글로 내보낸다(사용자 결정).
+- 사이드카(models/varco_ocr/runtime/varco_ocr_inference.py)는 이미지가 든 입력에서만 띄우고, 쓰지 않으면 내린다.
+- GPU 가 없거나 모델·실행 환경이 없어 글자 검사 대상 이미지를 못 읽으면 'unchecked' — orchestrator 가 입력을 막는다.
+- 작은 이미지(아이콘·로고)와 열 수 없는 그림 형식(EMF 등)은 글자 검사 대상이 아니라 건너뛴다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import hashlib
+import io
+from typing import Any
+
+from app import config
+from app.core import model_status
+from app.core.parser.images import MARK_RE
+
+from .gpu_residency import GpuResidency
+from .pii.encoder import EncoderPiiDetector
+
+UNCHECKED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — GPU 실행 환경이 없거나 이미지 검사 모델이 준비되지 않았습니다"
+
+
+class VarcoOcrProcess(EncoderPiiDetector):
+    """VARCO OCR 사이드카. 하위 프로세스 관리(_spawn_process·_rpc·죽으면 다시 띄우기)는 PII 탐지기 것을 그대로 쓴다."""
+
+    name = "image_ocr"
+    kind = "ocr"
+
+    def __init__(self) -> None:  # 부모 __init__ 은 만들자마자 띄운다 — VARCO(가중치 약 4.1GB)는 이미지가 든 입력에서만
+        self.residency = GpuResidency(model_name=self.name, mode="idle_unload",
+                                      idle_timeout_sec=config.IMAGE_OCR_IDLE_UNLOAD_SEC, load_delay_sec=0.0)
+        self._process: asyncio.subprocess.Process | None = None
+        self._process_ready = False
+        self._proc_lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
+        self._next_id = 0
+        self.no_gpu = False  # 사이드카가 GPU 를 못 찾았다 — 다시 띄우지 않는다(매번 띄워 보며 시간을 쓰지 않게)
+        self._idle_task: asyncio.Task | None = None
+
+    def _spawn_args(self) -> list[str]:
+        return [
+            config.IMAGE_OCR_PYTHON_EXECUTABLE,
+            str(config.IMAGE_OCR_ENGINE_DIR / "runtime" / "varco_ocr_inference.py"),
+            "--model-dir", str(config.IMAGE_OCR_ENGINE_DIR / "models"),
+            "--batch", str(config.IMAGE_OCR_BATCH),
+            "--token-budget", str(config.IMAGE_OCR_TOKEN_BUDGET),
+        ]
+
+    async def _warmup(self) -> None:
+        return None
+
+    async def detect(self, text: str, *, meta=None):  # noqa: ARG002 - Detector 가 아니다
+        raise NotImplementedError
+
+    async def read(self, blob: bytes) -> dict[str, Any] | None:
+        """이미지 한 장 → {"text", "tiles", "secs"}. 못 읽으면 None (GPU 없음·모델 없음·실패).
+        한 요청에 한 장 — 응답 대기 상한(DETECT_INFER_TIMEOUT_SEC)이 요청 단위라 여러 장을 묶으면 넘는다."""
+        if self.no_gpu or not model_status.image_ocr_ready():
+            return None
+        try:
+            await self._ensure_process()
+        except RuntimeError as exc:
+            if "no_gpu" in str(exc):
+                self.no_gpu = True
+            return None
+        try:
+            result = await self._rpc({"images": [base64.b64encode(blob).decode("ascii")]})
+            return result["results"][0]
+        except Exception:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
+            return None
+        finally:
+            self.residency.touch()
+            self._arm_unload()
+
+    def _arm_unload(self) -> None:
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+        with contextlib.suppress(RuntimeError):
+            self._idle_task = asyncio.get_running_loop().create_task(self._unload_when_idle())
+
+    async def _unload_when_idle(self) -> None:
+        await asyncio.sleep(config.IMAGE_OCR_IDLE_UNLOAD_SEC)
+        async with self._request_lock:  # 읽는 중이면 끝날 때까지 기다린다
+            await self._kill_process()
+            self._process_ready = False
+            self.residency.state = "unloaded"
+
+    async def close(self) -> None:
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+        await self._kill_process()
+        self._process_ready = False
+
+
+_process: VarcoOcrProcess | None = None
+
+
+def get() -> VarcoOcrProcess:
+    global _process
+    if _process is None:
+        _process = VarcoOcrProcess()
+    return _process
+
+
+def status() -> dict[str, Any]:
+    """/health·모델 상태용."""
+    return {
+        "enabled": config.IMAGE_OCR_ENABLED,
+        "ready": model_status.image_ocr_ready(),
+        "noGpu": _process.no_gpu if _process is not None else None,  # 한 번 띄워 봐야 안다
+    }
+
+
+def _target(blob: bytes) -> tuple[bool, str | None]:
+    """(글자 검사 대상인가, 건너뛰는 이유)."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(blob)) as im:
+            w, h = im.size
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False, "열 수 없는 그림 형식"  # EMF·WMF 같은 벡터 그림 — 지금까지처럼 검사하지 않는다
+    if w < config.IMAGE_OCR_MIN_WIDTH or h < config.IMAGE_OCR_MIN_HEIGHT:
+        return False, "작은 그림(아이콘·로고)"
+    return True, None
+
+
+async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dict[str, Any]]]:
+    """본문의 이미지 표시를 읽은 글로 바꾼다. 돌려주는 값: (글, 이미지별 정보).
+
+    정보: {"index", "status": read|skipped|unchecked, "reason", "start", "end", "secs"} — start/end 는 바꾼 뒤 글 기준.
+    같은 이미지(같은 해시)는 한 번만 읽는다.
+    """
+    ocr = get()
+    infos: list[dict[str, Any]] = []
+    read_cache: dict[str, dict[str, Any] | None] = {}
+    targets = 0
+    for i, blob in enumerate(images):
+        ok, why = _target(blob)
+        info: dict[str, Any] = {"index": i, "status": "skipped", "reason": why}
+        if ok:
+            targets += 1
+            key = hashlib.sha1(blob).hexdigest()
+            if key not in read_cache:
+                if targets > config.IMAGE_OCR_MAX_IMAGES:
+                    read_cache[key] = None
+                else:
+                    if emit:
+                        await emit({"type": "step", "step": 1, "label": f"이미지 속 글자 읽는 중 ({targets}번째)..."})
+                    read_cache[key] = await ocr.read(blob)
+            got = read_cache[key]
+            if got is None:
+                info.update(status="unchecked", reason=UNCHECKED_REASON if targets <= config.IMAGE_OCR_MAX_IMAGES
+                            else f"이미지가 {config.IMAGE_OCR_MAX_IMAGES}장을 넘어 나머지는 검사하지 못했습니다")
+            else:
+                info.update(status="read", reason=None, ocr=got)
+        infos.append(info)
+
+    out, pos, last = [], 0, 0
+    for m in MARK_RE.finditer(text):
+        out.append(text[last:m.start()])
+        pos += m.start() - last
+        last = m.end()
+        info = infos[int(m.group(1))]
+        got = info.pop("ocr", None) if "ocr" in info else None
+        if got is None or not got["text"].strip():
+            info.setdefault("start", pos)
+            info.setdefault("end", pos)
+            continue
+        head = f"[이미지 {info['index'] + 1}]\n"
+        info["start"], info["end"] = pos, pos + len(head) + len(got["text"])
+        info["secs"] = got.get("secs")
+        out.append(head + got["text"])
+        pos = info["end"]
+    out.append(text[last:])
+    for info in infos:
+        info.pop("ocr", None)
+    return "".join(out), infos

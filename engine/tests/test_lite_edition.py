@@ -22,6 +22,7 @@ _FLAGS = {
     "SECUREDOC_MCP_RISK_SCANNER_ENABLED": "1",
     "SECUREDOC_DEMO_TRACE": "1",
     "SECUREDOC_PROXY_ENABLED": "1",
+    "SECUREDOC_IMAGE_OCR_ENABLED": "1",
 }
 
 
@@ -38,7 +39,8 @@ def test_lite_turns_off_features_even_if_settings_left_on(monkeypatch):
         lite = importlib.reload(config)
         assert lite.LITE
         assert not (lite.CONFIDENTIAL_ENABLED or lite.MCP_RISK_SCANNER_ENABLED
-                    or lite.DEMO_TRACE_ENABLED or lite.PROXY_ENABLED)
+                    or lite.DEMO_TRACE_ENABLED or lite.PROXY_ENABLED or lite.IMAGE_OCR_ENABLED)
+        assert ".png" not in lite.SUPPORTED_EXTENSIONS
     finally:
         for key in [*_FLAGS, "SECUREDOC_EDITION"]:
             monkeypatch.delenv(key, raising=False)

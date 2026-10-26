@@ -50,3 +50,18 @@ def confidential_ready() -> bool:
     없다고 PII·인젝션까지 꺼지면 안 된다. 없으면 Solar 로 보내지 않고 근거 문장을 가린다."""
     model_dir = config.CONFIDENTIAL_ENGINE_DIR / "models"
     return all((model_dir / f).is_file() for f in CONFIDENTIAL_REQUIRED_FILES)
+
+
+# VARCO-VISION-2.0-1.7B (이미지 속 글자 검사) — Hugging Face 커밋을 고정해 받는 파일들(adapters/http_api/models.py)
+IMAGE_OCR_FILES = (
+    "model.safetensors", "config.json", "generation_config.json", "preprocessor_config.json", "processor_config.json",
+    "video_preprocessor_config.json", "chat_template.jinja", "tokenizer.json", "tokenizer_config.json",
+    "special_tokens_map.json", "added_tokens.json", "vocab.json", "merges.txt",
+)
+
+
+def image_ocr_ready() -> bool:
+    """이미지 속 글자 검사 모델. all_ready() 에 넣지 않는다 — 선택 기능이라 없다고 PII·인젝션까지 꺼지면 안 된다.
+    없으면 글자 검사 대상 이미지가 든 입력은 막는다(core/detectors/image_ocr.py)."""
+    model_dir = config.IMAGE_OCR_ENGINE_DIR / "models"
+    return all((model_dir / f).is_file() for f in IMAGE_OCR_FILES)

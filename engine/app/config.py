@@ -420,6 +420,25 @@ SUPPORTED_EXTENSIONS: set[str] = {
 }
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
 
+# ── 이미지 속 글자 검사 (선택 기능, core/detectors/image_ocr.py) ──────────────────
+# 이미지 파일(화면 캡처)과 DOCX·PPTX 속 그림을 NCSOFT VARCO-VISION-2.0-1.7B(CC BY-NC 4.0)로 읽어 본문의 그 자리에 넣고
+# 기존 탐지를 그대로 돌린다. 사진으로 찍은 문서는 대상이 아니다(화면 캡처 기준으로 맞춤).
+# GPU(CUDA) 에서만 돈다 — 사이드카가 GPU 를 못 찾으면 글자 검사 대상 이미지가 든 입력은 막는다(보내지 않는다).
+# Windows 설치본의 torch 는 CPU 빌드라 GPU 실행 환경(CUDA torch)을 따로 가리킨다: SECUREDOC_IMAGE_OCR_PYTHON.
+IMAGE_OCR_ENABLED: bool = os.environ.get("SECUREDOC_IMAGE_OCR_ENABLED", "0") == "1"
+IMAGE_OCR_ENGINE_DIR: Path = MODELS_ROOT / "varco_ocr"
+IMAGE_OCR_PYTHON_EXECUTABLE: str = os.environ.get("SECUREDOC_IMAGE_OCR_PYTHON", "") or sys.executable
+IMAGE_OCR_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"})
+IMAGE_OCR_BATCH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_BATCH", "8"))
+# 묶음 하나의 (조각 수 × 가장 긴 입력 토큰) 상한 — 입력 토큰당 GPU 메모리 약 0.25MB(실측). 12GB GPU 에 다른 모델과 함께.
+IMAGE_OCR_TOKEN_BUDGET: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_TOKEN_BUDGET", "6000"))
+# 마지막으로 쓴 뒤 이만큼 지나면 사이드카를 내린다 — 가중치만 약 4.1GB 라 계속 두지 않는다.
+IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDLE_UNLOAD_SEC", "120"))
+IMAGE_OCR_MAX_IMAGES: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MAX_IMAGES", "20"))  # 넘으면 나머지는 미검사로 막는다
+# 이보다 작은 이미지는 아이콘·로고로 보고 건너뛴다(글자 검사 대상 아님).
+IMAGE_OCR_MIN_WIDTH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MIN_WIDTH", "120"))
+IMAGE_OCR_MIN_HEIGHT: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MIN_HEIGHT", "32"))
+
 # ── 프록시 게이트웨이 (adapters/proxy) ────────────────────────────────────────
 # 확장 프로그램 대신 로컬 TLS 프록시로 업로드를 가로채는 경로. 기본은 꺼짐 —
 # 켜려면 mitmproxy 가 필요하고(`pip install -e ".[proxy]"`) 루트 CA 도 깔아야 한다.
@@ -458,4 +477,6 @@ PROXY_CAPTURE_DIR: str = os.environ.get("SECUREDOC_PROXY_CAPTURE_DIR", "")
 # 위 설정·환경변수와 상관없이 끈다 — 정식 판에서 켜 둔 설정이 남은 채 라이트로 바꿔 설치해도 켜지지 않게.
 LITE: bool = os.environ.get("SECUREDOC_EDITION", "") == "lite"
 if LITE:
-    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = False
+    CONFIDENTIAL_ENABLED = MCP_RISK_SCANNER_ENABLED = DEMO_TRACE_ENABLED = PROXY_ENABLED = IMAGE_OCR_ENABLED = False
+if IMAGE_OCR_ENABLED:  # 켰을 때만 이미지 파일이 검사 대상 형식이다 — 꺼져 있으면 지금처럼 미지원(통과)
+    SUPPORTED_EXTENSIONS |= IMAGE_OCR_EXTENSIONS

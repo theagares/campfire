@@ -356,6 +356,17 @@
           <input type="text" id="kg-path" placeholder="C:\company\kg.jsonl" autocomplete="off" />
         </div>
 
+        <!-- 이미지 속 글자 검사 — VARCO-VISION-2.0-1.7B (engine/app/core/detectors/image_ocr.py). 기본 OFF. -->
+        <div class="field">
+          <div class="setting-row">
+            <div>
+              <label for="image-ocr-enabled">이미지 속 글자 검사</label>
+              <div class="hint">이미지 파일(화면 캡처)과 DOCX·PPTX 속 그림의 글자를 읽어 본문과 함께 검사합니다. 모델(약 4.3GB)을 내려받고 이 PC 의 GPU 로 돌립니다. GPU 실행 환경이 없거나 모델이 준비되지 않으면 그림이 든 파일은 보내지 않습니다. 변경 시 엔진이 재시작됩니다.</div>
+            </div>
+            <input type="checkbox" id="image-ocr-enabled" />
+          </div>
+        </div>
+
         <div class="divider"></div>
 
         <!-- 탐지 모델(encoder/llm_mcp) — 유일한 모드라 고를 게 없다(룰베이스 폴백 제거).

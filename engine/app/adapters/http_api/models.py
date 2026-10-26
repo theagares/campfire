@@ -103,6 +103,7 @@ def _status() -> dict[str, Any]:
         },
         # 선택 기능 — enabled 가 아니면 ready 가 거짓이어도 받지 않는다(앱도 enabled 일 때만 기다린다)
         "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
+        "imageOcr": {"enabled": config.IMAGE_OCR_ENABLED, "ready": model_status.image_ocr_ready()},
     }
 
 
@@ -243,6 +244,63 @@ async def _download_backbone(emit: Callable) -> None:
     await emit({"type": "progress", "asset": "backbone", "label": f"{label} 완료", "pct": 100.0})
 
 
+# 이미지 속 글자 검사 모델 — 4.3GB 라 GitHub 첨부 상한(2GB)을 넘어 Hugging Face 에서 커밋을 고정해 받는다.
+_IMAGE_OCR_REPO = "NCSOFT/VARCO-VISION-2.0-1.7B"
+_IMAGE_OCR_REVISION = "ed09f37445518b1564d1ef3c6e26fbd7c1b2c818"
+_IMAGE_OCR_WEIGHTS_SHA256 = "8f34a4bf3913c055364c1817e65189d2592ca30adb5bce18d38455680015dcd1"
+_IMAGE_OCR_TOTAL_BYTES = 4_270_000_000  # 가중치 4,248,880,912 + 토크나이저·설정 (진행률용 어림)
+
+
+def _dir_bytes(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) if path.is_dir() else 0
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def _download_image_ocr(emit: Callable) -> None:
+    """VARCO-VISION-2.0-1.7B 를 받는다(필요한 13개 파일만). 임시 폴더에 받고 가중치 sha256 을 확인한 뒤 바꿔 넣는다.
+    진행률은 백본과 같이 디스크에 쌓인 양으로 잰다."""
+    from huggingface_hub import snapshot_download
+
+    label = "이미지 검사 모델(약 4.3GB)"
+    dest = config.IMAGE_OCR_ENGINE_DIR / "models"
+    tmp = config.IMAGE_OCR_ENGINE_DIR / "models.partial"
+    tmp.mkdir(parents=True, exist_ok=True)  # 중단 후 다시 받으면 이어 받는다
+    done = asyncio.Event()
+
+    async def report() -> None:
+        while not done.is_set():
+            got = await asyncio.to_thread(_dir_bytes, tmp)
+            await emit({"type": "progress", "asset": "image_ocr", "label": f"{label} 다운로드 중...",
+                        "pct": min(round(got / _IMAGE_OCR_TOTAL_BYTES * 100, 1), 99.0)})
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(done.wait(), timeout=1.0)
+
+    reporter = asyncio.create_task(report())
+    try:
+        await asyncio.to_thread(snapshot_download, _IMAGE_OCR_REPO, revision=_IMAGE_OCR_REVISION, local_dir=str(tmp),
+                                allow_patterns=list(model_status.IMAGE_OCR_FILES))
+    finally:
+        done.set()
+        await reporter
+    await emit({"type": "progress", "asset": "image_ocr", "label": f"{label} 확인 중...", "pct": 99.0})
+    digest = await asyncio.to_thread(_sha256_file, tmp / "model.safetensors")
+    if digest != _IMAGE_OCR_WEIGHTS_SHA256:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise ValueError(f"{label}: 가중치 해시가 다릅니다 ({digest[:12]}…)")
+    shutil.rmtree(tmp / ".cache", ignore_errors=True)
+    if dest.exists():
+        shutil.rmtree(dest)
+    tmp.rename(dest)
+    await emit({"type": "progress", "asset": "image_ocr", "label": f"{label} 완료", "pct": 100.0})
+
+
 async def _fetch_job(job_id: str) -> None:
     emit = job_registry.make_emit(job_id)
     try:
@@ -254,6 +312,8 @@ async def _fetch_job(job_id: str) -> None:
             await _download_backbone(emit)
         if config.CONFIDENTIAL_ENABLED and not model_status.confidential_ready():
             await _download_and_extract("confidential", _ASSETS["confidential"], emit)
+        if config.IMAGE_OCR_ENABLED and not model_status.image_ocr_ready():
+            await _download_image_ocr(emit)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})
