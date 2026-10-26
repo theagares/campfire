@@ -52,6 +52,23 @@ def test_기능을_끄면_파서_결과가_그대로고_이미지_파일은_미�
     assert parse_document(_png(), "image/png", "shot.png")[1] == STATUS_UNSUPPORTED
 
 
+def test_DOCX_표_칸_안의_그림도_그_자리에_표시가_남는다():
+    from docx import Document
+
+    d = Document()
+    d.add_paragraph("앞 문단")
+    t = d.add_table(rows=1, cols=2)
+    t.cell(0, 0).text = "캡처"
+    t.cell(0, 1).paragraphs[0].add_run().add_picture(io.BytesIO(_png()))
+    d.add_paragraph("뒤 문단")
+    buf = io.BytesIO()
+    d.save(buf)
+    images: list[bytes] = []
+    parts = extract_docx(buf.getvalue(), images).split("\n\n")
+    assert len(images) == 1 and parts[0] == "앞 문단" and parts[2] == "뒤 문단"
+    assert parts[1].startswith("캡처 | ") and MARK_RE.search(parts[1])
+
+
 def test_켜면_이미지_파일과_DOCX_PPTX_속_그림_자리에_표시가_남는다():
     images: list[bytes] = []
     text, status, _ = parse_document(_png(), "image/png", "shot.png", images)
