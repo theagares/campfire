@@ -87,6 +87,10 @@ assert.strictEqual(typeof sandbox.blockingReason, 'function', 'blockingReason �
 
 /** 요소에 걸린 리스너를 직접 부른다(스텁에는 실제 이벤트 전파가 없다). */
 const fire = (id, ev, event) => (handlersOf.get(id)?.[ev] || []).forEach(fn => fn(event));
+const finishPrompt = (sessionId, seq) => panelListener({
+  type: 'PANEL_SCAN_PROMPT', sessionId, tabId: 101, seq,
+  prompt: { status: 'done', counts: { pii: 0, injection: 0 } },
+});
 
 // ── 배치 시작: 지원 1 + 미지원 1 ────────────────────────────────────────────
 panelListener({
@@ -99,6 +103,7 @@ panelListener({
     { id: 'f1', fileName: 'old.hwp', status: 'unsupported', counts: null },
   ],
 });
+finishPrompt('s1', 1);
 
 // ── 1) 고르기 전에는 막힌다 ─────────────────────────────────────────────────
 const blocked = sandbox.blockingReason();
@@ -133,6 +138,7 @@ panelListener({
   type: 'PANEL_SCAN_INIT', sessionId: 's2', tabId: 101, seq: 2,
   docs: [{ id: 'f0', fileName: 'broken.pdf', status: 'error', error: '파싱 실패' }],
 });
+finishPrompt('s2', 2);
 assert.ok(sandbox.blockingReason(), '실패 파일이 있는데 전송이 열려 있다');
 clickOn('f0', 'exclude', false);
 assert.strictEqual(sandbox.blockingReason(), null, '제거를 골랐는데 전송이 안 열린다');
@@ -198,9 +204,10 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   );
 }
 
-// ── 8) 검사 중엔 대기 화면(별똥별), 다 끝나야 탭으로 넘어간다 ─────────────────
-//     처음 구현은 INIT 즉시 탭을 띄워서, 첨부+엔터의 대기 화면이 '대기 중…' 탭 줄로
-//     바뀌어 버렸다. 한 번 넘어간 뒤엔 재시도가 와도 대기 화면으로 되돌아가지 않는다.
+// ── 8) 첫 파일 결과부터 점진 공개하되, 전송은 전체 검사가 끝나야 열린다 ─────────
+//     INIT 직후에는 별똥별 대기 화면을 유지한다. 파일 하나가 끝나면 그 결과를 바로
+//     보여 주고, 나머지는 끝나는 대로 합계와 탭 상태에 추가한다. 검토를 먼저 시작할 수
+//     있어도 배치 전송은 원자적이므로 마지막 검사 전에는 버튼이 열리면 안 된다.
 {
   const shown = () => ({
     progress: !els.get('view-progress').hidden,
@@ -219,6 +226,7 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.deepStrictEqual(shown(), { progress: true, result: false, footer: false },
     '검사가 막 시작됐는데 대기 화면 대신 탭이 떴다');
   assert.strictEqual(els.get('progress-fill').style.width, '8%');
+  assert.strictEqual(els.get('btn-send').disabled, true, '검사 시작 직후 전송 버튼이 열렸다');
 
   msg({ type: 'PANEL_PROGRESS', itemId: 'f0', event: { type: 'step', step: 'pii', label: 'PII 탐지 중…' } });
   assert.strictEqual(els.get('progress-title').textContent, 'PII 탐지 중…');
@@ -226,16 +234,26 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.strictEqual(els.get('progress-fill').style.width, '8%', '항목 단계가 전체 막대를 덮었다');
 
   msg({ type: 'PANEL_SCAN_PROMPT', prompt: { status: 'done', counts: { pii: 1, injection: 0 } } });
-  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f0', fileName: 'a.pdf', status: 'done', counts: { pii: 2, injection: 1 } } });
-  assert.ok(shown().progress, '아직 b.docx 가 남았는데 대기 화면이 사라졌다');
-  assert.strictEqual(els.get('progress-fill').style.width, '67%');
+  assert.ok(shown().progress, '파일 결과가 하나도 없는데 검토 화면이 먼저 떴다');
 
-  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'done', counts: { pii: 0, injection: 0 } } });
-  assert.deepStrictEqual(shown(), { progress: false, result: true, footer: true }, '다 끝났는데 탭으로 안 넘어갔다');
+  // 두 번째 파일이 먼저 끝나는 경우에도 완료된 파일을 즉시 선택해 보여 준다.
+  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'done', counts: { pii: 0, injection: 1 } } });
+  assert.deepStrictEqual(shown(), { progress: false, result: true, footer: true },
+    '첫 파일 결과가 왔는데 검토 화면으로 넘어가지 않았다');
+  assert.strictEqual(vm.runInContext('state.activeTab', ctx), 'f1', '먼저 끝난 파일이 자동 선택되지 않았다');
+  assert.strictEqual(els.get('counts').textContent, 'PII 1건 | INJECTION 1건 탐지');
+  assert.strictEqual(els.get('btn-send').disabled, true, '다른 파일이 검사 중인데 전송 버튼이 열렸다');
+  assert.strictEqual(els.get('doc-type').textContent, '문서 2개 중 1개 검사 완료');
+  assert.strictEqual(els.get('mask-summary').textContent, '1개 검사 완료 · 1개 검사 중 · 2건 마스킹');
+
+  msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f0', fileName: 'a.pdf', status: 'done', counts: { pii: 2, injection: 0 } } });
+  assert.strictEqual(vm.runInContext('state.activeTab', ctx), 'f1', '후속 결과가 사용자가 보던 탭을 빼앗았다');
   assert.strictEqual(els.get('counts').textContent, 'PII 3건 | INJECTION 1건 탐지', '헤더가 검사 중에 머물렀다');
+  assert.strictEqual(els.get('btn-send').disabled, false, '전체 검사가 끝났는데 전송 버튼이 열리지 않았다');
 
   msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'scanning' } });
   assert.ok(shown().result, '재시도 한 번에 대기 화면으로 되돌아갔다');
+  assert.strictEqual(els.get('btn-send').disabled, true, '재검사가 시작됐는데 전송 버튼이 열려 있다');
 
   // 루프가 끝났다고 알리면(DONE) 남은 게 있어도 탭에서 고르게 한다.
   panelListener({
@@ -249,6 +267,7 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
     prompt: { status: 'error', counts: null },
   });
   assert.ok(shown().result, 'DONE 이 왔는데 대기 화면에 갇혔다');
+  assert.strictEqual(els.get('btn-send').disabled, true, '미완료 파일이 남은 DONE 상태에서 전송 버튼이 열렸다');
 }
 
 console.log('panel-multi-gate.test.js: 8개 블록 통과');

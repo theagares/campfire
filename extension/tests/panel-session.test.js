@@ -33,7 +33,14 @@ const SHARED = fs.readFileSync(path.join(__dirname, '..', 'utils', 'mask-segment
   .replace(/^export /gm, '');
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'sidepanel', 'sidepanel.js'), 'utf8')
   .replace(/^import .*from '[^']+';$/gm, '');
+const PANEL_HTML = fs.readFileSync(path.join(__dirname, '..', 'sidepanel', 'sidepanel.html'), 'utf8');
 const noop = () => {};
+
+assert.match(
+  PANEL_HTML,
+  /id="confidential-pill"[^>]*hidden[^>]*>.*기밀 탐지/s,
+  '진행 화면 HTML 에 기밀 탐지 표시가 없거나 기본 숨김 상태가 아니다',
+);
 
 /** sidepanel.js 를 스텁 DOM 위에 올리고 조작 손잡이를 돌려준다. */
 function loadPanel(opts = {}) {
@@ -88,7 +95,9 @@ function loadPanel(opts = {}) {
         sendMessage: (msg, cb) => {
           sent.push(msg);
           if (!cb) return;
-          cb(msg.type === 'PANEL_DECISION' ? decisionResponse : { ok: true, tabId: 101 });
+          if (msg.type === 'PANEL_DECISION') cb(decisionResponse);
+          else if (msg.type === 'GET_CONNECTION_INFO') cb(opts.connectionInfo || { ok: false });
+          else cb({ ok: true, tabId: 101 });
         },
       },
     },
@@ -110,8 +119,10 @@ function loadPanel(opts = {}) {
   /** 버튼을 실제로 눌러 본다 — 결정 경로는 클릭 핸들러를 통해서만 들어간다. */
   const click = (id) => byId(id)._fire('click');
   const text = (id) => byId(id).textContent;
+  const hidden = (id) => byId(id).hidden;
+  const width = (id) => byId(id).style.width;
 
-  return { send, rendered, sent, click, text, closed: () => closed };
+  return { send, rendered, sent, click, text, hidden, width, closed: () => closed };
 }
 
 const TAB = 101;
@@ -211,6 +222,39 @@ const meta = (n) => ({ fileName: `file-${n}.docx` });
     !/만료/.test(p.text('err-title')),
     '정상 결정인데 만료 화면이 떴다',
   );
+}
+
+// ── (7) 앱에서 기밀 탐지를 켜면 확장 진행 화면에도 표시한다 ────────────────
+{
+  const p = loadPanel({
+    connectionInfo: { ok: true, health: { confidential: { enabled: true } } },
+  });
+  assert.strictEqual(
+    p.hidden('confidential-pill'), false,
+    '기밀 탐지가 켜져 있는데 확장 진행 화면의 기밀 탐지 표시가 숨겨졌다',
+  );
+
+  p.send({
+    type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1,
+    event: { type: 'step', step: 3, done: true, label: '기밀 탐지 완료' },
+  });
+  assert.strictEqual(
+    p.width('progress-fill'), '80%',
+    '기밀 탐지 단계를 포함한 5단계 진행률이 반영되지 않았다',
+  );
+}
+
+// ── (8) 기밀 탐지를 끄면 기존 진행 화면과 4단계 진행률을 유지한다 ──────────
+{
+  const p = loadPanel({
+    connectionInfo: { ok: true, health: { confidential: { enabled: false } } },
+  });
+  assert.strictEqual(p.hidden('confidential-pill'), true);
+  p.send({
+    type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1,
+    event: { type: 'step', step: 4, done: true },
+  });
+  assert.strictEqual(p.width('progress-fill'), '75%');
 }
 
 console.log('panel-session ok');
