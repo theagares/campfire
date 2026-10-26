@@ -229,11 +229,13 @@
     return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
   }
 
-  // 프록시가 업로드를 가린 글로 제대로 바꿔 끼우는 사이트(엔진 proxy/addon.py). 여기 없는 사이트는 프록시
-  // 경로여도 확장이 파일을 먼저 가린다 — Gemini 는 업로드 시작 때 이름(형식)이 정해져 가린 글을 손상 파일로
-  // 거부하고, Perplexity 는 파일을 S3 로 바로 올려 등록 이름을 못 바꾼다(2026-10-26 실측). 확장이 가린
-  // .md 는 프록시를 깨끗한 글로 지난다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
-  const PROXY_FILE_HOSTS = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'grok.com', 'copilot.microsoft.com'];
+  // 앱+확장이 함께 있을 때 사이트가 파일을 받는 시점은 확장이 맡는다. ChatGPT 는 이미 이미지로 등록한 뒤
+  // 본문만 MD 로 바꾸면 invalid_image_format 이 되고, Claude·Grok 은 첨부 즉시 업로드해서 전송 전에
+  // 마스킹본 칩이 생긴다. Gemini·Perplexity 도 등록 메타데이터를 프록시에서 일관되게 바꿀 수 없다.
+  // 그래서 이 사이트들은 확장이 전송 시점까지 원본을 보류한 뒤 처음부터 올바른 이름·형식의 마스킹본을
+  // 등록한다. 프록시는 재주입된 파일을 다시 확인하므로 우회가 아니며, 확장이 없을 때는 기존 프록시
+  // 파일 검사가 그대로 안전망이 된다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
+  const PROXY_FILE_HOSTS = ['copilot.microsoft.com'];
   function proxyChecksFiles() {
     return proxyInPath() && PROXY_FILE_HOSTS.includes(location.hostname);
   }

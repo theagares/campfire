@@ -267,8 +267,9 @@
     return true;
   }
 
-  // 프록시가 업로드를 가린 글로 제대로 바꿔 끼우는 사이트. content.js 의 PROXY_FILE_HOSTS 와 같다(이유도 거기).
-  const _PROXY_FILE_HOSTS = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'grok.com', 'copilot.microsoft.com'];
+  // 파일의 사이트 등록 시점은 content.js 가 맡는다. ChatGPT·Claude·Gemini·Grok·Perplexity 는
+  // 전송 전 보류/형식 재등록이 필요하다. content.js 의 PROXY_FILE_HOSTS 와 같다(이유도 거기).
+  const _PROXY_FILE_HOSTS = ['copilot.microsoft.com'];
   function proxyChecksFiles() {
     return proxyInPath() && _PROXY_FILE_HOSTS.includes(location.hostname);
   }
