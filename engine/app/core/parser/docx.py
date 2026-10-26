@@ -38,17 +38,33 @@ def _paragraph_text(p, images: list[bytes] | None) -> str:
 
 
 def _table_rows(table, images: list[bytes] | None) -> list[str]:
-    """행마다 "칸 | 칸". 병합된 칸은 python-docx 가 칸 수만큼 같은 칸을 돌려주므로 처음 나온 자리에만 적는다."""
+    """행마다 "칸 | 칸". 중첩 표도 셀 안의 원래 위치에서 재귀 처리한다.
+
+    병합된 칸은 python-docx 가 칸 수만큼 같은 칸을 돌려준다. 가로 병합은 한 행에서
+    한 번만 적고, 세로 병합의 다음 행에는 빈 칸을 남겨 뒤 셀이 왼쪽으로 당겨지지
+    않게 한다.
+    """
+    from docx.table import Table
+
     rows, seen = [], set()
     for row in table.rows:
-        cells = []
+        cells, row_seen = [], set()
         for cell in row.cells:
-            if cell._tc in seen:
+            if cell._tc in row_seen:  # 가로 병합: 같은 행에서 반복되는 칸
+                continue
+            row_seen.add(cell._tc)
+            if cell._tc in seen:  # 세로 병합: 내용은 반복하지 말고 열 자리만 유지
+                cells.append("")
                 continue
             seen.add(cell._tc)
-            text = "\n".join(t for p in cell.paragraphs if (t := _paragraph_text(p, images).strip()))
-            if text:
-                cells.append(text)
-        if cells:
+
+            parts: list[str] = []
+            for item in cell.iter_inner_content():
+                if isinstance(item, Table):
+                    parts.extend(_table_rows(item, images))
+                elif text := _paragraph_text(item, images).strip():
+                    parts.append(text)
+            cells.append("\n".join(parts))
+        if any(cells):
             rows.append(" | ".join(cells))
     return rows
