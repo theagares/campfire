@@ -72,6 +72,14 @@ def test_한_도메인이라도_가리라고_하면_가리고_모두_남기라�
     assert [e["form"] for e in again] == ["김민준"]  # 다른 창의 같은 개체도 같은 판정
 
 
+def test_keep_진단은_마스킹_결과와_분리해서_돌려준다():
+    masked, kept = _detector().predict_with_decisions([TEXT])
+
+    assert [e["form"] for e in masked[0] if "score" in e] == ["김민준"]
+    assert [(e["form"], e["label"]) for e in kept[0]] == [("미르온테크", "OG_WORKPLACE")]
+    assert kept[0][0]["score"] < _detector().threshold
+
+
 def test_정규식_보정은_그대로_더하고_score_없이_항상_가린다():
     first = _detector().predict([TEXT])[0]
     phone = next(e for e in first if e["label"] == "QT_MOBILE")

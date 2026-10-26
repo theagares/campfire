@@ -120,18 +120,30 @@ class CombinedGpuWorker:
             injection_records = request.get("injection_records")
             if not isinstance(pii_texts, list) or not isinstance(injection_records, list):
                 raise ValueError("parallel requires pii_texts and injection_records lists")
-            pii_entities, injection_results = self._run_parallel(
-                lambda: self.pii.predict(pii_texts),
+            include_keep = request.get("include_pii_keep") is True
+            pii_output, injection_results = self._run_parallel(
+                lambda: (
+                    self.pii.predict_with_decisions(pii_texts)
+                    if include_keep
+                    else self.pii.predict(pii_texts)
+                ),
                 lambda: self.injection.predict_batch(injection_records),
             )
-            return {
+            pii_entities, pii_kept = pii_output if include_keep else (pii_output, None)
+            response = {
                 "pii_entities": pii_entities,
                 "injection_results": injection_results,
             }
+            if pii_kept is not None:
+                response["pii_kept"] = pii_kept
+            return response
         if command == "pii":
             texts = request.get("texts")
             if not isinstance(texts, list):
                 raise ValueError("pii requires a texts list")
+            if request.get("include_pii_keep") is True:
+                entities, kept = self.pii.predict_with_decisions(texts)
+                return {"pii_entities": entities, "pii_kept": kept}
             return {"pii_entities": self.pii.predict(texts)}
         if command == "injection":
             records = request.get("records")

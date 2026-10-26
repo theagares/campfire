@@ -137,6 +137,22 @@ async def _detect_pii(text: str) -> list[Detection]:
     return _dedupe(list(model_items) + credentials.detect(text))
 
 
+async def _detect_pii_with_keep(
+    text: str,
+) -> tuple[list[Detection], list[dict[str, Any]]]:
+    """PII 결과와 후단 MLP가 명시적으로 KEEP한 후보를 함께 얻는다.
+
+    KEEP은 시연 대시보드 표시용일 뿐 Detection에 섞지 않는다. 진단 기능을 모르는
+    대체 detector에서는 정상 탐지만 수행하고 빈 KEEP 목록으로 폴백한다.
+    """
+    detector = registry.get_pii_detector()
+    detect_with_keep = getattr(detector, "detect_with_keep", None)
+    if not callable(detect_with_keep):
+        return await _detect_pii(text), []
+    model_items, kept = await detect_with_keep(text, meta=None)
+    return _dedupe(list(model_items) + credentials.detect(text)), kept
+
+
 def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[dict]:
     """원문 기준 PII 좌표를 이 청크 기준으로 옮긴다. 경계를 걸친 항목은 잘라서 넘긴다.
 
@@ -305,6 +321,11 @@ async def _try_combined_local_inference(
     list[Detection],
     list[Detection],
     list[tuple[dict, dict[str, Any]]],
+] | tuple[
+    list[Detection],
+    list[Detection],
+    list[tuple[dict, dict[str, Any]]],
+    list[dict[str, Any]],
 ] | None:
     """PII와 EXAONE을 한 CUDA 프로세스의 두 stream에서 실행한다.
 
@@ -342,9 +363,20 @@ async def _try_combined_local_inference(
     ]
     worker = combined_gpu.get_worker()
     try:
-        entity_lists, valid_results = await worker.infer_parallel(
-            pii_texts, injection_records
-        )
+        if config.DEMO_TRACE_ENABLED:
+            infer_with_keep = getattr(worker, "infer_parallel_with_pii_keep", None)
+            if not callable(infer_with_keep):
+                raise combined_gpu.CombinedGpuUnavailable(
+                    "combined worker does not expose PII KEEP decisions"
+                )
+            entity_lists, keep_lists, valid_results = await infer_with_keep(
+                pii_texts, injection_records
+            )
+        else:
+            entity_lists, valid_results = await worker.infer_parallel(
+                pii_texts, injection_records
+            )
+            keep_lists = [[] for _ in pii_texts]
         local_results: list[dict[str, Any]] = [
             {"is_injection": False, "scores": {}} for _ in injection_chunks
         ]
@@ -353,6 +385,7 @@ async def _try_combined_local_inference(
         document_count = len(document_windows)
         document_entities = entity_lists[:document_count]
         prompt_entities = entity_lists[document_count:]
+        document_kept = keep_lists[:document_count]
         pii_items = _dedupe(
             list(decode(text, document_windows, document_entities))
             + credentials.detect(text)
@@ -363,6 +396,12 @@ async def _try_combined_local_inference(
                 + credentials.detect(user_prompt)
             )
             if user_prompt
+            else []
+        )
+        decode_keep = getattr(pii_detector, "decode_keep_windows", None)
+        pii_keep = (
+            decode_keep(text, document_windows, document_kept)
+            if config.DEMO_TRACE_ENABLED and callable(decode_keep)
             else []
         )
         classified = list(zip(injection_chunks, local_results, strict=True))
@@ -380,6 +419,8 @@ async def _try_combined_local_inference(
         if residency is not None:
             residency.device = "cuda"
             residency.touch()
+    if config.DEMO_TRACE_ENABLED:
+        return pii_items, user_pii_items, classified, pii_keep
     return pii_items, user_pii_items, classified
 
 
@@ -640,8 +681,12 @@ async def run_pipeline(
     classified: list[tuple[dict, dict[str, Any]]] | None = None
     injection_detector: Any | None = None
     injection_chunks: list[dict] = []
+    pii_keep: list[dict[str, Any]] = []
     if not scan_injection:
-        pii_items = await _detect_pii(text)
+        if config.DEMO_TRACE_ENABLED:
+            pii_items, pii_keep = await _detect_pii_with_keep(text)
+        else:
+            pii_items = await _detect_pii(text)
         user_prompt_pii_items = await _detect_pii(user_prompt) if user_prompt else []
         injection_items: list[Detection] = []
     else:
@@ -672,7 +717,10 @@ async def run_pipeline(
             user_prompt=user_prompt,
         )
         if combined_result is not None:
-            pii_items, user_prompt_pii_items, classified = combined_result
+            if config.DEMO_TRACE_ENABLED:
+                pii_items, user_prompt_pii_items, classified, pii_keep = combined_result
+            else:
+                pii_items, user_prompt_pii_items, classified = combined_result
         else:
             # CUDA가 없거나 통합 worker가 실패하면 검증된 개별 sidecar 경로를 그대로 쓴다.
             # 두 로컬 모델은 서로 다른 프로세스지만 기존처럼 동시에 실행한다.
@@ -685,7 +733,11 @@ async def run_pipeline(
                 list[tuple[dict, dict[str, Any]]]
             ] | None = None
             user_pii_task: asyncio.Task[list[Detection]] | None = None
-            pii_task = asyncio.create_task(_detect_pii(text))
+            pii_task = asyncio.create_task(
+                _detect_pii_with_keep(text)
+                if config.DEMO_TRACE_ENABLED
+                else _detect_pii(text)
+            )
             running_tasks: list[asyncio.Task[Any]] = [pii_task]
             if user_prompt:
                 user_pii_task = asyncio.create_task(_detect_pii(user_prompt))
@@ -701,7 +753,11 @@ async def run_pipeline(
                 running_tasks.append(classified_task)
 
             try:
-                pii_items = await pii_task
+                pii_result = await pii_task
+                if config.DEMO_TRACE_ENABLED:
+                    pii_items, pii_keep = pii_result
+                else:
+                    pii_items = pii_result
                 if user_pii_task is not None:
                     user_prompt_pii_items = await user_pii_task
                 else:
@@ -780,7 +836,12 @@ async def run_pipeline(
         reason = reason or (image_ocr.UNCHECKED_REASON if images_unchecked
                             else "문서가 길어 이미지 속 글자 일부를 검사하지 못해 보내지 않습니다")
     confidential_items = [] if blocked else await confidential.detect(
-        text, list(pii_items) + list(forced_items) + list(injection_items), emit, forced_snapshot)
+        text,
+        list(pii_items) + list(forced_items) + list(injection_items),
+        emit,
+        forced_snapshot,
+        pii_keep=pii_keep,
+    )
     if confidential_items:
         pii_items = _dedupe(list(pii_items) + confidential_items)
 

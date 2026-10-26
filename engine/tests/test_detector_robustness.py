@@ -50,6 +50,25 @@ def test_pii_sidecar_requests_are_bounded():
     assert {(it["start"], it["end"]) for it in items} == {(off, off + 2) for _, off in windows}
 
 
+def test_pii_keep_windows_are_deduplicated_in_document_coordinates():
+    detector = object.__new__(EncoderPiiDetector)
+    text = "가나다라마바사아자차"
+    windows = [(text[:8], 0), (text[4:], 4)]
+    kept = [
+        [{"label": "OG_WORKPLACE", "begin": 5, "end": 7, "score": 0.01}],
+        [{"label": "OG_WORKPLACE", "begin": 1, "end": 3, "score": 0.01}],
+    ]
+
+    assert detector.decode_keep_windows(text, windows, kept) == [{
+        "type": "ORGANIZATION",
+        "start": 5,
+        "end": 7,
+        "text": text[5:7],
+        "maskProbability": 0.01,
+        "decision": "KEEP",
+    }]
+
+
 def _client(monkeypatch) -> combined_gpu.CombinedGpuClient:
     monkeypatch.setattr(config, "COMBINED_GPU_WORKER_ENABLED", True)
     return combined_gpu.CombinedGpuClient()
@@ -80,6 +99,31 @@ def test_combined_requests_are_sliced(monkeypatch):
     assert all(len(p.get("pii_texts", p.get("texts", []))) <= config.COMBINED_GPU_PII_WINDOWS_PER_REQUEST
                for p in payloads)
     assert [p["command"] for p in payloads] == ["parallel", "pii", "pii"]  # 한쪽이 빈 회차는 단일 명령
+
+
+def test_combined_keep_diagnostics_follow_the_same_slices(monkeypatch):
+    client = _client(monkeypatch)
+    payloads: list[dict[str, Any]] = []
+
+    async def request(payload):
+        payloads.append(payload)
+        texts = payload.get("pii_texts", payload.get("texts", []))
+        records = payload.get("injection_records", payload.get("records", []))
+        return {
+            "pii_entities": [[] for _ in texts],
+            "pii_kept": [[{"form": value}] for value in texts],
+            "injection_results": [{"r": row["tool_response"]} for row in records],
+        }
+
+    client._request = request
+    pii, kept, injection = asyncio.run(client.infer_parallel_with_pii_keep(
+        ["p0", "p1"], [{"tool_response": "i0"}],
+    ))
+
+    assert pii == [[], []]
+    assert [row[0]["form"] for row in kept] == ["p0", "p1"]
+    assert injection == [{"r": "i0"}]
+    assert all(payload["include_pii_keep"] is True for payload in payloads)
 
 
 class _FakeProc:

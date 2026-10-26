@@ -194,10 +194,28 @@ class PIIDetector:
             best = prob if best is None else torch.maximum(best, prob)
         return best.tolist()
 
-    @torch.inference_mode()
     def predict(self, texts: list[str]) -> list[list[dict[str, Any]]]:
         """texts 를 한 문서의 문장들로 넘긴다 — 같은 개체가 여러 창에 나오면 한 개체로 묶여 같은 판정을 받는다."""
+        results, _ = self._predict(texts, include_keep=False)
+        return results
+
+    def predict_with_decisions(
+        self, texts: list[str]
+    ) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+        """마스킹할 개체와 MLP가 KEEP으로 해제한 모델 후보를 함께 돌려준다.
+
+        KEEP 후보는 시연 대시보드용 진단 정보다. 실제 탐지 결과에는 계속 포함하지
+        않아 기존 마스킹 동작을 바꾸지 않는다. 정규식 후처리 후보는 MLP 판정이
+        아니므로 KEEP 목록에 넣지 않는다.
+        """
+        return self._predict(texts, include_keep=True)
+
+    @torch.inference_mode()
+    def _predict(
+        self, texts: list[str], *, include_keep: bool
+    ) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
         found: list[list[dict[str, Any]]] = [[] for _ in texts]
+        kept: list[list[dict[str, Any]]] = [[] for _ in texts]
         rows = [{"sent_idx": str(i), "sentence": t} for i, t in enumerate(texts) if t.strip()]
         if rows:
             try:
@@ -209,13 +227,15 @@ class PIIDetector:
             if data is not None:
                 hidden, entities, _ = self.model.encode(data, predict=True)
                 for entity, score in zip(entities, self._mask_probabilities(hidden, data, entities), strict=True):
-                    if score < self.threshold:
-                        continue  # KEEP
+                    if score < self.threshold and not include_keep:
+                        continue
+                    target = kept if score < self.threshold else found
                     for m in entity["mentions"]:
-                        found[int(m["sent_idx"])].append({
+                        item = {
                             "form": m["form"], "label": self.codes[entity["entity_type"]],
                             "begin": m["begin"], "end": m["end"], "score": score,
-                        })
+                        }
+                        target[int(m["sent_idx"])].append(item)
         results = []
         for text, entities in zip(texts, found, strict=True):
             entities = merge_lc_address(sorted(entities, key=lambda e: (e["begin"], e["end"])), text)
@@ -223,7 +243,9 @@ class PIIDetector:
             entities = regex_postprocess(text, entities)
             entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
             results.append(entities)
-        return results
+        for entities in kept:
+            entities.sort(key=lambda item: (item["begin"], item["end"], item["label"]))
+        return results, kept
 
 
 def write_response(payload: dict[str, Any]) -> None:
@@ -244,11 +266,18 @@ def run_stdio(detector: PIIDetector) -> None:
             if texts is None:
                 texts = [request["text"]]
                 single = True
-            predictions = detector.predict(texts)
-            write_response({
+            include_keep = request.get("include_keep") is True
+            if include_keep:
+                predictions, kept = detector.predict_with_decisions(texts)
+            else:
+                predictions, kept = detector.predict(texts), None
+            response = {
                 "id": request.get("id"),
                 "entities": predictions[0] if single else predictions,
-            })
+            }
+            if kept is not None:
+                response["kept"] = kept[0] if single else kept
+            write_response(response)
         except Exception as exc:
             write_response({"id": None, "error": str(exc)})
 

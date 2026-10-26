@@ -112,6 +112,10 @@
   .sent.secret .sn, .sent.fallback .sn { color: var(--red-ink); }
   .sent.ev .sn { color: var(--orange-ink); }
   .sent.hover { box-shadow: inset 0 0 0 2px var(--purple); }
+  .pii-keep { padding: 1px 3px; border: 1.5px solid var(--green); border-radius: 3px;
+              background: var(--green-soft); color: var(--green-ink); font-weight: 700;
+              -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .keep-key { color: var(--green-ink); font-weight: 700; }
   .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
   .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: #fff; color: var(--red-ink); border: 1px solid #F7B6BC; cursor: default; }
   .mask { display: inline-block; font-size: 11px; line-height: 1.4; padding: 0 5px; border-radius: 4px; background: var(--mask); color: var(--ink-2); font-weight: 600; }
@@ -187,7 +191,7 @@
   </div>
   <div class="right">
     <div class="card" id="doc-card">
-      <h2>문서 <small>개인정보·인젝션은 가린 상태</small></h2>
+      <h2>문서 <small>개인정보·인젝션은 가린 상태 · <span class="keep-key">초록색 = PII MLP KEEP(마스킹 해제)</span></small></h2>
       <div id="doc"><div class="empty">검사가 시작되면 문장이 나타납니다</div></div>
     </div>
     <div class="card" id="facts-card">
@@ -281,7 +285,7 @@ async function loadKg() {
 function newScan(id, at) {
   return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
            passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false,
-           flagged: [], t: {}, shownAt: {} };
+           flagged: [], piiKeep: [], t: {}, shownAt: {} };
 }
 
 function applyEvent(sc, ev) {
@@ -289,6 +293,7 @@ function applyEvent(sc, ev) {
   sc.shownAt[ev.stage] = Date.now() / 1000;  // 경과 시간은 화면 시계로 — 엔진 시각(at)은 재접속·재생 때 과거일 수 있다
   if (ev.stage === "start") {
     sc.sentences = ev.sentences || []; sc.entities = ev.entities || []; sc.masked = ev.masked || {};
+    sc.piiKeep = ev.piiKeep || [];
     sc.candidates = (ev.candidates || []).map((t) => K(...t));
   } else if (ev.stage === "retriever") {
     sc.scored = ev.scored !== false;
@@ -414,8 +419,47 @@ function renderGraph(sc, animate) {
     : `검사 #${sc.id} — 문서에서 KG 엔티티 쌍을 찾지 못함`;
 }
 
-function fmtSentence(t) {
+function fmtPlain(t) {
   return esc(t).replace(/\[([^\[\]]{1,14}마스킹)\]/g, '<span class="mask">$1</span>');
+}
+
+function fmtSentence(t, keep) {
+  const ranges = [];
+  const seen = new Set();
+  for (const item of keep || []) {
+    const needle = String(item.text || "");
+    if (!needle) continue;
+    const exactStart = Number(item.start), exactEnd = Number(item.end);
+    if (Number.isInteger(exactStart) && Number.isInteger(exactEnd) && exactStart >= 0 && exactEnd > exactStart
+        && exactEnd <= t.length && t.slice(exactStart, exactEnd) === needle) {
+      const key = `${exactStart}:${exactEnd}`;
+      if (!seen.has(key)) { ranges.push({ start: exactStart, end: exactEnd, item }); seen.add(key); }
+      continue;
+    }
+    let at = 0;
+    while ((at = t.indexOf(needle, at)) !== -1) {
+      const key = `${at}:${at + needle.length}`;
+      if (!seen.has(key)) { ranges.push({ start: at, end: at + needle.length, item }); seen.add(key); }
+      at += Math.max(1, needle.length);
+    }
+  }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  const selected = [];
+  let cursor = -1;
+  for (const range of ranges) {
+    if (range.start >= cursor) { selected.push(range); cursor = range.end; }
+  }
+  if (!selected.length) return fmtPlain(t);
+  let html = "", offset = 0;
+  for (const range of selected) {
+    html += fmtPlain(t.slice(offset, range.start));
+    const probability = Number(range.item.maskProbability);
+    const score = Number.isFinite(probability) ? ` · MASK 확률 ${(probability * 100).toFixed(1)}%` : "";
+    const title = `PII MLP: KEEP · ${range.item.type || "OTHER_PII"}${score}`;
+    html += `<span class="pii-keep" title="${esc(title)}">${esc(t.slice(range.start, range.end))}</span>`;
+    offset = range.end;
+  }
+  return html + fmtPlain(t.slice(offset));
 }
 
 function renderDoc(sc) {
@@ -423,6 +467,11 @@ function renderDoc(sc) {
   const flagged = new Map(sc.flagged.map(([i, , src]) => [i, src]));
   const bySent = new Map();
   for (const [s, k] of sc.pairs) { if (!bySent.has(s)) bySent.set(s, []); bySent.get(s).push(k); }
+  const keepBySent = new Map();
+  for (const item of sc.piiKeep) {
+    if (!keepBySent.has(item.sentence)) keepBySent.set(item.sentence, []);
+    keepBySent.get(item.sentence).push(item);
+  }
   const ev = new Set();
   if (reached(sc, "retriever") && !reached(sc, "done")) for (const evs of sc.passed.values()) evs.forEach((i) => ev.add(i));
   const html = sc.sentences.map((t, i) => {
@@ -431,7 +480,7 @@ function renderDoc(sc) {
       const [s, p, o] = k.split("␟");
       return `<span class="chip" data-key="${esc(k)}" title="${esc(`(${s}, ${p}, ${o})`)}">${esc(p)} · ${esc(o)}</span>`;
     }).join("");
-    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st"><span class="tx">${fmtSentence(t)}</span></span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st"><span class="tx">${fmtSentence(t, keepBySent.get(i))}</span></span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
   }).join("");
   const box = $("#doc");
   const keep = box.dataset.scan === String(sc.id) ? box.scrollTop : 0;

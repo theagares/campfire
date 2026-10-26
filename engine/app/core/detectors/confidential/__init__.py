@@ -174,7 +174,12 @@ def _display(ent: str, mentions, masked_items: list[Detection], text: str) -> st
 
 
 async def detect(
-    text: str, masked_items: list[Detection], emit: Emit | None = None, forced=None,
+    text: str,
+    masked_items: list[Detection],
+    emit: Emit | None = None,
+    forced=None,
+    *,
+    pii_keep: list[dict[str, Any]] | None = None,
 ) -> list[Detection]:
     """masked_items: 이미 가려질 PII·사용자 지정·인젝션 구간 (원문 좌표) — Solar 로 보내기 전 가리고, 결과에서 뺀다.
     forced: 이 요청의 사용자 지정 마스킹 스냅샷 — 문서에 없는 KG 술어 같은 사실 문장 속 등록어도 가린다."""
@@ -202,9 +207,60 @@ async def detect(
     def solar_sentences() -> list[str]:
         return [no_forced(_redacted(text, sp, for_solar)) for sp in sents]
 
+    def visible_pii_keep() -> list[dict[str, Any]]:
+        """Solar가 보는 문장 안에 실제로 남은 MLP KEEP만 시연 정보로 만든다."""
+        visible: list[dict[str, Any]] = []
+        covers = [(int(it["start"]), int(it["end"])) for it in for_solar]
+        seen: set[tuple[int, int, str]] = set()
+        for item in pii_keep or []:
+            start, end = int(item.get("start", -1)), int(item.get("end", -1))
+            pii_type = str(item.get("type", "OTHER_PII"))
+            key = (start, end, pii_type)
+            if start < 0 or end <= start or end > len(text) or key in seen:
+                continue
+            seen.add(key)
+            if any(_overlaps((start, end), cover) for cover in covers):
+                continue  # 다른 창의 MASK·강제 규칙·인젝션에 실제로 가려진 후보
+            for sentence, (a, b) in enumerate(sents):
+                if a <= start and end <= b:
+                    local_masks = [
+                        {
+                            "start": max(int(mask["start"]), a) - a,
+                            "end": min(int(mask["end"]), b) - a,
+                            "type": mask.get("type", "OTHER_PII"),
+                            "confidence": mask.get("confidence", 1.0),
+                        }
+                        for mask in for_solar
+                        if int(mask["start"]) < b and a < int(mask["end"])
+                    ]
+                    redaction = build_redaction(text[a:b], local_masks)
+                    local_start, local_end = start - a, end - a
+                    display_span = next((
+                        (
+                            masked_start + local_start - original_start,
+                            masked_start + local_end - original_start,
+                        )
+                        for masked_start, _masked_end, original_start, original_end, is_mask
+                        in redaction.segments
+                        if not is_mask and original_start <= local_start and local_end <= original_end
+                    ), None)
+                    if display_span is None:
+                        break
+                    visible.append({
+                        "sentence": sentence,
+                        "text": text[start:end],
+                        "type": pii_type,
+                        "maskProbability": float(item.get("maskProbability", 0.0)),
+                        "start": display_span[0],
+                        "end": display_span[1],
+                    })
+                    break
+        return visible
+
     if trace is not None:  # 문장은 Solar 가 보는 것(가린 것)만 싣는다
         demo_trace.publish(trace, "start", sentences=solar_sentences(), entities=sorted(mentions),
                            candidates=[_spo(t) for t in cands], delta=config.CONFIDENTIAL_DELTA,
+                           piiKeep=visible_pii_keep(),
                            masked=dict(Counter("pii" if it.get("type") in PII_TYPES else "injection"
                                                if it.get("type") in INJECTION_TYPES else "other" for it in masked_items)))
     if not cands:

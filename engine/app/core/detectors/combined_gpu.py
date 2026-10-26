@@ -205,6 +205,36 @@ class CombinedGpuClient:
         pii_texts: list[str],
         injection_records: list[dict[str, str]],
     ) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+        pii_entities, _, injection_results = await self._infer_parallel(
+            pii_texts, injection_records, include_pii_keep=False
+        )
+        return pii_entities, injection_results
+
+    async def infer_parallel_with_pii_keep(
+        self,
+        pii_texts: list[str],
+        injection_records: list[dict[str, str]],
+    ) -> tuple[
+        list[list[dict[str, Any]]],
+        list[list[dict[str, Any]]],
+        list[dict[str, Any]],
+    ]:
+        """시연 대시보드용 MLP KEEP 판정까지 함께 받는다."""
+        return await self._infer_parallel(
+            pii_texts, injection_records, include_pii_keep=True
+        )
+
+    async def _infer_parallel(
+        self,
+        pii_texts: list[str],
+        injection_records: list[dict[str, str]],
+        *,
+        include_pii_keep: bool,
+    ) -> tuple[
+        list[list[dict[str, Any]]],
+        list[list[dict[str, Any]]],
+        list[dict[str, Any]],
+    ]:
         """문서를 여러 요청으로 나눠 보낸다. 문서 전체를 한 요청으로 보내면 응답 한 줄이
         문서 길이에 비례해 커지고 시간 상한도 문서 전체에 걸린다(긴 문서에서 실패)."""
         pii_step = config.COMBINED_GPU_PII_WINDOWS_PER_REQUEST
@@ -213,6 +243,7 @@ class CombinedGpuClient:
             -(-len(pii_texts) // pii_step), -(-len(injection_records) // injection_step), 1
         )
         pii_entities: list[list[dict[str, Any]]] = []
+        pii_kept: list[list[dict[str, Any]]] = []
         injection_results: list[dict[str, Any]] = []
         for index in range(rounds):
             pii_part = pii_texts[index * pii_step : (index + 1) * pii_step]
@@ -225,20 +256,26 @@ class CombinedGpuClient:
                 payload = {"command": "injection", "records": injection_part}
             else:
                 continue
+            if pii_part and include_pii_keep:
+                payload["include_pii_keep"] = True
             response = await self._request(payload)
             pii_rows = response.get("pii_entities", []) if pii_part else []
+            keep_rows = response.get("pii_kept", []) if pii_part and include_pii_keep else [[] for _ in pii_part]
             injection_rows = response.get("injection_results", []) if injection_part else []
             if (
                 not isinstance(pii_rows, list)
+                or not isinstance(keep_rows, list)
                 or not isinstance(injection_rows, list)
                 or len(pii_rows) != len(pii_part)
+                or len(keep_rows) != len(pii_part)
                 or len(injection_rows) != len(injection_part)
             ):
                 await self.fail()
                 raise CombinedGpuUnavailable("combined GPU worker returned malformed output")
             pii_entities += pii_rows
+            pii_kept += keep_rows
             injection_results += injection_rows
-        return pii_entities, injection_results
+        return pii_entities, pii_kept, injection_results
 
     def prewarm_background(self, on_unavailable=None) -> None:
         """앱 시작과 함께 띄운다. 쓸 수 없으면(CUDA 없음 등) on_unavailable 로 개별 sidecar 를
