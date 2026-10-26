@@ -41,6 +41,11 @@ assert.match(
   /id="confidential-pill"[^>]*hidden[^>]*>.*기밀 탐지/s,
   '진행 화면 HTML 에 기밀 탐지 표시가 없거나 기본 숨김 상태가 아니다',
 );
+assert.match(
+  PANEL_HTML,
+  /id="live-progress"[^>]*role="status"[^>]*aria-live="polite"[^>]*hidden/s,
+  '첫 결과 뒤 남은 검사를 알릴 라이브 진행 영역이 없거나 기본 숨김 상태가 아니다',
+);
 
 /** sidepanel.js 를 스텁 DOM 위에 올리고 조작 손잡이를 돌려준다. */
 function loadPanel(opts = {}) {

@@ -1163,6 +1163,9 @@
     }
 
     for (const item of items) {
+      await sendToSW({
+        type: 'SCAN_MULTI_ITEM_READING', sessionId, leaseId, docId: item.id,
+      });
       let base64Data = null;
       try {
         base64Data = await fileToBase64(item.file);
@@ -1289,6 +1292,9 @@
     const leaseId = await leasePromise;
     if (!leaseId) return;
 
+    await sendToSW({
+      type: 'SCAN_MULTI_ITEM_READING', sessionId, leaseId, docId,
+    });
     let base64Data = null;
     try {
       base64Data = await fileToBase64(item.file);

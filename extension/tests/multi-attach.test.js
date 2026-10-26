@@ -136,6 +136,10 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   assert.ok(init, 'PANEL_SCAN_INIT 이 없다 — 패널이 탭을 그릴 수 없다');
   assert.strictEqual(init.docs.length, 2, '파일 2개가 그대로 와야 한다');
   assert.strictEqual(init.docs.map(d => d.fileName).join(','), 'a.pdf,b.pdf', '스테이징 순서 유지');
+  assert.strictEqual(init.current?.phase, 'checking-engine', '엔진 확인 전부터 검사 중이라고 표시한다');
+
+  const starting = panelOf('PANEL_SCAN_STATE').find(m => m.sessionId === 's1' && m.current?.phase === 'starting');
+  assert.ok(starting, 'lease 를 주기 전에 검사 시작 상태를 패널에 알리지 않았다');
 
   // lease 는 인코딩보다 먼저 온다 — content 는 이걸 받기 전에 base64 를 만들지 않는다.
   const grant = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED');
@@ -156,6 +160,12 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 's1', leaseId, text: '요약해줘' });
   await settle();
   assert.strictEqual(panelOf('PANEL_SCAN_PROMPT').length, 1, '프롬프트 결과가 1건이어야 한다');
+
+  await send({ type: 'SCAN_MULTI_ITEM_READING', sessionId: 's1', leaseId, docId: 'f0' });
+  const reading = panelOf('PANEL_SCAN_STATE').slice(-1)[0];
+  assert.strictEqual(reading.current?.phase, 'reading', '파일을 읽는 상태가 즉시 전달되지 않았다');
+  assert.strictEqual(reading.current?.itemId, 'f0');
+  assert.strictEqual(reading.docs.find(d => d.id === 'f0')?.status, 'scanning', '검사 중인 탭이 대기 상태에 머문다');
 
   for (const [docId, fileName] of [['f0', 'a.pdf'], ['f1', 'b.pdf']]) {
     await send({
@@ -605,6 +615,10 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await settle();
     const granted = () => tabMessages.filter(m => m.type === 'SCAN_LEASE_GRANTED').map(m => m.sessionId);
     assert.deepStrictEqual(granted(), ['held'], '첫 배치만 차례를 받아야 한다');
+    const queued = panelOf('PANEL_SCAN_STATE').find(
+      m => m.sessionId === 'other-tab' && m.current?.phase === 'queued',
+    );
+    assert.strictEqual(queued?.current?.queuePosition, 1, '다른 탭의 대기 순서가 패널에 표시되지 않았다');
 
     await send({ type: 'PANEL_DECISION', sessionId: 'no-such', decision: { action: 'send' }, tabId: 7 }, {});
     await settle();

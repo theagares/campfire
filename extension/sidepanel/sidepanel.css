@@ -55,7 +55,7 @@ body {
 /* .view-progress/.view-error 는 display:flex를 직접 지정하므로, 동일 특이도(class 1개)인
    UA 기본 [hidden]{display:none}보다 author 규칙이 항상 이겨 hidden이 무시된다 —
    특이도를 [hidden]+class 조합으로 올려서 확실히 숨긴다. */
-.view[hidden], .footer[hidden], .doc-actions[hidden] { display: none; }
+.view[hidden], .footer[hidden], .doc-actions[hidden], .live-progress[hidden] { display: none; }
 
 /* ── 진행 (Figma AgentCard) ── */
 .view-progress {
@@ -199,7 +199,7 @@ body {
   background: rgba(0, 0, 0, .1); overflow: hidden; margin-top: 4px;
 }
 .progress-fill {
-  height: 100%; width: 8%; border-radius: 999px; background: var(--purple);
+  height: 100%; width: 0; border-radius: 999px; background: var(--purple);
   transition: width .35s ease;
 }
 .warn-note {
@@ -226,6 +226,21 @@ body {
 
 /* ── 다중 첨부 탭 ─────────────────────────────────────────────────────────
    탭 라벨에 탐지 건수를 띄운다 — 어느 파일이 문제인지 열어보지 않고 알 수 있어야 한다. */
+.live-progress {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 14px 0; padding: 8px 10px;
+  border: 1px solid #7c3aed33; border-radius: 8px;
+  background: #7c3aed0d; color: var(--text-2); font-size: 11.5px;
+}
+.live-progress-dot {
+  position: relative; width: 6px; height: 6px; flex: 0 0 6px;
+  border-radius: 50%; background: var(--purple);
+}
+.live-progress-dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: var(--purple); animation: pulse-ring 2.2s cubic-bezier(.2,.6,.3,1) infinite;
+}
+@media (prefers-reduced-motion: reduce) { .live-progress-dot::after { animation: none; } }
 .tabs {
   display: flex; gap: 4px; flex-wrap: wrap;
   padding: 8px 14px 0; font-size: 12px;

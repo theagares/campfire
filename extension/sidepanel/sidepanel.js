@@ -30,6 +30,7 @@ const el = {
   btnCancel: $('btn-cancel'), btnSend: $('btn-send'), btnClose: $('btn-close'),
   tabs: $('tabs'), docActions: $('doc-actions'),
   confidentialPill: $('confidential-pill'),
+  liveProgress: $('live-progress'), liveProgressText: $('live-progress-text'),
 };
 
 // 기밀 탐지는 인젝션 뒤에 실행된다. 엔진 단계 번호는 3이지만 실제 실행 순서에 맞춰
@@ -64,6 +65,7 @@ let state = {
   loaded: new Map(),    // itemId -> { originalText, piiItems, injectionItems }
   decisions: new Map(), // docId -> 'masked'|'original'|'exclude'
   multiRevealed: false, // 첫 파일 결과가 나와 대기 화면에서 탭으로 넘어갔는지 — syncMultiView 참고
+  multiCurrent: null,   // 준비·큐·파일 읽기·엔진 단계 중 지금 실제로 실행 중인 상태
 };
 
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
@@ -192,6 +194,7 @@ function renderMulti(session) {
   state.kind = 'multi';
   state.docs = session.docs || [];
   state.promptMeta = session.prompt || { status: 'pending', counts: null };
+  state.multiCurrent = session.current || null;
   const draft = session.draft || {};
   state.unmasked = new Set(draft.unmaskedKeys || []);
   state.loaded = new Map();
@@ -205,7 +208,7 @@ function renderMulti(session) {
   state.activeTab = draft.activeTab ?? (firstFinished?.id ?? state.docs[0]?.id ?? 'prompt');
   state.multiRevealed = session.status === 'ready' || Boolean(firstFinished) || !multiBusy();
   el.btnSend.textContent = '전송';
-  el.progressTitle.textContent = `문서 ${state.docs.length}개 보안 분석 중…`;
+  el.progressTitle.textContent = state.multiCurrent?.label || `문서 ${state.docs.length}개 보안 분석 중…`;
   el.progressSub.textContent = state.docs.map(d => d.fileName).join(', ');
   renderTabs();
   showTab(state.activeTab);
@@ -215,6 +218,44 @@ function renderMulti(session) {
 
 const isBusy = (status) => status === 'pending' || status === 'scanning';
 const multiBusy = () => state.docs.some(d => isBusy(d.status)) || isBusy(state.promptMeta?.status);
+
+function currentItemLabel(itemId) {
+  if (itemId === 'prompt') return '프롬프트';
+  return state.docs.find(doc => doc.id === itemId)?.fileName || '';
+}
+
+/** 단계 퍼센트는 예상 시간이 아니라 현재 항목 안에서의 위치다. PII·인젝션은 병렬일 수
+ * 있으므로 텍스트가 기준이고 막대는 보조 표시로만 쓴다. */
+function currentItemFraction(current) {
+  if (!current) return 0;
+  if (current.phase === 'reading') return 0.05;
+  if (current.phase === 'starting') return 0.08;
+  if (current.phase === 'done') return 1;
+  const order = { 1: 0.18, 2: 0.45, 4: 0.68, 3: 0.84, 5: 0.96 };
+  const base = order[current.step] || 0;
+  return Math.min(0.99, base + (current.done ? 0.04 : 0));
+}
+
+function syncMultiProgressDisplay() {
+  const current = state.multiCurrent;
+  const item = currentItemLabel(current?.itemId);
+  const label = current?.label || '검사 준비 중…';
+  const text = item ? `${item} · ${label}` : label;
+
+  if (!state.multiRevealed) {
+    el.progressTitle.textContent = label;
+    el.progressSub.textContent = item || state.docs.map(doc => doc.fileName).join(', ');
+    const finished = state.docs.filter(doc => !isBusy(doc.status)).length
+      + (isBusy(state.promptMeta?.status) ? 0 : 1);
+    const total = Math.max(1, state.docs.length + 1);
+    const pct = ((finished + currentItemFraction(current)) / total) * 100;
+    el.progressFill.style.width = `${Math.max(2, Math.min(99, Math.round(pct)))}%`;
+  }
+
+  const showLive = state.multiRevealed && multiBusy() && current?.phase !== 'done';
+  el.liveProgress.hidden = !showLive;
+  if (showLive) el.liveProgressText.textContent = text;
+}
 
 /** 첫 파일이 끝나기 전에는 대기 화면을 유지하고, 첫 결과부터 탭으로 점진 공개한다.
  *  한 번 넘어가면 다시 대기 화면으로 돌아가지 않는다 — 남은 검사와 재시도는 탭의
@@ -231,12 +272,10 @@ function syncMultiView() {
 
   if (!state.multiRevealed) {
     showView('progress');
-    const finished = state.docs.filter(d => !isBusy(d.status)).length
-      + (isBusy(state.promptMeta?.status) ? 0 : 1);
     el.docType.textContent = `문서 ${n}개 검사 중`;
     el.counts.textContent = '검사 중…';
-    el.progressFill.style.width = `${Math.max(8, Math.round((finished / (n + 1)) * 100))}%`;
     el.progressWarn.hidden = true;
+    syncMultiProgressDisplay();
     return;
   }
 
@@ -250,15 +289,16 @@ function syncMultiView() {
   const forced = sum('forced');
   el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건`
     + (forced ? ` | 필수 ${forced}건` : ' 탐지');
+  syncMultiProgressDisplay();
 }
 
-/** 다중 검사 중 진행 이벤트. 막대는 끝난 항목 수로만 채운다 — 항목별 단계로 채우면
- *  파일이 바뀔 때마다 막대가 뒤로 튄다. 제목은 지금 단계, 부제는 지금 보고 있는 파일. */
+/** 다중 검사 중 진행 이벤트. 현재 항목의 단계는 전체 항목 수 안의 일부로만 반영해
+ * 파일이 바뀔 때 막대가 뒤로 튀지 않게 한다. 제목은 지금 단계, 부제는 현재 파일이다. */
 function applyMultiProgress(event, itemId) {
-  if (state.multiRevealed || event?.type !== 'step') return;
-  if (event.label) el.progressTitle.textContent = event.label;
-  const doc = state.docs.find(d => d.id === itemId);
-  el.progressSub.textContent = doc ? doc.fileName : '프롬프트';
+  if (!event || (event.type !== 'step' && event.type !== 'status')) return;
+  if (event.step === 3) setConfidentialEnabled(true);
+  state.multiCurrent = { ...event, phase: event.phase || 'scanning', itemId };
+  syncMultiProgressDisplay();
 }
 
 // ── 파일별 결정 ─────────────────────────────────────────────────────────────
@@ -717,6 +757,11 @@ function refreshCapabilities() {
 
 function applyProgress(event) {
   if (!event) return;
+  if (event.type === 'status') {
+    if (event.label) el.progressTitle.textContent = event.label;
+    el.progressFill.style.width = event.phase === 'preparing' ? '2%' : '4%';
+    return;
+  }
   if (event.type === 'warning') {
     el.progressWarn.hidden = false;
     // partial 은 "검사는 했는데 일부만" 이다(문서가 길어 앞부분만 본 경우). 파싱 실패로
@@ -742,8 +787,11 @@ function applyProgress(event) {
 
 function renderProgress(session) {
   showView('progress');
-  el.counts.textContent = '검사 중…';
-  el.progressFill.style.width = '8%';
+  el.liveProgress.hidden = true;
+  el.counts.textContent = session ? '검사 중…' : '준비 중…';
+  el.progressTitle.textContent = session ? '문서 보안 분석 중…' : '검사 준비 중…';
+  el.progressSub.textContent = session ? '' : '검사 요청을 준비하고 있습니다';
+  el.progressFill.style.width = session ? '2%' : '0%';
   if (session?.meta?.fileName) {
     el.docName.textContent = session.meta.fileName;
     el.docType.textContent = '문서 검사 중';
@@ -757,9 +805,13 @@ function renderProgress(session) {
     el.docType.textContent = '문서 검토';
   }
   (session?.progress || []).forEach(applyProgress);
+  if (session?.current && !(session.progress || []).includes(session.current)) {
+    applyProgress(session.current);
+  }
 }
 
 function renderResult(kind, result, meta) {
+  el.liveProgress.hidden = true;
   state.kind = kind;
   state.result = result;
   state.meta = meta;
@@ -1040,11 +1092,38 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
   // ── 다중 첨부 ──
   // 여기로 오는 건 전부 메타다. 본문은 활성 탭이 GET_PANEL_ITEM_RESULT 로 끌어온다.
+  if (msg.type === 'PANEL_SCAN_STATE') {
+    const isNewSession = Boolean(msg.sessionId && msg.sessionId !== state.sessionId);
+    state.sessionId = msg.sessionId;
+    state.seq = msg.seq ?? state.seq;
+    if (msg.kind === 'multi') {
+      if (state.kind !== 'multi' || isNewSession) {
+        renderMulti({
+          status: msg.status, docs: msg.docs || [], prompt: msg.prompt,
+          current: msg.current,
+        });
+      } else {
+        if (msg.docs) state.docs = msg.docs;
+        if (msg.prompt) state.promptMeta = msg.prompt;
+        state.multiCurrent = msg.current || state.multiCurrent;
+        renderTabs();
+        refreshSummary();
+        syncMultiView();
+      }
+    } else {
+      state.kind = msg.kind || state.kind;
+      renderProgress({ meta: msg.meta, current: msg.current, progress: [] });
+    }
+    return;
+  }
   if (msg.type === 'PANEL_SCAN_INIT') {
     refreshCapabilities();
     state.sessionId = msg.sessionId;
     state.seq = msg.seq ?? state.seq;
-    renderMulti({ docs: msg.docs, prompt: { status: 'pending', counts: null } });
+    renderMulti({
+      status: msg.status, docs: msg.docs,
+      prompt: msg.prompt || { status: 'pending', counts: null }, current: msg.current,
+    });
     return;
   }
   if (msg.type === 'PANEL_SCAN_PROMPT') {
@@ -1067,6 +1146,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'PANEL_SCAN_DONE') {
     state.docs = msg.docs || state.docs;
     state.promptMeta = msg.prompt || state.promptMeta;
+    state.multiCurrent = msg.current || { type: 'status', phase: 'done', label: '검사가 완료되었습니다' };
     state.multiRevealed = true;   // 검사 루프가 끝났다 — 남은 '대기 중' 이 있어도 탭에서 고르게 한다
     renderTabs();
     refreshSummary();
