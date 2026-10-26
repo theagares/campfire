@@ -123,6 +123,49 @@ def test_같은_그림은_한_번만_읽는다(monkeypatch):
     assert len(calls) == 1 and [i["status"] for i in infos] == ["read", "read"] and text.count("로고 아님") == 2
 
 
+def _varco_runtime():
+    """사이드카 런타임(엔진 패키지 밖 스크립트)을 모듈로 불러온다 — torch·transformers 가 있어야 한다."""
+    import importlib.util
+    from pathlib import Path
+
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    runtime = Path(__file__).resolve().parents[1] / "app" / "models" / "varco_ocr" / "runtime" / "varco_ocr_inference.py"
+    spec = importlib.util.spec_from_file_location("varco_rt", runtime)
+    rt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rt)
+    return rt
+
+
+def test_VARCO_출력의_로고_수식_조각은_버리고_동그라미_숫자는_살린다():
+    """회사소개서 로고가 '\\circle \\textcircled{1} ㅁ | 르온테 크' 로 남았다(서버 실측)."""
+    clean = _varco_runtime().clean
+    assert clean("\\circle") == ""
+    assert clean("\\textcircled{1} 주문 자동 수집\n\\textcircled{2} 실시간 재고") == "① 주문 자동 수집\n② 실시간 재고"
+    assert clean("\\textcircled{1}") == "①"
+    assert clean("\\textcircled{0} 라이브러리") == "⓪ 라이브러리"
+    assert clean("\\red{선} \\blue{원} \\orange{선}") == "선 원 선"  # 색만 입힌 범례 글자는 살린다
+    assert clean("\\textcolor{red}{주의} 사항") == "주의 사항"
+    assert clean("\\begin{tikzpicture}") == ""  # 그림 코드는 여전히 거른다
+    assert clean("\\circle{blue} \\hline INJECTION 모델 \\mid LG EXAONE") == "INJECTION 모델 | LG EXAONE"  # 아이콘 도형은 글자가 아니다
+    assert clean("\\textsuperscript{V}RAM 4GB") == "VRAM 4GB"
+    assert clean("경로 C:\\Users\\홍길동") == "경로 C:\\Users\\홍길동"  # 아무 '\\단어' 나 지우지 않는다
+    assert clean("\\hookrightarrow 정책 종료") == "↪ 정책 종료"
+
+
+def test_VARCO_는_같은_줄을_되풀이하면_상한까지_가지_않고_멈춘다():
+    """로고 조각이 "VARCO-VISION\\n"(6토큰)을 2048토큰까지 뽑아 그림 한 장이 77초 걸렸다(서버 실측)."""
+    rt = _varco_runtime()
+    import torch
+
+    n_in = 10
+    stop = rt._stopper(torch.tensor([2048]), n_in)[0]
+    line = [11, 12, 13, 14, 15, 99]  # 한 줄 + 줄바꿈
+    assert stop(torch.tensor([[1] * n_in + line * 17]), None).item()               # 96토큰 넘게 같은 줄 → 멈춤
+    assert not stop(torch.tensor([[1] * n_in + line * 5 + list(range(100, 170))]), None).item()  # 다른 글이 이어지면 계속
+    assert not stop(torch.tensor([[1] * n_in + list(range(100, 230))]), None).item()
+
+
 def test_GPU_가_없다고_한_번_보면_다시_띄우지_않는다(monkeypatch):
     proc = image_ocr.VarcoOcrProcess()
     monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)
