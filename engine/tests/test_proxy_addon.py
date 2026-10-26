@@ -179,6 +179,28 @@ def test_perplexity_S3_업로드_호스트가_검사_대상이다():
     assert "ppl-ai-file-upload.s3.amazonaws.com" in exact  # PAC·TLS 풀기·CA 이름 제한이 모두 이 목록을 쓴다
 
 
+def test_gemini_메인호스트도_프록시_경로_확인_대상이다():
+    """확장은 현재 탭과 같은 호스트의 표식만 믿는다.
+
+    업로드 호스트만 PAC 에 넣으면 Gemini 탭의 same-origin probe 는 DIRECT 로 가서
+    프록시가 실제로 켜져 있어도 확장 화면에는 계속 확장 방식으로 보인다.
+    """
+    exact, _ = addon_mod.intercept_hosts()
+    assert "gemini.google.com" in exact
+    assert "push.clients6.google.com" in exact
+
+
+def test_gemini_메인호스트는_경로표식용이고_요청본문은_건드리지_않는다():
+    """Gemini 프롬프트는 확장이 맡는다. 메인 호스트를 PAC 에 넣었다고 프록시가
+    모르는 와이어 형식을 추측해 고치면 안 된다."""
+    a = CampfireAddon()
+    f = _req("gemini.google.com", "/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate",
+             content=b"opaque-gemini-request")
+    _run(a.request(f))
+    assert f.response is None
+    assert f.request.content == b"opaque-gemini-request"
+
+
 def _scan_result(*, status="ok", pii=0):
     items = [{"type": "PHONE", "start": 0, "end": 1}] * pii
     return {"originalText": "t", "maskedText": "[가림]" if pii else "t", "piiItems": items,

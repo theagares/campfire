@@ -2940,8 +2940,9 @@ cancelScan(stuckScan);
     }
   }
 
-  // (41) 프록시 경로여도 파일은 프록시가 가린 글로 바꿔 끼우는 사이트(PROXY_FILE_HOSTS)에서만 넘긴다.
-  //      Gemini·Perplexity 에서 손을 떼면 프록시가 막기만 해 아무 경로로도 못 올린다(2026-10-26 실측).
+  // (41) 앱+확장 병행에서는 파일을 전송 시점까지 확장이 보류한다. ChatGPT 는 이미지 등록 뒤 MD 치환 시
+  //      형식 오류가 나고, Claude·Grok 은 첨부 즉시 마스킹본이 올라간다. Gemini·Perplexity 도 등록
+  //      메타데이터를 프록시가 바꾸지 못한다. 확장이 올린 최종본은 프록시가 다시 확인한다.
   {
     const route41 = (mode) => dispatchWindowMessage({
       __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
@@ -2963,9 +2964,11 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of ['gemini.google.com', 'www.perplexity.ai']) {
+      for (const host of [
+        'chatgpt.com', 'chat.openai.com', 'claude.ai', 'gemini.google.com', 'grok.com', 'www.perplexity.ai',
+      ]) {
         if (!(await intercepts41(host))) {
-          throw new Error(`(41) ${host} 는 프록시가 가린 글을 넣지 못하는데 확장이 파일을 놓았다`);
+          throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
         }
       }
       // Perplexity 는 프롬프트를 프록시가 보지만(PROXY_PROMPT_HOSTS), 확장이 붙들어 둔 첨부가 있으면 전송 때
@@ -2984,8 +2987,8 @@ cancelScan(stuckScan);
       nextDecision = null;
       await clock.tick(500);
       if (!started41) throw new Error('(41) 프록시가 프롬프트를 보는 사이트에서 붙들어 둔 첨부를 전송 때 검사하지 않았다');
-      if (await intercepts41('chatgpt.com')) {
-        throw new Error('(41) chatgpt.com 은 프록시가 파일을 맡는데 확장도 가로챘다(이중 검토)');
+      if (await intercepts41('copilot.microsoft.com')) {
+        throw new Error('(41) copilot.microsoft.com 은 프록시가 파일을 맡는데 확장도 가로챘다(이중 검토)');
       }
     } finally {
       await route41('extension');

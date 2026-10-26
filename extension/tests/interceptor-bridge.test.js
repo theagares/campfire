@@ -287,7 +287,8 @@ async function main() {
 
   // (12) 엔진이 프록시를 기대해도 실제 HEAD 응답에 표식이 있을 때만 확장이 양보한다.
   {
-    const t = load({ proxyMarked: true });
+    // copilot.microsoft.com 은 아직 프록시가 파일 등록까지 맡는 대조군이다.
+    const t = load({ proxyMarked: true, host: 'copilot.microsoft.com' });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({
       type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
@@ -347,9 +348,11 @@ async function main() {
     );
   }
 
-  // (15-1) 프록시가 가린 글로 바꿔 끼우지 못하는 사이트(Gemini: 시작 요청에서 형식이 정해짐, Perplexity: S3 로 바로
-  //        올림)는 프록시 표식이 있어도 확장이 업로드를 맡는다 — 손을 떼면 프록시가 막기만 해 아무 경로도 안 된다.
-  for (const host of ['gemini.google.com', 'www.perplexity.ai']) {
+  // (15-1) 앱+확장 병행에서는 사이트 등록 형식과 전송 시점을 제어할 수 있게 확장이 업로드를 맡는다.
+  //        프록시는 확장이 올린 최종본을 다시 확인하고, 확장이 없을 때의 안전망으로도 남는다.
+  for (const host of [
+    'chatgpt.com', 'chat.openai.com', 'claude.ai', 'gemini.google.com', 'grok.com', 'www.perplexity.ai',
+  ]) {
     const t = load({ proxyMarked: true, host });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({
@@ -362,7 +365,7 @@ async function main() {
     );
     assert.strictEqual(
       await t.passedThrough(), false,
-      `${host} 는 프록시가 가린 글을 넣지 못하는데 확장이 업로드를 놓았다`,
+      `${host}: 전송 전 파일 보류를 확장이 맡지 않았다`,
     );
   }
 

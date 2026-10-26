@@ -233,6 +233,11 @@ PROMPT_ECHO_PATHS: dict[str, tuple[str, ...]] = {
 
 GEMINI_UPLOAD_HOST = "push.clients6.google.com"
 GEMINI_UPLOAD_PATH = "/upload/"
+# 실제 파일은 위 업로드 호스트로 가지만, 확장은 현재 탭과 같은 호스트의 응답만
+# "이 탭이 프록시를 지난다"는 증거로 인정한다. 메인 호스트를 PAC 에도 넣어야
+# gemini.google.com 의 same-origin probe 응답에 표식을 달 수 있다. 이 호스트의
+# 프롬프트는 프록시가 해석하지 않고 확장이 계속 검사한다(PROXY_PROMPT_HOSTS 참고).
+GEMINI_ROUTE_HOST = "gemini.google.com"
 _GOOG_CMD = "x-goog-upload-command"
 _GOOG_LEN = "x-goog-upload-header-content-length"
 _GOOG_URL = "x-goog-upload-url"
@@ -269,7 +274,7 @@ def intercept_hosts() -> tuple[list[str], list[str]]:
     exact = (
         MULTIPART_HOSTS
         | CHATGPT_HOSTS
-        | {GEMINI_UPLOAD_HOST}
+        | {GEMINI_UPLOAD_HOST, GEMINI_ROUTE_HOST}
         | set(UNSUPPORTED_UPLOADS)
         | {h for h, _ in PROMPT_FORM_ENDPOINTS}
         | {h for h, _ in PROMPT_JSON_ENDPOINTS}
