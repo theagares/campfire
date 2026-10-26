@@ -225,13 +225,25 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   });
   assert.deepStrictEqual(shown(), { progress: true, result: false, footer: false },
     '검사가 막 시작됐는데 대기 화면 대신 탭이 떴다');
-  assert.strictEqual(els.get('progress-fill').style.width, '8%');
+  assert.strictEqual(els.get('progress-fill').style.width, '2%');
   assert.strictEqual(els.get('btn-send').disabled, true, '검사 시작 직후 전송 버튼이 열렸다');
 
-  msg({ type: 'PANEL_PROGRESS', itemId: 'f0', event: { type: 'step', step: 'pii', label: 'PII 탐지 중…' } });
+  msg({
+    type: 'PANEL_SCAN_STATE', kind: 'multi', status: 'scanning',
+    docs: [
+      { id: 'f0', fileName: 'a.pdf', status: 'scanning' },
+      { id: 'f1', fileName: 'b.docx', status: 'pending' },
+    ],
+    prompt: { status: 'pending', counts: null },
+    current: { type: 'status', phase: 'reading', itemId: 'f0', label: '파일 읽는 중…' },
+  });
+  assert.strictEqual(els.get('progress-title').textContent, '파일 읽는 중…');
+  assert.strictEqual(els.get('progress-sub').textContent, 'a.pdf');
+
+  msg({ type: 'PANEL_PROGRESS', itemId: 'f0', event: { type: 'step', step: 2, label: 'PII 탐지 중…' } });
   assert.strictEqual(els.get('progress-title').textContent, 'PII 탐지 중…');
   assert.strictEqual(els.get('progress-sub').textContent, 'a.pdf', '지금 보는 파일이 부제에 없다');
-  assert.strictEqual(els.get('progress-fill').style.width, '8%', '항목 단계가 전체 막대를 덮었다');
+  assert.strictEqual(els.get('progress-fill').style.width, '15%', '현재 항목 단계가 전체 진행률에 반영되지 않았다');
 
   msg({ type: 'PANEL_SCAN_PROMPT', prompt: { status: 'done', counts: { pii: 1, injection: 0 } } });
   assert.ok(shown().progress, '파일 결과가 하나도 없는데 검토 화면이 먼저 떴다');
@@ -245,11 +257,14 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.strictEqual(els.get('btn-send').disabled, true, '다른 파일이 검사 중인데 전송 버튼이 열렸다');
   assert.strictEqual(els.get('doc-type').textContent, '문서 2개 중 1개 검사 완료');
   assert.strictEqual(els.get('mask-summary').textContent, '1개 검사 완료 · 1개 검사 중 · 2건 마스킹');
+  assert.strictEqual(els.get('live-progress').hidden, false, '첫 결과 뒤 남은 검사의 진행 표시가 사라졌다');
+  assert.strictEqual(els.get('live-progress-text').textContent, 'a.pdf · PII 탐지 중…');
 
   msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f0', fileName: 'a.pdf', status: 'done', counts: { pii: 2, injection: 0 } } });
   assert.strictEqual(vm.runInContext('state.activeTab', ctx), 'f1', '후속 결과가 사용자가 보던 탭을 빼앗았다');
   assert.strictEqual(els.get('counts').textContent, 'PII 3건 | INJECTION 1건 탐지', '헤더가 검사 중에 머물렀다');
   assert.strictEqual(els.get('btn-send').disabled, false, '전체 검사가 끝났는데 전송 버튼이 열리지 않았다');
+  assert.strictEqual(els.get('live-progress').hidden, true, '전체 검사 뒤 진행 표시가 남았다');
 
   msg({ type: 'PANEL_SCAN_ITEM', doc: { id: 'f1', fileName: 'b.docx', status: 'scanning' } });
   assert.ok(shown().result, '재시도 한 번에 대기 화면으로 되돌아갔다');

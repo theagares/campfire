@@ -228,6 +228,7 @@ async function reportProxyRoute(message, sender) {
 // ════════════════════════════════════════════════════════════════════════════
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+const JOB_EVENT_POLL_MS = 250;
 
 /** FastAPI HTTPException 응답 본문({"detail": "..."})에서 실제 원인 문구를 뽑는다.
  * 엔진이 500을 던져도 지금까지는 상태코드만 보여줬는데(예: "엔진 업로드 실패 (500)"),
@@ -288,7 +289,7 @@ async function pollJobEvents(jobId, onProgress) {
       }
       return null;
     }
-    await sleep(800);
+    await sleep(JOB_EVENT_POLL_MS);
   }
 }
 
@@ -479,6 +480,18 @@ function pushToPanel(message) {
   if (p?.catch) p.catch(() => {});
 }
 
+/** 검사 결과와 별개인 준비·대기·읽기 상태를 즉시 알린다. 엔진 step 이벤트가 오기
+ * 전에도 사용자가 지금 멈춘 곳을 알 수 있게 하고, 스냅샷 복구에도 같은 상태를 남긴다. */
+function publishScanState(sessionId, session, current) {
+  session.current = current;
+  persistSessions();
+  pushToPanel({
+    type: 'PANEL_SCAN_STATE', sessionId, tabId: session.tabId, seq: session.seq,
+    kind: session.kind, status: session.status, current, meta: session.meta,
+    ...(session.kind === 'multi' ? { docs: session.docs, prompt: session.prompt } : {}),
+  });
+}
+
 function recordSecurityBadge(result) {
   const pii = result?.stats?.piiCount ?? 0;
   const inj = result?.stats?.injectionCount ?? 0;
@@ -508,10 +521,15 @@ async function runScan(sessionId, kind, payload, tabId) {
   persistSessions();
 
   const onProgress = (event) => {
+    session.current = event;
     session.progress.push(event);
     persistSessions();
     pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event });
   };
+
+  publishScanState(sessionId, session, {
+    type: 'status', phase: 'preparing', label: '엔진 연결 확인 및 검사 준비 중…',
+  });
 
   try {
     const result = kind === 'file'
@@ -557,6 +575,18 @@ async function runScan(sessionId, kind, payload, tabId) {
 const scanQueue = [];
 let scanLeaseHolder = null;   // { sessionId, leaseId, tabId }
 
+function refreshQueuedStates() {
+  scanQueue.forEach((queued, index) => {
+    const session = sessions.get(queued.sessionId);
+    if (!session || session.status === 'cancelled') return;
+    session.status = 'queued';
+    publishScanState(queued.sessionId, session, {
+      type: 'status', phase: 'queued', queuePosition: index + 1,
+      label: `다른 문서 검사가 끝나기를 기다리는 중… (대기 ${index + 1}번째)`,
+    });
+  });
+}
+
 function grantNextLease() {
   if (scanLeaseHolder || !scanQueue.length) return;
   const next = scanQueue.shift();
@@ -565,7 +595,10 @@ function grantNextLease() {
 
   scanLeaseHolder = { ...next, leaseId: `lease_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}` };
   session.status = 'scanning';
-  persistSessions();
+  publishScanState(next.sessionId, session, {
+    type: 'status', phase: 'starting', label: '검사를 시작하고 있습니다…',
+  });
+  refreshQueuedStates();
   if (next.tabId != null) {
     chrome.tabs.sendMessage(next.tabId, {
       type: 'SCAN_LEASE_GRANTED', sessionId: next.sessionId, leaseId: scanLeaseHolder.leaseId,
@@ -627,44 +660,62 @@ async function startMultiScan(sessionId, payload, tabId) {
     return;
   }
 
-  // 미지원 문서는 엔진에 가지 않아 doc.forcedMaskActive 가 영영 켜지지 않았다 — 그래서
-  // 패널과 SW 의 "검사 없이 원본 포함" 가드가 둘 다 통과시켰다(.hwp 등이 원본으로 나감).
-  // 지금 엔진 상태를 직접 물어 모든 문서에 미리 찍는다. 알 수 없으면 켜진 것으로 본다.
-  let forcedActive = true;
-  try {
-    const fresh = await probePort((await getServer()).port);
-    if (fresh) forcedActive = fresh.health?.forcedMask?.active !== false;
-  } catch (_) { /* 엔진을 못 찾으면 켜진 것으로 */ }
-  noteForcedMask(forcedActive);
-
   const session = {
-    tabId, kind: 'multi', status: 'queued', progress: [], error: null,
+    tabId, kind: 'multi', status: 'preparing', progress: [], error: null,
     // 패널이 탭을 즉시 그릴 수 있게 메타를 먼저 채운다. 검사가 끝난 순서로 탭이
     // 재정렬되면 사용자가 혼란스러우므로 순서는 여기서 고정된다.
     docs: (payload.items || []).map(it => ({
       id: it.id, fileName: it.fileName, fileSize: it.fileSize, mimeType: it.mimeType,
       supported: it.supported, status: it.supported ? 'pending' : 'unsupported',
       counts: null, truncated: false, scannedChars: 0, originalChars: 0, error: null,
-      forcedMaskActive: forcedActive,
+      // 엔진 확인 전에는 활성으로 간주한다. 실제 값이 꺼짐으로 확인되기 전까지
+      // 미지원 문서의 원본 전송 선택지를 열지 않는 fail-closed 기본값이다.
+      forcedMaskActive: true,
     })),
     prompt: { status: 'pending', counts: null },
     results: {},   // docId -> { originalText, piiItems, injectionItems }  (+ 'prompt')
     seq: 0,
   };
   session.seq = ++sessionSeq;
+  session.current = { type: 'status', phase: 'checking-engine', label: '엔진 연결 및 보안 정책 확인 중…' };
   sessions.set(sessionId, session);
   activeSessionId = sessionId;
   persistSessions();
 
-  pushToPanel({ type: 'PANEL_SCAN_INIT', sessionId, tabId, seq: session.seq, docs: session.docs });
+  pushToPanel({
+    type: 'PANEL_SCAN_INIT', sessionId, tabId, seq: session.seq, status: session.status,
+    docs: session.docs, prompt: session.prompt, current: session.current,
+  });
+
+  // 미지원 문서는 엔진에 가지 않아 doc.forcedMaskActive 가 영영 켜지지 않았다 — 그래서
+  // 패널과 SW 의 "검사 없이 원본 포함" 가드가 둘 다 통과시켰다(.hwp 등이 원본으로 나감).
+  // UI 세션은 위에서 먼저 공개하되, 이 확인이 끝날 때까지 상태는 preparing 이고 전송은
+  // 잠겨 있다. 알 수 없으면 활성으로 남겨 fail-closed 한다.
+  let forcedActive = true;
+  try {
+    const fresh = await probePort((await getServer()).port);
+    if (fresh) forcedActive = fresh.health?.forcedMask?.active !== false;
+  } catch (_) { /* 엔진을 못 찾으면 켜진 것으로 */ }
+  noteForcedMask(forcedActive);
+  session.docs.forEach(doc => { doc.forcedMaskActive = forcedActive; });
+
   scanQueue.push({ sessionId, tabId });
+  // 실행 중인 배치가 있을 때만 "대기"로 알린다. 빈 큐에서 곧바로 lease 를 받을
+  // 세션까지 대기 1번째로 잠깐 깜빡이면 실제 상태보다 느리게 보인다.
+  if (scanLeaseHolder) refreshQueuedStates();
   grantNextLease();
 }
 
 async function scanMultiPrompt(sessionId, session, text) {
   const tabId = session.tabId;
+  session.prompt = { status: 'scanning', counts: null };
+  publishScanState(sessionId, session, {
+    type: 'status', phase: 'scanning', itemId: 'prompt', label: '프롬프트 PII 검사 중…',
+  });
   try {
     const result = await scanPrompt({ text }, (event) => {
+      session.current = { ...event, phase: 'scanning', itemId: 'prompt' };
+      persistSessions();
       pushToPanel({ type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: 'prompt' });
     });
     if (result.blocked || (result.scanStatus && result.scanStatus !== 'ok')) {
@@ -693,6 +744,14 @@ async function scanMultiPrompt(sessionId, session, text) {
   pushToPanel({
     type: 'PANEL_SCAN_PROMPT', sessionId, tabId, seq: session.seq, prompt: session.prompt,
   });
+  const next = session.prompt.status === 'done'
+    ? session.docs.find(doc => doc.status === 'pending')
+    : null;
+  if (next) {
+    publishScanState(sessionId, session, {
+      type: 'status', phase: 'preparing', itemId: next.id, label: '다음 파일 검사 준비 중…',
+    });
+  }
 }
 
 async function scanMultiItem(sessionId, session, payload) {
@@ -707,19 +766,31 @@ async function scanMultiItem(sessionId, session, payload) {
     doc.error = payload.readError;
     persistSessions();
     pushToPanel({ type: 'PANEL_SCAN_ITEM', sessionId, tabId, seq: session.seq, doc });
+    const next = session.docs.find(candidate => candidate.status === 'pending');
+    if (next) {
+      publishScanState(sessionId, session, {
+        type: 'status', phase: 'preparing', itemId: next.id, label: '다음 파일 검사 준비 중…',
+      });
+    }
     return;
   }
 
   doc.status = 'scanning';
-  persistSessions();
+  publishScanState(sessionId, session, {
+    type: 'status', phase: 'starting', itemId: doc.id, label: '엔진에 검사 요청을 보내는 중…',
+  });
 
   try {
     const result = await scanCombined(
       { text: payload.userPrompt || '', base64Data: payload.base64Data,
         mimeType: payload.mimeType, fileName: payload.fileName, wrapFile: false },
-      (event) => pushToPanel({
-        type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: doc.id,
-      }),
+      (event) => {
+        session.current = { ...event, phase: 'scanning', itemId: doc.id };
+        persistSessions();
+        pushToPanel({
+          type: 'PANEL_PROGRESS', sessionId, tabId, seq: session.seq, event, itemId: doc.id,
+        });
+      },
     );
 
     doc.forcedMaskActive = !!result.policy?.forcedMask?.active;
@@ -754,6 +825,12 @@ async function scanMultiItem(sessionId, session, payload) {
   }
   persistSessions();
   pushToPanel({ type: 'PANEL_SCAN_ITEM', sessionId, tabId, seq: session.seq, doc });
+  const next = session.docs.find(candidate => candidate.status === 'pending');
+  if (next) {
+    publishScanState(sessionId, session, {
+      type: 'status', phase: 'preparing', itemId: next.id, label: '다음 파일 검사 준비 중…',
+    });
+  }
 }
 
 /** 결정 하나를 최종 파일로 만든다. 패널 미리보기와 같은 순수 함수를 쓴다. */
@@ -1034,6 +1111,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (type === 'SCAN_MULTI_ITEM_READING') {
+    const session = leaseOk(message, sender);
+    if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
+    const doc = session.docs.find(d => d.id === message.docId);
+    if (!doc) { sendResponse({ ok: false, reason: 'no-doc' }); return false; }
+    doc.status = 'scanning';
+    publishScanState(message.sessionId, session, {
+      type: 'status', phase: 'reading', itemId: doc.id, label: '파일 읽는 중…',
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (type === 'SCAN_MULTI_ITEM') {
     const session = leaseOk(message, sender);
     if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
@@ -1048,10 +1138,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     releaseLease(message.sessionId);
     if (!session) { sendResponse({ ok: false, reason: 'no-lease' }); return false; }
     session.status = 'ready';
+    session.current = { type: 'status', phase: 'done', label: '검사가 완료되었습니다' };
     persistSessions();
     pushToPanel({
       type: 'PANEL_SCAN_DONE', sessionId: message.sessionId, tabId: session.tabId,
-      seq: session.seq, docs: session.docs, prompt: session.prompt,
+      seq: session.seq, docs: session.docs, prompt: session.prompt, current: session.current,
     });
     sendResponse({ ok: true });
     return false;
@@ -1072,6 +1163,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       for (let i = scanQueue.length - 1; i >= 0; i--) {
         if (scanQueue[i].sessionId === sessionId) scanQueue.splice(i, 1);
       }
+      refreshQueuedStates();
       endSession(sessionId);
       if (session) {
         pushToPanel({

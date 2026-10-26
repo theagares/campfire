@@ -472,6 +472,7 @@ const chromeStub = {
         cb?.({ ok: true, prompt: { status: 'done', counts: { pii: 0, injection: 0 } } });
         return;
       }
+      if (message.type === 'SCAN_MULTI_ITEM_READING') { cb?.({ ok: true }); return; }
       if (message.type === 'SCAN_MULTI_ITEM') { cb?.({ ok: true }); return; }
       if (message.type === 'FINISH_MULTI_SCAN') {
         cb?.({ ok: true });
