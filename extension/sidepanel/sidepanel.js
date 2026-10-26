@@ -63,7 +63,7 @@ let state = {
   activeTab: null,      // docId 또는 'prompt'
   loaded: new Map(),    // itemId -> { originalText, piiItems, injectionItems }
   decisions: new Map(), // docId -> 'masked'|'original'|'exclude'
-  multiRevealed: false, // 검사가 끝나 대기 화면에서 탭으로 넘어갔는지 — syncMultiView 참고
+  multiRevealed: false, // 첫 파일 결과가 나와 대기 화면에서 탭으로 넘어갔는지 — syncMultiView 참고
 };
 
 // chrome.runtime.sendMessage 브로드캐스트는 열려 있는 모든 탭의 패널 인스턴스에
@@ -198,10 +198,13 @@ function renderMulti(session) {
   state.decisions = new Map(Object.entries(draft.decisions || {}));
   state.decided = false;
   state.stale = false;
-  // 탭은 스테이징 순서대로 **즉시** 만든다. 검사가 끝난 순서로 생기면 사용자가
-  // 방금 붙인 파일이 어디 있는지 못 찾는다.
-  state.activeTab = draft.activeTab ?? (state.docs[0]?.id ?? 'prompt');
-  state.multiRevealed = session.status === 'ready' || !multiBusy();
+  // 탭 순서는 스테이징 순서로 고정하되, 복구 시 이미 끝난 파일이 있으면 그중 첫 파일을
+  // 바로 보여 준다. 아직 검사 중인 첫 번째 첨부를 기본 선택하면 결과 화면이 열려도
+  // '대기 중'만 보여 점진 공개의 의미가 없어진다.
+  const firstFinished = state.docs.find(d => !isBusy(d.status));
+  state.activeTab = draft.activeTab ?? (firstFinished?.id ?? state.docs[0]?.id ?? 'prompt');
+  state.multiRevealed = session.status === 'ready' || Boolean(firstFinished) || !multiBusy();
+  el.btnSend.textContent = '전송';
   el.progressTitle.textContent = `문서 ${state.docs.length}개 보안 분석 중…`;
   el.progressSub.textContent = state.docs.map(d => d.fileName).join(', ');
   renderTabs();
@@ -213,11 +216,16 @@ function renderMulti(session) {
 const isBusy = (status) => status === 'pending' || status === 'scanning';
 const multiBusy = () => state.docs.some(d => isBusy(d.status)) || isBusy(state.promptMeta?.status);
 
-/** 검사가 도는 동안은 단일 첨부와 같은 대기 화면(별똥별)을 띄우고, 다 끝나면 탭으로 넘긴다.
- *  처음엔 바로 탭을 띄웠는데, 그러면 첨부+엔터의 대기 화면이 '대기 중…' 탭 줄로 바뀌어
- *  버렸다. 한 번 넘어가면 다시 대기 화면으로 돌아가지 않는다 — 재시도는 탭 안에서 보인다. */
+/** 첫 파일이 끝나기 전에는 대기 화면을 유지하고, 첫 결과부터 탭으로 점진 공개한다.
+ *  한 번 넘어가면 다시 대기 화면으로 돌아가지 않는다 — 남은 검사와 재시도는 탭의
+ *  상태로 보여 주고, 전송 버튼은 refreshSummary()가 전체 완료 전까지 잠근다. */
 function syncMultiView() {
-  if (!state.multiRevealed && !multiBusy()) state.multiRevealed = true;
+  const firstFinished = state.docs.find(d => !isBusy(d.status));
+  if (!state.multiRevealed && (firstFinished || !multiBusy())) {
+    state.multiRevealed = true;
+    const activeDoc = state.docs.find(d => d.id === state.activeTab);
+    if (firstFinished && (!activeDoc || isBusy(activeDoc.status))) showTab(firstFinished.id);
+  }
   const n = state.docs.length;
   el.docName.textContent = 'Campfire';
 
@@ -233,9 +241,12 @@ function syncMultiView() {
   }
 
   showView('result');
+  const finished = state.docs.filter(d => !isBusy(d.status)).length;
   const sum = (key) => state.docs.reduce((t, d) => t + (d.counts?.[key] || 0), 0)
     + (state.promptMeta?.counts?.[key] || 0);
-  el.docType.textContent = `문서 ${n}개 + 프롬프트 검토`;
+  el.docType.textContent = multiBusy()
+    ? `문서 ${n}개 중 ${finished}개 검사 완료`
+    : `문서 ${n}개 + 프롬프트 검토`;
   const forced = sum('forced');
   el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건`
     + (forced ? ` | 필수 ${forced}건` : ' 탐지');
@@ -640,7 +651,7 @@ function multiSummary() {
     + counted(state.promptMeta?.counts);
   const excluded = state.docs.filter(d => (
     state.decisions.get(d.id) === 'exclude'
-    || (!state.decisions.has(d.id) && d.status !== 'done' && d.status !== 'truncated')
+    || (!state.decisions.has(d.id) && !isBusy(d.status) && d.status !== 'done' && d.status !== 'truncated')
   )).length;
   return { total, maskCount: Math.max(0, total - state.unmasked.size), sending: state.docs.length - excluded, excluded };
 }
@@ -652,9 +663,21 @@ function refreshSummary() {
     // 정반대 문구를 띄운다 — 실제로는 마스킹해서 보내는데 원본이 나간다고 말하는,
     // 이 화면이 절대 하면 안 되는 거짓말이다. 그래서 배치 전체로 센다.
     const { total, maskCount, sending, excluded } = multiSummary();
-    const files = excluded ? `${sending}개 전송 · ${excluded}개 제외` : `${sending}개 전송`;
+    const pendingFiles = state.docs.filter(d => isBusy(d.status)).length;
+    let files;
+    if (multiBusy()) {
+      const parts = [`${state.docs.length - pendingFiles}개 검사 완료`];
+      if (pendingFiles) parts.push(`${pendingFiles}개 검사 중`);
+      if (isBusy(state.promptMeta?.status)) parts.push('프롬프트 검사 중');
+      files = parts.join(' · ');
+    } else {
+      files = excluded ? `${sending}개 전송 · ${excluded}개 제외` : `${sending}개 전송`;
+    }
     el.maskSummary.textContent = maskCount > 0 ? `${files} · ${maskCount}건 마스킹` : files;
     el.maskSummary.classList.toggle('clear', maskCount <= 0 && total === 0);
+    // 결과를 점진 공개해도 배치 결정은 원자적이다. 아직 검사 중인 파일/프롬프트가
+    // 하나라도 있거나 사용자 결정이 필요한 항목이 남으면 전송을 절대 열지 않는다.
+    el.btnSend.disabled = Boolean(blockingReason());
     return;
   }
 
@@ -899,6 +922,7 @@ function blockingReason() {
     if (doc.status === 'unsupported') return `${doc.fileName}: 미지원 형식 — 포함할지 골라 주세요`;
     if (doc.status === 'truncated') return `${doc.fileName}: 일부만 검사됨 — 어떻게 보낼지 골라 주세요`;
   }
+  if (isBusy(state.promptMeta?.status)) return '프롬프트 검사가 끝나지 않았습니다';
   if (state.promptMeta?.status === 'error') return '프롬프트 검사에 실패했습니다';
   return null;
 }
@@ -1027,6 +1051,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     state.promptMeta = msg.prompt || state.promptMeta;
     renderTabs();
     if (state.activeTab === 'prompt') showTab('prompt');
+    refreshSummary();
     syncMultiView();
     return;
   }
