@@ -171,6 +171,9 @@ class EncoderPiiDetector:
             "--stdio",
         ]
 
+    def _spawn_env(self) -> dict[str, str]:
+        return {}  # 하위 클래스가 사이드카에만 더할 환경 변수(이미지 검사의 GPU torch 경로)
+
     async def _spawn_process(self) -> None:
         args = self._spawn_args()
         # Windows(특히 한국어 로케일)에서 자식 프로세스의 sys.stdin/stdout 이 기본
@@ -186,6 +189,7 @@ class EncoderPiiDetector:
             "PYTHONIOENCODING": "utf-8",
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
+            **self._spawn_env(),
         }
         self._process = await asyncio.create_subprocess_exec(
             *args,

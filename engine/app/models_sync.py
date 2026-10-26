@@ -111,6 +111,7 @@ def sync_bundled_model_files() -> None:
         ("pii_engine", config.PII_ENGINE_DIR),
         ("injection_engine", config.INJECTION_ENGINE_DIR),
         ("confidential_engine", config.CONFIDENTIAL_ENGINE_DIR),
+        ("varco_ocr", config.IMAGE_OCR_ENGINE_DIR),
     ):
         bundled = config.BUNDLED_MODELS_DIR / bundled_name
         try:

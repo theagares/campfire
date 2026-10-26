@@ -21,7 +21,7 @@ from app import config
 from app.adapters import proxy
 from app.adapters.http_api.proxy_control import extension_route_status
 from app.core import forced_mask, model_status
-from app.core.detectors import registry
+from app.core.detectors import image_ocr, registry
 
 router = APIRouter()
 
@@ -71,6 +71,8 @@ async def health(request: Request):
             "ready": model_status.confidential_ready() and _kg_file_ok(),
             "kgReady": _kg_file_ok(),
         },
+        # 이미지 속 글자 검사(선택 기능) — noGpu 는 사이드카를 한 번 띄워 봐야 안다(None = 아직 모름)
+        "imageOcr": image_ocr.status(),
         # 시연 전용 기밀 판정 근거 대시보드 경로 (SECUREDOC_DEMO_TRACE=1 일 때만) — 포트가 매번 달라 여기서 찾는다
         "demoDashboard": "/demo/dashboard" if config.DEMO_TRACE_ENABLED else None,
         "injectionPolicy": config.INJECTION_POLICY,

@@ -11,7 +11,7 @@
 
 // 라이트 판에서 저장을 막는 설정. 정식 판을 쓰다 라이트로 바꿔 설치해도 이 값들이 켜진 채 남아 있을 수 있어
 // 엔진(SECUREDOC_EDITION=lite)이 무시하지만, 화면 밖에서 다시 켜는 경로도 막아 둔다.
-const LITE_LOCKED_SETTINGS = ['confidentialEnabled', 'kgPath', 'mcpRiskScannerEnabled', 'proxyEnabled'];
+const LITE_LOCKED_SETTINGS = ['confidentialEnabled', 'kgPath', 'mcpRiskScannerEnabled', 'proxyEnabled', 'imageOcrEnabled'];
 
 function isLite(version, env = process.env) {
   return env.CAMPFIRE_EDITION === 'lite' || /-lite(\.|$)/.test(String(version || ''));

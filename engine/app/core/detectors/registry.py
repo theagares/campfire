@@ -90,14 +90,17 @@ def reset_cache() -> None:
     종료 완료까지 기다리지는 않는 best-effort).
     """
     global _pii_detector, _injection_detector
+    from . import image_ocr
+
     combined_gpu.reset_worker()
-    for det in (_pii_detector, _injection_detector):
+    for det in (_pii_detector, _injection_detector, image_ocr._process):
         proc = getattr(det, "_process", None)
         if proc is not None and proc.returncode is None:
             with contextlib.suppress(Exception):
                 proc.terminate()
     _pii_detector = None
     _injection_detector = None
+    image_ocr._process = None  # 이미지 검사 사이드카(registry 밖 싱글턴)도 같이 비운다
 
 
 def residency_status() -> dict[str, Any]:

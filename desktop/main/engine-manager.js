@@ -197,6 +197,9 @@ class EngineManager extends EventEmitter {
       // 기밀 탐지 (engine/app/core/detectors/confidential). 동의 토글이 꺼져 있으면 엔진이 아무것도 안 한다.
       SECUREDOC_CONFIDENTIAL_ENABLED: this.config.get('confidentialEnabled') ? '1' : '0',
       SECUREDOC_KG_PATH: this.config.get('kgPath') || '',
+      // 이미지 속 글자 검사 (engine/app/core/detectors/image_ocr.py). GPU 실행 환경(CUDA torch)은 엔진이 모델 받기 때
+      // 깐다. 개발 중에는 PC 환경 변수 SECUREDOC_IMAGE_OCR_PYTHON 으로 다른 파이썬을 줄 수 있다(위 process.env).
+      SECUREDOC_IMAGE_OCR_ENABLED: this.config.get('imageOcrEnabled') ? '1' : '0',
       // MCP 파일 도구(secure_read_file 등)의 작업 루트. 비워 두면 엔진이 홈 디렉터리를
       // 기본값으로 쓴다 — cwd 를 쓰면 안 된다. 아래 cwd 주석대로 우리는 cwd 를 사용자
       // 데이터 폴더로 옮겼고, 엔진이 그걸 경계로 삼으면 사용자 파일을 하나도 못 읽는다

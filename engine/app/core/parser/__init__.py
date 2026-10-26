@@ -44,7 +44,9 @@ def _looks_textual(file_bytes: bytes, mime_type: str) -> bool:
     return False
 
 
-def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[str, str, str | None]:
+def parse_document(
+    file_bytes: bytes, mime_type: str, file_name: str, images: list[bytes] | None = None,
+) -> tuple[str, str, str | None]:
     """포맷 분기 후 텍스트 추출.
 
     반환: (text, scan_status, reason)
@@ -52,8 +54,17 @@ def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[s
       - 미지원: ("", "unsupported", 사유)
       - 파싱 실패: ("", "failed", 사유)
     예외를 밖으로 던지지 않는다(PLAN §9.2 미검사 통과).
+
+    images: 이미지 속 글자 검사가 켜졌을 때만 준다. 이미지 파일(캡처)과 DOCX·PPTX 속 그림을 담고 본문의 그 자리에
+    표시를 남긴다(parser/images.py). 주지 않으면 이미지 파일은 지금처럼 미지원이다.
     """
     ext = _ext(file_name)
+
+    if images is not None:
+        from .images import is_image, mark
+
+        if is_image(ext, mime_type):
+            return mark(images, file_bytes), STATUS_OK, None
 
     # U5 미지원 포맷 — 스텁 (PLAN §6)
     if ext in config.UNSUPPORTED_EXTENSIONS:
@@ -92,7 +103,7 @@ def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[s
         if ext == ".docx" or "wordprocessingml" in mime_type:
             from .docx import extract_docx
 
-            return extract_docx(file_bytes), STATUS_OK, None
+            return extract_docx(file_bytes, images), STATUS_OK, None
 
         if ext == ".xlsx" or "spreadsheetml" in mime_type:
             from .xlsx import extract_xlsx
@@ -102,7 +113,7 @@ def parse_document(file_bytes: bytes, mime_type: str, file_name: str) -> tuple[s
         if ext == ".pptx" or "presentationml" in mime_type:
             from .pptx import extract_pptx
 
-            return extract_pptx(file_bytes), STATUS_OK, None
+            return extract_pptx(file_bytes, images), STATUS_OK, None
 
         if ext == ".hwpx":
             from .hwpx import extract_hwpx
