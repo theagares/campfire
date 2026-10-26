@@ -26,11 +26,13 @@ import asyncio
 import contextlib
 import hashlib
 import shutil
+import sys
 import tarfile
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter
@@ -103,7 +105,9 @@ def _status() -> dict[str, Any]:
         },
         # 선택 기능 — enabled 가 아니면 ready 가 거짓이어도 받지 않는다(앱도 enabled 일 때만 기다린다)
         "confidential": {"enabled": config.CONFIDENTIAL_ENABLED, "ready": model_status.confidential_ready()},
-        "imageOcr": {"enabled": config.IMAGE_OCR_ENABLED, "ready": model_status.image_ocr_ready()},
+        # gpu 가 거짓이면 받을 것이 없다(앱도 기다리지 않는다) — 그림이 든 입력은 막힌다
+        "imageOcr": {"enabled": config.IMAGE_OCR_ENABLED, "ready": model_status.image_ocr_ready(),
+                     "gpu": model_status.image_ocr_gpu()},
     }
 
 
@@ -129,40 +133,43 @@ def _safe_extract(tar: tarfile.TarFile, dest_dir: Path) -> None:
         tar.extractall(dest_dir)  # noqa: S202 - 위에서 각 멤버 경로를 이미 검증함
 
 
-async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable) -> None:
-    await emit({"type": "progress", "asset": name, "label": f"{spec['label']} 다운로드 중...", "pct": 0.0})
+async def _download(name: str, label: str, url: str, expected_sha256: str, dest: Path, emit: Callable) -> None:
+    """url 을 dest 로 받으며 진행 상황을 방출하고 sha256 을 확인한다."""
+    await emit({"type": "progress", "asset": name, "label": f"{label} 다운로드 중...", "pct": 0.0})
     sha256 = hashlib.sha256()
+    with dest.open("wb") as out:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0)) or None
+                downloaded = 0
+                async for chunk in resp.aiter_bytes(1024 * 1024):
+                    out.write(chunk)
+                    sha256.update(chunk)
+                    downloaded += len(chunk)
+                    pct = round(downloaded / total * 100, 1) if total else None
+                    await emit(
+                        {
+                            "type": "progress",
+                            "asset": name,
+                            "label": f"{label} 다운로드 중...",
+                            "pct": pct,
+                            "downloadedBytes": downloaded,
+                            "totalBytes": total,
+                        }
+                    )
+
+    digest = sha256.hexdigest()
+    if digest != expected_sha256:
+        raise ValueError(f"{label} 체크섬 불일치(다운로드 손상/변조 의심): 기대={expected_sha256} 실제={digest}")
+
+
+async def _download_and_extract(name: str, spec: dict[str, Any], emit: Callable) -> None:
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
             tmp_path = Path(tmp.name)
-            async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
-                async with client.stream("GET", spec["url"]) as resp:
-                    resp.raise_for_status()
-                    total = int(resp.headers.get("content-length", 0)) or None
-                    downloaded = 0
-                    async for chunk in resp.aiter_bytes(1024 * 1024):
-                        tmp.write(chunk)
-                        sha256.update(chunk)
-                        downloaded += len(chunk)
-                        pct = round(downloaded / total * 100, 1) if total else None
-                        await emit(
-                            {
-                                "type": "progress",
-                                "asset": name,
-                                "label": f"{spec['label']} 다운로드 중...",
-                                "pct": pct,
-                                "downloadedBytes": downloaded,
-                                "totalBytes": total,
-                            }
-                        )
-
-        digest = sha256.hexdigest()
-        if digest != spec["sha256"]:
-            raise ValueError(
-                f"{spec['label']} 체크섬 불일치(다운로드 손상/변조 의심): "
-                f"기대={spec['sha256']} 실제={digest}"
-            )
+        await _download(name, spec["label"], spec["url"], spec["sha256"], tmp_path, emit)
 
         await emit({"type": "progress", "asset": name, "label": f"{spec['label']} 압축 해제 중...", "pct": 100.0})
         dest_dir: Path = spec["extract_to"]()
@@ -301,6 +308,51 @@ async def _download_image_ocr(emit: Callable) -> None:
     await emit({"type": "progress", "asset": "image_ocr", "label": f"{label} 완료", "pct": 100.0})
 
 
+# GPU 실행 환경 — 설치본 torch 는 CPU 빌드라 VARCO 사이드카용 CUDA torch 를 따로 깐다(엔진·다른 탐지기는 그대로 CPU 판).
+# 판은 VARCO 를 실측한 환경과 같고, torchvision 은 transformers 의 LLaVA-OneVision 처리기가 요구한다. 의존 패키지(numpy·
+# transformers 등)는 앱 파이썬 것을 쓴다(--no-deps). 휠 태그 cp311·win_amd64 는 release.yml 의 `uv python install 3.11`
+# 과 맞아야 한다 — 다르면 pip 가 거부해 설치가 실패한다(조용히 깨지지 않는다).
+_GPU_TORCH_BASE = "https://download-r2.pytorch.org/whl/cu130/"
+_GPU_TORCH_WHEELS = (  # (파일 이름, sha256) — 작은 것부터 받아 진행률이 긴 휠에서 끝나게
+    ("torchvision-0.29.1+cu130-cp311-cp311-win_amd64.whl",
+     "08f02295d26ccb2054cafc8c21feacf9022384d5a0cd006fbbf1d59623af7522"),
+    ("torch-2.14.1+cu130-cp311-cp311-win_amd64.whl",
+     "e98711737150b5a6451cbbfdb425abd5d1bea77f4a1a5d29c48d5ec41cd54949"),
+)
+
+
+async def _install_gpu_torch(emit: Callable) -> None:
+    """CUDA torch 휠을 받아 해시를 확인하고 앱 파이썬의 pip 로 GPU_TORCH_DIR 에 깐다(임시 폴더에 깔고 이름을 바꿔 넣는다)."""
+    label = "GPU 실행 환경(약 2GB)"
+    dest = config.IMAGE_OCR_GPU_TORCH_DIR
+    partial = dest.with_name(dest.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)  # pip --target 은 있는 폴더에 깔지 않는다 — 지난번 실패분은 지우고 새로
+    wheel_dir = Path(tempfile.mkdtemp(prefix="securedoc_gpu_torch_"))
+    try:
+        wheels = []
+        for name, sha in _GPU_TORCH_WHEELS:
+            path = wheel_dir / name  # pip 는 파일 이름으로 휠을 알아본다 — 이름을 그대로 둔다
+            await _download("gpu_torch", label, _GPU_TORCH_BASE + quote(name), sha, path, emit)
+            wheels.append(str(path))
+        # 2GB 휠을 푸느라 몇 분 걸린다(실측 약 2분 30초) — 그동안 진행률이 멈춰 보이지 않게 문구로 알린다
+        await emit({"type": "progress", "asset": "gpu_torch", "label": f"{label} 설치 중 — 몇 분 걸립니다...", "pct": 100.0})
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "--disable-pip-version-check",
+            "--target", str(partial), *wheels,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"{label} 설치 실패: {out.decode('utf-8', 'replace')[-500:]}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        partial.rename(dest)
+    finally:
+        shutil.rmtree(wheel_dir, ignore_errors=True)
+        shutil.rmtree(partial, ignore_errors=True)
+    await emit({"type": "progress", "asset": "gpu_torch", "label": f"{label} 완료", "pct": 100.0})
+
+
 async def _fetch_job(job_id: str) -> None:
     emit = job_registry.make_emit(job_id)
     try:
@@ -312,8 +364,11 @@ async def _fetch_job(job_id: str) -> None:
             await _download_backbone(emit)
         if config.CONFIDENTIAL_ENABLED and not model_status.confidential_ready():
             await _download_and_extract("confidential", _ASSETS["confidential"], emit)
-        if config.IMAGE_OCR_ENABLED and not model_status.image_ocr_ready():
-            await _download_image_ocr(emit)
+        if config.IMAGE_OCR_ENABLED and model_status.image_ocr_gpu():  # GPU 가 없으면 받지 않는다 — 그림이 든 입력은 막힌다
+            if not model_status.image_ocr_weights_ready():
+                await _download_image_ocr(emit)
+            if not model_status.image_ocr_runtime_ready():
+                await _install_gpu_torch(emit)
         await emit({"type": "done", "result": _status()})
     except Exception as exc:  # noqa: BLE001 - 실패를 이벤트로 전달(검사 자체를 막지 않음)
         await emit({"type": "error", "message": str(exc)})

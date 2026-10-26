@@ -16,6 +16,7 @@ import base64
 import contextlib
 import hashlib
 import io
+import os
 from typing import Any
 
 from app import config
@@ -53,6 +54,13 @@ class VarcoOcrProcess(EncoderPiiDetector):
             "--batch", str(config.IMAGE_OCR_BATCH),
             "--token-budget", str(config.IMAGE_OCR_TOKEN_BUDGET),
         ]
+
+    def _spawn_env(self) -> dict[str, str]:
+        """앱 파이썬(CPU torch)에 모델 받기가 깐 CUDA torch 를 앞세운다 — 이 사이드카에만. 따로 지정한 파이썬이면 그대로."""
+        if config.IMAGE_OCR_PYTHON_OVERRIDE:
+            return {}
+        return {"PYTHONPATH": os.pathsep.join(filter(None, [str(config.IMAGE_OCR_GPU_TORCH_DIR),
+                                                              os.environ.get("PYTHONPATH")]))}
 
     async def _warmup(self) -> None:
         return None
@@ -115,7 +123,8 @@ def status() -> dict[str, Any]:
     return {
         "enabled": config.IMAGE_OCR_ENABLED,
         "ready": model_status.image_ocr_ready(),
-        "noGpu": _process.no_gpu if _process is not None else None,  # 한 번 띄워 봐야 안다
+        "gpu": model_status.image_ocr_gpu(),  # NVIDIA GPU 가 보이는가(없으면 모델·실행 환경을 받지 않는다)
+        "noGpu": _process.no_gpu if _process is not None else None,  # 사이드카가 CUDA 를 못 썼다 — 한 번 띄워 봐야 안다
     }
 
 
