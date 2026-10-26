@@ -368,6 +368,73 @@ class EncoderPiiDetector:
                 )
         return detections
 
+    def decode_keep_windows(
+        self,
+        text: str,
+        windows: list[tuple[str, int]],
+        entity_lists: list[list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """윈도우별 MLP KEEP 판정을 원문 좌표로 복원한다(시연 표시 전용)."""
+        if len(entity_lists) != len(windows):
+            raise RuntimeError("pii_encoder: KEEP 윈도우 응답 수가 요청 수와 다릅니다")
+        seen: set[tuple[str, int, int]] = set()
+        decisions: list[dict[str, Any]] = []
+        for (_, win_offset), entities in zip(windows, entity_lists, strict=True):
+            for entity in entities:
+                gateway_type = LABEL_MAP.get(entity["label"], OTHER_PII)
+                start = win_offset + int(entity["begin"])
+                end = win_offset + int(entity["end"])
+                key = (gateway_type, start, end)
+                if key in seen:
+                    continue
+                seen.add(key)
+                decisions.append({
+                    "type": gateway_type,
+                    "start": start,
+                    "end": end,
+                    "text": text[start:end],
+                    "maskProbability": float(entity.get("score", 0.0)),
+                    "decision": "KEEP",
+                })
+        return decisions
+
+    async def detect_with_keep(
+        self, text: str, *, meta: ChunkMeta | None = None  # noqa: ARG002 - Detector 호환 인자
+    ) -> tuple[list[Detection], list[dict[str, Any]]]:
+        """정상 MASK 결과와 명시적인 MLP KEEP 판정을 함께 얻는다.
+
+        일반 ``detect`` 경로는 응답 크기를 늘리지 않는다. 시연 추적이 켜진 요청만
+        sidecar에 ``include_keep``을 보내며, KEEP은 Detection으로 승격하지 않는다.
+        """
+        windows = self.prepare_windows(text)
+        if not windows:
+            return [], []
+        await self._ensure_process()
+        texts = [window for window, _ in windows]
+        entity_lists: list[list[dict[str, Any]]] = []
+        keep_lists: list[list[dict[str, Any]]] = []
+        try:
+            for start in range(0, len(texts), config.PII_WINDOWS_PER_RPC):
+                batch = texts[start : start + config.PII_WINDOWS_PER_RPC]
+                response = await self._rpc({"texts": batch, "include_keep": True})
+                entities = response.get("entities")
+                kept = response.get("kept")
+                if (
+                    not isinstance(entities, list)
+                    or not isinstance(kept, list)
+                    or len(entities) != len(batch)
+                    or len(kept) != len(batch)
+                ):
+                    raise RuntimeError("pii_encoder: KEEP 진단 응답 형식이 올바르지 않습니다")
+                entity_lists += entities
+                keep_lists += kept
+        finally:
+            self.residency.touch()
+        return (
+            self.decode_windows(text, windows, entity_lists),
+            self.decode_keep_windows(text, windows, keep_lists),
+        )
+
     async def detect(self, text: str, *, meta: ChunkMeta | None = None) -> list[Detection]:
         windows = self.prepare_windows(text)
         if not windows:

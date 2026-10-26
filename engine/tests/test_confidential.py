@@ -496,10 +496,23 @@ def test_시연_추적은_켰을_때만_KG_사실과_가린_문장의_연결을_
     assert demo_trace.snapshot() == []                      # 기본은 꺼짐 — 아무것도 남기지 않는다
 
     monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
-    asyncio.run(confidential.detect(DOC, PII))
+    keep = [
+        {"type": "ORGANIZATION", "start": DOC.index("오로라"),
+         "end": DOC.index("오로라") + len("오로라"), "text": "오로라",
+         "maskProbability": 0.02, "decision": "KEEP"},
+        # 다른 결과로 실제 가려진 후보는 초록색 진단에 나오면 안 된다.
+        {"type": "PERSON_NAME", "start": DOC.index(NAME),
+         "end": DOC.index(NAME) + len(NAME), "text": NAME,
+         "maskProbability": 0.03, "decision": "KEEP"},
+    ]
+    asyncio.run(confidential.detect(DOC, PII, pii_keep=keep))
     ev = {e["stage"]: e for e in demo_trace.snapshot()}
     assert list(ev) == ["start", "retriever", "solar", "verdict", "done"]
     assert NAME not in " ".join(ev["start"]["sentences"]) and "[이름 마스킹]" in ev["start"]["sentences"][0]
+    assert ev["start"]["piiKeep"] == [{
+        "sentence": 1, "text": "오로라", "type": "ORGANIZATION", "maskProbability": 0.02,
+        "start": 0, "end": 3,
+    }]
     assert not any(NAME in x for f in ev["solar"]["shown"] for x in f)   # 문장·사실 모두 Solar 가 본 것만
     assert ["가온연구소", "설립자", "김하늘", -20.0] in ev["retriever"]["scores"]  # 거른 사실도 점수와 함께
     assert ev["verdict"]["pairs"] == [[1, ["오로라", "출시 시기", "2027년 3월"]]]  # 어느 사실이 어느 문장을 가렸나
@@ -520,4 +533,5 @@ def test_시연_대시보드_경로는_꺼져_있으면_없다(monkeypatch):
     monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
     monkeypatch.setattr(config, "KG_PATH", "")
     assert "기밀 판정" in c.get("/demo/dashboard").text
+    assert "초록색 = PII MLP KEEP(마스킹 해제)" in c.get("/demo/dashboard").text
     assert c.get("/demo/kg").json()["triples"] == []         # KG 미설정
