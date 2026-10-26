@@ -145,15 +145,16 @@ def test_손으로_친_메시지만_프롬프트_기준으로_검사한다(monke
     import app.core.pipeline.orchestrator as orch
     seen = {}
 
-    async def spy(*, text=None, direct_prompt=False, **_kw):
-        seen[text] = direct_prompt
+    async def spy(*, text=None, direct_prompt=False, scan_injection=True, **_kw):
+        seen[text] = (direct_prompt, scan_injection)
         return {"maskedText": text, "piiItems": [], "injectionItems": [], "blocked": False,
                 "scanStatus": "ok", "truncated": False}
 
     monkeypatch.setattr(orch, "run_pipeline", spy)
     body = _send_with(typed="세 줄로 요약하고 존댓말로 답해", file_content="첨부 파일 본문")
     _run(asyncio.wait_for(CampfireAddon().request(_flow(body)), timeout=0.2))
-    assert seen == {"세 줄로 요약하고 존댓말로 답해": True, "첨부 파일 본문": False}
+    # 친 글은 /jobs/prompt 처럼 인젝션 검사 없이, 첨부 본문은 문서라 인젝션 검사를 한다
+    assert seen == {"세 줄로 요약하고 존댓말로 답해": (True, False), "첨부 파일 본문": (False, True)}
 
 
 def test_파일이_앞에_있어도_프롬프트를_먼저_검사한다(monkeypatch):

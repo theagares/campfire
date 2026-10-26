@@ -229,10 +229,19 @@
     return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
   }
 
+  // 프록시가 업로드를 가린 글로 제대로 바꿔 끼우는 사이트(엔진 proxy/addon.py). 여기 없는 사이트는 프록시
+  // 경로여도 확장이 파일을 먼저 가린다 — Gemini 는 업로드 시작 때 이름(형식)이 정해져 가린 글을 손상 파일로
+  // 거부하고, Perplexity 는 파일을 S3 로 바로 올려 등록 이름을 못 바꾼다(2026-10-26 실측). 확장이 가린
+  // .md 는 프록시를 깨끗한 글로 지난다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
+  const PROXY_FILE_HOSTS = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'grok.com', 'copilot.microsoft.com'];
+  function proxyChecksFiles() {
+    return proxyInPath() && PROXY_FILE_HOSTS.includes(location.hostname);
+  }
+
   function isSupportedFile(file) {
-    // proxyInPath: 프록시가 실제 경로에 있으면 가로채지 않는다 — 파일을 그대로 사이트로
+    // proxyChecksFiles: 프록시가 이 사이트 업로드를 맡으면 가로채지 않는다 — 파일을 그대로 사이트로
     // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
-    if (!protectionEnabled || !fileInterceptEnabled || proxyInPath() || !file) return false;
+    if (!protectionEnabled || !fileInterceptEnabled || proxyChecksFiles() || !file) return false;
     return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '');
   }
 
@@ -961,7 +970,7 @@
     // 검사할 게 없으면 개입하지 않는다 — 단 사용자 지정 마스킹이 켜져 있으면 미지원 형식도
     // 그냥 보내지 않는다. 안을 볼 수 없으니 등록어가 들었는지도 모른다(프록시도 같은 이유로
     // 막는다). 검토로 보내면 미지원 문서는 "제거" 만 고를 수 있다.
-    const holdUnsupported = forcedMaskActive && protectionEnabled && fileInterceptEnabled && !proxyInPath();
+    const holdUnsupported = forcedMaskActive && protectionEnabled && fileInterceptEnabled && !proxyChecksFiles();
     if (!fresh.some(isSupportedFile) && !(holdUnsupported && fresh.length)) return false;
 
     // **검사가 시작된 뒤**에만 새 첨부를 거절한다.
@@ -2646,7 +2655,11 @@
     // 여기까지 온 시점엔 리스너가 promptInProcess 를 이미 걸러냈지만(blockedWhileScanning),
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
-    if (!protectionEnabled || proxyChecksPrompts() || promptApproved) return;
+    if (!protectionEnabled || promptApproved) return;
+    // 프록시가 프롬프트를 보는 사이트라도 확장이 붙들어 둔 첨부가 있으면 함께 검사한다 — Perplexity 는 파일은
+    // 확장(PROXY_FILE_HOSTS 에 없음), 프롬프트는 프록시가 맡아, 여기서 돌아가면 첨부가 검사도 전송도 안 된 채
+    // 프롬프트만 나간다. 확장이 가린 프롬프트는 프록시를 깨끗한 글로 지난다.
+    if (proxyChecksPrompts() && !pendingBatch) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
