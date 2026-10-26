@@ -2813,6 +2813,8 @@ cancelScan(stuckScan);
     const badge38 = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
     const text38 = badge38 ? (badge38.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
     if (!text38.includes('그대로 대기 중')) throw new Error(`(38) 첨부를 남겼다는 안내가 없다: ${text38}`);
+    // 개수가 아니라 어떤 문서를 남겼는지 이름으로 알린다
+    if (!text38.includes('lease38.pdf')) throw new Error(`(38) 남긴 첨부의 이름이 안내에 없다: ${text38}`);
 
     const beforeLate = runtimeMessages.length;
     await clock.tick(10 * 60 * 1000);

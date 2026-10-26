@@ -208,8 +208,8 @@ function renderMulti(session) {
   state.activeTab = draft.activeTab ?? (firstFinished?.id ?? state.docs[0]?.id ?? 'prompt');
   state.multiRevealed = session.status === 'ready' || Boolean(firstFinished) || !multiBusy();
   el.btnSend.textContent = '전송';
-  el.progressTitle.textContent = state.multiCurrent?.label || `문서 ${state.docs.length}개 보안 분석 중…`;
-  el.progressSub.textContent = state.docs.map(d => d.fileName).join(', ');
+  el.progressTitle.textContent = state.multiCurrent?.label || '문서 보안 분석 중…';
+  el.progressSub.textContent = docNames(state.docs);
   renderTabs();
   showTab(state.activeTab);
   refreshSummary();
@@ -217,6 +217,8 @@ function renderMulti(session) {
 }
 
 const isBusy = (status) => status === 'pending' || status === 'scanning';
+// 여러 문서는 개수 대신 이름을 다 보인다 — 어떤 문서를 넣었는지 알 수 있게
+const docNames = (docs) => docs.map(d => d.fileName || '이름 없는 파일').join(', ');
 const multiBusy = () => state.docs.some(d => isBusy(d.status)) || isBusy(state.promptMeta?.status);
 
 function currentItemLabel(itemId) {
@@ -267,12 +269,13 @@ function syncMultiView() {
     const activeDoc = state.docs.find(d => d.id === state.activeTab);
     if (firstFinished && (!activeDoc || isBusy(activeDoc.status))) showTab(firstFinished.id);
   }
-  const n = state.docs.length;
+  // 첫 줄(.doc-name)은 한 줄 말줄임이라 이름은 줄바꿈되는 둘째 줄(.doc-type)에 다 싣는다. 문서별 상태는 아래 요약 줄
+  const names = docNames(state.docs);
   el.docName.textContent = 'Campfire';
 
   if (!state.multiRevealed) {
     showView('progress');
-    el.docType.textContent = `문서 ${n}개 검사 중`;
+    el.docType.textContent = `${names} · 검사 중`;
     el.counts.textContent = '검사 중…';
     el.progressWarn.hidden = true;
     syncMultiProgressDisplay();
@@ -280,12 +283,9 @@ function syncMultiView() {
   }
 
   showView('result');
-  const finished = state.docs.filter(d => !isBusy(d.status)).length;
   const sum = (key) => state.docs.reduce((t, d) => t + (d.counts?.[key] || 0), 0)
     + (state.promptMeta?.counts?.[key] || 0);
-  el.docType.textContent = multiBusy()
-    ? `문서 ${n}개 중 ${finished}개 검사 완료`
-    : `문서 ${n}개 + 프롬프트 검토`;
+  el.docType.textContent = multiBusy() ? `${names} · 검사 중` : `${names} + 프롬프트 검토`;
   const forced = sum('forced');
   el.counts.textContent = `PII ${sum('pii')}건 | INJECTION ${sum('injection')}건`
     + (forced ? ` | 필수 ${forced}건` : ' 탐지');
@@ -692,8 +692,9 @@ function multiSummary() {
   const excluded = state.docs.filter(d => (
     state.decisions.get(d.id) === 'exclude'
     || (!state.decisions.has(d.id) && !isBusy(d.status) && d.status !== 'done' && d.status !== 'truncated')
-  )).length;
-  return { total, maskCount: Math.max(0, total - state.unmasked.size), sending: state.docs.length - excluded, excluded };
+  ));
+  const sending = state.docs.filter(d => !excluded.includes(d));
+  return { total, maskCount: Math.max(0, total - state.unmasked.size), sending, excluded };
 }
 
 function refreshSummary() {
@@ -703,15 +704,18 @@ function refreshSummary() {
     // 정반대 문구를 띄운다 — 실제로는 마스킹해서 보내는데 원본이 나간다고 말하는,
     // 이 화면이 절대 하면 안 되는 거짓말이다. 그래서 배치 전체로 센다.
     const { total, maskCount, sending, excluded } = multiSummary();
-    const pendingFiles = state.docs.filter(d => isBusy(d.status)).length;
+    const pendingDocs = state.docs.filter(d => isBusy(d.status));
+    const doneDocs = state.docs.filter(d => !isBusy(d.status));
     let files;
     if (multiBusy()) {
-      const parts = [`${state.docs.length - pendingFiles}개 검사 완료`];
-      if (pendingFiles) parts.push(`${pendingFiles}개 검사 중`);
+      const parts = [];
+      if (doneDocs.length) parts.push(`검사 완료: ${docNames(doneDocs)}`);
+      if (pendingDocs.length) parts.push(`검사 중: ${docNames(pendingDocs)}`);
       if (isBusy(state.promptMeta?.status)) parts.push('프롬프트 검사 중');
       files = parts.join(' · ');
     } else {
-      files = excluded ? `${sending}개 전송 · ${excluded}개 제외` : `${sending}개 전송`;
+      const sendText = sending.length ? `전송: ${docNames(sending)}` : '전송할 문서 없음';
+      files = excluded.length ? `${sendText} · 제외: ${docNames(excluded)}` : sendText;
     }
     el.maskSummary.textContent = maskCount > 0 ? `${files} · ${maskCount}건 마스킹` : files;
     el.maskSummary.classList.toggle('clear', maskCount <= 0 && total === 0);

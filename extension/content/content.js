@@ -853,6 +853,11 @@
   const MAX_BATCH_BYTES = 20 * 1024 * 1024;
   let badgeRoot = null;
 
+  // 첨부 목록을 "a.docx, b.pdf" 로 — 배치 항목(fileName)과 File(name) 둘 다 받는다
+  function fileNames(items) {
+    return items.map(i => i.fileName || i.name || '이름 없는 파일').join(', ');
+  }
+
   function showPendingBadge(fileName) {
     hidePendingBadge();
     try {
@@ -863,12 +868,14 @@
         'z-index: 2147483646', 'background: #1f2430', 'color: #fff',
         'font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif', 'padding: 9px 12px',
         'border-radius: 10px', 'box-shadow: 0 4px 16px rgba(0,0,0,.25)',
-        'display: flex', 'align-items: center', 'gap: 8px', 'max-width: 320px',
+        'display: flex', 'align-items: flex-start', 'gap: 8px', 'max-width: 360px',
       ].join(' !important; ') + ' !important;';
 
+      // 여러 개면 이름을 다 보인다 — 어떤 문서를 넣었는지 알 수 있게(예전엔 "3개 파일" 이었다). 말줄임 대신 줄바꿈
       const label = document.createElement('span');
       label.textContent = `📎 ${fileName} 대기 중 — 프롬프트 전송 시 함께 검사됩니다`;
-      label.style.cssText = 'flex: 1 !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important;';
+      label.title = fileName;
+      label.style.cssText = 'flex: 1 !important; white-space: normal !important; overflow-wrap: anywhere !important;';
 
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
@@ -913,7 +920,7 @@
 
       const label = document.createElement('span');
       label.textContent = message;
-      label.style.cssText = 'flex: 1 !important;';
+      label.style.cssText = 'flex: 1 !important; overflow-wrap: anywhere !important;';  // 띄어쓰기 없는 긴 파일 이름도 줄바꿈
 
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
@@ -996,7 +1003,7 @@
     const merged = kept.length + fresh.length;
     if (merged > MAX_BATCH_FILES) {
       showBlockedBadge(`⚠️ 한 번에 최대 ${MAX_BATCH_FILES}개까지 첨부할 수 있습니다 `
-        + `(지금 ${kept.length}개 + ${fresh.length}개). 나눠서 보내주세요.`);
+        + `(첨부된 것: ${fileNames(kept) || '없음'} / 새로 고른 것: ${fileNames(fresh)}). 나눠서 보내주세요.`);
       return true;
     }
     const total = kept.reduce((sum, i) => sum + (i.fileSize || 0), 0)
@@ -1036,8 +1043,7 @@
     }
 
     const shown = supportedItems(pendingBatch);
-    const names = (shown.length ? shown : pendingBatch.items).map(i => i.fileName);
-    showPendingBadge(names.length === 1 ? names[0] : `${names.length}개 파일`);
+    showPendingBadge(fileNames(shown.length ? shown : pendingBatch.items));
     return true;
   }
 
@@ -2692,7 +2698,7 @@
           if (staged) clearPendingBatch();
           showBlockedBadge(`⚠️ 확장 프로그램이 다시 로드돼 이 탭과 연결이 끊겼습니다. 원본은 보내지 않았습니다 — 탭을 새로고침한 뒤 ${staged ? '파일을 다시 첨부해 ' : ''}보내주세요.`);
         } else if (staged && pendingBatch === staged) {
-          showBlockedBadge(`⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본은 보내지 않았습니다. 첨부한 파일 ${staged.items.length}개는 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+          showBlockedBadge(`⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본은 보내지 않았습니다. 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
         } else {
           showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
         }
@@ -2714,7 +2720,7 @@
       // 다시 보내면 함께 다시 검사한다.
       const why = staged && decision?.reason && BATCH_CANCEL_REASONS[decision.reason];
       if (why && pendingBatch === staged) {
-        showBlockedBadge(`⚠️ ${why} 첨부한 파일 ${staged.items.length}개는 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+        showBlockedBadge(`⚠️ ${why} 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
       } else if (staged) {
         clearPendingBatch();
       }
