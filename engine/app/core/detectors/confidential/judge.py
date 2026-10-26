@@ -49,7 +49,9 @@ SYSTEM_PROMPT = (
 FIX_FORMAT = ('형식이 틀렸다. JSON 하나로만 다시 답하라. "진술"에는 [사실]의 T1 부터 마지막까지 모든 사실을 빠짐없이 키로 쓴다: '
               '{"공개": ["T3"], "진술": {"T1": [3], "T2": [], "T3": [5, 6]}}')
 _PROMPT_CACHE_KEY = "campfire-confidential-judge-v6"  # 시스템 프롬프트 개정 시 올린다
-_CACHE_MAX = 256
+# 동일 문서를 다시 검사할 때 Solar 판정을 재호출하지 않는다. 원문은 보관하지 않고
+# SHA-256 키와 문장·사실 번호만 담으므로 장시간 실행에서도 최근 1만 건을 유지한다.
+_CACHE_MAX = 10_000
 _cache: OrderedDict[str, tuple[list[tuple[int, int]], list[int]]] = OrderedDict()  # → (기밀 쌍, 공개 사실 번호)
 _client: httpx.AsyncClient | None = None
 
