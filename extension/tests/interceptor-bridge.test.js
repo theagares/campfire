@@ -34,7 +34,7 @@ const noop = function () {};
 const settle = () => new Promise((r) => setTimeout(r, 30));
 
 /** interceptor.js 를 새 샌드박스에 올리고 조작 손잡이를 돌려준다. */
-function load({ proxyMarked = false } = {}) {
+function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
   const win = new Map();
   const doc = new Map();
   const origFetchCalls = [];
@@ -81,7 +81,7 @@ function load({ proxyMarked = false } = {}) {
     nodeType: 9, documentElement: el(), body: el(), createElement: el,
     addEventListener: (t, f) => { const a = doc.get(t) || []; a.push(f); doc.set(t, a); },
   });
-  store.location = { hostname: 'chatgpt.com', href: 'https://chatgpt.com/' };
+  store.location = { hostname: host, href: `https://${host}/` };
   // 훅이 원본으로 붙들어 두는 fetch. 여기 도착했다 = 인터셉트 없이 통과했다.
   store.fetch = function (...args) {
     origFetchCalls.push(args);
@@ -344,6 +344,25 @@ async function main() {
     assert.strictEqual(
       await t.passedThrough(), false,
       '다른 호스트 응답의 표식만 보고 확장이 손을 뗐다',
+    );
+  }
+
+  // (15-1) 프록시가 가린 글로 바꿔 끼우지 못하는 사이트(Gemini: 시작 요청에서 형식이 정해짐, Perplexity: S3 로 바로
+  //        올림)는 프록시 표식이 있어도 확장이 업로드를 맡는다 — 손을 떼면 프록시가 막기만 해 아무 경로도 안 된다.
+  for (const host of ['gemini.google.com', 'www.perplexity.ai']) {
+    const t = load({ proxyMarked: true, host });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(
+      t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'proxy'),
+      `${host}: 프록시 표식을 보지 못했다 — 이 사례가 아무것도 확인하지 않는다`,
+    );
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      `${host} 는 프록시가 가린 글을 넣지 못하는데 확장이 업로드를 놓았다`,
     );
   }
 

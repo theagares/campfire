@@ -52,11 +52,33 @@ def sniff(data: bytes) -> tuple[str, str] | None:
         return ".pdf", "application/pdf"
     if data[:4] == b"PK\x03\x04":
         return _sniff_zip(data)
+    image = _sniff_image(data)
+    if image is not None:
+        return image
     if _looks_textual(data):
         # 평문이면 확장자를 .txt 로 준다. 엔진은 text/plain 으로도 열 수 있지만,
         # 확장자까지 맞춰 주면 둘 중 어느 쪽으로 분기하든 통과한다.
         return ".txt", "text/plain"
     return None
+
+
+def _sniff_image(data: bytes) -> tuple[str, str] | None:
+    """화면 캡처 같은 그림. 엔진은 이미지 속 글자 검사를 켰을 때만 연다 — 꺼져 있으면 지금처럼 "미지원".
+    Gemini 는 그림도 이름 없이(upload.bin) 올려, 이걸 몰라보면 켜 둬도 검사되지 않았다(2026-10-26 실측)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png", "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg", "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    # BMP 매직은 'BM' 두 글자뿐이라 'BM' 으로 시작하는 평문을 잘못 찍지 않게 예약 칸(0 네 바이트)까지 본다.
+    if data[:2] == b"BM" and len(data) >= 26 and data[6:10] == b"\0\0\0\0":
+        return ".bmp", "image/bmp"
+    return None
+
+
+def is_image(data: bytes) -> bool:
+    return _sniff_image(data) is not None
 
 
 def _sniff_zip(data: bytes) -> tuple[str, str] | None:

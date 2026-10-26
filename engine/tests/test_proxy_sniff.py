@@ -65,6 +65,17 @@ def test_모르는_바이너리는_None():
     assert sniff(b"") is None
 
 
+def test_그림을_알아보고_BM_으로_시작하는_평문은_BMP_로_찍지_않는다():
+    """Gemini 는 그림도 upload.bin 으로 올린다 — 몰라보면 이미지 속 글자 검사를 켜도 검사되지 않는다."""
+    assert sniff(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16) == (".png", "image/png")
+    assert sniff(b"\xff\xd8\xff\xe0" + b"\x00" * 16) == (".jpg", "image/jpeg")
+    assert sniff(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 16) == (".webp", "image/webp")
+    assert sniff(b"BM" + (40).to_bytes(4, "little") + b"\x00" * 34) == (".bmp", "image/bmp")
+    assert sniff("BMW 보고서 초안입니다. 다음 주까지 정리해 주세요.".encode()) == (".txt", "text/plain")
+    assert refine(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, "upload.bin", "application/x-www-form-urlencoded") \
+        == ("upload.png", "image/png")
+
+
 def test_깨진_ZIP_은_None():
     assert sniff(b"PK\x03\x04" + b"\xff" * 50) is None
 

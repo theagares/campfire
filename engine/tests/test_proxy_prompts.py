@@ -24,8 +24,8 @@ MASKED = "주민번호 [주민등록번호 마스킹] 확인해줘"
 
 
 def _fake_pipeline(calls):
-    async def fake(*, text=None, direct_prompt=False, **kw):
-        calls.append((text, direct_prompt))
+    async def fake(*, text=None, direct_prompt=False, scan_injection=True, **kw):
+        calls.append((text, direct_prompt, scan_injection))
         m = text.replace("900101-1234567", "[주민등록번호 마스킹]")
         pii = [{"type": "RRN", "start": 0, "end": 1}] if m != text else []
         return {"maskedText": m, "piiItems": pii, "injectionItems": [], "blocked": False,
@@ -71,7 +71,8 @@ def test_ChatGPT_프롬프트를_가려_보낸다(monkeypatch):
     assert sent["prompt"] == MASKED
     # 나머지 칸은 그대로(토큰의 +/= 도 깨지지 않는다)
     assert sent["proofToken"] == "gAAAA+/=" and sent["timezone"] == "Asia/Seoul"
-    assert calls == [(PII, True)], "프롬프트 기준(direct_prompt)으로 한 번만 검사"
+    # 확장(/jobs/prompt)과 같이 인젝션 검사 없이 한 번만 — 안 그러면 평범한 요청이 [인젝션 마스킹] 으로 나간다
+    assert calls == [(PII, True, False)]
     assert f.response is None
 
 
@@ -114,7 +115,7 @@ def test_Perplexity_두_칸을_한_번에_검사해_같이_가린다(monkeypatch
     sent = json.loads(f.request.get_text())
     assert sent["query_str"] == MASKED and sent["params"]["dsl_query"] == MASKED
     assert sent["params"]["time_from_first_type"] == 5092.300000011921
-    assert calls == [(PII, True)]
+    assert calls == [(PII, True, False)]
 
 
 def test_Perplexity_해석_못하면_막는다(monkeypatch):
@@ -145,7 +146,7 @@ def test_ChatGPT_로그인_전송을_가린다(monkeypatch):
     sent = json.loads(f.request.get_text())
     assert sent["messages"][0]["content"]["parts"] == [MASKED]
     assert sent["messages"][0]["create_time"] == 1792653454.661 and sent["model"] == "auto"
-    assert calls == [(PII, True)] and f.response is None
+    assert calls == [(PII, True, False)] and f.response is None
 
 
 def test_ChatGPT_로그인_새_글_없는_전송은_통과_글_칸_없는_새_전송은_막는다(monkeypatch):
@@ -227,7 +228,8 @@ def test_친_글을_싣는_부수_요청은_보내지_않는다(host, path, meth
 
 def test_새_호스트가_PAC_대상에_들어간다():
     exact, _ = intercept_hosts()
-    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com"} <= set(exact)
+    assert {"suggest.perplexity.ai", "www.perplexity.ai", "grok.com", "chatgpt.com",
+            "ppl-ai-file-upload.s3.amazonaws.com"} <= set(exact)
 
 
 def test_M365_공용_호스트는_PAC_대상이_아니다():

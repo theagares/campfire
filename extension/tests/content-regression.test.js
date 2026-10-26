@@ -2939,6 +2939,43 @@ cancelScan(stuckScan);
     }
   }
 
+  // (41) 프록시 경로여도 파일은 프록시가 가린 글로 바꿔 끼우는 사이트(PROXY_FILE_HOSTS)에서만 넘긴다.
+  //      Gemini·Perplexity 에서 손을 떼면 프록시가 막기만 해 아무 경로로도 못 올린다(2026-10-26 실측).
+  {
+    const route41 = (mode) => dispatchWindowMessage({
+      __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', ttlMs: 15000,
+    });
+    const intercepts41 = async (host) => {
+      sandbox.location.hostname = host;
+      const file41 = new FileStub(['pdf bytes'], `${host}.pdf`, { type: 'application/pdf' });
+      const input41 = new HTMLInputElementStub(file41);
+      let stopped41 = false;
+      dispatchDocumentEvent('change', {
+        target: input41,
+        composedPath: () => [input41, documentStub],
+        preventDefault() {},
+        stopImmediatePropagation() { stopped41 = true; },
+      });
+      await flush();
+      return stopped41;
+    };
+    try {
+      await route41('proxy');
+      for (const host of ['gemini.google.com', 'www.perplexity.ai']) {
+        if (!(await intercepts41(host))) {
+          throw new Error(`(41) ${host} 는 프록시가 가린 글을 넣지 못하는데 확장이 파일을 놓았다`);
+        }
+      }
+      if (await intercepts41('chatgpt.com')) {
+        throw new Error('(41) chatgpt.com 은 프록시가 파일을 맡는데 확장도 가로챘다(이중 검토)');
+      }
+    } finally {
+      await route41('extension');
+      sandbox.location.hostname = 'chatgpt.com';
+    }
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();

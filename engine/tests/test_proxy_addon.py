@@ -147,6 +147,114 @@ def test_grok_지금_업로드는_가린_사본으로_바꿔_보낸다():
     assert "[주민등록번호 마스킹]" in sent and "900101-1234567" not in sent
 
 
+def test_perplexity_S3_업로드는_서명_칸을_그대로_두고_파일만_가린_사본으로_바꾼다():
+    """2026-10-26 실측: Perplexity 는 파일을 S3 presigned POST 로 바로 올려 원본이 검사 없이 나갔다.
+
+    key·policy·서명 칸이 한 바이트라도 바뀌면 S3 가 거부하므로 그대로 둔다.
+    """
+    boundary = "----WebKitFormBoundaryg2rxZcXAX3A6dEgl"
+    fields = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\nuploads/abc/메모.docx\r\n"
+              f"--{boundary}\r\nContent-Disposition: form-data; name=\"policy\"\r\n\r\neyJleHAiOiIyMDI2In0=\r\n"
+              f"--{boundary}\r\nContent-Disposition: form-data; name=\"x-amz-signature\"\r\n\r\n0a1b2c\r\n")
+    body = (fields + f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"메모.docx\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\nSECRET 010-1234-5678\r\n--{boundary}--\r\n").encode()
+    f = _req("ppl-ai-file-upload.s3.amazonaws.com", "/", content=body)
+    f.request.headers["content-type"] = f"multipart/form-data; boundary={boundary}"
+    a = CampfireAddon()
+
+    async def fake(**kw):
+        assert kw["data"] == b"SECRET 010-1234-5678"
+        return b"SECRET [phone]"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+    _run(a.request(f))
+    assert f.response is None
+    sent = f.request.content.decode()
+    assert sent.startswith(fields), "서명 칸이 바뀌면 S3 가 거부한다"
+    assert 'filename="메모_masked.md"' in sent and "SECRET [phone]" in sent and "010-1234-5678" not in sent
+
+
+def test_perplexity_S3_업로드_호스트가_검사_대상이다():
+    exact, _ = addon_mod.intercept_hosts()
+    assert "ppl-ai-file-upload.s3.amazonaws.com" in exact  # PAC·TLS 풀기·CA 이름 제한이 모두 이 목록을 쓴다
+
+
+def _scan_result(*, status="ok", pii=0):
+    items = [{"type": "PHONE", "start": 0, "end": 1}] * pii
+    return {"originalText": "t", "maskedText": "[가림]" if pii else "t", "piiItems": items,
+            "injectionItems": [], "forcedMaskItems": [], "blocked": False, "scanStatus": status,
+            "truncated": False, "stats": {"piiCount": pii, "injectionCount": 0, "forcedMaskCount": 0}}
+
+
+@pytest.mark.parametrize("status, pii, asks, want", [
+    ("ok", 2, False, addon_mod._UNREPLACEABLE),  # 끝까지 검사했고 가릴 것이 있다 → 묻지 않고 막는다
+    ("ok", 0, False, _ORIGINAL),                 # 깨끗하면 원본
+    ("unsupported", 0, True, _ORIGINAL),         # 검사를 못 끝냈으면(이미지 검사 꺼짐 등) 지금처럼 묻는다
+])
+def test_가린_글을_넣을_수_없는_업로드는_가릴_것이_있을_때만_묻지_않고_막는다(monkeypatch, status, pii, asks, want):
+    import app.core.pipeline.orchestrator as orch
+    asked = []
+
+    async def run(**_kw):
+        return _scan_result(status=status, pii=pii)
+
+    async def wait(**_kw):
+        asked.append(1)
+        return "send_original"
+
+    monkeypatch.setattr(orch, "run_pipeline", run)
+    monkeypatch.setattr(addon_mod.broker, "wait", wait)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"\x89PNG\r\n\x1a\n" + b"0" * 32, file_name="upload.bin", mime="", host="gemini.google.com",
+        can_replace=False,
+    ))
+    assert got is want and bool(asked) is asks
+
+
+def test_gemini_는_가린_글로_못_바꾸니_가릴_것이_있으면_이유를_붙여_막고_재시도도_막는다():
+    a = CampfireAddon()
+    _gem_start(a, declared=1000)
+    seen = []
+
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+        seen.append(can_replace)
+        return addon_mod._UNREPLACEABLE
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+    f = _gem_bytes(b"SECRET")
+    _run(a.request(f))
+    assert seen == [False]
+    assert f.response is not None and f.response.status_code == 403 and "Gemini".encode() in f.response.content
+    f2 = _gem_bytes(b"SECRET")
+    _run(a.request(f2))
+    assert f2.response is not None and f2.response.status_code == 403 and seen == [False]
+
+
+@pytest.mark.parametrize("content, ctype, replaceable", [
+    (b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png", False),
+    (b"\x89PNG\r\n\x1a\n" + b"0" * 32, "text/markdown", False),  # 등록을 MD 로 바꿔도 바이트가 그림이면 그림
+    (b"%PDF-1.7 ...", "application/pdf", True),
+])
+def test_ChatGPT_이미지는_가린_글로_못_바꾸니_가릴_것이_있으면_이유를_붙여_막는다(content, ctype, replaceable):
+    a = CampfireAddon()
+    _armed(a, "/files/img/raw")
+    seen = []
+
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+        seen.append(can_replace)
+        return b"# masked" if can_replace else addon_mod._UNREPLACEABLE
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+    f = _put_flow("/files/img/raw", content)
+    f.request.headers["content-type"] = ctype
+    _run(a.request(f))
+    assert seen == [replaceable]
+    if replaceable:
+        assert f.response is None and f.request.content.startswith(b"# masked")
+    else:
+        assert f.response is not None and f.response.status_code == 403 and "ChatGPT".encode() in f.response.content
+
+
 def test_grok_의_다른_요청은_건드리지_않는다():
     """업로드 엔드포인트만 막는다. 전부 막으면 사이트가 죽는다."""
     a = CampfireAddon()
@@ -198,7 +306,7 @@ def test_gemini_본문이_마스킹되고_선언값에_맞춰진다():
     start = _gem_start(a, declared=1000)
     nprime = int(start.request.headers["x-goog-upload-header-content-length"])
 
-    async def fake(*, data, file_name, mime, host, flow=None):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
         assert b"SECRET" in data
         return b"# masked"
 
@@ -233,7 +341,7 @@ def test_gemini_재시도도_같은_결과를_쓴다():
     _gem_start(a, declared=1000)
     calls = []
 
-    async def fake(*, data, file_name, mime, host, flow=None):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
         calls.append(1)
         return b"# masked"
 
@@ -343,7 +451,7 @@ def test_PUT_재시도는_같은_결과를_쓰고_다시_묻지_않는다():
     _armed(a, "/files/abc/raw")
     asked = []
 
-    async def fake(*, data, file_name, mime, host, flow=None):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
         asked.append(file_name)
         return b"# masked"
 
@@ -374,7 +482,7 @@ def test_크기선언이_없는_흐름은_패딩하지_않는다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.txt")
     a._chatgpt["/files/nopad/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host, flow=None):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]
@@ -395,7 +503,7 @@ def test_본문을_바꾸면_타입도_바꾼다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.pdf")
     a._chatgpt["/files/pdf/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host, flow=None):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]
@@ -412,7 +520,7 @@ def test_한번_막은_업로드는_재시도도_막는다():
     a = CampfireAddon()
     _armed(a, "/files/xyz/raw")
 
-    async def refuse(*, data, file_name, mime, host):
+    async def refuse(*, data, file_name, mime, host, **_kw):
         return None  # 사람이 '보내지 않음' 을 골랐다
 
     a._scan_and_decide = refuse  # type: ignore[assignment]
@@ -431,7 +539,7 @@ def test_마스킹본이_선언값보다_크면_차단하고_재시도도_막는
     a = CampfireAddon()
     _armed(a, "/files/big/raw", declared=8)
 
-    async def big(*, data, file_name, mime, host):
+    async def big(*, data, file_name, mime, host, **_kw):
         return b"x" * 100
 
     a._scan_and_decide = big  # type: ignore[assignment]
@@ -450,7 +558,7 @@ def test_원본_전송을_골라도_선언값에_맞춰_채운다():
     a = CampfireAddon()
     _armed(a, "/files/orig/raw", declared=64)
 
-    async def original(*, data, file_name, mime, host, flow=None):
+    async def original(*, data, file_name, mime, host, flow=None, can_replace=True):
         return _ORIGINAL
 
     a._scan_and_decide = original  # type: ignore[assignment]

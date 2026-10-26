@@ -34,7 +34,7 @@ from mitmproxy import http
 from app import config
 from app.adapters.proxy.decision import DecisionTimeout, broker
 from app.adapters.proxy.multipart import MultipartError, decode, encode
-from app.adapters.proxy.sniff import refine
+from app.adapters.proxy.sniff import is_image, refine
 from app.core import forced_mask
 
 logger = logging.getLogger("securedoc.proxy")
@@ -70,6 +70,12 @@ MULTIPART_HOSTS = {
     "copilot.microsoft.com",
     "www.perplexity.ai",
     "perplexity.ai",
+    # 2026-10-26 실측: Perplexity 는 이제 파일을 자기 오리진이 아니라 S3 presigned POST(multipart, 파일 파트가 마지막,
+    # key·policy·x-amz-* 칸이 앞)로 바로 올린다 — 이 호스트가 없어 원본이 검사 없이 나갔다. multipart 는 파일이 아닌
+    # 칸을 바이트 그대로 다시 싸므로 서명 칸이 깨지지 않는다. 등록(batch_create_upload_urls)의 이름·형식은 아직
+    # 못 바꿔서, 가린 글은 원래 형식 이름으로 저장된다 — 그래서 확장이 이 사이트 파일을 먼저 가린다(content.js
+    # PROXY_FILE_HOSTS 에 없음). 이 호스트는 확장이 없는 경로의 안전망이다. 허용 이름이 늘어 CA 가 새로 만들어진다.
+    "ppl-ai-file-upload.s3.amazonaws.com",
     # 2026-10-22 실측: Grok 은 이제 POST /http/upload-file-v2/direct 로 파일 하나(name="file")를
     # multipart 로 올린다. 예전 JSON+base64 경로(UNSUPPORTED_UPLOADS)만 막고 있어 그대로 나갔다.
     "grok.com",
@@ -645,7 +651,14 @@ class CampfireAddon:
             mime=flow.request.headers.get("content-type", ""),
             host="gemini.google.com",
             flow=flow,
+            # 시작 요청 본문("File name: 보고서.docx", 2026-10-26 실측 길이로 확인)이 바이트를 보기 전에 형식을 정해,
+            # 가린 글을 넣으면 Gemini 가 손상된 파일로 거부한다. 확장이 이 사이트 파일을 먼저 가린다(PROXY_FILE_HOSTS).
+            can_replace=False,
         )
+        if masked is _UNREPLACEABLE:
+            promise.blocked = True
+            self._block(flow, "Gemini 는 가린 글로 바꾼 파일을 받지 않아 보내지 않았습니다 — 가릴 내용이 있는 파일입니다")
+            return
         if masked is None:
             promise.blocked = True
             self._block(flow, "검토 결과 전송하지 않기로 했습니다")
@@ -777,13 +790,22 @@ class CampfireAddon:
             flow.request.content = promise.settled
             return
 
+        data = flow.request.content or b""
+        mime = flow.request.headers.get("content-type", "")
         masked = await self._scan_and_decide(
-            data=flow.request.content or b"",
+            data=data,
             file_name=promise.original_name,
-            mime=flow.request.headers.get("content-type", ""),
+            mime=mime,
             host="chatgpt.com",
             flow=flow,
+            # 이미지는 사이트가 고를 때부터 그림으로 다뤄(메시지에 그림 포인터·크기를 싣는다) 본문을 MD 로 바꾸면
+            # 처리 단계에서 invalid_image_format 으로 거부된다(2026-10-26 실측). 문서는 지금처럼 바꿔 넣는다.
+            can_replace=not (is_image(data) or mime.lower().startswith("image/")),
         )
+        if masked is _UNREPLACEABLE:
+            promise.blocked = True
+            self._block(flow, "ChatGPT 는 이미지 자리에 가린 글을 받지 않아 보내지 않았습니다 — 가릴 내용이 있는 이미지입니다")
+            return
         if masked is None:
             promise.blocked = True
             self._block(flow, "검토 결과 전송하지 않기로 했습니다")
@@ -826,9 +848,10 @@ class CampfireAddon:
         메시지 하나에 프롬프트(2.3)와 인라인 파일(2.15.4)이 같이 있어도 검토 요청은
         하나여야 한다 — 필드마다 따로 물으면 사람이 같은 전송을 여러 번 승인한다.
         prompt_fields: 사용자가 직접 친 프롬프트 필드. 문서 기준("AI 에게 내리는 지시 =
-        인젝션")으로 보면 평범한 요청이 인젝션으로 잡히므로 /jobs/prompt 와 같은 프롬프트
-        기준(direct_prompt)으로 본다(맥 실측: 확장 경로만 고쳐져 프록시 경로에 남아 있었다).
-        인라인 파일 내용은 문서이므로 그대로 문서 기준이다.
+        인젝션")으로 보면 평범한 요청이 인젝션으로 잡히므로 /jobs/prompt 와 같이 인젝션 검사를
+        하지 않는다(PII·자격증명·강제 마스킹만). #247 에서 확장 경로만 바뀌어, 프록시에서는
+        "첨부한 파일 내용을 그대로 옮겨 적어줘" 가 [인젝션 마스킹] 으로 나갔다(2026-10-26 실측).
+        인라인 파일 내용은 문서이므로 그대로 문서 기준(인젝션 검사)이다.
         반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함).
         """
         from app.core.pipeline.orchestrator import run_pipeline
@@ -843,9 +866,8 @@ class CampfireAddon:
         truncated = False
         for fld in fields:
             text = fld.value.decode("utf-8", "replace")
-            result = await run_pipeline(
-                text=text, direct_prompt=any(fld is p for p in prompt_fields)
-            )
+            is_prompt = any(fld is p for p in prompt_fields)
+            result = await run_pipeline(text=text, direct_prompt=is_prompt, scan_injection=not is_prompt)
             if result.get("blocked"):
                 logger.info("[proxy] 정책 차단 (Claude 메시지)")
                 return None
@@ -894,11 +916,15 @@ class CampfireAddon:
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
     async def _scan_and_decide(
-        self, *, data: bytes, file_name: str, mime: str, host: str, flow=None
+        self, *, data: bytes, file_name: str, mime: str, host: str, flow=None, can_replace: bool = True
     ) -> bytes | None | object:
         """검사하고 판단을 받는다.
 
-        반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / None(보내지 않음).
+        can_replace: 이 업로드 자리에 가린 글(MD)을 넣을 수 있는가. 아니면(Gemini 전부, ChatGPT 이미지) 끝까지
+        검사해 가릴 것이 있을 때 묻지 않고 `_UNREPLACEABLE` 을 돌려준다 — 가린 글을 넣으면 사이트가 깨진 파일로
+        거부한다(2026-10-26 실측). 그래서 이 경우는 오탐이어도 원본을 보내는 선택지가 없다. 미지원·잘림처럼
+        검사를 끝내지 못한 건은 지금처럼 묻는다(원본/취소).
+        반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / `_UNREPLACEABLE` / None(보내지 않음).
         """
         from app.core.pipeline.orchestrator import run_pipeline
 
@@ -920,6 +946,9 @@ class CampfireAddon:
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))
         if _is_clean_result(result) and not name_forced:
             return _ORIGINAL
+        if not can_replace and _scan_complete(result):
+            logger.info("[proxy] 가린 글로 바꿔 넣을 수 없는 업로드 — 차단 host=%s", host)
+            return _UNREPLACEABLE
 
         action = await broker.wait(
             file_name=file_name,
@@ -960,6 +989,8 @@ class CampfireAddon:
 # "원본을 그대로 보낸다" 를 나타내는 표식. None(보내지 않음)과 구분해야 해서
 # bytes 도 None 도 아닌 고유 객체를 쓴다.
 _ORIGINAL = object()
+# "가릴 것이 있는데 이 업로드 자리에는 가린 글을 넣을 수 없다" — 이유를 붙여 막는다(_scan_and_decide can_replace).
+_UNREPLACEABLE = object()
 
 
 class _TextSlot:
@@ -988,6 +1019,11 @@ def _client_alive(flow):
     return lambda: conn.timestamp_end is None
 
 
+def _scan_complete(result: dict) -> bool:
+    """검사를 끝까지 했는가(미지원·잘림·정책 차단이 아님)."""
+    return result.get("scanStatus") == "ok" and not result.get("blocked") and not result.get("truncated")
+
+
 def _is_clean_result(result: dict) -> bool:
     """완전히 검사했고 탐지나 사용자 지정 마스킹이 하나도 없는 결과인가."""
     stats = result.get("stats") or {}
@@ -999,9 +1035,7 @@ def _is_clean_result(result: dict) -> bool:
         int(stats.get("forcedMaskCount") or 0), len(result.get("forcedMaskItems") or [])
     )
     return (
-        result.get("scanStatus") == "ok"
-        and not result.get("blocked")
-        and not result.get("truncated")
+        _scan_complete(result)
         and pii_count == 0
         and injection_count == 0
         and forced_count == 0
