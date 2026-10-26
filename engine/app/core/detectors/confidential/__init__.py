@@ -4,9 +4,10 @@ app/core/detectors/confidential/__init__.py
 
   1. kg.py       KG 엔티티 이름이 나오는 위치 → 주어·목적어가 둘 다 나온 트리플(후보)
   2. retriever   문장 단위 창마다(인코더 길이 제한) 후보 쌍·술어의 여유값(s − s_TH)과 문장별 주의
-  3. judge       모든 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 전부 + PII·인젝션을 가린 문서 전체 →
-                 Solar 1회로 "어느 문장이 진술했고 기밀인가"
-  4. 고른 문장 전체를 CONFIDENTIAL 로 — 안쪽 PII·사용자 지정 구간은 따로 남아 자기 토글을 유지한다
+  3. judge       사실이 걸린 창마다(앞뒤 문장 하나씩 겹쳐) 그 창에서 CONFIDENTIAL_DELTA 를 넘은 사실 +
+                 PII·인젝션을 가린 문장 → Solar 로 "어느 문장이 진술했고 기밀인가" (창마다 1회, 동시 호출 상한)
+  4. 고른 문장 전체를 CONFIDENTIAL 로 — 안쪽 PII·사용자 지정 구간은 따로 남아 자기 토글을 유지한다.
+     기밀로 판정된 사실은 같은 묶음 안에서 주어·목적어가 함께 나오는 문장과, 줄바꿈에 쪼개진 바로 옆 문장도 가린다
 
 실패 처리: 리트리버를 못 쓰거나(가중치 없음·오류) Solar 를 못 쓰면(키 없음·오류·해석 불가) 근거
 문장을 낮은 신뢰도로 가린다 — 보안 게이트웨이라 막는 쪽. 리트리버 없이 Solar 로 보내지 않는다: 그러면
@@ -31,6 +32,8 @@ from . import judge, kg, retriever
 Emit = Callable[[dict], Awaitable[None]]
 
 MAX_EVIDENCE = 3   # Solar 를 못 쓸 때 사실 하나에 가리는 근거 문장 수
+CONTEXT_SENTENCES = 1  # Solar 묶음 앞뒤로 더 붙이는 문장 수 — 창 경계에 걸린 생략 주어·줄바꿈에 쪼개진 문장을 같이 보게
+SOLAR_CONCURRENCY = 3  # 문서 하나의 Solar 동시 호출 상한 (Upstage 429)
 _SENT_END = re.compile(r"[.!?。！？](?=\s|$)|\n+")
 
 
@@ -210,7 +213,8 @@ async def detect(
     if emit:
         await emit({"type": "step", "step": 3, "label": f"기밀 탐지 중 (KG 후보 {len(cands)}개)..."})
 
-    hits: dict[kg.Triple, set[int]] = {}  # 통과한 사실 → 근거 문장 (Solar 를 못 쓸 때만 쓴다)
+    hits: dict[kg.Triple, set[int]] = {}  # 통과한 사실 → 근거 문장 (시연 추적용, 창 전체 합)
+    windows: list[tuple[list[int], dict[kg.Triple, set[int]]]] = []  # 창 → 그 창의 후보 사실 → 그 창에서 통과했을 때의 근거
     scores: dict[kg.Triple, float | None] | None = {} if trace is not None else None
     use_retriever = model_status.confidential_ready()
     all_scored = True
@@ -219,33 +223,88 @@ async def detect(
         if not scored:
             # 한 번 못 뜬 리트리버를 창마다 다시 띄우면(창마다 기동 시간 상한까지 대기) 문서 하나에 수 분이 걸린다
             use_retriever = all_scored = False
+        ws, we = sents[idxs[0]][0], sents[idxs[-1]][1]
+        here = {ent for ent, spans in mentions.items() if any(ws <= a and b <= we for a, b in spans)}
+        win: dict[kg.Triple, set[int]] = {t: set() for t in cands if t.s in here and t.o in here}
         for t, ev in window_hits:
             hits.setdefault(t, set()).update(ev)
+            win[t].update(ev)
+        windows.append((idxs, win))
+    # Solar 묶음: 어느 창에서든 리트리버를 통과한 사실을, 그 사실의 주어·목적어가 함께 나오는 모든 창에서 묻는다.
+    # 리트리버는 같은 사실을 창마다 다르게 보아(한 창은 통과, 다른 창은 거름) 통과한 창만 물으면 다른 창의
+    # 진술을 놓쳤다(실측) — 예전엔 문서 전체를 Solar 에 보내 그 진술도 잡혔다.
+    groups: list[tuple[list[int], dict[kg.Triple, set[int]]]] = []  # 문장 번호(앞뒤 겹침 포함), 물을 사실 → 근거
+    for idxs, win in windows:
+        ask_here = {t: ev for t, ev in win.items() if t in hits}
+        if ask_here:
+            lo, hi = max(0, idxs[0] - CONTEXT_SENTENCES), min(len(sents), idxs[-1] + 1 + CONTEXT_SENTENCES)
+            groups.append((list(range(lo, hi)), ask_here))
     if trace is not None:
         demo_trace.publish(trace, "retriever", scored=all_scored,
                            scores=[[*_spo(t), m] for t, m in scores.items()],
                            passed=[[*_spo(t), sorted(ev)] for t, ev in hits.items()])
 
     flagged: dict[int, tuple[float, str]] = {}
-    if hits:
-        facts = list(hits)  # 이 순서가 Solar 에 보내는 [T#] 번호다 (T1 = facts[0])
-        verdict = None
-        info: dict = {}
+
+    def mark(i: int, conf: float, source: str) -> None:
+        if i not in flagged or flagged[i][0] < conf:
+            flagged[i] = (conf, source)
+
+    if groups:
+        # 문서 전체를 한 번에 물으면 Solar 가 사실마다 대표 문장 하나만 적고 나머지를 빠뜨렸다(시연 추적 실측,
+        # 55문장 문서에서 "베타 종료(2027년 2월)" 를 진술한 문장 누락). 사실이 걸린 창만, 그 창의 사실만 붙여 따로 묻는다
+        # — 관련 없는 창은 나가지 않고, 묶음이 짧아 시간 상한에도 덜 걸린다.
+        redacted = solar_sentences()
+        verdicts: list[list[tuple[int, int]] | None] = [None] * len(groups)
+        infos: list[dict] = [{} for _ in groups]
         if all_scored:  # 리트리버가 거르지 못한 사실은 문서와 함께 내보내지 않는다 — 아래에서 근거 문장을 가린다
-            shown = [tuple(no_forced(x) for x in (_display(t.s, mentions, for_solar, text), t.p,
-                                                  _display(t.o, mentions, for_solar, text))) for t in facts]
+            def shown(t: kg.Triple) -> tuple[str, ...]:
+                return tuple(no_forced(x) for x in (_display(t.s, mentions, for_solar, text), t.p,
+                                                    _display(t.o, mentions, for_solar, text)))
+
             if trace is not None:
-                demo_trace.publish(trace, "solar", facts=[_spo(t) for t in facts], shown=[list(f) for f in shown])
-            # ponytail: 문서 전체를 Solar 1회 — 컨텍스트·타임아웃을 넘는 긴 문서가 나오면 사실이 걸린 문장 주변만 보낸다
-            verdict = await judge.judge(solar_sentences(), shown, info)
-        if verdict is None:  # 판단 불가 → 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
-            flagged = {i: (0.5, "encoder") for ev in hits.values() for i in ev}
-        else:
-            flagged = {s: (0.95, "llm") for s, _ in verdict}
+                facts = list(hits)
+                demo_trace.publish(trace, "solar", facts=[_spo(t) for t in facts], shown=[list(shown(t)) for t in facts],
+                                   calls=len(groups))
+            sem = asyncio.Semaphore(SOLAR_CONCURRENCY)
+
+            async def ask(k: int) -> list[tuple[int, int]] | None:
+                ids, win = groups[k]
+                async with sem:  # [T#] 번호는 그 묶음의 사실 순서 (T1 = list(win)[0])
+                    return await judge.judge([redacted[i] for i in ids], [shown(t) for t in win], infos[k])
+
+            verdicts = list(await asyncio.gather(*(ask(k) for k in range(len(groups)))))
+        secret: list[tuple[int, kg.Triple]] = []  # (문서 문장 번호, 기밀 사실) — Solar 가 진술했다고 한 것
+        public: set[kg.Triple] = set()
+        for (ids, win), verdict, info in zip(groups, verdicts, infos):
+            facts = list(win)
+            if verdict is None:  # 판단 불가 → 이 창의 근거 문장을 낮은 신뢰도로 가린다 (사용자가 패널에서 풀 수 있음)
+                for ev in win.values():
+                    for i in ev:
+                        mark(i, 0.5, "encoder")
+                continue
+            public.update(facts[t] for t in info.get("public", []))
+            for s, t in verdict:
+                secret.append((ids[s], facts[t]))
+                mark(ids[s], 0.95, "llm")
+        # Solar 가 사실마다 문장 하나만 적어도 같은 진술을 놓치지 않게 — KG 표기 위치로 결정적으로 넓힌다
+        def has(i: int, ent: str) -> bool:
+            return any(_overlaps(sp, sents[i]) for sp in mentions.get(ent, ()))
+
+        asked = {t: {i for ids, win in groups if t in win for i in ids} for _, t in secret}
+        for i, t in secret:
+            for j in asked[t]:  # 그 사실을 물은 묶음 안에서 주어·목적어가 함께 나오는 문장
+                if has(j, t.s) and has(j, t.o):
+                    mark(j, 0.9, "llm")
+            for j in (i - 1, i + 1):  # 줄바꿈에 쪼개진 진술 — 고른 문장에 없는 쪽이 바로 옆 문장에 있으면
+                if 0 <= j < len(sents) and ((not has(i, t.o) and has(j, t.o)) or (not has(i, t.s) and has(j, t.s))):
+                    mark(j, 0.9, "llm")
         if trace is not None:
-            demo_trace.publish(trace, "verdict", fallback=verdict is None, cached=info.get("cached", False),
-                               pairs=[[s, _spo(facts[t])] for s, t in verdict or []],
-                               public=[_spo(facts[t]) for t in info.get("public", [])])
+            secret_facts = {t for _, t in secret}
+            demo_trace.publish(trace, "verdict", fallback=all(v is None for v in verdicts),
+                               cached=all(info.get("cached", False) for info in infos),
+                               pairs=[[s, _spo(t)] for s, t in secret],
+                               public=[_spo(t) for t in public - secret_facts])
     if trace is not None:
         demo_trace.publish(trace, "done", flagged=[[i, *flagged[i]] for i in sorted(flagged)])
 
