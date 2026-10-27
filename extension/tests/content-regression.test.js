@@ -311,6 +311,7 @@ let failNextOpenPanel = false;
 // content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
 let contentBridgeToken = '';
 
+let lastProtectionState = null;
 const windowStub = {
   addEventListener: (t, l) => addListener(windowListeners, t, l),
   removeEventListener: (t, l) => {
@@ -332,6 +333,7 @@ const windowStub = {
   },
   postMessage(data) {
     if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
+    if (data?.type === 'UPS_PROTECTION_STATE') lastProtectionState = data;
     // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
     if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
       for (const meta of data.files || []) actionLog.push({ kind: 'approve-msg', meta });
@@ -2780,6 +2782,25 @@ cancelScan(stuckScan);
     const held = attachPng();
     setForced(false);
     if (!held) throw new Error('강제 마스킹이 켜져 있는데 미지원 형식(이미지)이 검토 없이 그대로 나갔다');
+
+    // (37-2) 엔진에서 이미지 속 글자 검사를 켰으면(SW 가 imageScanEnabled 를 적는다) 그림도 지원 파일이다 —
+    //        문서 속 그림처럼 검사해 가린 .md 로 바꿔 올린다. MAIN world 에도 같은 상태를 알린다.
+    //        꺼지면 지금처럼 손대지 않는다(스크린샷마다 "미지원" 검토가 뜨지 않게).
+    const setImages = (v) => storageListeners.forEach(l => l({ imageScanEnabled: { newValue: v } }, 'local'));
+    await clock.tick(9000);
+    setImages(true);
+    if (lastProtectionState?.imageScan !== true) throw new Error('이미지 검사를 켰는데 MAIN world 에 알리지 않았다');
+    const before372 = runtimeMessages.length;
+    if (!attachPng()) throw new Error('이미지 검사가 켜져 있는데 그림 첨부를 가로채지 않았다 — 검사 없이 나간다');
+    await flush();
+    const staged372 = runtimeMessages.slice(before372).find(m => m.type === 'START_MULTI_SCAN');
+    if (staged372 && !staged372.payload?.items?.every(i => i.supported)) {
+      throw new Error('이미지 검사가 켜져 있는데 그림이 미지원으로 잡혔다');
+    }
+    setImages(false);
+    if (lastProtectionState?.imageScan !== false) throw new Error('이미지 검사를 껐는데 MAIN world 에 알리지 않았다');
+    await clock.tick(9000);
+    if (attachPng()) throw new Error('이미지 검사가 꺼졌는데 그림 첨부를 가로챘다');
   }
 
   // (38) 차례(lease)를 끝내 못 받은 배치. 맥 실측: 다시 보내니 프롬프트만 검사되고 첨부는

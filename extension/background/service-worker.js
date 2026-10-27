@@ -164,6 +164,7 @@ async function checkEngineHealthNow() {
     if (!res.ok) return { ok: false, target: server.target, baseUrl: server.baseUrl, port: server.port };
     const data = await res.json().catch(() => null);
     setActionBadge('', BADGE_OK);
+    if (data) noteImageScan(Boolean(data.imageOcr?.enabled));
     return {
       ok: true,
       target: server.target,
@@ -248,6 +249,16 @@ async function errorDetail(res) {
 function noteForcedMask(active) {
   if (typeof active !== 'boolean') return;
   chrome.storage.local.set({ forcedMaskActive: active }).catch(() => {});
+}
+
+/** 엔진에서 이미지 속 글자 검사를 켰는가를 콘텐츠 스크립트와 나눈다. 켜져 있으면 확장도 PNG·JPG 등을
+ *  가로채 검사하고, 문서 속 그림처럼 가린 .md 로 바꿔 올린다(content.js isSupportedFile). 켰는데 모델이
+ *  아직 없으면 엔진이 "검사하지 못해 보내지 않습니다" 로 막는다 — 그래서 ready 가 아니라 enabled 를 본다. */
+let lastImageScan = null;
+function noteImageScan(enabled) {
+  if (enabled === lastImageScan) return;
+  lastImageScan = enabled;
+  chrome.storage.local.set({ imageScanEnabled: enabled }).catch(() => {});
 }
 
 /** 강제 항목의 원문(엔진 위치 = 코드포인트)이 나가는 텍스트에 남았는가. 자리표시자

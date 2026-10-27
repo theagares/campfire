@@ -50,6 +50,7 @@
       bridgeToken,
       enabled: Boolean(enabled),
       fileInterceptEnabled: Boolean(fileEnabled),
+      imageScan: Boolean(imageScanEnabled),
     }, '*');
   }
 
@@ -189,13 +190,17 @@
 
   // 사용자 지정 마스킹이 켜져 있는가 — SW 가 엔진 상태를 보고 적어 둔다(noteForcedMask).
   let forcedMaskActive = false;
+  // 엔진에서 이미지 속 글자 검사를 켰는가 — SW 가 /health 를 보고 적어 둔다(noteImageScan). 켜져 있으면
+  // 그림 첨부도 가로채 검사하고 문서처럼 가린 .md 로 바꿔 올린다. 꺼져 있으면 지금처럼 손대지 않는다.
+  let imageScanEnabled = false;
 
   chrome.storage?.local?.get?.(
-    { protectionEnabled: true, fileInterceptEnabled: true, forcedMaskActive: false },
-    ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled, forcedMaskActive: forced }) => {
+    { protectionEnabled: true, fileInterceptEnabled: true, forcedMaskActive: false, imageScanEnabled: false },
+    ({ protectionEnabled: enabled, fileInterceptEnabled: fileEnabled, forcedMaskActive: forced, imageScanEnabled: images }) => {
       protectionEnabled = Boolean(enabled);
       fileInterceptEnabled = Boolean(fileEnabled);
       forcedMaskActive = Boolean(forced);
+      imageScanEnabled = Boolean(images);
       sendBridgeTokenToMain();
       sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
     },
@@ -204,9 +209,10 @@
   chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
     if (areaName !== 'local') return;
     if (changes.forcedMaskActive) forcedMaskActive = Boolean(changes.forcedMaskActive.newValue);
-    if (!changes.protectionEnabled && !changes.fileInterceptEnabled) return;
+    if (!changes.protectionEnabled && !changes.fileInterceptEnabled && !changes.imageScanEnabled) return;
     if (changes.protectionEnabled) protectionEnabled = Boolean(changes.protectionEnabled.newValue);
     if (changes.fileInterceptEnabled) fileInterceptEnabled = Boolean(changes.fileInterceptEnabled.newValue);
+    if (changes.imageScanEnabled) imageScanEnabled = Boolean(changes.imageScanEnabled.newValue);
     sendProtectionStateToMain(protectionEnabled, fileInterceptEnabled);
   });
 
@@ -227,6 +233,9 @@
   ]);
   const SUPPORTED_EXTS =
     /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
+  // 이미지 속 글자 검사를 켰을 때만(imageScanEnabled) 엔진이 받는 그림 형식 — engine config.py IMAGE_OCR_EXTENSIONS
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
+  const IMAGE_EXTS = /\.(png|jpe?g|webp|bmp)$/i;
   const contentOwnedFiles = new WeakSet();
   const contentProcessingFiles = new WeakSet();
   let promptInProcess = false;
@@ -267,7 +276,8 @@
     // proxyChecksFiles: 프록시가 이 사이트 업로드를 맡으면 가로채지 않는다 — 파일을 그대로 사이트로
     // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
     if (!protectionEnabled || !fileInterceptEnabled || proxyChecksFiles() || !file) return false;
-    return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '');
+    return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '')
+      || (imageScanEnabled && (IMAGE_TYPES.has(file.type) || IMAGE_EXTS.test(file.name || '')));
   }
 
   function base64ToFile(b64, mime, name) {
