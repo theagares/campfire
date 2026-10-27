@@ -6,7 +6,7 @@
  *   1) ConfigStore 로드 → EngineManager 생성 → IPC 등록
  *   2) 대시보드 BrowserWindow + 트레이 생성
  *   3) Python 엔진 사이드카 spawn (securityEnabled 면) → /health 폴링으로 포트 탐지
- *   4) 시스템 리소스/통계 주기 브로드캐스트
+ *   4) 보이는 창의 시스템 리소스 수집 + 완료 이벤트 기반 통계 브로드캐스트
  *   5) 자동 업데이트 확인(패키징 시)
  *   6) 종료 시 사이드카까지 정리
  */
@@ -53,7 +53,6 @@ let engineManager = null, proxyToggle = null;
 let config = null;
 let forcedMaskStore = null;
 let metricsTimer = null;
-let statsTimer = null;
 let proxyDecisionUi = null;
 let updater = null;
 let isQuitting = false;
@@ -81,6 +80,10 @@ function createMainWindow() {
 
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  // 트레이로 숨긴 동안에는 nvidia-smi/PowerShell GPU 카운터까지 포함한 리소스 수집을
+  // 완전히 멈춘다. 다시 보일 때 즉시 한 번 갱신하고 그때부터만 2초 샘플을 유지한다.
+  mainWindow.on('show', syncMetricsLoop);
+  mainWindow.on('hide', syncMetricsLoop);
 
   // 창 닫기 = 트레이로 최소화 (앱은 계속 상주). 실제 종료는 트레이 QUIT.
   mainWindow.on('close', (e) => {
@@ -91,6 +94,7 @@ function createMainWindow() {
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
+    syncMetricsLoop();
   });
 }
 
@@ -134,7 +138,7 @@ async function installUpdate() {
 
 async function cleanup() {
   if (metricsTimer) clearInterval(metricsTimer);
-  if (statsTimer) clearInterval(statsTimer);
+  metricsTimer = null;
   if (tray) tray.destroy();
   if (proxyDecisionUi) proxyDecisionUi.stop();
   // 엔진보다 먼저 시스템 프록시를 돌려놓는다. 거꾸로 하면 앱이 꺼진 뒤에도
@@ -143,16 +147,29 @@ async function cleanup() {
   if (engineManager) await engineManager.dispose();
 }
 
-function startBroadcastLoops() {
-  // CPU 사용률은 델타 계산이라 주기 샘플이 필요 → 2초마다 push
+function syncMetricsLoop() {
+  const visible = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+  if (!visible) {
+    if (metricsTimer) clearInterval(metricsTimer);
+    metricsTimer = null;
+    return;
+  }
+  if (metricsTimer) return;
+  ipc.broadcast('metrics:tick', systemMetrics.sample());
   metricsTimer = setInterval(() => {
+    // hide 이벤트를 놓쳤더라도 외부 명령을 실행하기 전에 다시 확인한다.
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+      syncMetricsLoop();
+      return;
+    }
     ipc.broadcast('metrics:tick', systemMetrics.sample());
   }, 2000);
+}
 
-  // 통계는 store 읽기라 다소 무거우므로 5초마다 push
-  statsTimer = setInterval(() => {
-    ipc.broadcast('stats:tick', ipc.buildStats(engineManager));
-  }, 5000);
+function startBroadcastLoops() {
+  // 통계는 ipc.js가 파이프라인 finish 이벤트에서 갱신한다. 여기에는 화면이 보이는 동안의
+  // 리소스 샘플만 남겨, 유휴 상태의 DB 조회와 외부 GPU 프로세스를 모두 없앤다.
+  syncMetricsLoop();
 }
 
 /**

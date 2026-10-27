@@ -21,7 +21,13 @@ from app.core.detectors import combined_gpu, confidential, image_ocr, registry
 from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
-from app.core.parser import STATUS_OK, STATUS_TIMEOUT, parse_document
+from app.core.parser import STATUS_FAILED, STATUS_OK, STATUS_TIMEOUT
+from app.core.parser.process_pool import (
+    ParserPoolBusy,
+    ParserTimedOut,
+    ParserWorkerError,
+    get_default_parse_pool,
+)
 from app.core.pipeline import injection_chunker
 
 Emit = Callable[[dict], Awaitable[None]]
@@ -38,23 +44,24 @@ async def _noop_emit(_event: dict) -> None:
 async def _parse_off_loop(
     file_bytes: bytes, mime_type: str, file_name: str, images: list[bytes] | None = None,
 ) -> tuple[str, str, str | None]:
-    """파싱을 이벤트 루프 밖에서 돌리고 상한을 건다.
-
-    parse_document 는 동기 함수인데 예전엔 async 안에서 그대로 불렀다. pdfplumber 가
-    무거운 PDF 를 붙들고 있는 동안 **이벤트 루프 전체가 멎어** /health·SSE·처리현황이
-    같이 멈췄다 — 데스크탑 앱이 엔진이 죽은 걸로 오인할 수 있다.
-
-    ponytail: wait_for 는 스레드를 죽이지 못한다 — 상한을 넘겨도 파싱 스레드는 뒤에서
-    계속 돈다(요청만 제때 끝난다). 진짜로 끊으려면 파싱을 별도 프로세스로 빼야 하고
-    그건 이 변경의 범위가 아니다. 지금 막는 것은 "한 파일이 엔진 전체를 붙잡는 것".
-    """
+    """제한된 별도 프로세스에서 파싱하고 타임아웃 워커를 실제 종료한다."""
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(parse_document, file_bytes, mime_type, file_name, images),
+        result, extracted_images = await get_default_parse_pool().parse(
+            file_bytes,
+            mime_type,
+            file_name,
+            collect_images=images is not None,
             timeout=config.PARSE_TIMEOUT_SEC,
         )
-    except asyncio.TimeoutError:
+        if images is not None and extracted_images:
+            images.extend(extracted_images)
+        return result
+    except ParserTimedOut:
         return "", STATUS_TIMEOUT, f"파싱이 {config.PARSE_TIMEOUT_SEC:g}초를 넘겨 중단했습니다"
+    except ParserPoolBusy:
+        return "", STATUS_TIMEOUT, "파싱 대기열이 가득 차 검사를 시작하지 못했습니다"
+    except ParserWorkerError as exc:
+        return "", STATUS_FAILED, f"파서 프로세스 오류: {exc}"
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int = 100) -> list[dict]:

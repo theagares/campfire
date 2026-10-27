@@ -9,7 +9,10 @@
  * 만료돼도 창이 남았다.
  */
 
-const POLL_MS = 500;
+// 오류 뒤 재연결 간격. 정상 상태에서는 이 간격으로 폴링하지 않고 엔진의 목록 버전
+// 변화가 생길 때까지 한 HTTP 요청을 최대 25초 유지한다.
+const POLL_MS = 1000;
+const LONG_POLL_MS = 25000;
 /** 확인창이 떠 있는 동안 그 판단 건이 아직 엔진에 있는지 보는 간격. */
 const WATCH_MS = 1000;
 /** 결정한 건을 기억하는 시간 — 엔진이 아직 목록에 두고 있어도 다시 띄우지 않는다. */
@@ -30,6 +33,9 @@ class ProxyDecisionController {
     this.getParentWindow = getParentWindow;
     this.platform = platform;
     this.timer = null;
+    this.requestAbort = null;
+    this.version = null;
+    this.onEngineStatus = null;
     this.stopped = true;
     this.currentId = null;
     // id -> { action, at, posted }. 결정을 엔진에 못 보냈으면(posted:false) 창 없이 다시 보낸다.
@@ -40,6 +46,15 @@ class ProxyDecisionController {
   start() {
     if (!this.stopped) return;
     this.stopped = false;
+    this.onEngineStatus = (status) => {
+      if (this.stopped) return;
+      if (!status || status.state !== 'running' || !status.baseUrl) {
+        this.requestAbort?.abort();
+        return;
+      }
+      if (!this.timer && !this.requestAbort && !this.currentId) this._schedule(0);
+    };
+    this.engineManager.on?.('status', this.onEngineStatus);
     this._schedule(0);
   }
 
@@ -47,28 +62,41 @@ class ProxyDecisionController {
     this.stopped = true;
     clearTimeout(this.timer);
     this.timer = null;
+    this.requestAbort?.abort();
+    this.requestAbort = null;
+    if (this.onEngineStatus) this.engineManager.off?.('status', this.onEngineStatus);
+    this.onEngineStatus = null;
   }
 
-  _schedule(delay = this.pollMs) {
+  _schedule(delay = 0) {
     clearTimeout(this.timer);
     if (this.stopped) return;
     this.timer = setTimeout(async () => {
+      this.timer = null;
+      const status = this.engineManager.getStatus();
+      // 엔진이 다시 뜨면 status 이벤트가 깨운다. 내려간 동안 타이머로 상태를 재조회하지 않는다.
+      if (!status || status.state !== 'running' || !status.baseUrl) return;
       try {
-        await this.checkNow();
+        await this.checkNow(true);
+        // 함께 실행된 구버전 엔진이 version을 주지 않으면 즉시 재귀 조회하지 않는다.
+        // 현재 엔진은 version 장기 대기로 들어가고, 구버전만 낮은 빈도의 호환 폴백을 쓴다.
+        this._schedule(Number.isInteger(this.version) ? 0 : this.pollMs);
       } catch (err) {
         if (!this.stopped && process.env.SECUREDOC_PROXY_DECISION_DEBUG) {
           console.warn('[proxy-decision] 조회 실패:', err.message);
         }
-      } finally {
-        this._schedule();
+        const current = this.engineManager.getStatus();
+        if (!this.stopped && current?.state === 'running' && current?.baseUrl) {
+          this._schedule(this.pollMs);
+        }
       }
     }, delay);
   }
 
   async _json(baseUrl, path, options = {}) {
-    const signal = typeof AbortSignal?.timeout === 'function'
+    const signal = options.signal || (typeof AbortSignal?.timeout === 'function'
       ? AbortSignal.timeout(2000)
-      : undefined;
+      : undefined);
     const res = await this.fetch(`${baseUrl}${path}`, { ...options, signal });
     if (!res.ok) {
       const err = new Error(`엔진 ${path} 응답 ${res.status}`);
@@ -78,7 +106,7 @@ class ProxyDecisionController {
     return res.json();
   }
 
-  async checkNow() {
+  async checkNow(waitForChange = false) {
     if (this.currentId) return false;
     const status = this.engineManager.getStatus();
     if (!status || status.state !== 'running' || !status.baseUrl) return false;
@@ -89,7 +117,24 @@ class ProxyDecisionController {
       if (!h.posted) await this._post(status.baseUrl, id, h.action);
     }
 
-    const listed = await this._json(status.baseUrl, '/decisions');
+    let listPath = '/decisions';
+    let timeout = null;
+    if (waitForChange && Number.isInteger(this.version)) {
+      listPath += `?after=${this.version}&wait_ms=${LONG_POLL_MS}`;
+      const ctrl = new AbortController();
+      this.requestAbort = ctrl;
+      timeout = setTimeout(() => ctrl.abort(), LONG_POLL_MS + 5000);
+    }
+    let listed;
+    try {
+      listed = await this._json(status.baseUrl, listPath, this.requestAbort
+        ? { signal: this.requestAbort.signal }
+        : {});
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.requestAbort = null;
+    }
+    if (Number.isInteger(listed?.version)) this.version = listed.version;
     const pending = Array.isArray(listed?.pending) ? listed.pending : [];
     const summary = pending.find((p) => p?.id && !this.handled.has(p.id));
     if (!summary) return false;

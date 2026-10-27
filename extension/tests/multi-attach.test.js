@@ -117,6 +117,7 @@ const send = (msg, sender = { tab: { id: 7 } }) => new Promise((resolve) => {
 });
 const settle = () => new Promise(r => setTimeout(r, 30));
 const panelOf = (type) => panelMessages.filter(m => m.type === type);
+const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/pdf' }), { name });
 
 (async () => {
   // ── 1) 배치 시작 → 탭 메타가 즉시, 순서대로 나온다 ───────────────────────
@@ -141,7 +142,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   const starting = panelOf('PANEL_SCAN_STATE').find(m => m.sessionId === 's1' && m.current?.phase === 'starting');
   assert.ok(starting, 'lease 를 주기 전에 검사 시작 상태를 패널에 알리지 않았다');
 
-  // lease 는 인코딩보다 먼저 온다 — content 는 이걸 받기 전에 base64 를 만들지 않는다.
+  // lease 는 File 전달보다 먼저 온다 — content 는 이걸 받기 전에 바이너리를 보내지 않는다.
   const grant = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED');
   assert.ok(grant, 'lease 를 주지 않았다 — content 가 영원히 기다린다');
   const leaseId = grant.leaseId;
@@ -170,7 +171,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   for (const [docId, fileName] of [['f0', 'a.pdf'], ['f1', 'b.pdf']]) {
     await send({
       type: 'SCAN_MULTI_ITEM', sessionId: 's1', leaseId,
-      payload: { docId, fileName, mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+      payload: { docId, fileName, mimeType: 'application/pdf', file: binaryFile(fileName), userPrompt: '요약해줘' },
     });
   }
   await settle();
@@ -227,11 +228,11 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   // ── 6) 산출물은 한 개씩, 자기 것만 ───────────────────────────────────────
   const a0 = await send({ type: 'GET_SCAN_ARTIFACT', sessionId: 's1', docId: 'f0', artifactId: ids[0] });
   assert.strictEqual(a0.ok, true);
-  const text0 = Buffer.from(a0.base64, 'base64').toString('utf8');
+  const text0 = new TextDecoder().decode(await a0.blob.arrayBuffer());
   assert.strictEqual(text0, '[이름 마스킹] 보고서', '아무것도 해제 안 한 파일은 전부 마스킹');
 
   const a1 = await send({ type: 'GET_SCAN_ARTIFACT', sessionId: 's1', docId: 'f1', artifactId: ids[1] });
-  const text1 = Buffer.from(a1.base64, 'base64').toString('utf8');
+  const text1 = new TextDecoder().decode(await a1.blob.arrayBuffer());
   assert.strictEqual(text1, '박영희 계약서', '사용자가 해제한 항목은 원문 유지');
 
   // 문서 짝이 안 맞으면 거절한다 — artifactId 는 저장소 키가 아니라 능력 토큰이다.
@@ -273,7 +274,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
   await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 's2', leaseId: lease2, text: '요약해줘' });
   await send({
     type: 'SCAN_MULTI_ITEM', sessionId: 's2', leaseId: lease2,
-    payload: { docId: 'f0', fileName: 'long.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+    payload: { docId: 'f0', fileName: 'long.pdf', mimeType: 'application/pdf', file: binaryFile('long.pdf'), userPrompt: '요약해줘' },
   });
   await settle();
 
@@ -420,7 +421,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'r1', leaseId: lr, text: '요약해줘' });
     await send({
       type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr,
-      payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+      payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', file: binaryFile('a.pdf'), userPrompt: '요약해줘' },
     });
     await send({
       type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr,
@@ -453,7 +454,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
 
     await send({
       type: 'SCAN_MULTI_ITEM', sessionId: 'r1', leaseId: lr2,
-      payload: { docId: 'f1', fileName: 'b.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+      payload: { docId: 'f1', fileName: 'b.pdf', mimeType: 'application/pdf', file: binaryFile('b.pdf'), userPrompt: '요약해줘' },
     });
     await settle();
     const fixed = panelOf('PANEL_SCAN_ITEM').slice(-1)[0].doc;
@@ -478,7 +479,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'forced-1', leaseId: lf, text: '요약해줘' });
     await send({
       type: 'SCAN_MULTI_ITEM', sessionId: 'forced-1', leaseId: lf,
-      payload: { docId: 'f0', fileName: 'forced.pdf', mimeType: 'application/pdf', base64Data: 'x', userPrompt: '요약해줘' },
+      payload: { docId: 'f0', fileName: 'forced.pdf', mimeType: 'application/pdf', file: binaryFile('forced.pdf'), userPrompt: '요약해줘' },
     });
     await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'forced-1', leaseId: lf });
     await settle();
@@ -503,7 +504,7 @@ const panelOf = (type) => panelMessages.filter(m => m.type === type);
     const artifact = await send({
       type: 'GET_SCAN_ARTIFACT', sessionId: 'forced-1', docId: 'f0', artifactId: descriptor.artifactId,
     });
-    assert.strictEqual(Buffer.from(artifact.base64, 'base64').toString('utf8'), '[사용자 지정 마스킹] 공개');
+    assert.strictEqual(new TextDecoder().decode(await artifact.blob.arrayBuffer()), '[사용자 지정 마스킹] 공개');
 
     await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'forced-1' });
     await settle();

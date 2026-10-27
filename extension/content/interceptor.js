@@ -443,10 +443,7 @@
       _pending.set(id, { type: 'input', input: inp, originalFile: file });
       _inProcess.add(file);
       try {
-        const b64 = await fileToBase64(file);
-        window.postMessage({ __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-          payload: { inputId: id, base64Data: b64, mimeType: file.type || 'application/octet-stream',
-                     fileName: file.name, fileSize: file.size } }, '*');
+        postFileSelection(id, file);
       } catch (e) { _pending.delete(id); _inProcess.delete(file); }
     }, true);
   }
@@ -483,13 +480,7 @@
       _pending.set(id, { type: 'input', input: el, originalFile: file });
       _inProcess.add(file);
       try {
-        const b64 = await fileToBase64(file);
-        window.postMessage({
-          __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-          payload: { inputId: id, base64Data: b64,
-                     mimeType: file.type || 'application/octet-stream',
-                     fileName: file.name, fileSize: file.size },
-        }, '*');
+        postFileSelection(id, file);
       } catch (e) { _pending.delete(id); _inProcess.delete(file); }
     };
   }
@@ -687,16 +678,6 @@
     return await prom;
   }
 
-  // ─── fileToBase64 (원본 arrayBuffer 사용, 재귀 없음) ─────────────────────
-  async function fileToBase64(file) {
-    const ab = await _origBlobArrayBuffer.call(file);
-    const arr = new Uint8Array(ab);
-    let bin = '';
-    for (let i = 0; i < arr.length; i += 8192)
-      bin += String.fromCharCode(...arr.subarray(i, i + 8192));
-    return btoa(bin);
-  }
-
   function base64ToFile(b64, mime, name) {
     const bin = atob(b64);
     const arr = new Uint8Array(bin.length);
@@ -731,6 +712,23 @@
     return `${prefix}_${Date.now().toString(36)}_${bytes[0].toString(36)}${bytes[1].toString(36)}_${++_cnt}`;
   }
 
+  /** MAIN → isolated는 표준 structured clone이라 File을 그대로 건넬 수 있다. isolated
+   *  → service worker도 manifest의 Chrome 148 structured clone을 사용하므로, 검사 입력은
+   *  끝까지 Base64 문자열로 부풀리지 않는다. */
+  function postFileSelection(inputId, file) {
+    window.postMessage({
+      __securedoc: true,
+      direction: 'main-to-isolated',
+      bridgeToken: _bridgeToken,
+      type: 'SECUREDOC_FILE_SELECTED',
+      payload: {
+        inputId, file,
+        mimeType: file.type || 'application/octet-stream',
+        fileName: file.name || 'document', fileSize: file.size,
+      },
+    }, '*');
+  }
+
   function requestProcessing(file) {
     if (!isProtectionEnabled()) return Promise.resolve(null);
     if (_inProcess.has(file)) return Promise.resolve(null);
@@ -747,15 +745,8 @@
       }, 10 * 60 * 1000);
       _pending.get(id).timeoutId = timeoutId;
       try {
-        const b64 = await fileToBase64(file);
         debugLog(`[SecureDoc] 📤 처리 요청: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
-        window.postMessage({
-          __securedoc: true,
-          direction: 'main-to-isolated',
-          bridgeToken: _bridgeToken,
-          type: 'SECUREDOC_FILE_SELECTED',
-          payload: { inputId: id, base64Data: b64, mimeType: file.type || 'application/octet-stream', fileName: file.name || 'document', fileSize: file.size },
-        }, '*');
+        postFileSelection(id, file);
       } catch (e) {
         clearTimeout(timeoutId);
         console.error('[SecureDoc] 처리 요청 오류:', e);
@@ -933,8 +924,7 @@
     _pending.set(id, { type: 'input', input, originalFile: file });
     _inProcess.add(file);
     try {
-      const b64 = await fileToBase64(file);
-      window.postMessage({ __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED', payload: { inputId: id, base64Data: b64, mimeType: file.type || 'application/octet-stream', fileName: file.name, fileSize: file.size } }, '*');
+      postFileSelection(id, file);
     } catch (e) { _pending.delete(id); _inProcess.delete(file); }
   }, true);
 
@@ -969,14 +959,11 @@
     // DragEvent 재디스패치가 깨지는 사이트 → 이벤트 통과, XHR Layer 2에서 인터셉트
     if (cfg.dropMode === 'passthrough-xhr') {
       _inProcess.add(file);
-      _pendingLayer3Promise = fileToBase64(file).then(b64 => new Promise(resolve => {
+      _pendingLayer3Promise = new Promise(resolve => {
         const id = nextRequestId('sd');
         _pending.set(id, { type: 'layer3', resolve, originalFile: file });
-        window.postMessage({ __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-          payload: { inputId: id, base64Data: b64,
-                     mimeType: file.type || 'application/octet-stream',
-                     fileName: file.name, fileSize: file.size } }, '*');
-      })).catch(() => { _pendingLayer3Promise = null; _inProcess.delete(file); });
+        postFileSelection(id, file);
+      }).catch(() => { _pendingLayer3Promise = null; _inProcess.delete(file); });
       debugLog('[SecureDoc] 📁 [1-DROP→L3] 모달 표시, XHR 대기:', file.name);
       return;
     }
@@ -985,14 +972,11 @@
     if (cfg.dropMode === 'passthrough-fetch') {
       _inProcess.add(file);
       _pendingFetchDropMeta = { name: file.name, size: file.size, type: file.type };
-      _pendingFetchDropPromise = fileToBase64(file).then(b64 => new Promise(resolve => {
+      _pendingFetchDropPromise = new Promise(resolve => {
         const id = nextRequestId('sd');
         _pending.set(id, { type: 'layer3', resolve, originalFile: file });
-        window.postMessage({ __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-          payload: { inputId: id, base64Data: b64,
-                     mimeType: file.type || 'application/octet-stream',
-                     fileName: file.name, fileSize: file.size } }, '*');
-      })).catch(() => { _pendingFetchDropPromise = null; _pendingFetchDropMeta = null; _inProcess.delete(file); });
+        postFileSelection(id, file);
+      }).catch(() => { _pendingFetchDropPromise = null; _pendingFetchDropMeta = null; _inProcess.delete(file); });
       debugLog('[SecureDoc] 📁 [1-DROP→FetchL3] 모달 표시, fetch 대기:', file.name);
       return;
     }
@@ -1034,13 +1018,7 @@
       clientY: event.clientY,
     });
     try {
-      const b64 = await fileToBase64(file);
-      window.postMessage({
-        __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-        payload: { inputId: id, base64Data: b64,
-                   mimeType: file.type || 'application/octet-stream',
-                   fileName: file.name, fileSize: file.size },
-      }, '*');
+      postFileSelection(id, file);
     } catch (e) { _pending.delete(id); _inProcess.delete(file); }
   }, true);
 
@@ -1068,13 +1046,7 @@
       pasteTarget: event.target,
     });
     try {
-      const b64 = await fileToBase64(file);
-      window.postMessage({
-        __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED',
-        payload: { inputId: id, base64Data: b64,
-                   mimeType: file.type || 'application/octet-stream',
-                   fileName: file.name, fileSize: file.size },
-      }, '*');
+      postFileSelection(id, file);
     } catch (e) { _pending.delete(id); _inProcess.delete(file); }
   }, true);
 
@@ -1103,8 +1075,7 @@
             _pending.set(id, { type: 'input', input: inp, originalFile: file });
             _inProcess.add(file);
             try {
-              const b64 = await fileToBase64(file);
-              window.postMessage({ __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken, type: 'SECUREDOC_FILE_SELECTED', payload: { inputId: id, base64Data: b64, mimeType: file.type || 'application/octet-stream', fileName: file.name, fileSize: file.size } }, '*');
+              postFileSelection(id, file);
             } catch (e) { _pending.delete(id); _inProcess.delete(file); }
           }, true);
         });

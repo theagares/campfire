@@ -146,6 +146,15 @@ MAX_TEXT_CHARS: int = int(os.environ.get("SECUREDOC_MAX_TEXT_CHARS", "200000"))
 # 으로 "미검사 통과" 처리되고 사용자에게 고지된다.
 PARSE_TIMEOUT_SEC: float = float(os.environ.get("SECUREDOC_PARSE_TIMEOUT_SEC", "30"))
 
+# 파서는 스레드 타임아웃으로 중단할 수 없으므로 별도 프로세스에서 실행한다. 동시에
+# 처리할 워커와 대기 요청을 모두 제한해 느리거나 손상된 문서가 CPU/RAM을 무한히
+# 점유하지 않게 한다. 워커는 첫 요청 때만 뜨며 타임아웃 뒤 폐기·재생성된다.
+PARSE_WORKERS: int = max(1, int(os.environ.get("SECUREDOC_PARSE_WORKERS", "2")))
+PARSE_QUEUE_SIZE: int = max(0, int(os.environ.get("SECUREDOC_PARSE_QUEUE_SIZE", "2")))
+PARSE_WORKER_START_TIMEOUT_SEC: float = max(
+    1.0, float(os.environ.get("SECUREDOC_PARSE_WORKER_START_TIMEOUT_SEC", "10"))
+)
+
 # 검출기 서브프로세스에 요청을 써넣고 응답 한 줄을 기다리는 상한(초).
 # 없으면 서브프로세스가 멎었을 때 readline() 이 영원히 대기하는데, 그 대기가
 # _request_lock 안에서 일어나므로 뒤에 줄 선 모든 청크까지 같이 멎는다

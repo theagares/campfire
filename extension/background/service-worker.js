@@ -181,8 +181,8 @@ async function checkEngineHealthNow() {
   }
 }
 
-/** 여러 AI 탭이 동시에 2초 폴링해도 /health 한 번만 보낸다. 짧은 캐시는 전환
- * 지연을 체감시키지 않으면서 포트 스캔과 서비스 워커 기동 경쟁을 크게 줄인다. */
+/** 여러 AI 탭이 포커스되거나 전송을 시작할 때 동시에 물어도 /health 한 번만 보낸다.
+ * 짧은 캐시는 전환 지연을 체감시키지 않으면서 포트 스캔과 서비스 워커 기동 경쟁을 줄인다. */
 async function checkEngineHealth(force = false) {
   const now = Date.now();
   if (!force && healthCache && now - healthCacheAt < HEALTH_CACHE_MS) return healthCache;
@@ -295,14 +295,10 @@ async function pollJobEvents(jobId, onProgress) {
 
 // ── 파일/프롬프트 검사 ─────────────────────────────────────────────────────────
 
-async function scanFile({ base64Data, mimeType, fileName }, onProgress) {
-  const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: mimeType });
-
+async function scanFile({ file, mimeType, fileName }, onProgress) {
+  if (!(file instanceof Blob)) throw new Error('검사할 파일 데이터가 없습니다');
   const form = new FormData();
-  form.append('file', blob, fileName);
+  form.append('file', file, fileName);
   form.append('mimeType', mimeType);
   form.append('fileName', fileName);
 
@@ -310,8 +306,7 @@ async function scanFile({ base64Data, mimeType, fileName }, onProgress) {
   if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
-    // 인라인 결과가 있어도 진행 단계 재생을 위해 이벤트를 한 번 훑어준다.
-    try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
+    noteForcedMask(data.result?.policy?.forcedMask?.active);
     return data.result;
   }
   return pollJobEvents(data.jobId, onProgress);
@@ -324,7 +319,7 @@ async function scanPrompt({ text }, onProgress) {
   if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
-    try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
+    noteForcedMask(data.result?.policy?.forcedMask?.active);
     return data.result;
   }
   return pollJobEvents(data.jobId, onProgress);
@@ -335,26 +330,22 @@ async function scanPrompt({ text }, onProgress) {
 // POST /jobs 에 파일 + userPrompt 를 한 번에 보낸다 — 문서/프롬프트 양쪽 결과가
 // 한 응답(result.piiItems/injectionItems = 문서, result.userPromptPiiItems = 프롬프트)
 // 에 함께 담겨 온다(engine/app/core/pipeline/orchestrator.py 참고).
-async function scanCombined({ text, base64Data, mimeType, fileName, wrapFile = true }, onProgress) {
-  const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: mimeType });
-
+async function scanCombined({ text, file, mimeType, fileName, wrapFile = true }, onProgress) {
+  if (!(file instanceof Blob)) throw new Error('검사할 파일 데이터가 없습니다');
   const form = new FormData();
-  form.append('file', blob, fileName);
+  form.append('file', file, fileName);
   form.append('mimeType', mimeType);
   form.append('fileName', fileName);
   form.append('userPrompt', text);
   // 다중 첨부는 false. 사용자가 아직 아무것도 해제하지 않아 "최종본" 이 정해지지 않았고,
-  // N개의 base64 를 세션에 쌓지 않으려는 것이다(최종 파일은 결정 뒤 여기서 한 번 만든다).
+  // N개의 마스킹 파일을 세션에 쌓지 않으려는 것이다(최종 파일은 결정 뒤 여기서 한 번 만든다).
   if (!wrapFile) form.append('wrapFile', 'false');
 
   const { res } = await fetchServer('/jobs', { method: 'POST', body: form });
   if (!res.ok) throw new Error(`엔진 업로드 실패: ${await errorDetail(res)}`);
   const data = await res.json();
   if (data.done && data.result) {
-    try { await pollJobEvents(data.jobId, onProgress); } catch (_) {}
+    noteForcedMask(data.result?.policy?.forcedMask?.active);
     return data.result;
   }
   return pollJobEvents(data.jobId, onProgress);
@@ -559,9 +550,9 @@ async function runScan(sessionId, kind, payload, tabId) {
 // DETECT_CONCURRENCY 팬아웃이 곱해져 메모리만 커진다. 순차면 진행률도 정확하고
 // 실패한 파일을 특정하기도 쉽다.
 //
-// lease 를 HTTP 요청이 아니라 **인코딩 앞**에 두는 이유: 두 탭의 content 가 각각
-// base64 를 다 만든 뒤에 줄을 서면, 기다리는 동안 거대한 문자열 두 개가 동시에 살아
-// 있다. 차례가 왔다는 신호를 받고 나서 인코딩하게 해야 그 상한이 지켜진다.
+// lease 를 HTTP 요청이 아니라 **파일 전달 앞**에 두는 이유: structured clone이
+// File의 바이너리를 효율적으로 복제해도 여러 탭이 동시에 큰 메시지를 만들면 순간
+// 메모리가 겹친다. 차례가 왔을 때 한 파일씩 보내 그 상한을 지킨다.
 //
 // 저장 위치: 텍스트와 탐지 항목은 chrome.storage.session(메모리 기반, 디스크에 안
 // 남는다 — 위 SESSION_STATE_KEY 주석 참고), **마스킹 바이너리는 sessions 바깥의
@@ -634,12 +625,6 @@ const scanArtifacts = new Map();   // artifactId -> { sessionId, docId, tabId, b
 
 function dropArtifactsOf(sessionId) {
   for (const [id, a] of scanArtifacts) if (a.sessionId === sessionId) scanArtifacts.delete(id);
-}
-
-function bytesToBase64(bytes) {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(bin);
 }
 
 async function startMultiScan(sessionId, payload, tabId) {
@@ -782,7 +767,7 @@ async function scanMultiItem(sessionId, session, payload) {
 
   try {
     const result = await scanCombined(
-      { text: payload.userPrompt || '', base64Data: payload.base64Data,
+      { text: payload.userPrompt || '', file: payload.file,
         mimeType: payload.mimeType, fileName: payload.fileName, wrapFile: false },
       (event) => {
         session.current = { ...event, phase: 'scanning', itemId: doc.id };
@@ -1189,8 +1174,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 하나씩 풀어 둔 사람에게는 그게 곧 처음부터 다시 하라는 뜻이다.
   // 패널 → content 재시도 중계.
   //
-  // 엔진을 여기서 바로 부를 수 없다. 파일 바이트는 content 가 들고 있고(base64 는
-  // 검사 직전에만 만든다) SW 에는 텍스트 결과만 남기 때문이다. 그래서 요청만 넘긴다.
+  // 엔진을 여기서 바로 부를 수 없다. 원본 File은 content가 들고 있고 SW에는 텍스트
+  // 결과만 남기 때문이다. 그래서 재검사 요청만 content로 넘긴다.
   // 재검사를 위해 lease 를 다시 받는다. 검사 구간은 전역 큐를 거쳐야 하는데
   // finish 에서 이미 풀었으므로 줄을 다시 서야 한다.
   if (type === 'RESUME_MULTI_LEASE') {
@@ -1345,7 +1330,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // 산출물은 한 개씩 건넨다 — 배치 전체 base64 를 한 메시지에 싣지 않는다.
+  // 산출물은 한 개씩 Blob으로 건넨다. Chrome 148 structured clone은 Blob을 직접
+  // 복제하므로 Base64 문자열·atob·Uint8Array의 동시 피크가 생기지 않는다.
   // artifactId 는 저장소 키가 아니라 탭·세션·문서에 묶인 1회용 토큰이다.
   if (type === 'GET_SCAN_ARTIFACT') {
     const art = scanArtifacts.get(message.artifactId);
@@ -1357,7 +1343,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     // ACK 전까지는 멱등이다 — 응답이 유실돼도 content 가 다시 요청할 수 있어야 한다.
     sendResponse({
-      ok: true, base64: bytesToBase64(art.bytes), mimeType: art.mimeType, fileName: art.fileName,
+      ok: true, blob: new Blob([art.bytes], { type: art.mimeType }),
+      mimeType: art.mimeType, fileName: art.fileName,
     });
     return false;
   }
