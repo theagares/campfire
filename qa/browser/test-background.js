@@ -3,12 +3,16 @@ const MASKED_FILE_TEXT = 'MASKED_FILE_CONTENT [전화번호 마스킹]';
 
 const multiSessions = new Map();
 
-// 진짜 서비스 워커처럼 받은 파일 본문을 읽어 본다. 사용자가 고른 디스크 파일을 그대로 넘기면 서비스 워커가
-// 본문을 못 읽어 엔진 fetch 가 "Failed to fetch" 로 끝났다(v0.2.53 맥 실측). 못 읽으면 그 검사를 실패로 세운다.
+// 진짜 서비스 워커(scanFile·scanCombined)처럼 받은 파일을 FormData 에 넣어 fetch 해 본다(QA_ECHO_URL 은
+// run-extension-e2e.mjs 가 앞에 붙인다). 사용자가 고른 디스크 파일을 그대로 넘기면 이 fetch 가 "Failed to fetch"
+// 로 끝나 엔진에 /jobs 가 가지 않았다(v0.2.53 맥 실측). 못 보내면 그 검사를 실패로 세운다.
 async function readsOriginalFile(file) {
   if (!(file instanceof Blob)) return false;
   try {
-    return (await file.text()).includes('ORIGINAL_PRIVATE_FILE');
+    const form = new FormData();
+    form.append('file', file, file.name || 'fixture');
+    const res = await fetch(QA_ECHO_URL, { method: 'POST', body: form });
+    return (await res.text()).includes('ORIGINAL_PRIVATE_FILE');
   } catch (_) {
     return false;
   }

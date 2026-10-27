@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,10 +112,26 @@ function fixtureHtml(site) {
 </html>`;
 }
 
-async function makeQaExtension(tempRoot) {
+/** 시험용 서비스 워커가 파일을 보내 볼 에코 서버 — 진짜 서비스 워커처럼 FormData 로 fetch 한 본문을 그대로 돌려준다. */
+async function startEchoServer() {
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'access-control-allow-origin': '*' });
+      res.end(Buffer.concat(chunks));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return server;
+}
+
+async function makeQaExtension(tempRoot, echoUrl) {
   const extensionDir = path.join(tempRoot, 'extension');
   await cp(sourceExtension, extensionDir, { recursive: true });
-  await cp(path.join(here, 'test-background.js'), path.join(extensionDir, 'qa-background.js'));
+  const background = await readFile(path.join(here, 'test-background.js'), 'utf8');
+  await writeFile(path.join(extensionDir, 'qa-background.js'), `const QA_ECHO_URL = ${JSON.stringify(echoUrl)};
+${background}`, 'utf8');
   const manifestPath = path.join(extensionDir, 'manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   manifest.name = `${manifest.name} QA Harness`;
@@ -128,7 +145,8 @@ async function main() {
   await mkdir(resultsDir, { recursive: true });
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'campfire-browser-qa-'));
   const userDataDir = path.join(tempRoot, 'profile');
-  const extensionDir = await makeQaExtension(tempRoot);
+  const echo = await startEchoServer();
+  const extensionDir = await makeQaExtension(tempRoot, `http://127.0.0.1:${echo.address().port}/echo`);
   const results = [];
   let context;
 
@@ -146,6 +164,7 @@ async function main() {
     await context.route('**/*', async (route) => {
       const request = route.request();
       const url = new URL(request.url());
+      if (url.hostname === '127.0.0.1') { await route.continue(); return; } // 시험용 서비스 워커 → 에코 서버
       const site = sites.find((candidate) => candidate.host === url.hostname);
       if (site && request.resourceType() === 'document') {
         await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: fixtureHtml(site) });
@@ -170,7 +189,9 @@ async function main() {
         await editor.fill(ORIGINAL_PROMPT);
         // 디스크에 쓴 파일을 고른다 — 사용자가 실제로 고르는 파일과 같다. 메모리 버퍼로만 붙이면 서비스 워커가
         // 디스크 파일 본문을 못 읽던 문제(v0.2.53 맥 실측)가 드러나지 않았다.
-        const fixturePath = path.join(tempRoot, `${site.host}-fixture-original.pdf`);
+        const fixtureDir = path.join(tempRoot, 'files', site.host);
+        await mkdir(fixtureDir, { recursive: true });
+        const fixturePath = path.join(fixtureDir, 'fixture-original.pdf');
         await writeFile(fixturePath, ORIGINAL_FILE_TEXT, 'utf8');
         await page.locator('#fixture-file').setInputFiles(fixturePath);
         await page.locator('#fixture-submit').click();
@@ -206,6 +227,7 @@ async function main() {
       'utf8',
     );
     await context?.close().catch(() => {});
+    echo.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 }
