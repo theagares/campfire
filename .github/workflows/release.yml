@@ -85,6 +85,8 @@ jobs:
 
   build:
     needs: prepare
+    # 이름을 고정한다 — publish 가 이 이름으로 Windows·Apple Silicon 빌드 결과를 찾는다
+    name: build ${{ matrix.platform }}-${{ matrix.arch }}
     # dry_run 이면 prepare 가 skip 되고, 기본 규칙대로면 build 도 따라 skip 된다.
     if: ${{ !cancelled() && (inputs.dry_run || needs.prepare.result == 'success') }}
     strategy:
@@ -106,12 +108,14 @@ jobs:
           # torch 2.2 + transformers 4.x + numpy 1.x 로 설치된다(engine/pyproject.toml 마커).
           # 예전 Intel dmg 는 arm64 러너에서 같이 만들어져 arm64 엔진이 들어 있었다 — 이제
           # package.json mac 타깃에 arch 를 박지 않아 러너마다 자기 arch 만 만든다.
+          # 공개를 기다리게 하지 않는다(Intel 러너가 느려 약 25분) — 검증 뒤 따로 올린다(맨 끝 단계·publish 참고).
           - os: macos-15-intel
             platform: macos
             arch: x64
             script: dist:mac
             build_arg: --x64
             app_dir: mac
+            upload_after_verify: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +194,7 @@ jobs:
           # 끝나고(경고만 찍고 무서명으로 통과) 실제 서명은 afterPack 훅(scripts/afterPack.js)
           # 이 담당한다(package.json _comment_mac_signing 참고).
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run ${{ matrix.script }} -- ${{ matrix.build_arg }} --publish ${{ inputs.dry_run && 'never' || 'always' }}
+        run: npm run ${{ matrix.script }} -- ${{ matrix.build_arg }} --publish ${{ (inputs.dry_run || matrix.upload_after_verify) && 'never' || 'always' }}
 
       # dry_run 은 공개하지 않으니 Windows 설치 파일을 올려 둔다 — 설치기 화면(업데이트 진행 창 등)을 직접 확인용
       - name: Upload Windows installer (dry_run)
@@ -480,16 +484,47 @@ jobs:
           PY
           echo "패키지 E2E 마스킹 검증 통과 (port $PORT)"
 
-  # 두 플랫폼 빌드가 모두 성공했을 때만 릴리스를 공개한다.
+      # Intel Mac 은 검증까지 통과한 dmg 만, 릴리스가 이미 공개됐어도 gh 로 붙인다 — electron-builder 는 공개된
+      # 릴리스에는 업로드를 조용히 건너뛴다(prepare 주석). latest-mac.yml 은 올리지 않는다(arm64 것이 남는다).
+      - name: Upload Intel dmg after verification
+        if: ${{ !inputs.dry_run && matrix.upload_after_verify }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" desktop/release/*.dmg desktop/release/*.dmg.blockmap --clobber
+
+  # Windows·Apple Silicon 빌드가 모두 성공하면 릴리스를 공개한다. Intel Mac 은 기다리지 않는다(검증 뒤 따로 붙음).
   #
-  # needs 는 build 매트릭스의 "모든" 잡이 성공해야 통과한다 — fail-fast: false 로 한쪽이
-  # 실패해도 다른 쪽은 계속 돌지만, 그 경우 이 잡은 실행되지 않으므로 릴리스는 draft 로
-  # 남는다. 반쪽짜리 릴리스가 Latest 로 공개되던 문제(v0.2.1)를 이걸로 막는다.
+  # 한쪽이라도 실패하면 공개하지 않고 draft 로 둔다 — 반쪽짜리 릴리스가 Latest 로 공개되던 문제(v0.2.1)를
+  # 이걸로 막는다. matrix 일부만 needs 로 기다릴 수 없어 같은 실행의 두 잡 결과를 API 로 본다.
   publish:
-    needs: [prepare, build]
-    if: ${{ !inputs.dry_run }}
+    needs: prepare
+    if: ${{ !inputs.dry_run && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     steps:
+      - name: Wait for Windows and Apple Silicon builds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # ponytail: 30초 간격 폴링(최대 60분). 실패한 잡만 다시 돌려도 filter=latest 가 마지막 시도를 본다.
+          for _ in $(seq 1 120); do
+            states=$(gh api "repos/$GH_REPO/actions/runs/${{ github.run_id }}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | select(.name == "build windows-x64" or .name == "build macos-arm64") | "\(.name)=\(.status)/\(.conclusion)"')
+            echo "$(date -u +%H:%M:%S) $(echo $states)"
+            if echo "$states" | grep -qE "/(failure|cancelled|timed_out|skipped)$"; then
+              echo "필수 빌드가 실패했습니다 — draft 로 둡니다."
+              exit 1
+            fi
+            [ "$(echo "$states" | grep -c "=completed/success$")" -eq 2 ] && exit 0
+            sleep 30
+          done
+          echo "필수 빌드가 60분 안에 끝나지 않았습니다 — draft 로 둡니다."
+          exit 1
+
       - name: Publish release
         shell: bash
         env:
@@ -499,13 +534,13 @@ jobs:
           tag="${{ needs.prepare.outputs.tag }}"
           # 에셋이 실제로 붙었는지 확인 — 빌드가 "성공" 했는데 업로드가 비어 있으면
           # 공개해선 안 된다.
-          count=$(gh release view "$tag" --json assets --jq '[.assets[] | select(.name | endswith(".exe") or endswith(".dmg"))] | length')
-          echo "설치 파일 에셋 수: $count"
-          # ponytail: mac 두 job 이 각자 latest-mac.yml 을 올려 나중 것만 남는다(한 arch 누락).
-          # 지금 mac 자동 업데이트는 zip·정식 서명이 없어 어차피 동작하지 않으니 합치지 않는다 —
-          # zip 타깃과 Developer ID 서명을 넣는 날 두 yml 의 files 를 합치는 단계를 추가할 것.
-          if [ "$count" -lt 3 ]; then
-            echo "에셋이 부족합니다(exe 1 + dmg 2 = 3 기대) — draft 로 둡니다."
+          names=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          echo "에셋: $(echo $names)"
+          # ponytail: latest-mac.yml 은 arm64 잡 것만 올라간다(Intel 은 dmg 만 따로 붙인다). 지금 mac 자동
+          # 업데이트는 zip·정식 서명이 없어 버전 안내만 하니 합치지 않는다 — zip 타깃과 Developer ID 서명을
+          # 넣는 날 두 arch 의 files 를 합친 latest-mac.yml 을 만들 것.
+          if ! echo "$names" | grep -q '\.exe$' || ! echo "$names" | grep -q -- '-arm64\.dmg$'; then
+            echo "에셋이 부족합니다(Windows exe · Apple Silicon dmg 기대) — draft 로 둡니다."
             exit 1
           fi
           # draft 생성 때 넣어둔 "빌드 중입니다" placeholder 가 공개된 뒤에도 그대로
