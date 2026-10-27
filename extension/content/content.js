@@ -63,23 +63,34 @@
     }, '*');
   }
 
-  let proxyExpectationTimer = null;
-  function refreshProxyExpectation() {
-    try {
-      chrome.runtime.sendMessage({ type: 'GET_PROXY_EXPECTATION' }, (result) => {
-        // 서비스 워커/엔진을 못 물으면 프록시를 기대하지 않는다. MAIN world는 즉시
-        // 확장 보호로 복귀하므로 확인 실패가 보호 공백으로 이어지지 않는다.
-        void chrome.runtime.lastError;
-        sendProxyExpectationToMain(Boolean(result?.expected));
-        // 라이트 판 엔진에는 프록시가 없다 — 경로 확인을 멈춘다(확장 보호는 그대로, 새 탭은 다시 확인).
-        if (result?.lite && proxyExpectationTimer) {
-          clearInterval(proxyExpectationTimer);
-          proxyExpectationTimer = null;
-        }
-      });
-    } catch {
-      sendProxyExpectationToMain(false);
-    }
+  let proxyExpectationInFlight = null;
+  let proxyExpectationCheckedAt = 0;
+  let proxyExpectationDisabled = false;
+  function refreshProxyExpectation(force = false) {
+    if (proxyExpectationDisabled) return Promise.resolve(false);
+    if (proxyExpectationInFlight) return proxyExpectationInFlight;
+    if (!force && Date.now() - proxyExpectationCheckedAt < 1500) return Promise.resolve(null);
+    proxyExpectationInFlight = new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'GET_PROXY_EXPECTATION' }, (result) => {
+          // 서비스 워커/엔진을 못 물으면 프록시를 기대하지 않는다. MAIN world는 즉시
+          // 확장 보호로 복귀하므로 확인 실패가 보호 공백으로 이어지지 않는다.
+          void chrome.runtime.lastError;
+          const expected = Boolean(result?.expected);
+          sendProxyExpectationToMain(expected);
+          // 라이트 판 엔진에는 프록시가 없다. 이 탭에서는 이후 확인도 필요 없다.
+          if (result?.lite) proxyExpectationDisabled = true;
+          resolve(expected);
+        });
+      } catch {
+        sendProxyExpectationToMain(false);
+        resolve(false);
+      }
+    }).finally(() => {
+      proxyExpectationCheckedAt = Date.now();
+      proxyExpectationInFlight = null;
+    });
+    return proxyExpectationInFlight;
   }
 
   /** MAIN world(interceptor.js)에 "이 파일은 content.js가 사용자 검토까지 이미
@@ -134,10 +145,22 @@
 
   sendBridgeTokenToMain();
   // 하위 frame마다 확인 요청을 보내면 같은 탭이 여러 상태로 집계된다. 보호 경로는
-  // top frame 하나가 능동 확인하고, MAIN world의 게이트도 그 결과로 즉시 전환한다.
+  // top frame 하나가 능동 확인한다. 2초 상시 타이머 대신 탭이 다시 활성화되거나 사용자가
+  // 전송 동작을 시작할 때만 확인한다. 그 사이 실제 프록시 이탈은 MAIN world의 표식 TTL이
+  // 만료되는 즉시 확장 보호로 돌아오므로 확인 실패가 보호 공백을 만들지 않는다.
   if (window.top === window) {
-    proxyExpectationTimer = setInterval(refreshProxyExpectation, 2000);
     refreshProxyExpectation();
+    window.addEventListener('focus', () => refreshProxyExpectation(true));
+    window.addEventListener('pageshow', () => refreshProxyExpectation(true));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshProxyExpectation(true);
+    });
+    // 파일 선택 버튼과 전송 버튼은 click 전에 pointerdown이 먼저 온다. 그 짧은 구간에
+    // 엔진 상태를 갱신하고, 키보드 전송도 직전 입력에서 갱신을 시작한다.
+    document.addEventListener('pointerdown', () => refreshProxyExpectation(), true);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') refreshProxyExpectation();
+    }, true);
   }
 
   // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
@@ -245,13 +268,6 @@
     // 보내고 프록시가 검사한다. 확장이 재주입하면 프록시가 또 붙들어 이중 검토가 된다.
     if (!protectionEnabled || !fileInterceptEnabled || proxyChecksFiles() || !file) return false;
     return SUPPORTED_TYPES.has(file.type) || SUPPORTED_EXTS.test(file.name || '');
-  }
-
-  async function fileToBase64(file) {
-    const arr = new Uint8Array(await file.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < arr.length; i += 8192) bin += String.fromCharCode(...arr.subarray(i, i + 8192));
-    return btoa(bin);
   }
 
   function base64ToFile(b64, mime, name) {
@@ -950,11 +966,10 @@
 
   const supportedItems = (batch) => (batch?.items || []).filter(i => i.supported);
 
-  /** 첨부 이벤트 하나를 통째로 보류한다. 스캔도 base64 도 여기서 하지 않는다.
+  /** 첨부 이벤트 하나를 통째로 보류한다. 스캔도 파일 메시지 전송도 여기서 하지 않는다.
    *
-   *  base64 를 나중으로 미루는 게 핵심이다. 예전엔 붙이는 즉시 인코딩했는데, 파일이
-   *  N개면 전송을 누르기도 전에 N개의 거대한 문자열을 동시에 들고 있게 된다.
-   *  지금은 File 객체만 붙들고 있다가 검사 차례가 온 파일만 하나씩 인코딩한다.
+   *  File 객체만 붙들고 있다가 검사 차례가 온 파일만 structured clone으로 하나씩
+   *  보낸다. 파일 N개를 하나의 거대한 메시지에 쌓지 않는 것이 핵심이다.
    *
    *  injectionContext 는 "어디에 돌려놓을지" 를 기억해 둔 것이다. 노드를 그대로
    *  들고 있지 않는 이유는 승인까지 시간이 흐르는 동안 SPA 가 컴포저를 다시 그리면
@@ -1077,10 +1092,9 @@
 
   // ── 다중 첨부: 배치 하나를 순차로 검사한다 ─────────────────────────────────
   //
-  // lease 를 받기 전에는 **인코딩하지 않는다.** 두 탭이 각각 base64 를 다 만든 뒤
-  // 줄을 서면 기다리는 동안 거대한 문자열이 동시에 살아 있다. 차례 신호를 받고
-  // 나서 한 파일씩 인코딩하고, 응답을 받은 뒤에 다음 파일로 넘어간다 — 그래서
-  // 어느 시점에도 base64 가 하나뿐이다.
+  // lease 를 받기 전에는 **파일을 보내지 않는다.** Chrome 148 structured clone으로
+  // File을 직접 전달해 Base64 복사를 없앴지만, 여러 탭의 큰 바이너리 복제 피크가
+  // 겹치지 않도록 차례 신호 뒤 한 파일씩 보내고 응답 뒤 다음 파일로 넘어간다.
   const pendingLeases = new Map();   // sessionId -> resolve
   const pendingBatchDecisions = new Map();
   // 재검사에도 같은 프롬프트 문맥을 실어야 한다 — 인젝션 판정이 사용자의 실제 지시를
@@ -1168,24 +1182,18 @@
       await sendToSW({
         type: 'SCAN_MULTI_ITEM_READING', sessionId, leaseId, docId: item.id,
       });
-      let base64Data = null;
-      try {
-        base64Data = await fileToBase64(item.file);
-      } catch (_) { base64Data = null; }
-
       // 못 읽은 파일도 반드시 알린다. 그냥 건너뛰면 그 탭이 영원히 '대기 중' 으로
       // 남아 전송 버튼이 열리지 않고, 사용자에게는 "기다리면 되는" 것처럼 보인다.
       // 오류로 세워야 "이 파일 제거" 를 골라 나머지를 보낼 수 있다.
       await sendToSW({
         type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
-        payload: base64Data
+        payload: item.file && typeof item.file.arrayBuffer === 'function'
           ? {
-              docId: item.id, base64Data,
+              docId: item.id, file: item.file,
               mimeType: item.mimeType, fileName: item.fileName, userPrompt: text,
             }
           : { docId: item.id, readError: '파일을 읽지 못했습니다' },
       });
-      base64Data = null;   // 다음 파일을 읽기 전에 참조를 버린다
     }
 
     await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
@@ -1208,7 +1216,11 @@
       artifactId: file.artifactId,
     });
     if (!got?.ok) return null;
-    const f = base64ToFile(got.base64, got.mimeType, got.fileName);
+    const f = got.blob && typeof got.blob.arrayBuffer === 'function'
+      ? new File([got.blob], got.fileName, { type: got.mimeType || got.blob.type })
+      // 개발 중 저장된 옛 서비스 워커와 잠깐 겹쳐도 fail-closed 재검사로 떨어지지 않게
+      // 한 버전 동안만 응답 호환을 둔다. 새 SW는 항상 blob을 보낸다.
+      : (got.base64 ? base64ToFile(got.base64, got.mimeType, got.fileName) : null);
     // File 로 바꾼 뒤에만 소비 처리한다 — 응답이 유실되면 다시 요청할 수 있어야 한다.
     if (f) await sendToSW({ type: 'ACK_SCAN_ARTIFACT', artifactId: file.artifactId });
     return f;
@@ -1297,16 +1309,11 @@
     await sendToSW({
       type: 'SCAN_MULTI_ITEM_READING', sessionId, leaseId, docId,
     });
-    let base64Data = null;
-    try {
-      base64Data = await fileToBase64(item.file);
-    } catch (_) { base64Data = null; }
-
     await sendToSW({
       type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
-      payload: base64Data
+      payload: item.file && typeof item.file.arrayBuffer === 'function'
         ? {
-            docId: item.id, base64Data,
+            docId: item.id, file: item.file,
             mimeType: item.mimeType, fileName: item.fileName, userPrompt: lastBatchPrompt,
           }
         : { docId: item.id, readError: '파일을 읽지 못했습니다' },
@@ -1316,7 +1323,7 @@
 
   /** 결정된 파일들을 사이트에 넣는다. 성공한 파일은 절대 다시 쏘지 않는다.
    *
-   *  산출물은 SW 에서 한 개씩 받아 온다(배치 전체 base64 를 한 메시지에 싣지 않는다).
+   *  산출물은 SW 에서 Blob으로 한 개씩 받아 온다(배치 전체 바이너리를 한 메시지에 싣지 않는다).
    *  다만 한 이벤트로 넣으려면 File 들이 동시에 있어야 하므로, 받아 둔 File 은 주입이
    *  끝날 때까지 함께 살아 있다 — 마스킹본은 추출 텍스트 기반이라 원본보다 훨씬 작다. */
   async function injectBatchDecision(decision, batch) {
@@ -2768,7 +2775,7 @@
           return;
         }
 
-        // 산출물은 한 개씩 받아 넣는다 — 배치 전체 base64 를 동시에 들고 있지 않는다.
+        // 산출물은 Blob으로 한 개씩 받아 넣는다 — 배치 전체 바이너리를 동시에 들고 있지 않는다.
         // "우리 것" 등록은 injectFileWithEvidence 진입부에서 한꺼번에 한다(모든 주입이
         // 그리로 모인다). 그게 없으면 우리 캡처 리스너가 자기 첨부를 삼키고, 삼켜진
         // 이벤트가 stageBatch 를 다시 타면서 방금 지운 배치가 유령 첨부로 되살아난다.
@@ -2928,7 +2935,7 @@
 
     if (event.data.type === 'SECUREDOC_FILE_SELECTED') {
       if (event.data.bridgeToken !== bridgeToken) return; // 위조 메시지 차단
-      const { inputId, base64Data, mimeType, fileName, fileSize } = event.data.payload;
+      const { inputId, file, mimeType, fileName, fileSize } = event.data.payload;
       if (!protectionEnabled) { sendResultToMain({ inputId, action: 'passthrough' }); return; }
 
       if (!(await openSidePanel())) {
@@ -2936,7 +2943,7 @@
         sendResultToMain({ inputId, action: 'cancel' });
         return;
       }
-      const decision = await startPanelSession('file', { base64Data, mimeType, fileName, fileSize });
+      const decision = await startPanelSession('file', { file, mimeType, fileName, fileSize });
       if (decision?.action === 'upload' && decision.maskedBase64) {
         sendResultToMain({
           inputId, action: 'upload',

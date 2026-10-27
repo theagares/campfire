@@ -20,7 +20,14 @@ def _client() -> TestClient:
 def test_대기_목록은_기본이_비어있다():
     r = _client().get("/decisions")
     assert r.status_code == 200
-    assert r.json() == {"pending": []}
+    assert r.json() == {"pending": [], "version": broker.version}
+
+
+def test_변경_대기는_타임아웃에도_현재_버전을_돌려준다():
+    version = broker.version
+    r = _client().get(f"/decisions?after={version}&wait_ms=1")
+    assert r.status_code == 200
+    assert r.json() == {"pending": [], "version": version}
 
 
 def test_없는_id_는_409_이지_500_이_아니다():

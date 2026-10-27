@@ -70,6 +70,28 @@ def test_없는_id_는_조용히_False():
     assert broker.resolve("없는id", "send_masked") is False
 
 
+def test_목록_변경은_장기_대기자를_즉시_깨운다():
+    async def go():
+        broker = DecisionBroker()
+        before = broker.version
+        changed = asyncio.create_task(broker.wait_for_change(before, timeout_s=5))
+        await asyncio.sleep(0)
+
+        decision = asyncio.create_task(_wait(broker))
+        assert await asyncio.wait_for(changed, timeout=1) > before
+        [summary] = broker.list_pending()
+
+        before_resolve = broker.version
+        removed = asyncio.create_task(broker.wait_for_change(before_resolve, timeout_s=5))
+        await asyncio.sleep(0)
+        assert broker.resolve(summary["id"], "cancel") is True
+        assert await asyncio.wait_for(removed, timeout=1) > before_resolve
+        assert broker.list_pending() == []
+        assert await decision == "cancel"
+
+    asyncio.run(go())
+
+
 def test_목록에는_원문이_없다():
     """대기 목록은 여러 곳에 뿌려질 수 있다. 원문이 따라다니면 안 된다."""
 

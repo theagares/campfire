@@ -1,5 +1,6 @@
 """REST 어댑터 계약 테스트 (PLAN §11 시그니처, §10 Phase 0 완료 기준)."""
 
+import asyncio
 import io
 
 import pytest
@@ -68,6 +69,29 @@ def test_jobs_prompt_requests_pii_only_pipeline(client, monkeypatch):
     assert response.json()["result"]["injectionItems"] == []
 
 
+def test_job_record_is_visible_before_finish_activity(monkeypatch):
+    """finish를 받은 데스크톱이 즉시 통계를 읽어도 방금 job이 보여야 한다."""
+    from app.adapters.http_api import jobs
+
+    order: list[str] = []
+
+    async def fake_pipeline(**_kwargs):
+        return {"maskedText": "ok", "stats": {"piiCount": 0, "injectionCount": 0}}
+
+    real_finished = jobs.activity_bus.job_finished
+
+    def tracked_finished(*args, **kwargs):
+        order.append("finish")
+        return real_finished(*args, **kwargs)
+
+    monkeypatch.setattr(jobs, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(jobs, "_record", lambda *args, **kwargs: order.append("record"))
+    monkeypatch.setattr(jobs.activity_bus, "job_finished", tracked_finished)
+
+    asyncio.run(jobs.create_prompt_job(text="hello"))
+    assert order == ["record", "finish"]
+
+
 def test_mcp_risk_scanner_is_optional_and_versioned(client):
     status = client.get("/mcp-risk-scanner/v1/status")
     assert status.status_code == 200
@@ -114,4 +138,7 @@ def test_events_replay(client):
     assert e.status_code == 200
     ev = e.json()
     assert ev["done"] is True
-    assert any(x["type"] == "done" for x in ev["events"])
+    done = [x for x in ev["events"] if x["type"] == "done"]
+    assert len(done) == 1
+    assert "result" not in done[0]
+    assert all("originalText" not in x for x in ev["events"])

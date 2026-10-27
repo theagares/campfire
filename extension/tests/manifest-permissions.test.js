@@ -11,6 +11,12 @@ const extensionRoot = path.join(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
 const permissions = [...(manifest.permissions || [])].sort();
 
+assert.equal(manifest.minimum_chrome_version, '148', 'File/Blob 메시징에는 Chrome 148+가 필요하다');
+assert.equal(
+  manifest.message_serialization, 'structured_clone',
+  '파일을 Base64로 복사하지 않으려면 structured clone 메시징을 명시해야 한다',
+);
+
 assert.deepEqual(
   permissions,
   ['declarativeNetRequest', 'sidePanel', 'storage'],
@@ -48,5 +54,8 @@ assert.match(runtimeSource, /chrome\.sidePanel\b/, 'sidePanel permission has no 
 assert.match(runtimeSource, /chrome\.storage\b/, 'storage permission has no matching API use');
 assert.match(runtimeSource, /chrome\.declarativeNetRequest\b/, '보호 토글이 차단 규칙을 같이 켜고 끄지 않는다');
 assert.doesNotMatch(runtimeSource, /chrome\.scripting\b/, 'scripting API use requires a fresh permission review');
+assert.doesNotMatch(runtimeSource, /\bbase64Data\b/, '검사 입력 파일을 Base64 런타임 메시지로 보내고 있다');
+assert.doesNotMatch(runtimeSource, /\bfileToBase64\b/, '검사 입력 파일의 Base64 변환이 되살아났다');
+assert.match(runtimeSource, /form\.append\('file', file, fileName\)/, 'File을 multipart에 직접 넣지 않는다');
 
 console.log('manifest permissions ok');

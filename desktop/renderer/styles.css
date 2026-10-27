@@ -407,11 +407,11 @@ img { display:block; }
 .gear-btn:hover { background:var(--line-06); color:var(--ink-900); }
 .modal-backdrop { position:fixed; inset:0; background:rgba(17,24,39,.42); display:none; align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(2px); }
 .modal-backdrop.open { display:flex; }
-.modal { width:520px; max-width:92vw; max-height:88vh; overflow-y:auto; background:#fff; border:1px solid var(--line-08); border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
-.modal-head { display:flex; justify-content:space-between; align-items:center; padding:20px 22px; border-bottom:1px solid var(--line-06); }
+.modal { width:520px; max-width:92vw; max-height:88vh; overflow:hidden; display:flex; flex-direction:column; background:#fff; border:1px solid var(--line-08); border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+.modal-head { flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; padding:20px 22px; border-bottom:1px solid var(--line-06); }
 .modal-head h2 { margin:0; font-size:17px; font-weight:700; }
-.modal-body { padding:20px 22px; display:flex; flex-direction:column; gap:20px; }
-.modal-foot { padding:16px 22px; border-top:1px solid var(--line-06); display:flex; justify-content:flex-end; gap:10px; }
+.modal-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:20px 22px; display:flex; flex-direction:column; gap:20px; }
+.modal-foot { flex:0 0 auto; position:relative; z-index:1; padding:16px 22px; border-top:1px solid var(--line-06); background:#fff; box-shadow:0 -8px 20px rgba(17,24,39,.04); display:flex; justify-content:flex-end; gap:10px; }
 .field { display:flex; flex-direction:column; gap:7px; }
 .field label { font-weight:600; font-size:13px; }
 .field .hint { color:var(--ink-500); font-size:11px; }

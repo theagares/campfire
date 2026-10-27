@@ -70,9 +70,43 @@ class DecisionBroker:
 
     def __init__(self) -> None:
         self._pending: dict[str, PendingDecision] = {}
+        # 데스크톱은 판단 목록을 짧은 주기로 폴링하지 않고 이 버전의 변화를 장기 대기한다.
+        # waiter 는 요청별 Future 라서 한 소비자가 깨어나도 다른 소비자의 알림을 뺏지 않는다.
+        self._version = 0
+        self._change_waiters: set[asyncio.Future[int]] = set()
+
+    @property
+    def version(self) -> int:
+        return self._version
+
+    def _notify_change(self) -> None:
+        self._version += 1
+        for waiter in tuple(self._change_waiters):
+            if not waiter.done():
+                waiter.set_result(self._version)
+
+    async def wait_for_change(self, after: int, timeout_s: float) -> int:
+        """목록 버전이 ``after``와 달라질 때까지 기다린다.
+
+        먼저 버전을 비교하고 waiter 를 등록한 뒤 한 번 더 비교해, 그 사이에 들어온
+        판단을 놓치는 check-then-wait 경쟁을 막는다. 타임아웃은 정상적인 keepalive다.
+        """
+        if after != self._version:
+            return self._version
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[int] = loop.create_future()
+        self._change_waiters.add(waiter)
+        if after != self._version and not waiter.done():
+            waiter.set_result(self._version)
+        try:
+            return await asyncio.wait_for(waiter, timeout=max(0.0, timeout_s))
+        except asyncio.TimeoutError:
+            return self._version
+        finally:
+            self._change_waiters.discard(waiter)
 
     def list_pending(self) -> list[dict[str, Any]]:
-        return [p.summary() for p in self._pending.values()]
+        return [p.summary() for p in self._pending.values() if not p.future.done()]
 
     def get(self, decision_id: str) -> PendingDecision | None:
         return self._pending.get(decision_id)
@@ -109,6 +143,7 @@ class DecisionBroker:
             future=loop.create_future(),
         )
         self._pending[decision_id] = pending
+        self._notify_change()
         logger.info(
             "[proxy] 판단 대기 id=%s host=%s pii=%d injection=%d forced=%d",
             decision_id,
@@ -129,7 +164,8 @@ class DecisionBroker:
         finally:
             if not pending.future.done():
                 pending.future.cancel()  # 늦게 온 판단은 resolve 가 409 로 돌려보낸다
-            self._pending.pop(decision_id, None)
+            if self._pending.pop(decision_id, None) is not None:
+                self._notify_change()
 
     @staticmethod
     async def _wait_while_alive(
@@ -169,6 +205,8 @@ class DecisionBroker:
             if not pending.future.done():
                 pending.future.set_exception(DecisionTimeout(reason))
                 n += 1
+        if n:
+            self._notify_change()
         return n
 
     def resolve(self, decision_id: str, action: Action) -> bool:
@@ -181,6 +219,9 @@ class DecisionBroker:
         if pending is None or pending.future.done():
             return False
         pending.future.set_result(action)
+        # wait()의 finally가 dict에서 지우기 전이라도 목록에서는 future.done()인 항목을
+        # 제외한다. 따라서 UI는 이 알림을 받는 즉시 판단이 사라졌다고 볼 수 있다.
+        self._notify_change()
         return True
 
 

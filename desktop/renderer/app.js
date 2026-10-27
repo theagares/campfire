@@ -68,6 +68,7 @@ function goto(view) {
     refreshMcpClients();
     refreshProxy();
   }
+  syncProxyRouteLoop();
 }
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => goto(b.dataset.view)));
 
@@ -197,8 +198,10 @@ async function refreshProxy() {
   renderProxy();
 }
 let proxyRouteRefreshBusy = false;
+let proxyRouteTimer = null;
 async function refreshProxyRoute() {
   if (proxyRouteRefreshBusy || !api.getProxyRouteStatus
+      || document.visibilityState === 'hidden'
       || !$('#view-connect').classList.contains('active') || !state.proxy) return;
   proxyRouteRefreshBusy = true;
   try {
@@ -1016,6 +1019,19 @@ async function loadForcedMaskTerms() {
   }
 }
 
+function syncProxyRouteLoop() {
+  const active = document.visibilityState !== 'hidden'
+    && $('#view-connect').classList.contains('active');
+  if (!active) {
+    clearInterval(proxyRouteTimer);
+    proxyRouteTimer = null;
+    return;
+  }
+  if (proxyRouteTimer) return;
+  refreshProxyRoute();
+  proxyRouteTimer = setInterval(refreshProxyRoute, 1500);
+}
+
 function openSettings() {
   const s = state.settings || {};
   draftPolicy = s.injectionPolicy || 'mask';
@@ -1037,7 +1053,27 @@ function closeSettings() { modal.classList.remove('open'); }
 $('#open-settings').addEventListener('click', openSettings);
 $('#close-settings').addEventListener('click', closeSettings);
 $('#settings-cancel').addEventListener('click', closeSettings);
-modal.addEventListener('click', (e) => { if (e.target === modal) closeSettings(); });
+
+// 단순 click target만 보면 모달 안에서 누른 채 바깥으로 드래그해 놓았을 때도
+// pointerdown/up의 공통 조상인 backdrop이 click target이 될 수 있다. 설정을 읽거나
+// 스크롤하려다 창이 닫히지 않게, 누르기와 놓기가 모두 backdrop 자체였을 때만 닫는다.
+let settingsBackdropPointer = null;
+modal.addEventListener('pointerdown', (event) => {
+  if (!event.isPrimary) return;
+  settingsBackdropPointer = {
+    id: event.pointerId,
+    startedOnBackdrop: event.target === modal,
+  };
+});
+modal.addEventListener('pointerup', (event) => {
+  if (!settingsBackdropPointer || settingsBackdropPointer.id !== event.pointerId) return;
+  const directBackdropClick = settingsBackdropPointer.startedOnBackdrop && event.target === modal;
+  settingsBackdropPointer = null;
+  if (directBackdropClick) closeSettings();
+});
+modal.addEventListener('pointercancel', (event) => {
+  if (settingsBackdropPointer?.id === event.pointerId) settingsBackdropPointer = null;
+});
 $$('#policy-seg button').forEach((b) =>
   b.addEventListener('click', () => {
     draftPolicy = b.dataset.policy;
@@ -1259,10 +1295,13 @@ async function init() {
   // 수 초 걸리는 환경에서 5초마다 전역 실행하면 자식 프로세스가 거의 계속 떠 있었다.
   refreshMcpClients();
   setInterval(() => {
-    if ($('#view-connect').classList.contains('active')) refreshMcpClients();
+    if (document.visibilityState !== 'hidden'
+        && $('#view-connect').classList.contains('active')) refreshMcpClients();
   }, 30000);
-  // 전체 시스템 프록시 조회는 비싸므로 실제 탭 경로만 가볍게 갱신한다.
-  setInterval(refreshProxyRoute, 1500);
+  // 실제 경로 표시는 연결 화면이 보일 때만 타이머 자체를 유지한다. 트레이로 숨기거나
+  // 다른 화면으로 이동하면 interval을 제거하고, 복귀 시 즉시 한 번 동기화한다.
+  syncProxyRouteLoop();
+  document.addEventListener('visibilitychange', syncProxyRouteLoop);
 }
 
 init().catch((err) => console.error('[renderer] init 실패:', err));

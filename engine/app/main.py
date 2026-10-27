@@ -98,7 +98,14 @@ async def lifespan(app: FastAPI):
         try:
             await proxy.stop()
         finally:
-            db.close_db()
+            try:
+                # 파서 워커는 지연 생성되지만 한 번 뜨면 재사용된다. lifespan 종료 때
+                # 명시적으로 내려 개발 재시작과 앱 종료 뒤 자식 프로세스가 남지 않게 한다.
+                from app.core.parser.process_pool import shutdown_default_parse_pool
+
+                shutdown_default_parse_pool()
+            finally:
+                db.close_db()
 
 
 app = FastAPI(title="Campfire engine", version="0.1.0", lifespan=lifespan)

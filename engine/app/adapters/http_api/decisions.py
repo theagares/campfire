@@ -10,7 +10,7 @@ app/adapters/http_api/decisions.py
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.adapters.proxy.decision import broker
@@ -26,9 +26,18 @@ class DecisionBody(BaseModel):
 
 
 @router.get("/decisions")
-async def list_decisions() -> dict:
-    """지금 사람을 기다리고 있는 건들. 원문은 들어가지 않는다."""
-    return {"pending": broker.list_pending()}
+async def list_decisions(
+    after: int | None = Query(default=None, ge=0),
+    wait_ms: int = Query(default=0, ge=0, le=30_000),
+) -> dict:
+    """지금 사람을 기다리는 건들.
+
+    ``after``와 ``wait_ms``를 주면 목록 버전이 바뀔 때까지 장기 대기한다. 데스크톱의
+    500 ms 유휴 폴링을 없애면서도 새 판단은 즉시 깨우기 위한 경로다. 원문은 싣지 않는다.
+    """
+    if after is not None and wait_ms:
+        await broker.wait_for_change(after, wait_ms / 1000)
+    return {"pending": broker.list_pending(), "version": broker.version}
 
 
 @router.get("/decisions/{decision_id}")

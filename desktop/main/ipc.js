@@ -297,7 +297,14 @@ function register(ctx) {
   // 엔진 SSE 를 메인이 중계한다(렌더러는 엔진 포트를 모르고, contextIsolation 아래
   // 화이트리스트 API 만 쓴다). 구버전 엔진이면 404 로 조용히 물러난다.
   pipelineActivity = new PipelineActivity(engineManager);
-  pipelineActivity.on('activity', (payload) => broadcast('pipeline:activity', payload));
+  pipelineActivity.on('activity', (payload) => {
+    broadcast('pipeline:activity', payload);
+    // SQLite 통계는 시간 경과로 바뀌지 않고 job 완료 때만 바뀐다. 5초 타이머 대신
+    // 이미 유지 중인 SSE의 완료 이벤트에서 딱 한 번 다시 읽는다.
+    if (payload?.type === 'activity' && payload.phase === 'finish') {
+      broadcast('stats:tick', buildStats(engineManager));
+    }
+  });
   pipelineActivity.on('busy', (busy) => busyListeners.forEach((cb) => cb(busy)));
   pipelineActivity.start();
 }

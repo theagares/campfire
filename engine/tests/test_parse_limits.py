@@ -16,13 +16,13 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
 from app import config
 from app.core import model_status
 from app.core.parser import STATUS_OK, STATUS_TIMEOUT, STATUS_UNSUPPORTED, parse_document
+from app.core.parser.process_pool import ParserTimedOut
 from app.core.pipeline import orchestrator as orch
 
 
@@ -111,11 +111,11 @@ def test_slow_parse_times_out(monkeypatch):
     쪽이 없어 둘 다 죽어 있었다 — 있는 척하는 안전장치가 제일 위험하다."""
     monkeypatch.setattr(config, "PARSE_TIMEOUT_SEC", 0.2)
 
-    def _slow(*_a, **_k):
-        time.sleep(3)
-        return "느림", STATUS_OK, None
+    class _TimedOutPool:
+        async def parse(self, *_args, **_kwargs):
+            raise ParserTimedOut(config.PARSE_TIMEOUT_SEC, 1234)
 
-    monkeypatch.setattr(orch, "parse_document", _slow)
+    monkeypatch.setattr(orch, "get_default_parse_pool", lambda: _TimedOutPool())
 
     result = asyncio.run(
         orch.run_pipeline(file_bytes=b"x", mime_type="text/plain", file_name="slow.txt")
@@ -133,11 +133,12 @@ def test_parse_does_not_block_event_loop(monkeypatch):
     _parse_only(monkeypatch)
     PARSE_SEC = 0.4
 
-    def _slow(*_a, **_k):
-        time.sleep(PARSE_SEC)
-        return "본문", STATUS_OK, None
+    class _SlowAsyncPool:
+        async def parse(self, *_args, **_kwargs):
+            await asyncio.sleep(PARSE_SEC)
+            return ("본문", STATUS_OK, None), None
 
-    monkeypatch.setattr(orch, "parse_document", _slow)
+    monkeypatch.setattr(orch, "get_default_parse_pool", lambda: _SlowAsyncPool())
 
     async def scenario():
         ticks = 0
@@ -157,6 +158,6 @@ def test_parse_does_not_block_event_loop(monkeypatch):
         return got
 
     ticks = asyncio.run(scenario())
-    # 파싱을 스레드로 뺐다면 그 0.4초 동안 ticker 가 수십 번 돈다.
+    # 파싱을 별도 프로세스로 뺐다면 그 0.4초 동안 ticker 가 수십 번 돈다.
     # 이벤트 루프를 막고 있었다면 한 자리수(사실상 0)에 머문다.
     assert ticks >= 10, f"파싱 중 이벤트 루프가 멎었다 (tick={ticks})"

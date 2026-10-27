@@ -8,41 +8,94 @@ app/adapters/http_api/job_registry.py
 
 from __future__ import annotations
 
+import json
 import time
 from collections import OrderedDict
 from typing import Any
 
 from app.core import activity as activity_bus
 
-# job_id -> {"events": [...], "done": bool}
+# job_id -> {"events": [...], "done": bool, "event_bytes": int, ...}
 _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
-_MAX_JOBS = 200  # 메모리 상한 (오래된 것부터 폐기)
+_MAX_JOBS = 200
+_MAX_EVENTS_PER_JOB = 64
+_MAX_EVENT_BYTES_PER_JOB = 64 * 1024
+_COMPLETED_TTL_SECONDS = 60.0
 
 
-def create_job(job_id: str) -> None:
-    _jobs[job_id] = {"events": [], "done": False, "created_at": time.time()}
+def _event_size(event: dict) -> int:
+    """이벤트 보관량의 안정적인 상한을 위한 UTF-8 JSON 크기."""
+    return len(json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _prune(now: float | None = None) -> None:
+    """완료된 job은 짧게 재생한 뒤 버리고, 전체 job 수도 제한한다."""
+    current = time.time() if now is None else now
+    expired = [
+        job_id for job_id, job in _jobs.items()
+        if job.get("completed_at") is not None
+        and current - float(job["completed_at"]) >= _COMPLETED_TTL_SECONDS
+    ]
+    for job_id in expired:
+        _jobs.pop(job_id, None)
     while len(_jobs) > _MAX_JOBS:
         _jobs.popitem(last=False)
 
 
+def create_job(job_id: str) -> None:
+    _prune()
+    _jobs[job_id] = {
+        "events": [], "done": False, "created_at": time.time(),
+        "completed_at": None, "event_bytes": 0, "next_seq": 1,
+    }
+    _prune()
+
+
 def record_event(job_id: str, event: dict) -> dict:
+    _prune()
     job = _jobs.get(job_id)
     if job is None:
         create_job(job_id)
         job = _jobs[job_id]
     ev = dict(event)
-    ev["seq"] = len(job["events"]) + 1
+    ev["seq"] = job["next_seq"]
+    job["next_seq"] += 1
+    ev_size = _event_size(ev)
+    if ev_size > _MAX_EVENT_BYTES_PER_JOB:
+        # 단일 이벤트 자체가 상한보다 크면 앞 이벤트를 아무리 지워도 제한을 못 지킨다.
+        # 진행 UI에 필요한 최소 메타만 남기고 큰 result/임의 payload는 버린다.
+        compact = {"type": ev.get("type", "event"), "seq": ev["seq"], "truncated": True}
+        for key in ("message", "label", "asset"):
+            if ev.get(key) is not None:
+                compact[key] = str(ev[key])[: max(16, _MAX_EVENT_BYTES_PER_JOB // 4)]
+        if _event_size(compact) > _MAX_EVENT_BYTES_PER_JOB:
+            compact = {"type": ev.get("type", "event"), "seq": ev["seq"], "truncated": True}
+        ev = compact
+        ev_size = _event_size(ev)
     job["events"].append(ev)
+    job["event_bytes"] += ev_size
+
+    # 진행 이벤트가 많은 작업도 보관량이 문서 크기와 함께 커지지 않게 한다. seq는
+    # 별도 카운터라 앞 이벤트를 버려도 after=N 폴링 계약이 깨지지 않는다.
+    while len(job["events"]) > 1 and (
+        len(job["events"]) > _MAX_EVENTS_PER_JOB
+        or job["event_bytes"] > _MAX_EVENT_BYTES_PER_JOB
+    ):
+        dropped = job["events"].pop(0)
+        job["event_bytes"] -= _event_size(dropped)
     if ev.get("type") in ("done", "error"):
         job["done"] = True
+        job["completed_at"] = time.time()
     return ev
 
 
 def has_job(job_id: str) -> bool:
+    _prune()
     return job_id in _jobs
 
 
 def get_events(job_id: str, after: int = 0) -> list[dict]:
+    _prune()
     job = _jobs.get(job_id)
     if job is None:
         return []
@@ -50,6 +103,7 @@ def get_events(job_id: str, after: int = 0) -> list[dict]:
 
 
 def is_done(job_id: str) -> bool:
+    _prune()
     job = _jobs.get(job_id)
     return bool(job and job["done"])
 

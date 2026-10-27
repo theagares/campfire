@@ -565,7 +565,7 @@ const flush = () => clock.tick(60);
     direction: 'main-to-isolated',
     type: 'SECUREDOC_FILE_SELECTED',
     bridgeToken: 'attacker-controlled',
-    payload: { inputId: 'x', base64Data: btoa('malicious'), mimeType: 'application/pdf', fileName: 'attack.pdf', fileSize: 9 },
+    payload: { inputId: 'x', file: new FileStub(['malicious'], 'attack.pdf', { type: 'application/pdf' }), mimeType: 'application/pdf', fileName: 'attack.pdf', fileSize: 9 },
   });
   await flush();
   if (runtimeMessages.some(isScanStart)) {
@@ -608,9 +608,9 @@ const flush = () => clock.tick(60);
   if (!startMulti.payload?.items?.length) {
     throw new Error('START_MULTI_SCAN 에 파일 목록이 없다');
   }
-  // 시작 메시지에는 메타만 — 본문/base64 를 실으면 N개가 한 메시지에 쌓인다.
-  if (startMulti.payload.items.some(i => i.base64Data)) {
-    throw new Error('START_MULTI_SCAN 이 base64 를 실어 보냈다 — 메타만 보내야 한다');
+  // 시작 메시지에는 메타만 — File을 실으면 N개가 한 메시지에 쌓인다.
+  if (startMulti.payload.items.some(i => i.file || i.base64Data)) {
+    throw new Error('START_MULTI_SCAN 이 파일 바이너리를 실어 보냈다 — 메타만 보내야 한다');
   }
 
   const promptIdx = sent.findIndex(m => m.type === 'SCAN_MULTI_PROMPT');
@@ -623,9 +623,8 @@ const flush = () => clock.tick(60);
   if (sent[promptIdx].text !== '이 문서를 요약해줘') {
     throw new Error('프롬프트 검사에 실제 프롬프트가 안 실렸다');
   }
-  if (!sent[itemIdx].payload?.base64Data) {
-    throw new Error('파일 검사에 base64 가 없다');
-  }
+  if (sent[itemIdx].payload?.file !== file) throw new Error('파일 검사에 File이 직접 전달되지 않았다');
+  if ('base64Data' in sent[itemIdx].payload) throw new Error('파일 검사가 Base64를 다시 사용한다');
   if (!sent[itemIdx].leaseId) throw new Error('파일 검사에 leaseId 가 없다');
   const combinedScan = startMulti;
 

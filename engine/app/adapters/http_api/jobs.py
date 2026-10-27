@@ -4,8 +4,8 @@ POST /jobs        — 파일 업로드 → 마스킹 결과
 POST /jobs/prompt — 텍스트(프롬프트) → PII/강제 마스킹 텍스트
 
 기존 EC2 계약 호환: 응답에 jobId 포함. 룰베이스 v1 은 즉시 처리되므로
-결과(result)도 인라인으로 함께 반환한다(curl 한 방으로 마스킹 결과 확인 가능,
-PLAN §10 Phase 0 완료 기준). 이벤트는 /jobs/{id}/events 로도 재생된다.
+결과(result)는 HTTP 응답으로 한 번만 반환한다. /jobs/{id}/events 에는 진행 상태와
+완료 표식만 남겨 큰 원문·마스킹 파일을 메모리에 중복 보관하지 않는다.
 """
 
 from __future__ import annotations
@@ -45,10 +45,9 @@ async def _fail(job_id: str, exc: Exception) -> None:
 def _record(job_id: str, *, file_name: str, source: str, result: dict) -> None:
     """탐지 통계 기록. **실패해도 응답을 깨지 않는다.**
 
-    호출 시점이 이미 emit({"type":"done"}) 뒤라, 여기서 예외가 나면 SSE 구독자는
-    done+결과를 받아 마스킹을 진행하는데 같은 요청의 HTTP 는 500 으로 끝난다 —
-    두 경로가 서로 다른 결론을 갖는다. 기록은 통계용이고 마스킹 결과와 무관하므로
-    디스크가 가득 차거나 항목 모양이 예상과 달라도 사용자 흐름을 막을 이유가 없다.
+    완료 이벤트보다 먼저 기록해야 그 이벤트를 받은 데스크톱의 통계 재조회에 방금 건이
+    포함된다. 기록은 통계용이고 마스킹 결과와 무관하므로 디스크가 가득 차거나 항목
+    모양이 예상과 달라도 사용자 흐름을 막지 않고 완료 이벤트와 HTTP 응답은 그대로 낸다.
     """
     try:
         db.record_job(job_id, file_name=file_name, source=source, result=result)
@@ -81,9 +80,8 @@ async def create_prompt_job(text: str = Form(...)):
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
-    await emit({"type": "done", "result": _public(result)})
-
     _record(job_id, file_name="prompt.txt", source="prompt", result=result)
+    await emit({"type": "done"})
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 
@@ -133,9 +131,8 @@ async def create_job(
         )
     except Exception as exc:  # noqa: BLE001 - 아래에서 로그 남기고 500 으로 변환
         await _fail(job_id, exc)
-    await emit({"type": "done", "result": _public(result)})
-
     _record(job_id, file_name=name, source="extension", result=result)
+    await emit({"type": "done"})
     return {"jobId": job_id, "done": True, "result": _public(result)}
 
 

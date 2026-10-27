@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const { ProxyDecisionController } = require('../main/proxy-decision-ui');
 
 function response(body, status = 200) {
@@ -42,6 +43,37 @@ test('대기 중인 판단이 없으면 확인창을 띄우지 않는다', async
   });
   assert.equal(await ui.checkNow(), false);
   assert.equal(dialogs, 0);
+});
+
+test('start는 빈 목록을 0.5초마다 폴링하지 않고 목록 버전 변경을 장기 대기한다', async () => {
+  const engineManager = new EventEmitter();
+  engineManager.getStatus = () => ({ state: 'running', baseUrl: 'http://127.0.0.1:48200' });
+  const urls = [];
+  const fetchImpl = (url, options = {}) => {
+    urls.push(url);
+    if (!url.includes('?')) return Promise.resolve(response({ pending: [], version: 7 }));
+    return new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+  };
+  const ui = new ProxyDecisionController({
+    engineManager, fetchImpl,
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    pollMs: 5,
+  });
+  ui.start();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  try {
+    assert.equal(urls.length, 2, '초기 조회 뒤에는 장기 대기 요청 하나만 있어야 한다');
+    assert.match(urls[1], /\/decisions\?after=7&wait_ms=25000$/);
+  } finally {
+    ui.stop();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 });
 
 test('일반 탐지는 마스킹 전송을 기본값으로 하고 원본은 재확인한다', async () => {
