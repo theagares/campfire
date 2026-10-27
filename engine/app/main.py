@@ -160,9 +160,40 @@ def find_available_port() -> int:
     )
 
 
+def exit_with_parent() -> None:
+    """데스크톱 앱이 사라지면 엔진도 끈다 — 앱이 stdin 파이프를 줄 때만(config.EXIT_WITH_PARENT).
+
+    앱이 강제 종료·비정상 종료되면 종료 정리(engine-manager stop)가 돌지 않아 엔진이 부모 없이 남았다.
+    남은 엔진은 예전 강제 마스킹 단어(또는 빈 목록)를 든 채 가장 낮은 포트를 쥐고 있어 확장이 그리로
+    검사를 보냈고, 새 앱의 엔진은 다음 포트로 밀렸다 — 등록 단어가 하나도 안 가려지고 앱 처리현황도
+    안 움직였다(맥 실측: PPID 1 엔진이 48200 에 단어 0개, 앱 엔진은 48201 에 11개).
+    앱은 이 파이프에 아무것도 쓰지 않는다. 앱 프로세스가 끝나면 운영체제가 파이프를 닫아 EOF 가 온다.
+    """
+    import os
+    import signal
+    import sys
+    import threading
+    import time
+
+    def watch() -> None:
+        try:
+            while sys.stdin.buffer.read(4096):
+                pass
+        except (OSError, ValueError, AttributeError):
+            return  # stdin 을 못 읽으면 감시만 포기한다 — 엔진을 끄지는 않는다
+        logger.warning("[engine] 데스크톱 앱이 사라져 엔진을 끕니다")
+        signal.raise_signal(signal.SIGTERM)  # uvicorn 정상 종료 — 프록시·검출기 자식 정리
+        time.sleep(10)
+        os._exit(0)  # 정상 종료가 멈춰도 포트는 놓는다
+
+    threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
+
+
 def main() -> None:
     import uvicorn
 
+    if config.EXIT_WITH_PARENT:
+        exit_with_parent()
     port = find_available_port()
     config.BOUND_PORT = port
     logger.info("[engine] %s:%d 에서 시작합니다 (service=%s)", config.HOST, port, config.SERVICE_NAME)
