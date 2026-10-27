@@ -6,6 +6,7 @@
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
@@ -27,5 +28,43 @@ def test_stdin_eof_raises_sigterm():
         assert proc.stdout.readline().strip() == "ready"
         proc.stdin.close()  # 앱 프로세스가 끝난 것과 같다
         assert proc.wait(timeout=8) == 7
+    finally:
+        proc.kill()
+
+
+def test_watching_stdin_does_not_block_spawned_children():
+    """감시 중에도 파서 프로세스 풀(spawn)의 자식이 뜬다.
+
+    Windows 에서 막힌 stdin read 가 걸려 있으면 자식 Python 이 시작하며 물려받은 stdin 을 확인하다 멈췄다 —
+    v0.2.52 설치본에서 파일 검사가 전부 "parser worker did not start within 10s" 로 실패했다.
+    """
+    code = textwrap.dedent("""
+        import asyncio
+        from app.main import exit_with_parent
+        from app.core.parser.process_pool import ParserProcessPool
+
+        async def main():
+            pool = ParserProcessPool(1, 0, worker_start_timeout=15)
+            try:
+                (text, status, _), _ = await pool.parse(b"hello", "text/plain", "a.txt",
+                                                        collect_images=False, timeout=15)
+                print(status, text, flush=True)
+            except Exception as exc:
+                print("error", exc, flush=True)
+            finally:
+                pool.close()
+
+        if __name__ == "__main__":
+            exit_with_parent()
+            asyncio.run(main())
+    """)
+    proc = subprocess.Popen([sys.executable, "-c", code], cwd=ENGINE_DIR,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    out: list[str] = []
+    reader = threading.Thread(target=lambda: out.append(proc.stdout.readline()), daemon=True)
+    try:
+        reader.start()
+        reader.join(40)
+        assert out and out[0].strip() == "ok hello", out
     finally:
         proc.kill()
