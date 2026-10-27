@@ -184,8 +184,8 @@ def exit_with_parent() -> None:
 
     def watch() -> None:
         try:
-            while sys.stdin.buffer.read(4096):
-                pass
+            if not _wait_stdin_closed():
+                return  # stdin 이 파이프가 아니다 — 감시만 포기한다
         except (OSError, ValueError, AttributeError):
             return  # stdin 을 못 읽으면 감시만 포기한다 — 엔진을 끄지는 않는다
         logger.warning("[engine] 데스크톱 앱이 사라져 엔진을 끕니다")
@@ -194,6 +194,42 @@ def exit_with_parent() -> None:
         os._exit(0)  # 정상 종료가 멈춰도 포트는 놓는다
 
     threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
+
+
+def _wait_stdin_closed() -> bool:
+    """stdin 파이프가 닫힐 때까지 기다린다. 닫혔으면 True, 파이프가 아니라 감시할 수 없으면 False.
+
+    Windows 는 막힌 read 대신 PeekNamedPipe 로 1초마다 들여다본다. 동기 파이프에 read 가 걸려 있으면 같은
+    파이프를 건드리는 다른 호출이 그 read 가 끝날 때까지 기다리는데, 파서 프로세스 풀(spawn)이 띄운 자식
+    Python 이 시작하며 물려받은 stdin 을 확인하다 영영 멈췄다 — v0.2.52 설치본에서 파일 검사가 전부
+    "parser worker did not start within 10s" 로 실패했다(앱이 stdin 파이프를 주는 실행에서만).
+    """
+    import sys
+
+    if sys.platform != "win32":
+        while sys.stdin.buffer.read(4096):
+            pass
+        return True
+
+    import ctypes
+    import msvcrt
+    import os
+    import time
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    peek = kernel32.PeekNamedPipe
+    peek.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+                     ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    peek.restype = wintypes.BOOL
+    fd = sys.stdin.fileno()
+    handle = msvcrt.get_osfhandle(fd)
+    avail = wintypes.DWORD()
+    while peek(handle, None, 0, None, ctypes.byref(avail), None):
+        if avail.value:
+            os.read(fd, avail.value)  # 앱은 아무것도 쓰지 않지만, 쓰면 비워 둔다(있는 만큼이라 막히지 않음)
+        time.sleep(1.0)
+    return ctypes.get_last_error() == 109  # ERROR_BROKEN_PIPE: 앱이 끝나 파이프가 닫혔다
 
 
 def main() -> None:
