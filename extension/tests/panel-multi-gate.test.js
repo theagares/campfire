@@ -195,6 +195,9 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
 
   // 막혀 있던 미지원 파일의 선택이 되살아나 전송이 열려 있어야 한다.
   assert.strictEqual(sandbox.blockingReason(), null, '복구된 선택이 반영되지 않아 전송이 막혔다');
+  // 어떤 문서가 나가고 빠지는지 이름으로 보인다(예전엔 "1개 전송 · 1개 제외")
+  assert.strictEqual(els.get('mask-summary').textContent, '전송: a.pdf · 제외: b.hwp · 1건 마스킹');
+  assert.strictEqual(els.get('doc-type').textContent, 'a.pdf, b.hwp + 프롬프트 검토');
 
   const d = sandbox.buildMultiDecision();
   assert.strictEqual(d.files.find(f => f.id === 'f1').action, 'exclude', '파일별 선택이 안 돌아왔다');
@@ -255,8 +258,9 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.strictEqual(vm.runInContext('state.activeTab', ctx), 'f1', '먼저 끝난 파일이 자동 선택되지 않았다');
   assert.strictEqual(els.get('counts').textContent, 'PII 1건 | INJECTION 1건 탐지');
   assert.strictEqual(els.get('btn-send').disabled, true, '다른 파일이 검사 중인데 전송 버튼이 열렸다');
-  assert.strictEqual(els.get('doc-type').textContent, '문서 2개 중 1개 검사 완료');
-  assert.strictEqual(els.get('mask-summary').textContent, '1개 검사 완료 · 1개 검사 중 · 2건 마스킹');
+  // 여러 문서는 개수 대신 이름으로 — 헤더에는 넣은 문서, 아래 요약에는 문서별 상태
+  assert.strictEqual(els.get('doc-type').textContent, 'a.pdf, b.docx · 검사 중');
+  assert.strictEqual(els.get('mask-summary').textContent, '검사 완료: b.docx · 검사 중: a.pdf · 2건 마스킹');
   assert.strictEqual(els.get('live-progress').hidden, false, '첫 결과 뒤 남은 검사의 진행 표시가 사라졌다');
   assert.strictEqual(els.get('live-progress-text').textContent, 'a.pdf · PII 탐지 중…');
 
