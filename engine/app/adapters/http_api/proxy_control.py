@@ -20,7 +20,11 @@ from app.adapters import proxy
 
 router = APIRouter()
 
-_ROUTE_TTL_SECONDS = 12.0
+# 탭이 보고한 보호 경로를 얼마 동안 보여 줄지. 표시용이라 허용·차단에는 쓰지 않는다(ExtensionRouteReport).
+# 예전엔 확장이 2초마다 보고해 12초면 됐는데, #269 부터 탭 전환·클릭·Enter 때만 보고해서 AI 탭을 가만히 두면
+# 12초 뒤 "브라우저 확인 대기" 로 떨어졌다가 건드리면 "확인됨" 으로 오가기를 되풀이했다(맥 실측). 쓰는 탭은
+# 그때마다 다시 보고하므로 길게 둔다. 대신 프록시를 켜고 끌 때 지워, 바뀐 상태에 옛 보고가 남지 않게 한다.
+_ROUTE_TTL_SECONDS = 600.0
 _MAX_ROUTE_REPORTS = 32
 _extension_routes: dict[tuple[str, int, str], dict] = {}
 
@@ -85,12 +89,14 @@ async def proxy_start() -> dict:
     # 켰는지 여부는 start() 의 반환값이 아니라 status 로 알린다 — 앱은 늘 같은
     # 모양을 받고, "켜라고 했는데 안 켜진" 경우를 running=False 로 알아챈다.
     await proxy.start(force=True)
+    _extension_routes.clear()  # 켜기 전 "확장 보호" 보고가 남아 "확인됨" 으로 보이지 않게
     return _proxy_status()
 
 
 @router.post("/proxy/stop")
 async def proxy_stop() -> dict:
     await proxy.stop()
+    _extension_routes.clear()  # 끈 뒤에도 "프록시 경로 확인됨" 이 남지 않게
     return _proxy_status()
 
 

@@ -56,9 +56,33 @@ def test_stale_route_reports_expire() -> None:
         "expectedProxy": False,
         "seenAt": 100.0,
     }
-    fresh = proxy_control.extension_route_status(now=111.9)
+    ttl = proxy_control._ROUTE_TTL_SECONDS
+    fresh = proxy_control.extension_route_status(now=100.0 + ttl - 0.1)
     assert fresh["mode"] == "extension"
 
-    stale = proxy_control.extension_route_status(now=112.1)
+    stale = proxy_control.extension_route_status(now=100.0 + ttl + 0.1)
     assert stale["mode"] == "unknown"
     assert stale["connected"] is False
+
+
+def test_idle_tab_keeps_route_well_past_old_12s_window() -> None:
+    """확장은 탭 전환·클릭·Enter 때만 보고한다 — 가만히 둔 탭이 12초 만에 "확인 대기" 로 떨어지면 안 된다(맥 실측)."""
+    proxy_control._extension_routes[(EXT_ORIGIN, 3, "chatgpt.com")] = {
+        "mode": "proxy", "host": "chatgpt.com", "tabId": 3, "expectedProxy": True, "seenAt": 100.0,
+    }
+    assert proxy_control.extension_route_status(now=100.0 + 120)["mode"] == "proxy"
+
+
+def test_proxy_start_and_stop_clear_old_route_reports(monkeypatch) -> None:
+    async def noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(proxy_control.proxy, "start", noop)
+    monkeypatch.setattr(proxy_control.proxy, "stop", noop)
+    monkeypatch.setattr(proxy_control.proxy, "status", lambda: {"running": False})
+    client = _client()
+    report = {"mode": "proxy", "host": "chatgpt.com", "tabId": 3, "expectedProxy": True}
+    for path in ("/proxy/stop", "/proxy/start"):
+        assert client.post("/proxy/extension-route", headers={"Origin": EXT_ORIGIN}, json=report).json()["mode"] == "proxy"
+        body = client.post(path).json()
+        assert body["extensionRoute"]["mode"] == "unknown", path  # 켜고 끈 뒤에는 탭이 다시 보고해야 보인다
