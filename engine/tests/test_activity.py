@@ -301,3 +301,34 @@ def test_broadcast_never_carries_real_job_id():
     assert len(ids) == 1, f"jobId 가 프레임마다 달라 job 을 추적할 수 없다: {ids}"
     assert frames[0]["phase"] == "start"
     assert frames[-1]["phase"] == "finish"
+
+
+def test_proxy_scan_broadcasts_and_records(monkeypatch):
+    """프록시 검사(맥은 프롬프트를 프록시가 맡는다)도 처리현황에 뜨고 탐지 통계에 남아야 한다.
+    예전엔 둘 다 안 해서 맥 프록시로 검사하면 앱 처리현황이 그대로였다."""
+    from types import SimpleNamespace
+
+    import app.core.pipeline.orchestrator as orch
+    from app.adapters.proxy import addon
+
+    monkeypatch.setattr(orch, "run_pipeline", _fake_pipeline(steps=(1, 2, 5)))
+    recorded = []
+    monkeypatch.setattr(addon.db, "record_job", lambda job_id, **kw: recorded.append(kw))
+
+    async def decide(**_kw):
+        return "send_masked"
+
+    monkeypatch.setattr(addon.broker, "wait", decide)
+
+    q = activity_bus.subscribe()
+    got = asyncio.run(addon.CampfireAddon()._scan_texts_and_decide(
+        [SimpleNamespace(value=b"hi")], host="claude.ai"))
+    events = _drain(q)
+    activity_bus.unsubscribe(q)
+
+    assert got is not None
+    assert events[0]["phase"] == "start" and events[0]["source"] == "proxy"
+    assert "pii" in [e["stage"] for e in events]
+    assert events[-1]["phase"] == "finish" and events[-1]["ok"] is True
+    assert activity_bus.snapshot() == []
+    assert recorded and recorded[0]["source"] == "proxy"

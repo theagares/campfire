@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 
 from mitmproxy import http
@@ -35,7 +36,9 @@ from app import config
 from app.adapters.proxy.decision import DecisionTimeout, broker
 from app.adapters.proxy.multipart import MultipartError, decode, encode
 from app.adapters.proxy.sniff import is_image, refine
+from app.core import activity as activity_bus
 from app.core import forced_mask
+from app.store import db
 
 logger = logging.getLogger("securedoc.proxy")
 
@@ -60,6 +63,37 @@ def masked_name_for(original: str) -> str:
     if forced_mask.registry.snapshot().find(stem):
         stem = "document"
     return f"{stem}_masked.md"
+
+
+async def _run_pipeline(*, record_name: str, **kwargs) -> dict:
+    """run_pipeline 을 돌리며 앱 처리현황에 방송하고 탐지 통계에 남긴다 — 확장(jobs.py)·MCP 와 같게.
+
+    예전엔 프록시 검사만 둘 다 안 했다. 맥처럼 프록시가 프롬프트를 맡으면(확장 PROXY_PROMPT_HOSTS) 앱
+    처리현황이 꿈쩍도 안 하고 통계(사용자 지정 건수 포함)도 오르지 않아, 검사가 안 되는 것처럼 보였다.
+    확장이 이미 가린 파일을 프록시가 다시 검사하면 그 건도 한 번 더 센다(가린 뒤라 탐지는 0건).
+    """
+    from app.core.pipeline.orchestrator import run_pipeline
+
+    job_id = f"proxy-{uuid.uuid4().hex}"
+    activity_bus.job_started(job_id, source="proxy")
+
+    async def emit(event: dict) -> None:
+        activity_bus.job_event(job_id, event)
+
+    ok = False
+    try:
+        result = await run_pipeline(emit=emit, **kwargs)
+        ok = True
+    finally:
+        # run_pipeline 은 done 을 내지 않는다 — 여기서 끝내야 처리현황이 "탐지중" 으로 굳지 않는다.
+        activity_bus.job_finished(job_id, ok=ok)
+    # 이름에 등록어가 있으면 기록에도 남기지 않는다(masked_name_for 와 같은 이유).
+    name = "document" if forced_mask.registry.snapshot().find(record_name) else record_name
+    try:
+        db.record_job(job_id, file_name=name, source="proxy", result=result)
+    except Exception:  # noqa: BLE001 - 통계 기록 실패로 검사 결과를 버리지 않는다
+        logger.exception("[proxy] 탐지 통계 기록 실패 — 검사 결과는 그대로 쓴다")
+    return result
 
 
 # ─── 사이트 표 ────────────────────────────────────────────────────────────────
@@ -859,8 +893,6 @@ class CampfireAddon:
         인라인 파일 내용은 문서이므로 그대로 문서 기준(인젝션 검사)이다.
         반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함).
         """
-        from app.core.pipeline.orchestrator import run_pipeline
-
         # 확장처럼 프롬프트를 먼저 검사한다 — 메시지 안 필드 순서와 상관없이. 대시보드·검토 화면에도
         # 프롬프트가 먼저 나온다. (첨부할 때 따로 올라가는 파일은 전송보다 먼저 와서 순서를 바꿀 수 없다)
         fields = sorted(fields, key=lambda f: not any(f is p for p in prompt_fields))
@@ -872,7 +904,8 @@ class CampfireAddon:
         for fld in fields:
             text = fld.value.decode("utf-8", "replace")
             is_prompt = any(fld is p for p in prompt_fields)
-            result = await run_pipeline(text=text, direct_prompt=is_prompt, scan_injection=not is_prompt)
+            result = await _run_pipeline(text=text, direct_prompt=is_prompt, scan_injection=not is_prompt,
+                                         record_name="prompt.txt" if is_prompt else "message.txt")
             if result.get("blocked"):
                 logger.info("[proxy] 정책 차단 (Claude 메시지)")
                 return None
@@ -931,8 +964,6 @@ class CampfireAddon:
         검사를 끝내지 못한 건은 지금처럼 묻는다(원본/취소).
         반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / `_UNREPLACEABLE` / None(보내지 않음).
         """
-        from app.core.pipeline.orchestrator import run_pipeline
-
         # 이름이나 타입을 못 받았으면 바이트를 보고 채운다.
         #
         # ChatGPT(upload_reservations)도 Gemini 도 등록에 파일 이름을 안 싣는다.
@@ -940,8 +971,8 @@ class CampfireAddon:
         # 그대로 넘기면 PDF·DOCX 가 "미지원" 으로 떨어져 **검사되지 않는다.**
         file_name, mime = refine(data, file_name, mime)
 
-        result = await run_pipeline(
-            file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False
+        result = await _run_pipeline(
+            file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False, record_name=file_name
         )
         if result.get("blocked"):
             logger.info("[proxy] 정책 차단 host=%s", host)  # 파일명엔 등록어가 있을 수 있다
