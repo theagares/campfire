@@ -168,11 +168,11 @@ async function main() {
         const editor = page.locator(site.editorSelector);
         await editor.click();
         await editor.fill(ORIGINAL_PROMPT);
-        await page.locator('#fixture-file').setInputFiles({
-          name: 'fixture-original.pdf',
-          mimeType: 'application/pdf',
-          buffer: Buffer.from(ORIGINAL_FILE_TEXT, 'utf8'),
-        });
+        // 디스크에 쓴 파일을 고른다 — 사용자가 실제로 고르는 파일과 같다. 메모리 버퍼로만 붙이면 서비스 워커가
+        // 디스크 파일 본문을 못 읽던 문제(v0.2.53 맥 실측)가 드러나지 않았다.
+        const fixturePath = path.join(tempRoot, `${site.host}-fixture-original.pdf`);
+        await writeFile(fixturePath, ORIGINAL_FILE_TEXT, 'utf8');
+        await page.locator('#fixture-file').setInputFiles(fixturePath);
         await page.locator('#fixture-submit').click();
         await page.waitForFunction(() => window.__campfireFixture?.submission?.file, null, { timeout: 30_000 });
 
