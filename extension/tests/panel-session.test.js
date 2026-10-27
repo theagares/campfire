@@ -38,8 +38,8 @@ const noop = () => {};
 
 assert.match(
   PANEL_HTML,
-  /id="confidential-pill"[^>]*hidden[^>]*>.*Confidential model/s,
-  '진행 화면 HTML 에 앱 메인과 같은 Confidential model 표시가 없거나 기본 숨김 상태가 아니다',
+  /class="model-pill off" id="confidential-pill"[^>]*hidden[^>]*>.*Confidential model/s,
+  '진행 화면 HTML 에 앱 메인과 같은 Confidential model 표시가 없거나 기본 숨김·꺼짐 상태가 아니다',
 );
 assert.match(
   PANEL_HTML,
@@ -62,10 +62,14 @@ function loadPanel(opts = {}) {
 
   const makeEl = () => {
     const handlers = {};
+    const classes = new Set();
     const el = {
       textContent: '', innerHTML: '', hidden: false, value: '', checked: false,
       dataset: {}, style: { setProperty: noop, removeProperty: noop },
-      classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
+      classList: {
+        add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c),
+        toggle: (c, on = !classes.has(c)) => { if (on) classes.add(c); else classes.delete(c); return on; },
+      },
       addEventListener: (ev, fn) => { (handlers[ev] = handlers[ev] || []).push(fn); },
       removeEventListener: noop,
       _fire: (ev) => (handlers[ev] || []).forEach(fn => fn({ preventDefault: noop, stopPropagation: noop })),
@@ -131,8 +135,9 @@ function loadPanel(opts = {}) {
   const text = (id) => byId(id).textContent;
   const hidden = (id) => byId(id).hidden;
   const width = (id) => byId(id).style.width;
+  const hasClass = (id, c) => byId(id).classList.contains(c);
 
-  return { send, rendered, sent, click, text, hidden, width, closed: () => closed };
+  return { send, rendered, sent, click, text, hidden, width, hasClass, closed: () => closed };
 }
 
 const TAB = 101;
@@ -265,6 +270,34 @@ const meta = (n) => ({ fileName: `file-${n}.docx` });
     event: { type: 'step', step: 4, done: true },
   });
   assert.strictEqual(p.width('progress-fill'), '75%');
+}
+
+// ── (9) 설정이 켜져 있어도 이번 검사에서 기밀 탐지가 돌 때만 불을 켠다 ─────────
+// 엔진은 KG 후보가 있는 글에서만 3단계를 보낸다. KG 와 관계없는 글·프롬프트나 KG·모델이 준비 안 된
+// 엔진에서는 탐지가 돌지 않는데, 예전엔 검사 내내 켜진 모양이라 "기밀 탐지가 돌았다" 로 보였다(사용자 제보).
+{
+  const p = loadPanel({
+    connectionInfo: { ok: true, health: { confidential: { enabled: true, ready: false } } },
+  });
+  for (const step of [1, 2, 4]) {
+    p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1, event: { type: 'step', step, done: true } });
+  }
+  assert.strictEqual(p.hidden('confidential-pill'), false, '설정이 켜졌는데 기밀 탐지 줄이 숨었다');
+  assert.ok(p.hasClass('confidential-pill', 'off'), '기밀 탐지가 돌지 않았는데 불이 켜져 있다');
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1, event: { type: 'step', step: 5, done: true } });
+  assert.ok(p.hasClass('confidential-pill', 'off'), '기밀 탐지 없이 끝난 검사에서 불이 켜졌다');
+
+  // 다음 검사(B)에서 KG 후보가 있어 기밀 탐지가 돈다 → 켜짐
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 1 } });
+  assert.ok(p.hasClass('confidential-pill', 'off'));
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 3, label: '기밀 탐지 중' } });
+  assert.ok(!p.hasClass('confidential-pill', 'off'), '기밀 탐지가 도는데 불이 꺼져 있다');
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 5, done: true } });
+  assert.ok(!p.hasClass('confidential-pill', 'off'), '같은 검사의 다음 단계에서 기밀 탐지 불이 꺼졌다');
+
+  // 그다음 검사(C)는 다시 끈 채로 시작한다 — 앞 검사의 불이 남지 않는다
+  p.send({ type: 'PANEL_SCAN_STATE', tabId: TAB, sessionId: 'C', seq: 3, kind: 'file', meta: meta('C') });
+  assert.ok(p.hasClass('confidential-pill', 'off'), '앞 검사의 기밀 탐지 불이 새 검사에 남았다');
 }
 
 console.log('panel-session ok');
