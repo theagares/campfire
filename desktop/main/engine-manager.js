@@ -230,6 +230,9 @@ class EngineManager extends EventEmitter {
       SECUREDOC_EDITION: isLite(app.getVersion()) ? 'lite' : 'full',
       SECUREDOC_DESKTOP_MANAGED: this.forcedMaskStore ? '1' : '0',
       SECUREDOC_INTERNAL_CONTROL_TOKEN: this.internalControlToken,
+      // 아래 stdin 파이프가 닫히면 엔진이 스스로 꺼진다(engine app/main.py exit_with_parent). 앱이 강제 종료되면
+      // stop() 이 안 돌아 엔진이 부모 없이 남았고, 예전 단어를 든 채 낮은 포트를 쥐어 확장이 그리로 검사를 보냈다(맥 실측).
+      SECUREDOC_EXIT_WITH_PARENT: '1',
     };
 
     try {
@@ -263,8 +266,10 @@ class EngineManager extends EventEmitter {
           cwd,
           env,
           windowsHide: true,
-          stdio: ['ignore', out, out],
+          // stdin: 아무것도 쓰지 않는 파이프 — 이 프로세스가 끝나면 운영체제가 닫아 엔진이 따라 꺼진다.
+          stdio: ['pipe', out, out],
         });
+        this.child.stdin?.on('error', () => { /* 엔진이 먼저 끝나 파이프가 닫힌 것 — 쓰지 않으니 무시 */ });
       } finally {
         // 자식은 자기 사본을 물려받았다 — 이쪽 핸들은 닫는다.
         if (logFd !== null) try { fs.closeSync(logFd); } catch (_) { /* noop */ }

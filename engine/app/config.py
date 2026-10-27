@@ -60,6 +60,8 @@ DESKTOP_MANAGED: bool = os.environ.get("SECUREDOC_DESKTOP_MANAGED", "0").strip()
 # 읽고 바로 환경에서 지운다 — 남겨 두면 엔진이 띄우는 검출기 자식 프로세스(**os.environ)에
 # 그대로 상속된다. 엔진은 uvicorn 을 같은 프로세스에서 돌리므로 다시 읽을 일이 없다.
 INTERNAL_CONTROL_TOKEN: str = os.environ.pop("SECUREDOC_INTERNAL_CONTROL_TOKEN", "")
+# 데스크톱 앱이 stdin 에 파이프를 붙여 띄웠다 — 그 파이프가 닫히면(앱이 어떻게 끝나든) 엔진도 끈다(main.py).
+EXIT_WITH_PARENT: bool = os.environ.pop("SECUREDOC_EXIT_WITH_PARENT", "0") == "1"
 
 # 실제 바인딩된 포트. main.py 가 기동 시점에 채운다. /health 가 이 값을 반환.
 BOUND_PORT: int | None = None
