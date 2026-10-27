@@ -60,7 +60,7 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
   BlobStub.prototype.arrayBuffer = function () { return Promise.resolve(new ArrayBuffer(this.size)); };
   store.Blob = BlobStub;
   store.File = class extends BlobStub {
-    constructor(name) { super(); this.name = name || 'secret.pdf'; }
+    constructor(name, type) { super(); this.name = name || 'secret.pdf'; if (type) this.type = type; }
   };
   store.FileReader = function () {};
   store.FileReader.prototype = {
@@ -129,11 +129,11 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
   const config = (extra) => send({ __campfire_config: true, direction: 'isolated-to-main', ...extra });
 
   /** 파일 업로드를 흉내내고 "인터셉트 없이 통과했는지"를 돌려준다. */
-  async function passedThrough(fileName = 'secret.pdf') {
+  async function passedThrough(fileName = 'secret.pdf', type) {
     origFetchCalls.length = 0;
     // 인터셉트되면 이 promise 는 사용자 결정 때까지 끝나지 않는다 — await 하지 않는다.
     sandbox.fetch('https://chatgpt.com/upload', {
-      method: 'POST', body: new store.File(fileName),
+      method: 'POST', body: new store.File(fileName, type),
     }).catch(() => {});
     await settle();
     return origFetchCalls.length > 0;
@@ -196,6 +196,19 @@ async function main() {
       await t.passedThrough(), false,
       '페이지가 토큰을 덮어쓴 뒤 보호를 껐다 — 토큰 검사 자체가 무의미해진다',
     );
+  }
+
+  // (4-2) 그림은 엔진에서 이미지 속 글자 검사를 켰을 때만 가로챈다(content.js 가 imageScan 으로 알린다).
+  //       끄는 방향은 보호 해제처럼 토큰이 있어야 한다 — 페이지가 위조하면 그림이 검사 없이 나간다.
+  {
+    const t = withToken();
+    assert.strictEqual(await t.passedThrough('shot.png', 'image/png'), true, '이미지 검사가 꺼져 있는데 그림 업로드를 가로챘다');
+    t.config({ type: 'UPS_PROTECTION_STATE', bridgeToken: TOKEN, enabled: true, fileInterceptEnabled: true, imageScan: true });
+    assert.strictEqual(await t.passedThrough('shot.png', 'image/png'), false, '이미지 검사가 켜져 있는데 그림 업로드가 검사 없이 나갔다');
+    t.config({ type: 'UPS_PROTECTION_STATE', enabled: true, fileInterceptEnabled: true, imageScan: false });
+    assert.strictEqual(await t.passedThrough('shot.png', 'image/png'), false, '페이지가 토큰 없이 보낸 요청으로 그림 검사가 꺼졌다');
+    t.config({ type: 'UPS_PROTECTION_STATE', bridgeToken: TOKEN, enabled: true, fileInterceptEnabled: true, imageScan: false });
+    assert.strictEqual(await t.passedThrough('shot.png', 'image/png'), true, '정상 경로(토큰 동봉)로 그림 검사를 껐는데 계속 가로챈다');
   }
 
   const APPROVED = { name: 'secret.pdf', size: 2048, type: 'application/pdf' };

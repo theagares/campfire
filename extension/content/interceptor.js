@@ -153,6 +153,8 @@
   // 팝업은 두 값을 함께 끄지만, 여기서는 둘 다 확인한다(어느 한쪽만 꺼진 예전 설정이
   // 남아 있어도 안전하게 꺼진 쪽을 따르도록).
   let _fileInterceptEnabled = true;
+  // 엔진에서 이미지 속 글자 검사를 켰는가(content.js imageScanEnabled 미러). 켜져 있으면 그림도 가로챈다.
+  let _imageScanEnabled = false;
   let _bridgeToken = '';
 
   /** isolated world(content.js)가 보낸 것이라는 증거.
@@ -234,13 +236,17 @@
     // 없다. 그래서 끄는 방향에만 증거를 요구한다(fail-closed).
     const nextEnabled = Boolean(event.data.enabled);
     const nextFileEnabled = Boolean(event.data.fileInterceptEnabled);
-    const turningOff = (!nextEnabled && _protectionEnabled) || (!nextFileEnabled && _fileInterceptEnabled);
+    const nextImageScan = Boolean(event.data.imageScan);
+    // 그림 검사를 끄는 것도 끄는 방향이다 — 페이지가 위조하면 그림이 검사 없이 나간다.
+    const turningOff = (!nextEnabled && _protectionEnabled) || (!nextFileEnabled && _fileInterceptEnabled)
+      || (!nextImageScan && _imageScanEnabled);
     if (turningOff && !fromIsolated(event.data)) {
       debugLog('[SecureDoc] 보호 해제 요청 무시 — isolated world 증거 없음');
       return;
     }
     _protectionEnabled = nextEnabled;
     _fileInterceptEnabled = nextFileEnabled;
+    _imageScanEnabled = nextImageScan;
     if (!_proxyExpected) _setProxyRoute(_extensionMode());
     else if (!proxyInPath()) _probeProxyPath();
     debugLog(`[SecureDoc] 보호 상태: ${_protectionEnabled ? 'ON' : 'OFF'}, 파일 인터셉트: ${_fileInterceptEnabled ? 'ON' : 'OFF'}`);
@@ -568,11 +574,15 @@
   ]);
   const SUPPORTED_EXTS =
     /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
+  // 이미지 속 글자 검사를 켰을 때만(_imageScanEnabled) — content.js IMAGE_TYPES·IMAGE_EXTS 와 같다
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
+  const IMAGE_EXTS = /\.(png|jpe?g|webp|bmp)$/i;
 
   function isSupportedFile(b) {
     if (!isProtectionEnabled() || !isFileInterceptEnabled()) return false;
     if (!b) return false;
-    return SUPPORTED_TYPES.has(b.type) || SUPPORTED_EXTS.test(b.name || '');
+    return SUPPORTED_TYPES.has(b.type) || SUPPORTED_EXTS.test(b.name || '')
+      || (_imageScanEnabled && (IMAGE_TYPES.has(b.type) || IMAGE_EXTS.test(b.name || '')));
   }
 
   // ─── 사이트별 업로드 패턴 설정 ───────────────────────────────────────────
