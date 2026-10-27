@@ -136,13 +136,15 @@ class HTMLTextAreaElementStub extends EventTargetStub {
 }
 class FileStub {
   constructor(parts, name, options = {}) {
-    this._parts = parts;
+    const bytes = (p) => (p instanceof ArrayBuffer ? Buffer.from(new Uint8Array(p)) : Buffer.from(String(p)));
+    this._bytes = Buffer.concat(parts.map(bytes));
     this.name = name;
     this.type = options.type || '';
-    this.size = parts.reduce((s, p) => s + Buffer.byteLength(String(p)), 0);
+    this.size = this._bytes.length;
   }
   async arrayBuffer() {
-    return Buffer.concat(this._parts.map(p => Buffer.from(String(p)))).buffer;
+    const b = this._bytes;
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
   }
 }
 class DataTransferStub {
@@ -623,7 +625,14 @@ const flush = () => clock.tick(60);
   if (sent[promptIdx].text !== '이 문서를 요약해줘') {
     throw new Error('프롬프트 검사에 실제 프롬프트가 안 실렸다');
   }
-  if (sent[itemIdx].payload?.file !== file) throw new Error('파일 검사에 File이 직접 전달되지 않았다');
+  // 사용자가 고른 디스크 File 을 그대로 넘기면 서비스 워커가 본문을 못 읽었다(v0.2.53 맥 U1) — 이 페이지에서
+  // 읽은 메모리 사본(같은 이름·형식·내용의 File)을 넘겨야 한다. Base64 는 쓰지 않는다.
+  const sentFile = sent[itemIdx].payload?.file;
+  if (!(sentFile instanceof FileStub) || sentFile === file) throw new Error('파일 검사에 메모리 사본 File 이 전달되지 않았다');
+  if (sentFile.name !== file.name || sentFile.type !== file.type
+      || Buffer.from(await sentFile.arrayBuffer()).toString() !== 'pdf bytes') {
+    throw new Error('파일 검사에 넘긴 사본의 이름·형식·내용이 원본과 다르다');
+  }
   if ('base64Data' in sent[itemIdx].payload) throw new Error('파일 검사가 Base64를 다시 사용한다');
   if (!sent[itemIdx].leaseId) throw new Error('파일 검사에 leaseId 가 없다');
   const combinedScan = startMulti;

@@ -1191,11 +1191,12 @@
       // 못 읽은 파일도 반드시 알린다. 그냥 건너뛰면 그 탭이 영원히 '대기 중' 으로
       // 남아 전송 버튼이 열리지 않고, 사용자에게는 "기다리면 되는" 것처럼 보인다.
       // 오류로 세워야 "이 파일 제거" 를 골라 나머지를 보낼 수 있다.
+      const file = await inMemoryFile(item.file);
       await sendToSW({
         type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
-        payload: item.file && typeof item.file.arrayBuffer === 'function'
+        payload: file
           ? {
-              docId: item.id, file: item.file,
+              docId: item.id, file,
               mimeType: item.mimeType, fileName: item.fileName, userPrompt: text,
             }
           : { docId: item.id, readError: '파일을 읽지 못했습니다' },
@@ -1204,6 +1205,20 @@
 
     await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
     return decisionPromise;
+  }
+
+  /** 서비스 워커로 넘길 파일을 이 페이지에서 메모리로 읽어 둔다. 못 읽으면 null.
+   *  사용자가 고르거나 붙인 파일은 디스크를 가리키는 File 이라, structured clone 으로 넘겨도 서비스 워커
+   *  프로세스는 그 본문을 읽지 못해 엔진으로 가는 fetch 가 "Failed to fetch" 로 끝났다 — 엔진에 /jobs 가
+   *  오지 않았다(v0.2.53 맥 실측, 세 사이트 모두). 메모리에서 만든 파일만 쓰던 CI 에서는 드러나지 않았다.
+   *  차례가 온 파일 하나만 읽으므로 동시에 메모리에 있는 사본은 하나다(lease 주석 참고). */
+  async function inMemoryFile(file) {
+    if (!file || typeof file.arrayBuffer !== 'function') return null;
+    try {
+      return new File([await file.arrayBuffer()], file.name, { type: file.type, lastModified: file.lastModified });
+    } catch (_) {
+      return null;
+    }
   }
 
   // 배치 주입의 증거 대기 상한. 파일마다 따로 기다리는 게 아니라 동시에 본다.
@@ -1315,11 +1330,12 @@
     await sendToSW({
       type: 'SCAN_MULTI_ITEM_READING', sessionId, leaseId, docId,
     });
+    const file = await inMemoryFile(item.file);
     await sendToSW({
       type: 'SCAN_MULTI_ITEM', sessionId, leaseId,
-      payload: item.file && typeof item.file.arrayBuffer === 'function'
+      payload: file
         ? {
-            docId: item.id, file: item.file,
+            docId: item.id, file,
             mimeType: item.mimeType, fileName: item.fileName, userPrompt: lastBatchPrompt,
           }
         : { docId: item.id, readError: '파일을 읽지 못했습니다' },
@@ -2949,7 +2965,8 @@
         sendResultToMain({ inputId, action: 'cancel' });
         return;
       }
-      const decision = await startPanelSession('file', { file, mimeType, fileName, fileSize });
+      // 못 읽으면 null 로 넘긴다 — 서비스 워커가 "검사할 파일 데이터가 없습니다" 로 세운다(보내지 않음)
+      const decision = await startPanelSession('file', { file: await inMemoryFile(file), mimeType, fileName, fileSize });
       if (decision?.action === 'upload' && decision.maskedBase64) {
         sendResultToMain({
           inputId, action: 'upload',
