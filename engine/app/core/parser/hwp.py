@@ -24,12 +24,18 @@ _WINDOWS_CANDIDATES = [
     r"C:\Program Files\LibreOffice\program\soffice.exe",
     r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
 ]
+# macOS dmg 설치 경로. dmg 로 깐 LibreOffice 는 PATH 에 soffice 를 두지 않는다(Homebrew 만 링크한다).
+_MAC_CANDIDATES = [
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    os.path.expanduser("~/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+]
 
 
 def _find_soffice() -> str | None:
     """OS별 LibreOffice 실행 파일 탐색.
 
     Windows: PATH 의 soffice.exe 우선, 없으면 일반 설치 경로.
+    macOS: PATH 의 soffice/libreoffice, 없으면 /Applications 의 LibreOffice.app.
     그 외 OS: PATH 의 soffice/libreoffice.
     """
     if sys.platform.startswith("win"):
@@ -41,7 +47,10 @@ def _find_soffice() -> str | None:
                 return candidate
         return None
 
-    return shutil.which("soffice") or shutil.which("libreoffice")
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found or sys.platform != "darwin":
+        return found
+    return next((c for c in _MAC_CANDIDATES if os.path.exists(c)), None)
 
 
 def extract_hwp(file_bytes: bytes) -> str:
