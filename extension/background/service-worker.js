@@ -805,7 +805,6 @@ async function scanMultiItem(sessionId, session, payload) {
         // 이미지 속 글자 검사가 꺼져 검사하지 못한 문서 속 그림 수 — 있으면 "원본" 결정도 그림을 뺀 글로 보낸다.
         imagesRemoved: result.imagesRemoved || 0,
       };
-      doc.imagesRemoved = result.imagesRemoved || 0;
       doc.truncated = !!result.truncated;
       doc.scannedChars = result.scannedChars ?? 0;
       doc.originalChars = result.originalChars ?? 0;
