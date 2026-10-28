@@ -533,5 +533,5 @@ def test_시연_대시보드_경로는_꺼져_있으면_없다(monkeypatch):
     monkeypatch.setattr(config, "DEMO_TRACE_ENABLED", True)
     monkeypatch.setattr(config, "KG_PATH", "")
     assert "기밀 판정" in c.get("/demo/dashboard").text
-    assert "초록색 = PII MLP KEEP(마스킹 해제)" in c.get("/demo/dashboard").text
+    assert "초록 테두리 = PII MLP KEEP(마스킹 해제)" in c.get("/demo/dashboard").text
     assert c.get("/demo/kg").json()["triples"] == []         # KG 미설정
