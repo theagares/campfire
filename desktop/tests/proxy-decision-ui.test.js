@@ -189,18 +189,21 @@ test('창이 떠 있는 동안 판단 건이 엔진에서 사라지면 창을 �
       : response({ detail: 'gone' }, 409);
   };
   let aborted = false;
+  const notices = [];
   const ui = new ProxyDecisionController({
     engineManager: manager(), fetchImpl, watchMs: 5,
     dialog: {
-      // 사람이 아무것도 누르지 않는다 — signal 로 닫혀야만 끝난다.
-      showMessageBox: (opts) => new Promise((resolve) => {
+      // 사람이 아무것도 누르지 않는다 — signal 로 닫혀야만 끝난다. signal 없는 창은 취소 안내다.
+      showMessageBox: (opts) => (opts.signal ? new Promise((resolve) => {
         opts.signal.addEventListener('abort', () => { aborted = true; resolve({ response: opts.cancelId }); });
-      }),
+      }) : (notices.push(opts), Promise.resolve({ response: 0 }))),
     },
   });
   await ui.checkNow();
   assert.equal(aborted, true, '사라진 판단 건의 창이 닫히지 않았다');
   assert.deepEqual(posts, [], '사라진 건에 결정을 보냈다');
+  // 사이트는 이유 없이 "전송 실패" 만 보인다 — 왜 안 갔는지 앱이 알려야 한다(Windows PX-6)
+  assert.match(notices[0]?.message || '', /검토 시간이 지나 전송을 취소/);
   assert.equal(await ui.checkNow(), false, '사라진 건을 다시 띄웠다');
 });
 

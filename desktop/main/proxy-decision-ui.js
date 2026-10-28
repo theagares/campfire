@@ -198,6 +198,16 @@ class ProxyDecisionController {
     }
     if (gone) {
       this.handled.set(id, { action: 'cancel', at: Date.now(), posted: true });
+      // 엔진이 기다리다(120초) 막았거나 브라우저가 요청을 버렸다. 사이트는 이유 없이 "전송 실패" 만 보여 주므로
+      // (Windows PX-6) 여기서 알린다. 기다리지 않는다 — 이 창이 떠 있는 동안에도 다음 건은 받아야 한다.
+      this._show({
+        type: 'info',
+        title: 'Campfire 전송 취소',
+        message: '검토 시간이 지나 전송을 취소했습니다.',
+        detail: '원본은 보내지 않았습니다. 사이트에서 다시 보내 주세요.',
+        buttons: ['확인'],
+        noLink: true,
+      }).catch(() => {});
       return;
     }
     this.handled.set(id, { action, at: Date.now(), posted: false });
