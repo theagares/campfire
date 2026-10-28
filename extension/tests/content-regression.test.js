@@ -3027,6 +3027,14 @@ cancelScan(stuckScan);
     }
   }
 
+  // (42) SW 가 새 판으로 다시 로드되기 직전(EXTENSION_RELOADING): 끊기기 전에 탭에 새로고침 안내를 띄운다.
+  {
+    decisionListener({ type: 'EXTENSION_RELOADING' });
+    const b = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
+    const text = b ? (b.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
+    if (!text.includes('탭을 새로고침')) throw new Error(`(42) 확장이 다시 로드되기 전에 새로고침 안내가 없다: ${text}`);
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
