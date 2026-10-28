@@ -254,16 +254,27 @@
 
   /** Lexical 편집기 내용을 글 하나로 바꾼다. 성공하면 true.
    *  노드 모양(문단·글 노드 속성, Copilot 의 sentinel 같은 자체 노드)은 지금 상태에서 빌려 쓴다 —
-   *  모르는 노드를 새로 만들지 않는다. 줄바꿈은 linebreak 노드로 넣는다. */
+   *  모르는 노드를 새로 만들지 않는다. 줄바꿈은 사이트가 쓰는 모양을 따른다(아래). */
   function _setLexicalText(selector, text) {
     const ed = document.querySelector(selector)?.__lexicalEditor;
     if (!ed || typeof ed.parseEditorState !== 'function') return false;
     const json = ed.getEditorState().toJSON();
-    const para = json?.root?.children?.find((n) => n.type === 'paragraph');
+    const paras = (json?.root?.children || []).filter((n) => n.type === 'paragraph');
+    const para = paras[0];
     if (!para) return false;
     const tmpl = para.children.find((n) => n.type === 'text')
       || { detail: 0, format: 0, mode: 'normal', style: '', type: 'text', version: 1 };
     const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak');
+    // Copilot(copilot.com)은 Shift+Enter 마다 문단을 새로 만들고(문단마다 sentinel), 보낼 때 linebreak 노드는 버린다 —
+    // 여러 줄 프롬프트가 한 줄로 붙어 나갔다(v0.2.56 Windows: "…[이메일 마스킹]이번 분기…"). 사용자가 친 글이 문단 여럿이면
+    // 줄마다 문단으로 넣는다. 그 글은 innerText 라 문단 사이가 "\n\n" 이다.
+    if (paras.length > 1) {
+      json.root.children = text.split(/\n\n|\n/).map((line) => ({
+        ...para, children: [...(line ? [{ ...tmpl, text: line }] : []), ...keep],
+      }));
+      ed.setEditorState(ed.parseEditorState(JSON.stringify(json)));
+      return true;
+    }
     const children = text.split('\n').flatMap((line, i) => [
       ...(i ? [{ type: 'linebreak', version: 1 }] : []),
       ...(line ? [{ ...tmpl, text: line }] : []),
