@@ -17,8 +17,16 @@ const path = require('path');
 const { execFile } = require('child_process');
 const macosProxy = require('./system-proxy-macos');
 
+/** app.asar 안 경로를 asarUnpack 된 같은 파일 경로로. 이미 unpacked 경로면 그대로 둔다.
+ *  ★ 복원 워치독은 app.asar.unpacked 안에서 돌아, 그냥 replace('app.asar', …) 하면
+ *  app.asar.unpacked.unpacked 가 돼 system-proxy.ps1 을 못 찾았다 — 앱을 강제 종료해도
+ *  시스템 프록시가 안 풀렸다(v0.2.56 Windows 전체 시험 PX-8). */
+function asarUnpacked(p) {
+  return p.replace(/app\.asar(?=[\\/])/, 'app.asar.unpacked');
+}
+
 // app.asar 안의 스크립트는 powershell 이 못 연다. 패키징 시 asarUnpack 대상이다.
-const SCRIPT = path.join(__dirname, 'system-proxy.ps1').replace('app.asar', 'app.asar.unpacked');
+const SCRIPT = asarUnpacked(path.join(__dirname, 'system-proxy.ps1'));
 
 // InternetSetOption 플래그
 const PROXY_TYPE_PROXY = 2;
@@ -132,4 +140,4 @@ function create(runner = null, platform = null) {
   };
 }
 
-module.exports = { create, runScript, PROXY_TYPE_PROXY, PROXY_TYPE_AUTO_PROXY_URL };
+module.exports = { create, runScript, asarUnpacked, SCRIPT, PROXY_TYPE_PROXY, PROXY_TYPE_AUTO_PROXY_URL };

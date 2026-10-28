@@ -13,8 +13,9 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
+const { asarUnpacked } = require('./system-proxy');
 
-const SCRIPT = path.join(__dirname, 'proxy-watchdog.js').replace('app.asar', 'app.asar.unpacked');
+const SCRIPT = asarUnpacked(path.join(__dirname, 'proxy-watchdog.js'));
 
 function create({ scriptPath = SCRIPT, execPath = process.execPath, spawnImpl = spawn } = {}) {
   let child = null;

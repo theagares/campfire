@@ -15,7 +15,20 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 
-const { create, runScript } = require('../main/system-proxy');
+const { create, runScript, asarUnpacked } = require('../main/system-proxy');
+
+// 복원 워치독은 app.asar.unpacked 안에서 돈다. 거기서 한 번 더 바꾸면 없는 경로
+// (app.asar.unpacked.unpacked)가 돼 ps1 을 못 찾았다(v0.2.56 Windows PX-8).
+test('asarUnpacked: asar 안 경로는 unpacked 로, 이미 unpacked 면 그대로', () => {
+  const res = 'C:\\Users\\u\\AppData\\Local\\Programs\\Campfire\\resources';
+  assert.equal(asarUnpacked(`${res}\\app.asar\\main\\system-proxy.ps1`), `${res}\\app.asar.unpacked\\main\\system-proxy.ps1`);
+  assert.equal(asarUnpacked(`${res}\\app.asar.unpacked\\main\\system-proxy.ps1`), `${res}\\app.asar.unpacked\\main\\system-proxy.ps1`);
+  assert.equal(
+    asarUnpacked('/Applications/Campfire.app/Contents/Resources/app.asar/main/proxy-watchdog.js'),
+    '/Applications/Campfire.app/Contents/Resources/app.asar.unpacked/main/proxy-watchdog.js',
+  );
+  assert.equal(asarUnpacked('D:\\dev\\campfire\\desktop\\main\\x.ps1'), 'D:\\dev\\campfire\\desktop\\main\\x.ps1');
+});
 
 const onWindows = process.platform === 'win32';
 const onMac = process.platform === 'darwin';
