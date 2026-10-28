@@ -1677,12 +1677,30 @@
    *
    *  그래서 순서를 넷으로 둔다: 사이트 선택자 → 포커스된 편집 요소 → 직전에 쓰던 입력창
    *  → 화면에 있는 입력창 탐색. 찾은 것은 기억해 다음에 포커스가 없어도 쓴다. */
+  /** 한 선택자에 여럿 맞을 때 실제로 쓰는 입력창을 고른다(하나 이하면 null — querySelector 로 충분).
+   *
+   *  ★ v0.2.56 맥 실측(EX-7): ChatGPT 는 첫 메시지를 보낸 뒤 같은 대화 화면에
+   *  `form[data-chatgpt-composer] .ProseMirror` 가 둘이 된다. 문서 순서상 첫 것(포커스 없는 쪽)을
+   *  잡으면 Enter 는 "입력창 밖" 으로, 전송 버튼은 "빈 글" 로 보고 넘겨 두 번째 메시지부터 원문이 나갔다.
+   *  포커스가 든 것 → 포커스가 있는 form(전송 버튼을 누른 경우) 안의 것 → 화면에 보이는 것 순으로 본다. */
+  function pickEditorAmong(nodes) {
+    const list = Array.from(nodes || []);
+    if (list.length < 2) return null;
+    const active = document.activeElement;
+    return list.find((el) => el === active || el.contains?.(active))
+      || list.find((el) => active && el.closest?.('form')?.contains?.(active))
+      || list.find(isVisibleEl)
+      || list[0];
+  }
+
   function findEditor(cfg) {
     // 묶음 선택자는 적힌 순서대로 본다. querySelector 에 통째로 넘기면 문서에서 먼저
     // 나오는 요소를 골라 "id 를 먼저 본다" 같은 우선순위가 먹지 않는다.
     let bySel = null;
     for (const sel of (cfg?.editorSel || '').split(',')) {
-      try { bySel = document.querySelector(sel.trim()); } catch (_) { bySel = null; }
+      try {
+        bySel = pickEditorAmong(document.querySelectorAll?.(sel.trim())) || document.querySelector(sel.trim());
+      } catch (_) { bySel = null; }
       if (bySel) break;
     }
     if (bySel) { lastKnownEditor = bySel; return bySel; }
