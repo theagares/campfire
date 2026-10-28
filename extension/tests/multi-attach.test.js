@@ -36,6 +36,8 @@ const engineResults = {
   'b.pdf': { scanStatus: 'ok', originalText: '박영희 계약서', piiItems: [{ start: 0, end: 3, type: 'PERSON_NAME' }], injectionItems: [], truncated: false, scannedChars: 7, originalChars: 7 },
   // 잘린 파일: 뒷부분을 안 봤다는 사실이 상태로 드러나야 한다
   'long.pdf': { scanStatus: 'ok', originalText: '앞부분만', piiItems: [], injectionItems: [], truncated: true, scannedChars: 4, originalChars: 900 },
+  // 이미지 속 글자 검사가 꺼져 그림을 검사하지 못한 문서 — 깨끗해도 원본(그림째) 대신 글만 나가야 한다
+  'pic.docx': { scanStatus: 'ok', originalText: '그림 옆 설명', piiItems: [], injectionItems: [], imagesRemoved: 1, truncated: false, scannedChars: 7, originalChars: 7 },
   'forced.pdf': {
     scanStatus: 'ok', originalText: 'secret 공개', piiItems: [], injectionItems: [],
     forcedMaskItems: [{ start: 0, end: 6, type: 'USER_DEFINED_TERM', mandatory: true }],
@@ -507,6 +509,42 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
     assert.strictEqual(new TextDecoder().decode(await artifact.blob.arrayBuffer()), '[사용자 지정 마스킹] 공개');
 
     await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'forced-1' });
+    await settle();
+  }
+
+  // ── 그림을 검사하지 못한 문서(이미지 검사 꺼짐)는 "원본" 을 골라도 그림을 뺀 원문 글만 나간다 ──
+  {
+    panelMessages.length = 0;
+    tabMessages.length = 0;
+    const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    await send({
+      type: 'START_MULTI_SCAN', sessionId: 'pic-1',
+      payload: { items: [{ id: 'p0', fileName: 'pic.docx', fileSize: 10, mimeType: DOCX, supported: true }] },
+    });
+    await settle();
+    const lp = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED').leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'pic-1', leaseId: lp, text: '요약해줘' });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'pic-1', leaseId: lp,
+      payload: { docId: 'p0', fileName: 'pic.docx', mimeType: DOCX, file: binaryFile('pic.docx'), userPrompt: '요약해줘' },
+    });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'pic-1', leaseId: lp });
+    await settle();
+
+    const original = await send({
+      type: 'PANEL_MULTI_DECISION', sessionId: 'pic-1',
+      decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'p0', action: 'original' }] },
+    });
+    assert.strictEqual(original.ok, true);
+    const relay = tabMessages.filter(m => m.type === 'CONTENT_BATCH_DECISION').slice(-1)[0];
+    const descriptor = relay.decision.files[0];
+    assert.notStrictEqual(descriptor.action, 'original', '그림을 검사하지 못한 문서를 원본(그림째)으로 보냈다');
+    const artifact = await send({
+      type: 'GET_SCAN_ARTIFACT', sessionId: 'pic-1', docId: 'p0', artifactId: descriptor.artifactId,
+    });
+    assert.strictEqual(new TextDecoder().decode(await artifact.blob.arrayBuffer()), '그림 옆 설명');
+
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'pic-1' });
     await settle();
   }
 

@@ -22,6 +22,7 @@ from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_FAILED, STATUS_OK, STATUS_TIMEOUT
+from app.core.parser import images as image_marks
 from app.core.parser.process_pool import (
     ParserPoolBusy,
     ParserTimedOut,
@@ -536,11 +537,20 @@ async def run_pipeline(
     # 읽어 그 자리에 넣는다(파싱 스레드 안에서는 사이드카를 부를 수 없다). 꺼져 있으면 images=None — 파서 결과가 그대로다.
     images: list[bytes] | None = None
     image_infos: list[dict[str, Any]] = []
+    images_removed = 0
     if text is None:
-        images = [] if config.IMAGE_OCR_ENABLED else None
+        # 꺼져 있어도 문서 속 그림은 센다 — 검사 못 한 그림째 원본을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28,
+        # 확장·프록시가 imagesRemoved 를 보고 원본 대신 글 .md 를 보낸다). 이미지 파일 자체는 꺼져 있으면 지금처럼 미지원이다
+        # (목록을 주면 파서가 그림 한 장짜리 문서로 받는다).
+        collect = config.IMAGE_OCR_ENABLED or not image_marks.is_image(
+            os.path.splitext(file_name or "")[1].lower(), mime_type or "")
+        images = [] if collect else None
         text, scan_status, reason = await _parse_off_loop(file_bytes or b"", mime_type, file_name, images)
         if images and scan_status == STATUS_OK:
-            text, image_infos = await image_ocr.fill(text, images, emit)
+            if config.IMAGE_OCR_ENABLED:
+                text, image_infos = await image_ocr.fill(text, images, emit)
+            else:
+                text, images_removed = image_marks.strip_marks(text), len(images)
     images_unchecked = any(i["status"] == "unchecked" for i in image_infos)
     images_read = [i for i in image_infos if i["status"] == "read"]
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
@@ -889,6 +899,7 @@ async def run_pipeline(
         user_prompt_forced_mask_items=user_prompt_forced_items,
         forced_policy=forced_policy,
         images=image_infos,
+        images_removed=images_removed,
     )
 
 
@@ -911,6 +922,7 @@ def _build_result(
     user_prompt_forced_mask_items: list[Detection] | None = None,
     forced_policy: dict[str, Any] | None = None,
     images: list[dict[str, Any]] | None = None,
+    images_removed: int = 0,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
@@ -952,6 +964,8 @@ def _build_result(
         result["maskedFile"] = masked_file
     if images:  # 이미지 속 글자 검사: 이미지마다 읽음/건너뜀/미검사와 본문 속 위치(화면에 "이미지에서 읽은 글" 표시용)
         result["images"] = images
+    if images_removed:  # 이미지 속 글자 검사가 꺼져 검사하지 않은 문서 속 그림 수 — 원본 대신 글만 보낸다
+        result["imagesRemoved"] = images_removed
     if user_prompt is not None:
         # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
         # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.

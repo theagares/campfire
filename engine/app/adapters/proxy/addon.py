@@ -980,8 +980,13 @@ class CampfireAddon:
 
         # 이름에 등록어가 있으면 내용이 깨끗해도 원본(=원래 이름)을 보내면 안 된다.
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))
+        # 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 원본(그림째)을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28).
+        images_removed = bool(result.get("imagesRemoved"))
         if _is_clean_result(result) and not name_forced:
-            return _ORIGINAL
+            if not images_removed:
+                return _ORIGINAL
+            if can_replace:
+                return (result.get("maskedText") or "").encode("utf-8")
         if not can_replace and _scan_complete(result):
             logger.info("[proxy] 가린 글로 바꿔 넣을 수 없는 업로드 — 차단 host=%s", host)
             return _UNREPLACEABLE
@@ -995,7 +1000,7 @@ class CampfireAddon:
         )
         if action == "cancel":
             return None
-        if action == "send_original" and not result.get("forcedMaskItems") and not name_forced:
+        if action == "send_original" and not result.get("forcedMaskItems") and not name_forced and not images_removed:
             return _ORIGINAL
         return (result.get("maskedText") or "").encode("utf-8")
 
