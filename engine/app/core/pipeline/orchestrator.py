@@ -840,7 +840,8 @@ async def run_pipeline(
     # 이미지 글이 든 문서가 잘렸으면 이미지 글 일부가 검사 밖이라 같은 이유로 막는다.
     if images_unchecked or (truncated and images_read):
         blocked = True
-        reason = reason or (image_ocr.UNCHECKED_REASON if images_unchecked
+        reason = reason or (next((i["reason"] for i in image_infos if i["status"] == "unchecked"), image_ocr.UNCHECKED_REASON)
+                            if images_unchecked
                             else "문서가 길어 이미지 속 글자 일부를 검사하지 못해 보내지 않습니다")
     confidential_items = [] if blocked else await confidential.detect(
         text,
