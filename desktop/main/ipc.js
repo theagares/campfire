@@ -35,15 +35,17 @@ function broadcast(channel, payload) {
  * 동안은 엔진이 죽지 않고 검사만 통과 처리하므로(§PLAN 9.2), pill 은 "준비 중"으로
  * 보여준다.
  */
-function deriveModelStatus(engineStatus) {
+function deriveModelStatus(engineStatus, confidentialSetting = false) {
   const running = engineStatus.state === 'running';
   const detectors = (engineStatus.health && engineStatus.health.detectors) || {};
   const modelsReady = (engineStatus.health && engineStatus.health.modelsReady) || {};
   const piiActive = running && !!modelsReady.pii;
   const injectionActive = running && !!modelsReady.injection;
-  // 기밀 탐지(선택 기능) — 엔진이 실제로 켜고 떴을 때만 enabled. 화면은 enabled 일 때만 이 항목을 그린다
+  // 기밀 탐지(선택 기능) — 엔진이 실제로 켜고 떴을 때만 enabled. 화면은 enabled 일 때만 이 항목을 그린다.
+  // 엔진이 아직 /health 를 안 냈으면(뜨는 중) 켰는지 몰라 줄을 숨겼다가 1분쯤 뒤에야 보였다(Windows UI-1) — 그동안은
+  // 엔진을 띄울 때 넘긴 앱 설정을 따라, 다른 두 칩처럼 꺼진 표시로 같이 보인다.
   const conf = (engineStatus.health && engineStatus.health.confidential) || {};
-  const confEnabled = running && !!conf.enabled;
+  const confEnabled = engineStatus.health ? running && !!conf.enabled : !!confidentialSetting;
   const confActive = confEnabled && !!conf.ready;
   return {
     confidential: {
@@ -71,7 +73,8 @@ function buildStats(engineManager) {
   const stats = engineStats.readStats(app);
   return {
     ...stats,
-    models: deriveModelStatus(engineStatus),
+    models: deriveModelStatus(engineStatus,
+      !isLite(app.getVersion()) && !!engineManager.config?.get('confidentialEnabled')),
     injectionPolicy:
       (engineStatus.health && engineStatus.health.injectionPolicy) || null,
     engineState: engineStatus.state,
