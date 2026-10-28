@@ -1427,6 +1427,13 @@
 
   // SW → content : 사이드패널의 HITL 결정 수신
   chrome.runtime?.onMessage?.addListener((message) => {
+    // SW 가 새 판으로 다시 로드되기 직전에 보낸다. 그 뒤 이 스크립트는 확장과 끊겨 보내기를 막으므로 미리 알린다.
+    if (message?.type === 'EXTENSION_RELOADING') {
+      const staged = pendingBatch;
+      if (staged) clearPendingBatch();
+      showBlockedBadge(`⚠️ Campfire 확장 프로그램이 새 판으로 바뀌었습니다. 이 탭을 새로고침한 뒤 ${staged ? '파일을 다시 첨부해 ' : ''}보내주세요.`);
+      return;
+    }
     if (message?.type === 'SCAN_LEASE_GRANTED') {
       const grant = pendingLeases.get(message.sessionId);
       if (grant) { pendingLeases.delete(message.sessionId); grant(message.leaseId); }
