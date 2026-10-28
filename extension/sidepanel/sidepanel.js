@@ -1003,7 +1003,9 @@ function blockingReason() {
     if (doc.status === 'truncated') return `${doc.fileName}: 일부만 검사됨 — 어떻게 보낼지 골라 주세요`;
   }
   if (isBusy(state.promptMeta?.status)) return '프롬프트 검사가 끝나지 않았습니다';
-  if (state.promptMeta?.status === 'error') return '프롬프트 검사에 실패했습니다';
+  if (state.promptMeta?.status === 'error') {
+    return `프롬프트 검사에 실패했습니다${state.promptMeta.error ? ` — ${state.promptMeta.error}` : ''}`;
+  }
   return null;
 }
 
