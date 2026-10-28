@@ -38,6 +38,26 @@ class ExtensionRouteReport(BaseModel):
     expectedProxy: bool
 
 
+class ApprovedUpload(BaseModel):
+    """확장이 검토해 사람이 승인한 마스킹본 하나(사이트에 다시 넣기 직전에 알린다)."""
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    name: str = Field(min_length=1, max_length=255)
+    size: int = Field(ge=0)
+
+
+class ApprovedUploads(BaseModel):
+    items: list[ApprovedUpload] = Field(max_length=16)
+
+
+def _require_extension_origin(request: Request) -> str:
+    # 웹 페이지가 보내면 안 된다. CORS 는 응답 읽기만 막고 보내기(blind write)는 확실히 못 막는다.
+    origin = request.headers.get("origin", "")
+    if re.fullmatch(r"chrome-extension://[a-p]{32}", origin) is None:
+        raise HTTPException(status_code=403, detail="extension origin required")
+    return origin
+
+
 def _prune_extension_routes(now: float) -> None:
     stale = [key for key, value in _extension_routes.items()
              if now - value["seenAt"] > _ROUTE_TTL_SECONDS]
@@ -117,10 +137,7 @@ async def proxy_stop() -> dict:
 @router.post("/proxy/extension-route")
 async def report_extension_route(report: ExtensionRouteReport, request: Request) -> dict:
     # A web page must not be able to paint a reassuring status in the desktop app.
-    # CORS blocks reading responses, but it does not reliably prevent blind writes.
-    origin = request.headers.get("origin", "")
-    if re.fullmatch(r"chrome-extension://[a-p]{32}", origin) is None:
-        raise HTTPException(status_code=403, detail="extension origin required")
+    origin = _require_extension_origin(request)
 
     now = time.monotonic()
     _prune_extension_routes(now)
@@ -144,3 +161,16 @@ async def report_extension_route(report: ExtensionRouteReport, request: Request)
 @router.get("/proxy/extension-route")
 async def get_extension_route() -> dict:
     return extension_route_status()
+
+
+@router.post("/proxy/approved-uploads")
+async def approve_uploads(body: ApprovedUploads, request: Request) -> dict:
+    # 이 바이트는 프록시가 다시 검사하지 않는다 — 그래서 웹 페이지가 아니라 확장만 알릴 수 있다. 다른 확장도
+    # 이 출처 검사를 통과하지만, 그 확장은 이미 페이지 전체를 읽을 수 있어 여기서 더 얻는 것이 없다.
+    _require_extension_origin(request)
+    try:
+        from app.adapters.proxy.addon import approve_uploads as remember
+    except ImportError:  # 라이트 판 — 프록시가 없다
+        return {"ok": True}
+    remember([(item.sha256, item.name, item.size) for item in body.items])
+    return {"ok": True}

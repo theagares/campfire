@@ -107,3 +107,21 @@ def test_proxy_start_and_stop_clear_old_route_reports(monkeypatch) -> None:
         assert client.post("/proxy/extension-route", headers={"Origin": EXT_ORIGIN}, json=report).json()["mode"] == "proxy"
         body = client.post(path).json()
         assert body["extensionRoute"]["mode"] == "unknown", path  # 켜고 끈 뒤에는 탭이 다시 보고해야 보인다
+
+
+def test_approved_uploads_need_extension_origin_and_reach_the_proxy(monkeypatch) -> None:
+    """확장이 검토한 마스킹본 알림 — 이 바이트는 프록시가 다시 검사하지 않으므로 웹 페이지는 알릴 수 없어야 한다."""
+    import pytest
+
+    addon = pytest.importorskip("app.adapters.proxy.addon")
+    monkeypatch.setattr(addon, "_approved", {})
+    client = _client()
+    item = {"sha256": "a" * 64, "name": "pii_masked.md", "size": 406}
+    assert client.post("/proxy/approved-uploads", json={"items": [item]}).status_code == 403
+    assert not addon._approved
+    response = client.post("/proxy/approved-uploads", headers={"Origin": EXT_ORIGIN}, json={"items": [item]})
+    assert response.status_code == 200
+    assert addon._approved["a" * 64][:2] == ("pii_masked.md", 406)
+    bad = client.post("/proxy/approved-uploads", headers={"Origin": EXT_ORIGIN},
+                      json={"items": [{**item, "sha256": "not-a-hash"}]})
+    assert bad.status_code == 422

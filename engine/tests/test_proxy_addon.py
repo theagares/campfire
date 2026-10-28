@@ -10,6 +10,8 @@ run_pipeline 은 부르지 않는다(모델 로드가 붙는다) — `_scan_and_
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 
 import pytest
 
@@ -683,3 +685,41 @@ def test_파일명에_등록어가_있으면_깨끗해도_원본도_원래이름
     assert got == b"hello"
     assert addon_mod.masked_name_for("Aurora_plan.pdf") == "document_masked.md"
     assert addon_mod.masked_name_for("plain.pdf") == "plain_masked.md"
+
+
+def test_확장이_검토한_마스킹본은_다시_검사하지_않는다(monkeypatch):
+    """맥 v0.2.58: 프록시가 확장의 마스킹본을 프롬프트 없이 다시 검사해 마지막 줄을 인젝션으로 바꿔 보냈고(ChatGPT),
+    Gemini 는 바꿔 넣을 수 없어 막혀 첨부가 오류로 떴다. 확장이 알린 해시와 같은 바이트는 그대로 보낸다."""
+    import app.core.pipeline.orchestrator as orch
+
+    async def must_not_scan(**_kwargs):
+        raise AssertionError("확장이 검토한 마스킹본을 다시 검사했다")
+
+    monkeypatch.setattr(orch, "run_pipeline", must_not_scan)
+    monkeypatch.setattr(addon_mod, "_approved", {})
+    body = "담당자: [이름 마스킹]\n이번 분기 일정을 정리해 주세요.".encode()
+    addon_mod.approve_uploads([(hashlib.sha256(body).hexdigest(), "pii_masked.md", len(body))])
+    for host, can_replace in (("chatgpt.com", True), ("gemini.google.com", False)):
+        got = _run(CampfireAddon()._scan_and_decide(
+            data=body, file_name="upload.bin", mime="text/markdown", host=host, can_replace=can_replace,
+        ))
+        assert got is _ORIGINAL, host
+    with pytest.raises(AssertionError):  # 한 바이트라도 다르면 지금처럼 검사한다
+        _run(CampfireAddon()._scan_and_decide(data=body + b" ", file_name="x.md", mime="text/markdown", host="chatgpt.com"))
+
+
+def test_확장이_검토한_마스킹본은_ChatGPT_등록의_이름과_크기를_고치지_않는다(monkeypatch):
+    """맥 v0.2.58: 등록에 "image_masked_masked.md", 크기 67160(=406×4+64K)이 실렸다."""
+    monkeypatch.setattr(addon_mod, "_approved", {})
+    addon_mod.approve_uploads([("0" * 64, "image_masked.md", 406)])
+
+    def register(name: str, size: int) -> tuple[dict, object]:
+        flow = _req("chatgpt.com", "/backend-api/files",
+                    content=json.dumps({"file_name": name, "file_size": size, "use_case": "multimodal"}).encode())
+        CampfireAddon()._chatgpt_register(flow)
+        return json.loads(flow.request.get_text()), flow.metadata["campfire_upload"]
+
+    body, promise = register("image_masked.md", 406)
+    assert (body["file_name"], body["file_size"], promise.declared) == ("image_masked.md", 406, None)
+    body, promise = register("report.docx", 406)  # 알리지 않은 업로드는 지금처럼 고친다
+    assert body["file_name"] == "report_masked.md" and body["file_size"] == promise.declared > 406

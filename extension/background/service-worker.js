@@ -864,6 +864,25 @@ function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
+/** 사람이 검토해 승인한 마스킹본을 사이트에 넣기 직전에 엔진(프록시)에 알린다 — 같은 바이트는 프록시가 다시 검사하지
+ *  않는다. 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 말없이 바꾸고, ChatGPT 등록의 이름·크기까지
+ *  고쳤다(맥 v0.2.58 실측). 알리지 못해도 막지 않는다 — 프록시가 예전처럼 한 번 더 검사할 뿐이다. */
+async function approveUploads(files) {
+  try {
+    const items = await Promise.all(files.map(async ({ bytes, fileName }) => ({
+      sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+        (b) => b.toString(16).padStart(2, '0')).join(''),
+      name: fileName,
+      size: bytes.byteLength,
+    })));
+    if (!items.length) return;
+    await fetchServer('/proxy/approved-uploads', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }), signal: AbortSignal.timeout(1500),
+    });
+  } catch (_) { /* 위 주석 */ }
+}
+
 /** 글을 .md 로 감싼 업로드 결정 — content.js 의 'upload' 모양 그대로. */
 function textUpload(text, mimeType, fileName) {
   const wrapped = wrapMaskedFile(text, mimeType, fileName);
@@ -1077,7 +1096,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === 'PANEL_DECISION') {
     // SW 가 재시작됐으면 sessions 가 비어 있다 — 복구하기 전에 판단하면 멀쩡한
     // 세션을 "모르는 세션" 으로 처리해 사용자에게 만료를 띄우게 된다.
-    ensureHydrated().then(() => {
+    ensureHydrated().then(async () => {
       const { sessionId, decision } = message;
       const session = sessions.get(sessionId);
 
@@ -1135,17 +1154,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         else if (session.kind === 'file' && decision?.action === 'passthrough') Object.assign(decision, asText());
       }
 
+      // 검토가 끝났으니 그 탭의 패널을 꺼둔다 — 패널은 스스로 window.close() 로
+      // 닫지만, 옵션을 켠 채로 두면 나중에 그 탭으로 돌아왔을 때 빈 패널이 되살아난다.
+      // 세션은 아래에서 기다리기 **전에** 지운다 — 결정 직후 패널이 닫히면 남은 세션을 취소로 풀기 때문이다.
+      disablePanelForTab(session.tabId);
+      sessions.delete(sessionId);
+      if (activeSessionId === sessionId) activeSessionId = null;
+      persistSessions();
+
+      if (outFile?.maskedBase64) {
+        await approveUploads([{
+          bytes: Uint8Array.from(atob(outFile.maskedBase64), c => c.charCodeAt(0)), fileName: outFile.fileName,
+        }]);
+      }
       if (session.tabId != null) {
         chrome.tabs.sendMessage(session.tabId, {
           type: 'PANEL_DECISION', sessionId, kind: session.kind, decision,
         }).catch(() => {});
       }
-      // 검토가 끝났으니 그 탭의 패널을 꺼둔다 — 패널은 스스로 window.close() 로
-      // 닫지만, 옵션을 켠 채로 두면 나중에 그 탭으로 돌아왔을 때 빈 패널이 되살아난다.
-      disablePanelForTab(session.tabId);
-      sessions.delete(sessionId);
-      if (activeSessionId === sessionId) activeSessionId = null;
-      persistSessions();
       sendResponse({ ok: true });
     });
     return true; // 응답이 비동기 — 채널을 열어둔다
@@ -1328,7 +1354,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 결정 → 산출물 생성. 패널은 unmaskedKeys 와 action 만 보내고 바이너리도
   // artifactId 도 만들지 않는다. 여기서 검증하고 만든 뒤 descriptor 만 중계한다.
   if (type === 'PANEL_MULTI_DECISION') {
-    ensureHydrated().then(() => {
+    ensureHydrated().then(async () => {
       const { sessionId, decision } = message;
       const session = sessions.get(sessionId);
       if (!session || session.kind !== 'multi') {
@@ -1402,6 +1428,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // FINALIZE_MULTI_SESSION 을 보내야 세션과 남은 산출물을 지운다.
       session.status = 'awaiting-injection';
       persistSessions();
+      // 주입 대기로 바꾼 뒤에 기다린다 — 결정 직후 패널이 닫혀도(cancelSessionsForTab) 이 세션은 건드리지 않는다.
+      await approveUploads(files.filter(f => f.artifactId).map(f => scanArtifacts.get(f.artifactId)).filter(Boolean));
 
       if (session.tabId != null) {
         chrome.tabs.sendMessage(session.tabId, {

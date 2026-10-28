@@ -718,5 +718,49 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
     await settle();
   }
 
-  console.log('multi-attach.test.js: 18개 블록 통과');
+  // ── 19) 사람이 승인한 마스킹본은 탭에 넘기기 전에 엔진(프록시)에 해시로 알린다 ──
+  //     맥 v0.2.58: 프록시가 그 마스킹본을 프롬프트 없이 다시 검사해 마지막 줄을 인젝션으로 바꿔 보냈고(ChatGPT),
+  //     Gemini 는 바꿔 넣을 수 없어 막혀 첨부가 오류로 떴다.
+  {
+    sandbox.crypto.subtle = require('crypto').webcrypto.subtle;
+    sandbox.Headers = Headers; // 하니스에 없는 전역 — 엔진 호출(fetchServer)이 쓴다
+    const posts = [];
+    sandbox.fetch = (url, opts = {}) => {
+      if (String(url).endsWith('/proxy/approved-uploads')) {
+        posts.push({ ...JSON.parse(opts.body), relayedFirst: tabMessages.some(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === 'appr') });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ service: 'campfire', forcedMask: { managed: true, ready: true } }) });
+    };
+    delete sessionStore.srv;
+    tabMessages.length = 0;
+    const one = [{ id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }];
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'appr', payload: { items: one } });
+    await settle();
+    const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED' && m.sessionId === 'appr').leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'appr', leaseId: lease, text: '요약해줘' });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'appr', leaseId: lease,
+      payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', file: binaryFile('a.pdf'), userPrompt: '요약해줘' },
+    });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'appr', leaseId: lease });
+    await settle();
+    await send({
+      type: 'PANEL_MULTI_DECISION', sessionId: 'appr',
+      decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'masked', unmaskedKeys: [] }] },
+    });
+    await settle();
+    const relay = tabMessages.find(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === 'appr');
+    const artifact = await send({
+      type: 'GET_SCAN_ARTIFACT', sessionId: 'appr', docId: 'f0', artifactId: relay.decision.files[0].artifactId,
+    });
+    const bytes = Buffer.from(await artifact.blob.arrayBuffer());
+    const sha = require('crypto').createHash('sha256').update(bytes).digest('hex');
+    assert.strictEqual(posts.length, 1, '승인한 마스킹본을 엔진에 알리지 않았다 — 프록시가 다시 검사해 바꾸거나 막는다');
+    assert.deepStrictEqual(posts[0].items, [{ sha256: sha, name: artifact.fileName, size: bytes.length }]);
+    assert.strictEqual(posts[0].relayedFirst, false, '탭에 먼저 넘겨 사이트가 올리기 전에 알리지 못할 수 있다');
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'appr' });
+    await settle();
+  }
+
+  console.log('multi-attach.test.js: 19개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });
