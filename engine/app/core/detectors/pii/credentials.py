@@ -38,6 +38,10 @@ _CONFIDENCE = 0.95
 #
 # 값만 잡는 게 아니라 매치 전체를 가린다. 접두사만 봐도 무엇인지 드러나고,
 # 접두사를 남겨두면 어떤 서비스의 키가 여기 있었는지가 그대로 노출된다.
+#
+# re.ASCII: 기본 \b 는 유니코드 기준이라 한글도 단어문자로 본다. 그러면 "키는AKIA…입니다" 처럼
+# 키 바로 앞뒤에 한글이 붙으면 경계가 없어 키 전체를 놓쳤다(v0.2.56 Windows FM-3, 형식과 무관).
+# 아래 패턴은 모두 명시적인 ASCII 문자 클래스를 쓰므로 re.ASCII 가 바꾸는 건 \b 뿐이다.
 _WHOLE_MATCH: tuple[tuple[str, re.Pattern[str]], ...] = (
     # PEM 블록 — 헤더부터 푸터까지 통째로. DOTALL 로 여러 줄을 한 덩어리로 본다.
     ("private_key", re.compile(
@@ -45,18 +49,18 @@ _WHOLE_MATCH: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.DOTALL,
     )),
     # AWS 액세스 키 ID
-    ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b", re.ASCII)),
     # GitHub 토큰 (ghp_ 개인, gho_ OAuth, ghu_/ghs_ 앱, ghr_ 갱신)
-    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", re.ASCII)),
     # OpenAI / Anthropic 계열
-    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
-    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b", re.ASCII)),
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b", re.ASCII)),
     # Slack
-    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", re.ASCII)),
     # Google API 키
-    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b", re.ASCII)),
     # JWT — 헤더.페이로드.서명
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b", re.ASCII)),
 )
 
 # ── 값만 가리는 패턴 (key=value) ──────────────────────────────────────────────
