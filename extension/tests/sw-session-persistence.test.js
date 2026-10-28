@@ -37,16 +37,18 @@ const noop = () => {};
 
 /** 서비스워커를 한 번 "기동" 한다. storage 는 호출자가 넘긴 객체를 그대로 쓰므로,
  *  같은 객체로 두 번 기동하면 재시작을 재현할 수 있다. */
-function bootWorker(storageBacking) {
+function bootWorker(storageBacking, opts = {}) {
   const listeners = [];
   const tabsSent = [];
+  const reloads = []; // chrome.runtime.reload() 때까지 탭에 보낸 메시지 수
+  const local = opts.local || {}; // storage.local — 같은 객체로 다시 기동하면 다시 로드한 뒤를 재현한다
 
   const sandbox = {
     console: { log: noop, warn: noop, error: noop, debug: noop },
     setTimeout, clearTimeout, setInterval, clearInterval,
     Promise, Date, Math, JSON, Set, Map, Object, Array, String, Number, Boolean,
-    Error, RegExp, Symbol, URL, URLSearchParams, TextEncoder, TextDecoder,
-    fetch: () => Promise.reject(new Error('네트워크는 이 테스트의 관심사가 아니다')),
+    Error, RegExp, Symbol, URL, URLSearchParams, TextEncoder, TextDecoder, AbortSignal, Headers,
+    fetch: opts.fetch || (() => Promise.reject(new Error('네트워크는 이 테스트의 관심사가 아니다'))),
     atob: (b) => Buffer.from(b, 'base64').toString('binary'),
     btoa: (b) => Buffer.from(b, 'binary').toString('base64'),
     crypto: { randomUUID: () => 'uuid-' + Math.random().toString(16).slice(2) },
@@ -73,10 +75,12 @@ function bootWorker(storageBacking) {
         onStartup: { addListener: noop },
         sendMessage: () => Promise.resolve(),
         getURL: (p) => 'chrome-extension://x/' + p,
+        getManifest: () => opts.manifest || { version: '0.0.0', content_scripts: [] },
+        reload: () => { reloads.push(tabsSent.length); },
       },
       tabs: {
         sendMessage: (tabId, msg) => { tabsSent.push({ tabId, msg }); return Promise.resolve(); },
-        query: () => Promise.resolve([]),
+        query: () => Promise.resolve(opts.tabs || []),
       },
       action: { setBadgeText: noop, setBadgeBackgroundColor: noop },
       sidePanel: { setOptions: () => Promise.resolve(), open: () => Promise.resolve(), close: () => Promise.resolve() },
@@ -87,7 +91,10 @@ function bootWorker(storageBacking) {
           ),
           set: (obj) => { Object.assign(storageBacking, obj); return Promise.resolve(); },
         },
-        local: { get: () => Promise.resolve({}), set: () => Promise.resolve() },
+        local: {
+          get: (key) => Promise.resolve(key in local ? { [key]: local[key] } : {}),
+          set: (obj) => { Object.assign(local, obj); return Promise.resolve(); },
+        },
       },
     },
   };
@@ -106,7 +113,7 @@ function bootWorker(storageBacking) {
     setTimeout(() => respond(undefined), 1500);
   });
 
-  return { send, tabsSent };
+  return { send, tabsSent, reloads };
 }
 
 const SESSION_KEY = 'campfireSessionState';
@@ -248,6 +255,30 @@ const pendingState = () => ({
     assert.strictEqual(d?.action, 'upload', '그림을 검사하지 못한 문서를 원본(그림째)으로 보냈다');
     assert.ok(/\.md$/.test(d.fileName), `글 문서로 보내지 않았다: ${d.fileName}`);
     assert.ok(Buffer.from(d.maskedBase64, 'base64').toString('utf8').includes('그림 옆 설명'), '원문 글이 빠졌다');
+  }
+
+  // ── 앱 업데이트로 확장 폴더는 새 판인데 크롬이 옛 코드를 돌면(Windows EX-5): AI 탭에 알린 뒤 한 번 스스로 다시 로드 ──
+  {
+    const engine = { target: 'local', baseUrl: 'http://127.0.0.1:48200', port: 48200,
+      health: { forcedMask: { managed: true, ready: true } } };
+    const boot = (state, local, disk = '{"version":"9.9.9"}') => bootWorker({ k: engine, ...state }, {
+      local, tabs: [{ id: 7 }],
+      manifest: { version: '0.2.57', content_scripts: [{ matches: ['https://chatgpt.com/*'] }] },
+      fetch: async (url) => ({ ok: true, json: async () => JSON.parse(url.endsWith('/health') ? '{"service":"campfire"}' : disk) }),
+    });
+    const healthCheck = async (w) => {
+      await w.send({ type: 'GET_PROXY_EXPECTATION' }, { tab: { id: 7 } });
+      await new Promise(r => setTimeout(r, 50));
+      return w.reloads;
+    };
+    const local = {};
+    let w = boot({}, local);
+    assert.deepStrictEqual(await healthCheck(w), [1], '폴더가 새 판인데 다시 로드하지 않았거나, 탭에 알리기 전에 다시 로드했다');
+    assert.strictEqual(w.tabsSent[0].msg.type, 'EXTENSION_RELOADING');
+    assert.deepStrictEqual(await healthCheck(boot({}, local)), [], '다시 로드해도 판이 그대로면 되풀이하면 안 된다');
+    assert.deepStrictEqual(await healthCheck(boot(pendingState(), {})), [], '검토 중인 세션을 날렸다');
+    assert.deepStrictEqual(await healthCheck(boot({}, {}, '{"version":"0.2.57"}')), [], '같은 판인데 다시 로드했다');
+    assert.deepStrictEqual(await healthCheck(boot({}, {}, '{"vers')), [], '설치 중 반쯤 쓰인 manifest 로 다시 로드했다');
   }
 
   console.log('sw-session-persistence ok');
