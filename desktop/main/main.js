@@ -102,6 +102,12 @@ function showDashboard(view) {
   if (!mainWindow) createMainWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
+  // Windows 는 다른 앱이 앞에 있으면 focus() 로 창을 올리지 못하게 막는다(포그라운드 잠금) — 두 번째 실행 때
+  // 창이 크롬 뒤에 깔렸다(Windows IN-5). 맨 위로 잠깐 올렸다 내리면 Z 순서는 맨 앞에 남는다.
+  if (process.platform === 'win32') {
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.setAlwaysOnTop(false);
+  }
   mainWindow.focus();
   if (view) mainWindow.webContents.send('nav:goto', view);
 }
