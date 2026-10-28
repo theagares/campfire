@@ -412,6 +412,16 @@ async function main() {
     assert.strictEqual(kids[0].mode, 'normal', '글 노드 속성을 지금 상태에서 빌리지 않았다');
     const res = t.posted.find((m) => m.type === 'SECUREDOC_SET_EDITOR_STATE_RESULT');
     assert.ok(res && res.ok === true && res.nonce === 'n1' && res.bridgeToken === TOKEN, '결과를 content.js 에 알리지 않았다');
+
+    // Copilot 은 여러 줄을 문단 여럿으로 친다(Shift+Enter, 문단마다 sentinel) — 한 문단 linebreak 로 넣으면 보낼 때 줄이 붙었다.
+    const line = (text) => ({ type: 'paragraph', version: 1, textFormat: 0, children: [
+      { type: 'text', version: 1, detail: 0, format: 0, mode: 'normal', style: '', text }, { type: 'sentinel', version: 1, text: '​‌' },
+    ] });
+    state.root.children = [line('주민번호 900101-1234567'), line('둘째 줄')];
+    ask({ bridgeToken: TOKEN, text: '주민번호 [주민등록번호 마스킹]\n\n둘째 줄', nonce: 'n2' });
+    assert.deepStrictEqual((applied?.root?.children || []).map((p) => p.children.map((n) => [n.type, n.text])), [
+      [['text', '주민번호 [주민등록번호 마스킹]'], ['sentinel', '​‌']], [['text', '둘째 줄'], ['sentinel', '​‌']],
+    ], '여러 문단으로 친 글을 사이트와 같은 모양(줄마다 문단)으로 넣지 않았다');
   }
 
   console.log('interceptor-bridge ok');
