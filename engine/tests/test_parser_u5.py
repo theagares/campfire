@@ -150,6 +150,18 @@ def test_hwp_find_soffice_returns_none_or_path():
     assert found is None or isinstance(found, str)
 
 
+def test_hwp_find_soffice_mac_dmg_install_without_path(monkeypatch):
+    # dmg 로 설치한 LibreOffice 는 PATH 에 없다 — /Applications 의 앱 안 실행 파일을 찾아야 한다.
+    app = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    monkeypatch.setattr(hwp_module.sys, "platform", "darwin")
+    monkeypatch.setattr(hwp_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(hwp_module.os.path, "exists", lambda p: p == app)
+    assert hwp_module._find_soffice() == app
+
+    monkeypatch.setattr(hwp_module.os.path, "exists", lambda _p: False)
+    assert hwp_module._find_soffice() is None
+
+
 # ── HWPX (pyhwpx) ─────────────────────────────────────────────────────────────
 
 
