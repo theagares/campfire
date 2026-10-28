@@ -1,657 +1,509 @@
 <!doctype html>
 <html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Campfire 기밀 판정 근거 대시보드</title>
-<link rel="icon" href="data:,">
-<!-- 시연 전용 (SECUREDOC_DEMO_TRACE=1). 엔진이 직접 준다 — /demo/kg, /demo/trace/stream 과 같은 출처 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
-<style>
-  :root {
-    --bg: #F6F6F8; --panel: #FFFFFF; --ink: #0A0A0A; --ink-2: #4B5563; --ink-3: #9CA3AF; --line: #E5E7EB;
-    --purple: #584CDC; --purple-soft: rgba(88, 76, 220, .10);
-    --red: #F04452; --red-soft: #FEECEE; --red-ink: #B4232F;
-    --orange: #FF9500; --orange-soft: #FFF4E5; --orange-ink: #A85F00;
-    --green: #09AE4B; --green-soft: #E6F7ED; --green-ink: #067A35;
-    --blue-soft: #EEF0FF; --mask: #EEF0F3;
-    --radius: 12px; --shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    background: var(--bg); color: var(--ink);
-    font: 14px/1.5 "Pretendard", "Inter", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
-    display: flex; flex-direction: column; overflow: hidden;
-  }
-  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  header h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
-  header h1 span { color: var(--purple); }
-  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--mask); color: var(--ink-2); white-space: nowrap; }
-  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
-  .pill.live .dot { background: var(--green); box-shadow: 0 0 0 3px rgba(9, 174, 75, .2); }
-  .pill.down .dot { background: var(--red); }
-  .grow { flex: 1; }
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark light"><title>Campfire · KG 근거 대시보드</title><link rel="icon" href="data:,"><style>
+#campfire-disconnected-review .mr-view-switch{display:flex;gap:3px;padding:3px;border:1px solid var(--mr-border);border-radius:8px;margin-left:auto}#campfire-disconnected-review .mr-view-switch button{padding:6px 12px;border:0;border-radius:5px;background:transparent;color:var(--mr-secondary);white-space:nowrap}#campfire-disconnected-review .mr-view-switch button[aria-pressed="true"]{background:var(--mr-node);color:var(--mr-ink)}#campfire-disconnected-review .mr-doc-count{margin-left:10px!important}#campfire-disconnected-review .mr-candidate-summary{padding:2px 5px 20px;margin-bottom:20px;border-bottom:1px solid var(--mr-border)}#campfire-disconnected-review .mr-candidate-summary p{margin-top:10px;font-size:12px;color:var(--mr-secondary);line-height:1.7}#campfire-disconnected-review.is-candidates{--mr-green:light-dark(#64758a,#a1afc0);--mr-green-ink:light-dark(#526477,#c1cbd7);--mr-selected:light-dark(#edf0f4,#303740)}#campfire-disconnected-review.is-candidates .mr-entity.related .mr-node{border-image-source:var(--mr-frame)}#campfire-disconnected-review .mr-graph{width:calc(100% - 32px);margin-inline:auto!important}#campfire-disconnected-review .mr-docbar{flex-wrap:wrap}@media(max-width:650px){#campfire-disconnected-review .mr-view-switch{margin-left:0}#campfire-disconnected-review.is-candidates .mr-sentences{grid-template-columns:1fr}#campfire-disconnected-review.is-candidates .mr-sentence-copy{display:block}}
+#campfire-disconnected-review .mr-appearance{display:flex;align-items:center;gap:18px}#campfire-disconnected-review .mr-appearance label{display:flex;align-items:center;gap:8px;color:var(--mr-secondary);font-size:12px;white-space:nowrap}#campfire-disconnected-review .mr-appearance select{font:inherit;color:var(--mr-ink);background:var(--mr-node);border:1px solid var(--mr-border);border-radius:6px;padding:5px 8px;min-height:32px}#campfire-disconnected-review .mr-appbar{height:auto!important;min-height:46px;flex-wrap:wrap;padding-block:8px!important}@media(max-width:600px){#campfire-disconnected-review .mr-appearance .mr-demo{display:none}#campfire-disconnected-review .mr-appearance select{min-height:44px}}
+#campfire-disconnected-review{--mr-surface:light-dark(#fff,#202124);--mr-sidebar:light-dark(#fcfcfd,#222327);--mr-canvas:light-dark(#f7f9fa,#1b1d20);--mr-node:light-dark(#fff,#2b2e32);--mr-ink:light-dark(#282f39,#eceef2);--mr-secondary:light-dark(#697380,#a3a9b2);--mr-dim:light-dark(#808b97,#8f98a4);--mr-border:light-dark(#e3e7eb,#34373d);--mr-line:light-dark(#acb6c1,#68727f);--mr-dot:light-dark(#dce2e7,#383e45);--mr-green:light-dark(#288569,#6bceaa);--mr-green-ink:light-dark(#226f59,#a6e0c9);--mr-selected:light-dark(#edf7f2,#293c34);--mr-coral:light-dark(#b25b40,#efae95);--mr-coral-bg:light-dark(#fbede7,#44332c);font:13px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;color:var(--mr-ink);width:100%}
+#campfire-disconnected-review *{box-sizing:border-box}#campfire-disconnected-review [hidden]{display:none!important}#campfire-disconnected-review button{font:inherit}#campfire-disconnected-review h2,#campfire-disconnected-review h3,#campfire-disconnected-review p{margin:0}#campfire-disconnected-review button:focus-visible{outline:2px solid var(--mr-green);outline-offset:3px}#campfire-disconnected-review svg.lucide{width:16px;height:16px;flex:none}#campfire-disconnected-review h3{font-size:13px;font-weight:550}
+#campfire-disconnected-review .mr-app{background:var(--mr-surface);border:1px solid var(--mr-border);border-radius:12px;overflow:hidden}#campfire-disconnected-review .mr-appbar{height:46px;display:flex;justify-content:space-between;align-items:center;padding:0 22px;border-bottom:1px solid var(--mr-border);gap:16px}#campfire-disconnected-review .mr-brand{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--mr-secondary)}#campfire-disconnected-review .mr-brand b{font-size:14px;color:var(--mr-ink);font-weight:650}#campfire-disconnected-review .mr-brand svg{color:var(--mr-coral)}#campfire-disconnected-review .mr-brand>span:first-of-type{margin-inline:4px;color:var(--mr-dim)}#campfire-disconnected-review .mr-demo{font-size:11px;color:var(--mr-dim)}
+#campfire-disconnected-review .mr-docbar{display:flex;align-items:center;gap:13px;padding:18px 23px;border-bottom:1px solid var(--mr-border)}#campfire-disconnected-review .mr-docbar>svg{width:32px;height:36px;padding:6px;color:var(--mr-secondary);border:1px solid var(--mr-border);border-radius:6px}#campfire-disconnected-review h2{font-size:17px;line-height:1.4;font-weight:600;letter-spacing:-.3px}#campfire-disconnected-review .mr-docbar p{font-size:11px;color:var(--mr-secondary);margin-top:5px}#campfire-disconnected-review .mr-doc-count{margin-left:auto;font-size:11px;color:var(--mr-dim);white-space:nowrap}
+#campfire-disconnected-review .mr-workspace{display:grid;grid-template-columns:250px minmax(0,1fr)}#campfire-disconnected-review .mr-sidebar{background:var(--mr-sidebar);border-right:1px solid var(--mr-border);padding:19px 13px}#campfire-disconnected-review .mr-list-title{display:flex;align-items:center;justify-content:space-between;margin:0 5px 12px}#campfire-disconnected-review .mr-list-title>span{font-size:11px;color:var(--mr-dim)}#campfire-disconnected-review .mr-sentences{display:flex;flex-direction:column;gap:8px}#campfire-disconnected-review .mr-sentence{width:100%;padding:12px;text-align:left;background:none;border:1px solid transparent;border-radius:8px;color:var(--mr-secondary)}#campfire-disconnected-review .mr-sentence:hover{background:light-dark(#f3f5f7,#282c30)}#campfire-disconnected-review .mr-sentence[aria-pressed="true"]{background:var(--mr-selected);border-color:light-dark(#b5d8c8,#466b59);color:var(--mr-ink)}#campfire-disconnected-review .mr-sentence-top{display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:7px;color:var(--mr-dim)}#campfire-disconnected-review .mr-sentence[aria-pressed="true"] .mr-sentence-top{color:var(--mr-green-ink)}#campfire-disconnected-review .mr-sentence-count{font-weight:500;color:var(--mr-secondary)}#campfire-disconnected-review .mr-sentence[aria-pressed="true"] .mr-sentence-count{color:var(--mr-green-ink)}#campfire-disconnected-review .mr-sentence-title{display:block;font-size:13px;font-weight:550;color:var(--mr-ink);margin-bottom:6px}#campfire-disconnected-review .mr-sentence-copy{font-size:12px;line-height:1.8;display:block;word-break:keep-all}#campfire-disconnected-review .mr-sentence-badge{display:inline-block;margin-top:10px;font-size:11px;line-height:1.5;padding:1px 5px;border-radius:3px;color:var(--mr-coral);background:var(--mr-coral-bg)}#campfire-disconnected-review .mr-hint{display:flex;align-items:flex-start;gap:7px;margin:18px 6px 0;padding-top:15px;border-top:1px solid var(--mr-border);font-size:11px;line-height:1.8;color:var(--mr-dim)}#campfire-disconnected-review .mr-hint>svg{width:13px;height:13px;margin-top:3px}
+#campfire-disconnected-review .mr-main{min-width:0}#campfire-disconnected-review .mr-network{background:var(--mr-canvas);background-image:radial-gradient(var(--mr-dot) .7px,transparent .7px);background-size:17px 17px}#campfire-disconnected-review .mr-network-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:18px 21px 0}#campfire-disconnected-review .mr-network-heading>div{display:flex;align-items:center;gap:8px}#campfire-disconnected-review .mr-selected-tag{color:var(--mr-green-ink);font-size:11px;background:var(--mr-selected);padding:3px 6px;border-radius:4px;white-space:nowrap}#campfire-disconnected-review .mr-count{font-size:11px;color:var(--mr-dim)}#campfire-disconnected-review .mr-verdict{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--mr-secondary);white-space:nowrap}#campfire-disconnected-review .mr-verdict img{width:17px;height:17px}#campfire-disconnected-review .mr-verdict b{font-weight:500;color:var(--mr-coral);background:var(--mr-coral-bg);padding:2px 6px;border-radius:4px}
+#campfire-disconnected-review .mr-focusbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:15px 21px 0;min-height:28px}#campfire-disconnected-review .mr-all{display:flex;align-items:center;gap:6px;font-size:11px;border:1px solid var(--mr-border);border-radius:6px;padding:5px 8px;background:var(--mr-node);color:var(--mr-secondary);white-space:nowrap}#campfire-disconnected-review .mr-all[aria-pressed="true"]{border-color:light-dark(#afd2c2,#436858);color:var(--mr-green-ink);background:var(--mr-selected)}#campfire-disconnected-review .mr-all>svg{width:13px;height:13px}#campfire-disconnected-review .mr-focusbar>span{font-size:11px;color:var(--mr-dim);text-align:right}
+#campfire-disconnected-review .mr-graph{position:relative;height:410px;margin:0 8px}#campfire-disconnected-review .mr-wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}#campfire-disconnected-review .mr-wire{fill:none;stroke:var(--mr-line);stroke-width:1.2;opacity:.3}#campfire-disconnected-review .mr-wire.related{stroke:var(--mr-green);stroke-width:1.6;opacity:.7}#campfire-disconnected-review .mr-wire.focused{stroke:var(--mr-green);stroke-width:2;opacity:1}#campfire-disconnected-review .mr-port{fill:var(--mr-node);stroke:var(--mr-line);stroke-width:1;opacity:.5}#campfire-disconnected-review .mr-port.related{stroke:var(--mr-green);opacity:.9}#campfire-disconnected-review .mr-entity{position:absolute;width:44px;height:44px;transform:translate(-50%,-50%);z-index:2;opacity:.35}#campfire-disconnected-review .mr-entity.related{opacity:.85}#campfire-disconnected-review .mr-entity.focused{opacity:1}#campfire-disconnected-review .mr-node{width:44px;height:44px;background:var(--mr-node);display:flex;align-items:center;justify-content:center;color:var(--mr-ink);border:8px solid transparent;border-image:var(--mr-frame) 14 stretch;border-radius:7px;padding:0}#campfire-disconnected-review .mr-node>svg{width:21px;height:21px;stroke-width:1.6}#campfire-disconnected-review .mr-entity.related .mr-node{border-image-source:var(--mr-frame-active)}#campfire-disconnected-review .mr-entity strong{position:absolute;top:51px;left:50%;transform:translateX(-50%);display:block;max-width:122px;width:max-content;text-align:center;white-space:normal;word-break:keep-all;color:var(--mr-ink);font-size:12px;font-weight:500;line-height:1.4;background:var(--mr-canvas);padding:0 3px}#campfire-disconnected-review .mr-edge{position:absolute;transform:translate(-50%,-50%);z-index:3;display:flex;align-items:center;gap:4px;padding:4px 5px;background:var(--mr-canvas);border:0;border-radius:4px;color:var(--mr-dim);font-size:11px;white-space:nowrap}#campfire-disconnected-review .mr-edge.related{color:var(--mr-green-ink)}#campfire-disconnected-review .mr-edge.focused{background:var(--mr-selected);box-shadow:0 0 0 1px light-dark(#9ac8b3,#4c846a)}#campfire-disconnected-review .mr-edge:not(.related){opacity:.45}#campfire-disconnected-review .mr-edge-num{display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;font-size:11px;border-radius:3px;background:var(--mr-node);color:inherit}
+#campfire-disconnected-review .mr-legend{display:flex;align-items:center;gap:16px;padding:2px 21px 15px;font-size:11px;color:var(--mr-dim);flex-wrap:wrap}#campfire-disconnected-review .mr-legend>span{display:flex;align-items:center;gap:6px}#campfire-disconnected-review .mr-legend b{display:block;width:13px;border-top:2px solid var(--mr-green)}#campfire-disconnected-review .mr-legend>span:nth-child(2)>b{border-color:var(--mr-line);opacity:.5}#campfire-disconnected-review .mr-entity-count{margin-left:auto}
+#campfire-disconnected-review .mr-relations{padding:15px 21px 17px;border-top:1px solid var(--mr-border)}#campfire-disconnected-review .mr-relations-heading{display:flex;justify-content:space-between;gap:10px;margin-bottom:11px;align-items:center}#campfire-disconnected-review .mr-relations-heading h3{font-size:12px}#campfire-disconnected-review .mr-relations-heading>span{font-size:11px;color:var(--mr-dim)}#campfire-disconnected-review .mr-fact-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}#campfire-disconnected-review .mr-fact{display:flex;align-items:flex-start;gap:7px;border:1px solid var(--mr-border);background:var(--mr-surface);border-radius:6px;padding:9px;text-align:left;color:var(--mr-secondary);min-width:0}#campfire-disconnected-review .mr-fact[aria-pressed="true"]{border-color:light-dark(#97c5b0,#517e68);background:var(--mr-selected);color:var(--mr-green-ink)}#campfire-disconnected-review .mr-fact-number{font-size:11px;flex:none;min-width:17px;height:18px;display:flex;align-items:center;justify-content:center;background:var(--mr-canvas);border-radius:3px;margin-top:1px;color:var(--mr-dim)}#campfire-disconnected-review .mr-fact-content{min-width:0;display:block}#campfire-disconnected-review .mr-fact-content>span{display:block;font-size:11px;color:var(--mr-dim);margin-bottom:3px}#campfire-disconnected-review .mr-fact-content>strong{font-size:12px;font-weight:500;color:var(--mr-ink);line-height:1.4;display:block;overflow-wrap:anywhere}
+#campfire-disconnected-review .mr-source{border-top:1px solid var(--mr-border);padding:16px 21px 20px}#campfire-disconnected-review .mr-source-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}#campfire-disconnected-review .mr-source-heading h3{display:flex;align-items:center;gap:7px;font-size:12px}#campfire-disconnected-review .mr-source-heading h3>span{font-size:11px;color:var(--mr-green-ink);font-weight:400}#campfire-disconnected-review .mr-source-heading>span{font-size:11px;color:var(--mr-dim)}#campfire-disconnected-review .mr-source-heading svg{width:14px;height:14px;color:var(--mr-secondary)}#campfire-disconnected-review .mr-source-text{display:flex;gap:11px;background:var(--mr-selected);border-left:2px solid var(--mr-green);border-radius:0 5px 5px 0;padding:11px 12px;font-size:13px;line-height:1.85;word-break:keep-all}#campfire-disconnected-review .mr-source-text>span{font-size:11px;color:var(--mr-green-ink);flex:none;padding-top:2px}#campfire-disconnected-review .mr-shared{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:12px;color:var(--mr-dim);font-size:11px}#campfire-disconnected-review .mr-shared>svg{width:13px;height:13px}#campfire-disconnected-review .mr-shared>div{display:flex;gap:5px}#campfire-disconnected-review .mr-shared button{font-size:11px;color:var(--mr-secondary);padding:2px 6px;border:1px solid var(--mr-border);background:var(--mr-surface);border-radius:4px}#campfire-disconnected-review .mr-shared button[aria-pressed="true"]{color:var(--mr-green-ink);background:var(--mr-selected)}
+#campfire-disconnected-review .mr-provenance{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;padding:10px 2px;font-size:11px;color:light-dark(#788390,#8f98a4)}#campfire-disconnected-review .mr-provenance a{color:inherit;text-underline-offset:3px}#campfire-disconnected-review .mr-announcement{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@media(max-width:850px){#campfire-disconnected-review .mr-workspace{grid-template-columns:218px minmax(0,1fr)}#campfire-disconnected-review .mr-sidebar{padding-inline:10px}#campfire-disconnected-review .mr-network-heading,#campfire-disconnected-review .mr-source,#campfire-disconnected-review .mr-relations{padding-inline:15px}#campfire-disconnected-review .mr-verdict>span{display:none}#campfire-disconnected-review .mr-focusbar{margin-inline:15px}#campfire-disconnected-review .mr-fact-list{grid-template-columns:repeat(2,minmax(0,1fr))}#campfire-disconnected-review .mr-relations-heading>span{display:none}#campfire-disconnected-review .mr-demo{display:none}#campfire-disconnected-review .mr-entity strong{font-size:11px}}
+@media(max-width:650px){#campfire-disconnected-review .mr-workspace{display:block}#campfire-disconnected-review .mr-sidebar{border-right:0;border-bottom:1px solid var(--mr-border);padding:15px 12px}#campfire-disconnected-review .mr-sentences{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}#campfire-disconnected-review .mr-sentence{padding:10px}#campfire-disconnected-review .mr-sentence-copy{display:none}#campfire-disconnected-review .mr-sentence-title{font-size:12px;margin-bottom:0}#campfire-disconnected-review .mr-sentence-badge{display:none}#campfire-disconnected-review .mr-sentence-top{font-size:11px;gap:4px;flex-wrap:wrap}#campfire-disconnected-review .mr-hint{display:none}#campfire-disconnected-review .mr-docbar{padding:17px 16px}#campfire-disconnected-review .mr-doc-count{display:none}#campfire-disconnected-review .mr-docbar>svg{display:none}#campfire-disconnected-review .mr-appbar{padding-inline:16px}#campfire-disconnected-review .mr-count{display:none}#campfire-disconnected-review .mr-network-heading{gap:6px}#campfire-disconnected-review .mr-network-heading h3{font-size:12px}#campfire-disconnected-review .mr-focusbar>span{max-width:175px}#campfire-disconnected-review .mr-entity-count{display:none!important}#campfire-disconnected-review .mr-source-heading>span{display:none}#campfire-disconnected-review .mr-source-text{font-size:12px}}
+#campfire-disconnected-review .mr-graph.portrait .mr-edge-name{display:none}#campfire-disconnected-review .mr-graph.portrait .mr-edge{padding:3px}#campfire-disconnected-review .mr-graph.portrait .mr-entity strong{max-width:105px}#campfire-disconnected-review .mr-graph.portrait .mr-edge-num{width:18px;height:18px}
+@media(pointer:coarse){#campfire-disconnected-review .mr-all,#campfire-disconnected-review .mr-fact,#campfire-disconnected-review .mr-shared button{min-height:44px}#campfire-disconnected-review .mr-edge::after{content:"";position:absolute;inset:-9px -5px}}
+@media(prefers-reduced-motion:no-preference){#campfire-disconnected-review .mr-entity,#campfire-disconnected-review .mr-wire,#campfire-disconnected-review .mr-sentence,#campfire-disconnected-review .mr-fact{transition:opacity .15s,background-color .15s,border-color .15s}}
+#campfire-disconnected-review .mr-relations{padding-block:11px}#campfire-disconnected-review .mr-relations-heading{margin:0;list-style:none;font-size:12px;color:var(--mr-secondary)}#campfire-disconnected-review .mr-relations-heading::-webkit-details-marker{display:none}#campfire-disconnected-review .mr-relations-heading b{font-size:11px;font-weight:400;color:var(--mr-dim);margin-left:5px}#campfire-disconnected-review .mr-relations-heading>span:first-child{font-size:12px;color:var(--mr-secondary)}#campfire-disconnected-review .mr-relations[open] .mr-relations-heading{margin-bottom:11px}#campfire-disconnected-review .mr-relations[open] .mr-relations-heading>span:last-child{font-size:0}#campfire-disconnected-review .mr-relations[open] .mr-relations-heading>span:last-child::after{content:"접기";font-size:11px}
+#campfire-disconnected-review .mr-relations-heading>span:first-child{display:inline}#campfire-disconnected-review .mr-focusbar>span{overflow-wrap:anywhere}
+#campfire-disconnected-review .mr-docbar>svg{width:32px!important;height:36px!important}#campfire-disconnected-review .mr-node>svg{width:21px!important;height:21px!important}
+#campfire-disconnected-review .dr-group-heading{position:absolute;display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--mr-secondary);font-size:11px;line-height:1.5;z-index:1}#campfire-disconnected-review .dr-group-heading>span:last-child{color:var(--mr-dim)}
+#campfire-disconnected-review .dr-unlinked-heading{position:absolute;left:16px;right:16px;display:flex;justify-content:space-between;gap:12px;padding-top:15px;border-top:1px solid var(--mr-border);color:var(--mr-dim);font-size:11px;z-index:1}
+#campfire-disconnected-review .mr-entity.dr-unlinked{opacity:.8}#campfire-disconnected-review .mr-entity.dr-unlinked .mr-node{color:var(--mr-secondary);border-image-source:var(--mr-frame)}#campfire-disconnected-review .mr-entity.dr-unlinked.dr-inspected{opacity:1}#campfire-disconnected-review .dr-inspected .mr-node{outline:1px dashed var(--mr-secondary);outline-offset:4px}
+#campfire-disconnected-review .dr-node-status{position:absolute;left:50%;top:78px;transform:translateX(-50%);font-size:11px;white-space:nowrap;color:var(--mr-dim);background:var(--mr-canvas);padding-inline:3px}
+#campfire-disconnected-review .dr-empty{position:absolute;top:55px;left:20px;right:20px;text-align:center;color:var(--mr-secondary);font-size:12px;line-height:1.8}
+#campfire-disconnected-review .mr-sentence-badge.dr-neutral,#campfire-disconnected-review .mr-verdict.dr-neutral b{color:var(--mr-secondary);background:var(--mr-canvas)}#campfire-disconnected-review .mr-source-text.dr-neutral{background:var(--mr-canvas);border-left-color:var(--mr-border);color:var(--mr-secondary)}#campfire-disconnected-review .mr-source-text.dr-neutral>span{color:var(--mr-secondary)}#campfire-disconnected-review .mr-all:disabled{color:var(--mr-dim);border-color:var(--mr-border);background:var(--mr-node)}
+#campfire-disconnected-review .mr-focusbar>span{max-width:440px}#campfire-disconnected-review .mr-entity strong{max-width:130px}#campfire-disconnected-review .mr-graph{margin-inline:8px}#campfire-disconnected-review .mr-source{padding-top:15px}
+@media(max-width:650px){#campfire-disconnected-review .mr-focusbar{align-items:flex-start}#campfire-disconnected-review .mr-focusbar>span{max-width:170px}#campfire-disconnected-review .dr-unlinked-heading{gap:8px}#campfire-disconnected-review .mr-entity strong{max-width:115px}}
+#campfire-disconnected-review .dr-isolated-key>b{width:8px;height:8px;border:1px solid var(--mr-line);border-radius:2px}#campfire-disconnected-review .mr-legend{gap:12px}
 
-  /* 깔때기 */
-  .funnel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 28px; padding: 10px 20px 0; }
-  /* 단계 박스 — 진행 상황은 이름 왼쪽 상태 표시로 (GitHub Actions 처럼): 대기 = 번호 원, 진행 중 = 도는 원, 완료 = 보라 체크 */
-  .stage { position: relative; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 7px 12px 7px; transition: transform .3s; }
-  .stage .lbl { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); font-weight: 600; }
-  .stage .num { font-size: 21px; font-weight: 800; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
-  .stage .sub { font-size: 11px; color: var(--ink-3); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .mark { position: relative; flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%;
-          border: 1.5px solid #D5D8DD; color: var(--ink-3); font-size: 10px; font-weight: 700; line-height: 1;
-          transition: background .3s, border-color .3s; }
-  .mark::before { content: attr(data-n); }
-  .stage.run .mark { border-color: #CFCBF5; color: var(--purple); }
-  .stage.run .mark::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--purple);
-                            border-right-color: transparent; border-bottom-color: transparent; animation: rot .9s linear infinite; }
-  .stage.on .mark { background: var(--purple); border-color: var(--purple); }
-  .stage.on .mark::before { content: ""; width: 7px; height: 4px; border-left: 2px solid #FFF; border-bottom: 2px solid #FFF;
-                            transform: translateY(-1px) rotate(-45deg); }
-  @media (prefers-reduced-motion: reduce) { .stage.run .mark::after { animation: none; } }
-  /* 단계 사이 화살표 — 간격 가운데 */
-  .stage:not(:last-child)::after {
-    content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); z-index: 1;
-    width: 22px; text-align: center; color: var(--purple); font-size: 20px; font-weight: 800; line-height: 1;
-  }
-  .stage.flash { animation: flash .7s ease; }
-  @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(88, 76, 220, .55); } 100% { box-shadow: 0 0 0 12px rgba(88, 76, 220, 0); } }
-  @keyframes rot { to { transform: rotate(360deg); } }
+/* Browser export fills the viewport; the inline preview keeps its own framing. */
+html[data-visualize-standalone],
+html[data-visualize-standalone] > body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+#campfire-disconnected-review {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--mr-surface);
+}
+#campfire-disconnected-review .mr-app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+}
+#campfire-disconnected-review .mr-workspace { flex: 1; }
+#campfire-disconnected-review .mr-main {
+  display: flex;
+  flex-direction: column;
+}
+#campfire-disconnected-review .mr-network {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+#campfire-disconnected-review .mr-graph { flex-shrink: 0; margin-block: auto; }
+#campfire-disconnected-review .mr-legend { margin-top: 0; }
+#campfire-disconnected-review .mr-provenance {
+  padding: 10px 22px;
+  border-top: 1px solid var(--mr-border);
+  background: var(--mr-surface);
+}
 
-  /* 본문 */
-  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 470px; gap: 14px; padding: 14px 20px 16px; }
-  .card { background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; }
-  .card > h2 { margin: 0; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
-  .card > h2 small { font-weight: 500; color: var(--ink-3); }
-  .left { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
-  .right { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
-  #graph-card { flex: 1; position: relative; }
-  #cy { flex: 1; min-height: 0; }
-  .legend { position: absolute; left: 12px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--ink-2); background: rgba(255, 255, 255, .92); padding: 6px 10px; border-radius: 8px; }
-  .legend i { display: inline-block; width: 18px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 4px; }
-  .graph-tools { position: absolute; right: 12px; top: 50px; display: flex; gap: 6px; }
-  button { font: inherit; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
-  button:hover { border-color: var(--purple); color: var(--purple); }
-  button.on { background: var(--purple); border-color: var(--purple); color: #fff; }
-  .empty { margin: auto; color: var(--ink-3); text-align: center; padding: 24px; font-size: 13px; }
+#campfire-disconnected-review .kg-explorer{display:grid;grid-template-columns:270px minmax(0,1fr);flex:1;min-height:570px}
+#campfire-disconnected-review .kg-sidebar{padding:22px 18px;background:var(--mr-sidebar);border-right:1px solid var(--mr-border);min-width:0}
+#campfire-disconnected-review .kg-side-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+#campfire-disconnected-review .kg-side-heading>span,#campfire-disconnected-review .kg-filter{color:var(--mr-secondary);font-size:12px}
+#campfire-disconnected-review .kg-search{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--mr-border);border-radius:7px;background:var(--mr-surface)}
+#campfire-disconnected-review .kg-search input{width:100%;min-width:0;border:0;background:transparent;color:var(--mr-ink);font:inherit;outline-offset:4px}
+#campfire-disconnected-review .kg-filter{display:flex;align-items:center;gap:10px;margin:12px 0}
+#campfire-disconnected-review .kg-filter select{flex:1;min-width:0;padding:7px;background:var(--mr-node);color:var(--mr-ink);border:1px solid var(--mr-border);border-radius:6px;font:inherit}
+#campfire-disconnected-review .kg-entity-list{max-height:310px;overflow:auto;display:flex;flex-direction:column;gap:4px}
+#campfire-disconnected-review .kg-entity-list button{display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;padding:10px;border:0;border-radius:6px;background:none;color:var(--mr-secondary)}
+#campfire-disconnected-review .kg-entity-list button[aria-pressed="true"]{background:var(--mr-selected);color:var(--mr-green-ink)}
+#campfire-disconnected-review .kg-entity-list button span:first-child{overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-entity-list button span:last-child{white-space:nowrap;font-size:11px}
+#campfire-disconnected-review .kg-selection{border-top:1px solid var(--mr-border);padding-top:20px;margin-top:18px}
+#campfire-disconnected-review .kg-selection p{color:var(--mr-secondary);font-size:12px;margin:9px 0;line-height:1.7;overflow-wrap:anywhere}
+#campfire-disconnected-review [data-kg-selection]{max-height:260px;overflow:auto}
+#campfire-disconnected-review [data-kg-selection] button{display:block;width:100%;text-align:left;padding:9px 0;border:0;border-bottom:1px solid var(--mr-border);color:var(--mr-ink);background:transparent;font-size:12px;overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-stage{display:flex;flex-direction:column;min-width:0;background:var(--mr-canvas);background-image:radial-gradient(var(--mr-dot) .7px,transparent .7px);background-size:17px 17px}
+#campfire-disconnected-review .kg-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px 12px;flex-wrap:wrap}
+#campfire-disconnected-review .kg-toolbar>div{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#campfire-disconnected-review .kg-toolbar strong{font-size:13px;font-weight:500}
+#campfire-disconnected-review .kg-source-badge{padding:4px 7px;background:var(--mr-node);border-radius:4px;color:var(--mr-secondary);font-size:11px}
+#campfire-disconnected-review .kg-import{position:relative;display:flex;align-items:center;gap:7px;border:1px solid var(--mr-border);padding:7px 11px;border-radius:7px;background:var(--mr-surface);font-size:12px;overflow:hidden}
+#campfire-disconnected-review .kg-import input{position:absolute;inset:0;opacity:0;width:100%;cursor:inherit}
+#campfire-disconnected-review .kg-import:focus-within{outline:2px solid var(--mr-green);outline-offset:3px}
+#campfire-disconnected-review .kg-scope{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:0 22px 12px;font-size:11px;color:var(--mr-secondary)}
+#campfire-disconnected-review .kg-viewport{position:relative;overflow:hidden;flex:1;min-height:430px;touch-action:none;cursor:grab}
+#campfire-disconnected-review .kg-viewport:active{cursor:grabbing}
+#campfire-disconnected-review .kg-world{position:absolute;left:0;top:0;transform-origin:0 0}
+#campfire-disconnected-review .kg-wires{position:absolute;inset:0;overflow:visible;pointer-events:none}
+#campfire-disconnected-review .kg-wire{fill:none;stroke:var(--mr-secondary);stroke-width:1.4;opacity:.7}
+#campfire-disconnected-review .kg-wire.active{stroke:var(--mr-green);stroke-width:2;opacity:1}
+#campfire-disconnected-review .kg-node{position:absolute;transform:translate(-50%,-50%);width:44px;height:44px;border:1px solid var(--mr-line);border-radius:8px;background:var(--mr-node);color:var(--mr-ink);display:flex;align-items:center;justify-content:center;padding:0}
+#campfire-disconnected-review .kg-node svg{width:21px;height:21px}
+#campfire-disconnected-review .kg-node>span{position:absolute;top:51px;left:50%;transform:translateX(-50%);max-width:130px;width:max-content;overflow-wrap:anywhere;white-space:normal;font-size:12px;text-align:center;line-height:1.5;background:var(--mr-canvas);padding:0 3px}
+#campfire-disconnected-review .kg-node.active{border-color:var(--mr-green);box-shadow:0 0 0 3px color-mix(in srgb,var(--mr-green) 12%,transparent)}
+#campfire-disconnected-review .kg-node.dim,#campfire-disconnected-review .kg-edge.dim,#campfire-disconnected-review .kg-wire.dim{opacity:.5}
+#campfire-disconnected-review .kg-edge{position:absolute;transform:translate(-50%,-50%);border:0;padding:3px 5px;border-radius:4px;background:var(--mr-canvas);color:var(--mr-secondary);font-size:11px;white-space:nowrap}
+#campfire-disconnected-review .kg-edge.active{color:var(--mr-green-ink);background:var(--mr-selected)}
+#campfire-disconnected-review .kg-group{position:absolute;color:var(--mr-secondary);font-size:11px;display:flex;justify-content:space-between;border-bottom:1px solid var(--mr-border);padding-bottom:9px}
+#campfire-disconnected-review .kg-canvas-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 22px;color:var(--mr-secondary);font-size:11px;flex-wrap:wrap}
+#campfire-disconnected-review .kg-zoom{display:flex;align-items:center;gap:6px;background:var(--mr-surface);border:1px solid var(--mr-border);border-radius:8px;padding:4px}
+#campfire-disconnected-review .kg-zoom button{display:flex;align-items:center;justify-content:center;min-width:30px;min-height:30px;border:0;border-radius:4px;background:transparent;color:var(--mr-ink);padding:5px 9px}
+#campfire-disconnected-review .kg-zoom button:hover{background:var(--mr-node)}
+#campfire-disconnected-review [data-kg-zoom-label]{min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
+#campfire-disconnected-review .kg-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--mr-secondary)}
+#campfire-disconnected-review .kg-error{color:var(--mr-coral);padding:10px 22px;background:var(--mr-coral-bg);font-size:12px}
+@media(max-width:700px){#campfire-disconnected-review .kg-explorer{grid-template-columns:1fr}#campfire-disconnected-review .kg-sidebar{border-right:0;border-bottom:1px solid var(--mr-border)}#campfire-disconnected-review .kg-entity-list{max-height:150px}#campfire-disconnected-review .kg-selection{margin-top:12px}#campfire-disconnected-review .kg-viewport{min-height:420px}#campfire-disconnected-review .kg-canvas-footer>span:last-child{display:none}}
+#campfire-disconnected-review .kg-list-hint{font-size:11px;color:var(--mr-secondary);margin:12px 0}
+#campfire-disconnected-review .kg-history{display:flex;align-items:center;gap:10px;padding:10px 22px;border-block:1px solid var(--mr-border);font-size:11px;color:var(--mr-secondary);background:var(--mr-surface);flex-wrap:wrap}
+#campfire-disconnected-review .kg-history>div{display:flex;gap:10px;align-items:center;flex:1;flex-wrap:wrap;min-width:0}
+#campfire-disconnected-review .kg-history strong{color:var(--mr-ink);font-weight:500;overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-history button{border:0;background:transparent;color:var(--mr-secondary);font:inherit;padding:5px;display:flex;align-items:center;overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-history button:hover{color:var(--mr-green-ink)}
+#campfire-disconnected-review .kg-history button:disabled,#campfire-disconnected-review .kg-pagination button:disabled{opacity:.3;cursor:default}
+#campfire-disconnected-review .kg-focus-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 22px 4px;flex-wrap:wrap}
+#campfire-disconnected-review .kg-focus-bar>div{display:flex;gap:12px;align-items:center;flex-wrap:wrap;min-width:0}
+#campfire-disconnected-review .kg-focus-bar h3{font-size:18px;overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-focus-kicker{background:var(--mr-selected);color:var(--mr-green-ink);padding:4px 7px;border-radius:4px;font-size:11px}
+#campfire-disconnected-review [data-kg-degree]{font-size:12px;color:var(--mr-secondary)}
+#campfire-disconnected-review .kg-focus-bar .kg-filter{max-width:310px;margin:0}
+#campfire-disconnected-review .kg-viewport{min-height:510px}
+#campfire-disconnected-review .kg-center{width:48px;height:48px;border-color:var(--mr-green)}
+#campfire-disconnected-review .kg-node .kg-center-tag{position:absolute;bottom:60px;font-size:11px;color:var(--mr-green-ink);white-space:nowrap}
+#campfire-disconnected-review .kg-node .kg-more{position:absolute;right:-13px;top:-9px;border:1px solid var(--mr-border);border-radius:10px;padding:2px 5px;font-size:10px;background:var(--mr-surface);color:var(--mr-green-ink);white-space:nowrap}
+#campfire-disconnected-review .kg-node:hover{border-color:var(--mr-green);background:var(--mr-selected)}
+#campfire-disconnected-review .kg-node>span{max-width:160px}
+#campfire-disconnected-review .kg-edge{max-width:180px;white-space:normal;line-height:1.5;text-align:center}
+#campfire-disconnected-review .kg-neighbor-footer{display:flex;justify-content:center;align-items:center;gap:20px;flex-wrap:wrap;padding:10px 22px;color:var(--mr-secondary);font-size:12px}
+#campfire-disconnected-review .kg-pagination{display:flex;align-items:center;gap:10px}
+#campfire-disconnected-review .kg-pagination button{display:flex;border:1px solid var(--mr-border);border-radius:5px;background:var(--mr-surface);color:var(--mr-ink);padding:6px}
+#campfire-disconnected-review .kg-fact{display:flex;flex-direction:column;gap:4px;border-bottom:1px solid var(--mr-border);padding:10px 0;font-size:12px;overflow-wrap:anywhere}
+#campfire-disconnected-review .kg-fact>strong{font-size:11px;color:var(--mr-green-ink);font-weight:400}
+#campfire-disconnected-review .kg-fact>span:first-child{color:var(--mr-secondary)}
+#campfire-disconnected-review [data-kg-selection] .kg-jump{color:var(--mr-green-ink);padding:12px 0}
+@media(max-width:700px){#campfire-disconnected-review .kg-history{padding-inline:16px}#campfire-disconnected-review .kg-focus-bar{padding-inline:16px}#campfire-disconnected-review .kg-focus-bar .kg-filter{max-width:100%}#campfire-disconnected-review .kg-focus-bar h3{font-size:16px}#campfire-disconnected-review .kg-viewport{min-height:400px}}
+#campfire-disconnected-review .kg-expanded{border-color:var(--mr-green)}
+#campfire-disconnected-review .kg-expanded .kg-more{background:var(--mr-selected);color:var(--mr-green-ink)}
 
-  /* 검사 목록 */
-  /* 한 화면씩 넘긴다 (‹ › 버튼) — 스크롤바는 숨기고 카드 단위로 맞춘다 */
-  #history { display: flex; gap: 10px; overflow-x: auto; padding: 10px 12px; min-height: 92px; scroll-snap-type: x mandatory; scroll-padding: 0 12px; scrollbar-width: none; }
-  #history::-webkit-scrollbar { display: none; }
-  .scan { flex: 0 0 210px; scroll-snap-align: start; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); transition: border-color .2s, box-shadow .2s; }
-  .pager { display: flex; align-items: center; gap: 6px; }
-  .pager button { width: 28px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
-  .pager button:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--ink-3); }
-  #hist-page { min-width: 38px; text-align: center; font-size: 11.5px; font-weight: 600; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-  .scan:hover { border-color: var(--purple); }
-  .scan.sel { border-color: var(--purple); box-shadow: 0 0 0 2px var(--purple-soft); }
-  .scan .t { font-size: 11px; color: var(--ink-3); display: flex; justify-content: space-between; }
-  .scan .n { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 2px 0 4px; }
-  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-right: 4px; }
-  .b-secret { background: var(--red-soft); color: var(--red-ink); }
-  .b-none { background: var(--mask); color: var(--ink-2); }
-  .b-run { background: var(--purple-soft); color: var(--purple); }
-  .b-fb { background: var(--orange-soft); color: var(--orange-ink); }
+:root{color-scheme:dark}html,body{margin:0;min-height:100%;background:#202124}body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}button,select{cursor:pointer}button:disabled{cursor:default}
+#campfire-disconnected-review{min-height:100dvh}#campfire-disconnected-review .mr-appbar{padding:12px 22px}#campfire-disconnected-review .mr-docbar{padding:20px 22px}#campfire-disconnected-review .kg-explorer{min-height:580px}#campfire-disconnected-review .kg-viewport{min-height:420px}#campfire-disconnected-review .kg-sidebar{width:270px}
+#campfire-disconnected-review .scanbar{display:flex;gap:14px;align-items:center;padding:10px 22px;border-block:1px solid var(--mr-border);background:var(--mr-sidebar);flex-wrap:wrap}#campfire-disconnected-review .scanbar label{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--mr-secondary)}#campfire-disconnected-review .scanbar select{max-width:min(500px,60vw);padding:7px 10px;background:var(--mr-node);color:var(--mr-ink);border:1px solid var(--mr-border);border-radius:6px}#campfire-disconnected-review .scanbar button{background:transparent;color:var(--mr-secondary);border:1px solid var(--mr-border);border-radius:6px;padding:7px 10px;font-size:12px}#campfire-disconnected-review .scanbar button[aria-pressed=true]{color:var(--mr-green-ink);background:var(--mr-selected)}#scan-status{color:var(--mr-secondary);font-size:12px}
+#campfire-disconnected-review .pipeline{display:flex;gap:22px;flex-wrap:wrap;list-style:none;margin:0;padding:12px 22px;border-bottom:1px solid var(--mr-border)}#campfire-disconnected-review .pipeline li{display:flex;gap:8px;font-size:12px;color:var(--mr-secondary)}#campfire-disconnected-review .pipeline li.done{color:var(--mr-green-ink)}#campfire-disconnected-review .pipeline li.running{color:var(--mr-coral)}#campfire-disconnected-review .pipeline b{font-weight:500;color:var(--mr-ink)}
+#campfire-disconnected-review .api-alert{padding:10px 22px;color:var(--mr-coral);background:var(--mr-coral-bg);border-bottom:1px solid var(--mr-border);font-size:12px}#connection{font-size:12px;color:var(--mr-secondary)}#connection.live{color:var(--mr-green-ink)}#connection.down{color:var(--mr-coral)}
+#campfire-disconnected-review [data-review-sidebar]>h3{margin-bottom:14px}#campfire-disconnected-review .sentence-choice{width:100%;display:block;text-align:left;background:none;border:1px solid transparent;border-radius:8px;padding:12px;color:var(--mr-secondary);margin-bottom:8px}#campfire-disconnected-review .sentence-choice[aria-pressed=true]{border-color:var(--mr-green);background:var(--mr-selected);color:var(--mr-ink)}#campfire-disconnected-review .sentence-choice p{line-height:1.75;margin-top:9px;overflow-wrap:anywhere}#campfire-disconnected-review .sentence-choice>span{display:flex;justify-content:space-between;gap:8px;font-size:11px}#campfire-disconnected-review .state-badge{font-size:11px;padding:3px 6px;border-radius:4px;display:inline-block;background:var(--mr-coral-bg);color:var(--mr-coral)}#campfire-disconnected-review .state-badge.fallback{border:1px dashed var(--mr-coral)}#campfire-disconnected-review .state-badge.public{background:var(--mr-selected);color:var(--mr-green-ink)}#campfire-disconnected-review .empty-note{font-size:12px;color:var(--mr-secondary);line-height:1.8;padding:12px 0}
+#campfire-disconnected-review .document-panel{border-top:1px solid var(--mr-border);padding:16px 22px;background:var(--mr-surface)}#campfire-disconnected-review .document-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}#campfire-disconnected-review .document-heading h3{font-size:13px}#campfire-disconnected-review .document-heading small,#campfire-disconnected-review [data-document-caption]{font-size:11px;font-weight:400;color:var(--mr-secondary)}#campfire-disconnected-review [data-document-body]{max-height:220px;overflow:auto;scroll-padding:10px}#campfire-disconnected-review .doc-sentence{display:flex;gap:14px;width:100%;text-align:left;border:0;border-left:2px solid transparent;background:none;color:var(--mr-secondary);padding:9px 12px;line-height:1.8;overflow-wrap:anywhere}#campfire-disconnected-review .doc-sentence>small{flex:none;font-size:11px;min-width:28px}#campfire-disconnected-review .doc-sentence.selected,#campfire-disconnected-review .doc-sentence.related{background:var(--mr-selected);border-left-color:var(--mr-green);color:var(--mr-ink)}#campfire-disconnected-review .doc-sentence.secret small{color:var(--mr-coral)}#campfire-disconnected-review .doc-sentence.fallback small{text-decoration:underline dashed;color:var(--mr-coral)}
+#campfire-disconnected-review .fact-state{display:flex;justify-content:space-between;gap:10px;font-size:11px;margin:8px 0;color:var(--mr-secondary)}#campfire-disconnected-review .fact-state b{font-weight:400;color:var(--mr-coral)}#campfire-disconnected-review .app-footer{display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between;padding:10px 22px;background:var(--mr-surface);font-size:11px;color:var(--mr-secondary);border-top:1px solid var(--mr-border)}#campfire-disconnected-review[data-view=review] .kg-neighbor-footer,#campfire-disconnected-review[data-view=candidates] .kg-neighbor-footer{justify-content:flex-start}#campfire-disconnected-review .kg-stage{min-width:0}#campfire-disconnected-review .kg-fact{border-left:2px solid transparent;padding-left:7px}#campfire-disconnected-review .kg-fact[data-status=secret]{border-left-color:var(--mr-coral)}#campfire-disconnected-review .kg-fact[data-status=fallback]{border-left:2px dashed var(--mr-coral)}
+@media(max-width:700px){#campfire-disconnected-review .kg-sidebar{width:auto}#campfire-disconnected-review .kg-explorer{display:block}#campfire-disconnected-review .document-heading{flex-wrap:wrap}#campfire-disconnected-review .pipeline{gap:10px}#campfire-disconnected-review .scanbar{padding-inline:14px}#campfire-disconnected-review .mr-docbar{padding:14px}#campfire-disconnected-review [data-review-sidebar]{max-height:280px;overflow:auto}}
 
-  /* 문장 */
-  #doc-card { flex: 1.15; }
-  #doc { overflow-y: auto; padding: 8px 10px 12px; }
-  .sent { display: grid; grid-template-columns: 34px 1fr; gap: 6px; padding: 5px 8px; border-radius: 8px; }
-  .sent .sn { font-size: 11px; color: var(--ink-3); font-weight: 700; padding-top: 3px; font-variant-numeric: tabular-nums; }
-  .sent .st { word-break: keep-all; overflow-wrap: anywhere; line-height: 1.8; }
-  /* 가림 표시 — Adobe Acrobat 의 "가릴 항목" 처럼 글자를 얇은 빨간 테두리로 감싼다 (줄이 바뀌어도 줄마다).
-     판정 불가(낮은 신뢰도)는 점선, 리트리버가 근거로 본 문장(판정 전)은 주황 점선 밑줄 */
-  .sent .tx { padding: 1px 3px; border: 1.5px solid transparent; border-radius: 3px;
-              -webkit-box-decoration-break: clone; box-decoration-break: clone; transition: border-color .3s; }
-  .sent.secret .tx { border-color: var(--red); }
-  .sent.fallback .tx { border-color: var(--red); border-style: dashed; }
-  .sent.ev .tx { text-decoration: underline dotted var(--orange); text-decoration-thickness: 2px; text-underline-offset: 5px; }
-  .sent.secret .sn, .sent.fallback .sn { color: var(--red-ink); }
-  .sent.ev .sn { color: var(--orange-ink); }
-  .sent.hover { box-shadow: inset 0 0 0 2px var(--purple); }
-  .pii-keep { padding: 1px 3px; border: 1.5px solid var(--green); border-radius: 3px;
-              background: var(--green-soft); color: var(--green-ink); font-weight: 700;
-              -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-  .keep-key { color: var(--green-ink); font-weight: 700; }
-  .chips { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-  .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: #fff; color: var(--red-ink); border: 1px solid #F7B6BC; cursor: default; }
-  .mask { display: inline-block; font-size: 11px; line-height: 1.4; padding: 0 5px; border-radius: 4px; background: var(--mask); color: var(--ink-2); font-weight: 600; }
-
-  /* 사실 표 */
-  #facts-card { flex: 1; }
-  #facts { overflow-y: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 11px; color: var(--ink-3); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); z-index: 1; white-space: nowrap; }
-  td.fact { word-break: keep-all; overflow-wrap: anywhere; }
-  td { padding: 5px 10px; border-bottom: 1px solid #F1F2F4; vertical-align: middle; }
-  tr.hover td { background: var(--purple-soft); }
-  .st-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
-  .s-secret { background: var(--red-soft); color: var(--red-ink); }
-  .s-fallback { background: var(--red-soft); color: var(--red-ink); }
-  .s-public { background: var(--green-soft); color: var(--green-ink); }
-  .s-passed { background: var(--orange-soft); color: var(--orange-ink); }
-  .s-filtered, .s-unscored, .s-cand { background: var(--mask); color: var(--ink-2); }
-  .fact b { font-weight: 700; }
-  .fact .p { color: var(--ink-2); }
-  .score { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .bar { position: relative; width: 64px; height: 6px; background: var(--mask); border-radius: 3px; }
-  .bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--ink-3); }
-  .bar.ok span { background: var(--orange); }
-  .bar em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); opacity: .55; }
-  .refs { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; }
-
-  @media (max-width: 1100px) {
-    body { overflow: auto; }
-    main { grid-template-columns: 1fr; }
-    #graph-card { min-height: 420px; }
-    .funnel { grid-template-columns: repeat(2, 1fr); }
-    .stage::after { display: none; }
-  }
-</style>
-</head>
+#campfire-disconnected-review[data-view=review] .kg-wire{stroke:var(--mr-green)}
+#campfire-disconnected-review[data-view=review] .kg-node{border-color:var(--mr-green)}
+#campfire-disconnected-review[data-view=review] .kg-edge{color:var(--mr-green-ink)}
+#campfire-disconnected-review{background:var(--mr-surface)}
+#campfire-disconnected-review[data-view=review] .kg-center-tag,#campfire-disconnected-review[data-view=candidates] .kg-center-tag{display:none}
+#campfire-disconnected-review .demo-banner{padding:10px 22px;background:var(--mr-selected);color:var(--mr-green-ink);font-size:12px;border-bottom:1px solid var(--mr-border)}
+@media(min-width:901px) and (min-height:700px){
+  #campfire-disconnected-review{height:100dvh;min-height:0;overflow:hidden}
+  #campfire-disconnected-review>.mr-appbar,#campfire-disconnected-review>.mr-docbar,#campfire-disconnected-review>.scanbar,#campfire-disconnected-review>.pipeline,#campfire-disconnected-review>.demo-banner,#campfire-disconnected-review>.app-footer{flex:none}
+  #campfire-disconnected-review .kg-explorer{min-height:0;overflow:hidden}
+  #campfire-disconnected-review .kg-sidebar{overflow:auto}
+  #campfire-disconnected-review .kg-stage{min-height:0}
+  #campfire-disconnected-review .kg-viewport{min-height:180px}
+  #campfire-disconnected-review .document-panel{flex:none;padding:12px 22px}
+  #campfire-disconnected-review [data-document-body]{max-height:150px}
+  #campfire-disconnected-review .kg-canvas-footer,#campfire-disconnected-review .kg-neighbor-footer,#campfire-disconnected-review .kg-toolbar,#campfire-disconnected-review .kg-scope,#campfire-disconnected-review .kg-history,#campfire-disconnected-review .kg-focus-bar{flex:none}
+}
+#campfire-disconnected-review .mr-docbar{padding-block:12px}
+#campfire-disconnected-review .scanbar{padding-block:8px}
+#campfire-disconnected-review .pipeline{padding-block:8px}
+@media(min-width:901px) and (min-height:700px){#campfire-disconnected-review [data-document-body]{max-height:120px}}
+#campfire-disconnected-review[data-view=all]>.scanbar,#campfire-disconnected-review[data-view=all]>.pipeline{display:none}
+#campfire-disconnected-review .kg-focus-bar{padding-block:12px}
+#campfire-disconnected-review .pii-keep{padding:0 2px;border:1.5px solid var(--mr-green);border-radius:3px;background:color-mix(in srgb,var(--mr-green) 14%,transparent);color:var(--mr-green-ink);font-weight:700;-webkit-box-decoration-break:clone;box-decoration-break:clone}#campfire-disconnected-review .keep-key{color:var(--mr-green-ink);font-weight:700}
+</style></head>
 <body>
-<header>
-  <h1>Campfire <span>기밀 판정 근거</span> 대시보드</h1>
-  <span class="pill" id="conn"><span class="dot"></span><span>연결 중</span></span>
-</header>
-
-<section class="funnel">
-  <div class="stage kg on"><div class="lbl">회사 KG</div><div class="num" id="f-kg">–</div><div class="sub" id="f-kg-sub"></div></div>
-  <div class="stage cand"><div class="lbl"><span class="mark" data-n="1"></span>문서 속 KG 후보</div><div class="num" id="f-cand">–</div><div class="sub" id="f-cand-sub"></div></div>
-  <div class="stage pass"><div class="lbl"><span class="mark" data-n="2"></span>리트리버 통과</div><div class="num" id="f-pass">–</div><div class="sub" id="f-pass-sub"></div></div>
-  <div class="stage secret"><div class="lbl"><span class="mark" data-n="3"></span>Solar 기밀 판정</div><div class="num" id="f-secret">–</div><div class="sub" id="f-secret-sub"></div></div>
-  <div class="stage masked"><div class="lbl"><span class="mark" data-n="4"></span>가린 문장</div><div class="num" id="f-masked">–</div><div class="sub" id="f-masked-sub"></div></div>
+<div id="campfire-disconnected-review" data-view="all">
+  <header class="mr-appbar"><div class="mr-brand"><i data-lucide="flame" aria-hidden="true"></i><b>Campfire</b><span>/</span><span>KG 근거 대시보드</span></div><div class="mr-appearance"><span id="connection" role="status">검사 연결 중</span><label>화면 색상 <select id="theme" aria-label="화면 색상"><option value="dark">어둡게</option><option value="light">밝게</option><option value="system">시스템 설정</option></select></label></div></header>
+  <div class="mr-docbar"><div><h2 id="view-title">전체 KG 탐색</h2><p id="view-description">노드를 눌러 주변 관계를 펼치고, 다시 눌러 접으세요.</p></div><div class="mr-view-switch" role="group" aria-label="그래프 보기"><button type="button" data-view="review" aria-pressed="false">기밀 검토</button><button type="button" data-view="candidates" aria-pressed="false">후보 그래프</button><button type="button" data-view="all" aria-pressed="true">전체 KG</button></div><span class="mr-doc-count"></span></div>
+  <div class="scanbar"><label>검사 <select id="scan-select" aria-label="검사 선택"><option>검사 대기 중</option></select></label><button type="button" id="follow-latest" aria-pressed="true">최신 검사 따라가기</button><span id="scan-status" role="status"></span></div>
+  <ol class="pipeline" id="pipeline" aria-label="기밀 판정 진행 단계"></ol>
+  <div id="kg-alert" class="api-alert" role="alert" hidden></div><div id="trace-alert" class="api-alert" role="alert" hidden></div>
+  <section class="kg-explorer" aria-label="전체 KG 탐색">
+  <aside class="kg-sidebar">
+    <div data-review-sidebar hidden></div><div class="kg-side-heading" data-entity-controls><h3>탐색 시작점</h3><span data-kg-entity-count></span></div>
+    <label class="kg-search" data-entity-controls><i data-lucide="search" aria-hidden="true"></i><input type="search" placeholder="엔티티 검색" aria-label="전체 KG 엔티티 검색"></label>
+    <p class="kg-list-hint" data-entity-controls>연결이 많은 순 · 선택하면 새 탐색을 시작합니다</p>
+    <div data-entity-controls class="kg-entity-list" aria-label="KG 엔티티 목록"></div>
+    <div class="kg-selection"><h3>연결 살펴보기</h3><p></p><div data-kg-selection></div></div>
+  </aside>
+  <div class="kg-stage">
+    <header class="kg-toolbar"><div><span class="kg-source-badge" data-kg-source>사용자 제공 KG</span><strong data-kg-summary></strong></div><button type="button" class="kg-import" data-reload-kg><i data-lucide="folder-open" aria-hidden="true"></i>KG 새로고침</button></header>
+    <div class="kg-scope"><span data-kg-scope>전체 KG에서 중심 노드의 직접 연결을 탐색합니다.</span><span>기밀 여부는 문서 맥락에서 판정</span></div>
+    <nav class="kg-history" aria-label="KG 탐색 기록"><button type="button" data-kg-back aria-label="이전 중심 노드"><i data-lucide="arrow-left" aria-hidden="true"></i></button><span>최근 탐색</span><div data-kg-history></div><button type="button" data-kg-collapse-all>모두 접기</button><button type="button" data-kg-home>시작점으로</button></nav>
+    <div class="kg-focus-bar"><div><span class="kg-focus-kicker">시작 노드</span><h3 data-kg-center></h3><span data-kg-degree></span></div><label class="kg-filter">시작점 관계 <select aria-label="전체 KG 관계 필터"><option value="">모든 관계</option></select></label></div>
+    <p class="kg-error" role="alert" hidden></p>
+    <div class="kg-viewport" aria-label="전체 KG 펼침 탐색">
+      <div class="kg-world"><svg class="kg-wires" aria-label="펼쳐진 노드와 실제 KG 관계" role="img"></svg><div class="kg-groups"></div><div class="kg-nodes"></div><div class="kg-edges"></div></div>
+      <div class="kg-empty" hidden>일치하는 관계가 없습니다.</div>
+    </div>
+    <div class="kg-neighbor-footer"><span data-kg-visible aria-live="polite"></span><div class="kg-pagination"><button type="button" data-kg-page="prev" aria-label="이전 주변 노드"><i data-lucide="chevron-left" aria-hidden="true"></i></button><span data-kg-page-label></span><button type="button" data-kg-page="next" aria-label="다음 주변 노드"><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></div>
+    <section class="document-panel" data-document-panel hidden><div class="document-heading"><h3>문서 원문 <small>개인정보·인젝션 마스킹 적용 · <span class="keep-key">초록 테두리 = PII MLP KEEP(마스킹 해제)</span></small></h3><span data-document-caption></span></div><div data-document-body></div></section><footer class="kg-canvas-footer"><span>노드 클릭 → 펼치기 / 접기 · 기존 연결 유지</span><div class="kg-zoom"><button type="button" data-kg-zoom="out" aria-label="KG 축소"><i data-lucide="minus" aria-hidden="true"></i></button><span data-kg-zoom-label>100%</span><button type="button" data-kg-zoom="in" aria-label="KG 확대"><i data-lucide="plus" aria-hidden="true"></i></button><button type="button" data-kg-fit>화면에 맞춤</button></div><span>빈 공간을 드래그해 이동</span></footer>
+  </div>
 </section>
 
-<main>
-  <div class="left">
-    <div class="card" id="graph-card">
-      <h2>회사 지식그래프 <small id="graph-sub">문서를 검사하면 관련 사실이 표시됩니다</small></h2>
-      <div id="cy"></div>
-      <div class="graph-tools">
-        <button id="btn-focus" class="on" title="검사한 문서와 관련된 부분만 확대">문서 관련만</button>
-        <button id="btn-all" title="KG 전체 보기">전체 KG</button>
-      </div>
-      <div class="legend">
-        <span><i style="border-color:#9CA3AF"></i>후보</span>
-        <span><i style="border-color:#C7CBD1;border-top-style:dashed"></i>관련성 낮음</span>
-        <span><i style="border-color:#FF9500"></i>리트리버 통과</span>
-        <span><i style="border-color:#F04452"></i>Solar 기밀</span>
-        <span><i style="border-color:#09AE4B"></i>Solar 공개</span>
-      </div>
-    </div>
-    <div class="card">
-      <h2>검사 목록 <small>최근 20건</small><span class="grow"></span>
-        <span class="pager"><button id="hist-prev" aria-label="이전 검사들">‹</button><span id="hist-page"></span><button id="hist-next" aria-label="다음 검사들">›</button></span></h2>
-      <div id="history"><div class="empty">아직 검사한 문서가 없습니다 — 앱이나 확장 프로그램으로 문서를 올려 보세요</div></div>
-    </div>
-  </div>
-  <div class="right">
-    <div class="card" id="doc-card">
-      <h2>문서 <small>개인정보·인젝션은 가린 상태 · <span class="keep-key">초록색 = PII MLP KEEP(마스킹 해제)</span></small></h2>
-      <div id="doc"><div class="empty">검사가 시작되면 문장이 나타납니다</div></div>
-    </div>
-    <div class="card" id="facts-card">
-      <h2>KG 사실별 판정 <small id="facts-sub"></small></h2>
-      <div id="facts"><div class="empty">문서에서 찾은 KG 사실이 여기에 나옵니다</div></div>
-    </div>
-  </div>
-</main>
+  <footer class="app-footer"><span>엔진 연결 · v0.2.50 데이터 계약</span><span>KG 자체의 기밀 속성이 아닌, 문장별 판정 근거를 표시합니다.</span></footer>
+</div>
+<script>/* Lucide inline SVG icons.
+ISC License
 
-<script>
-"use strict";
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const K = (s, p, o) => `${s}␟${p}␟${o}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const STEP_MS = { start: 650, retriever: 800, solar: 300, verdict: 900, done: 400 };  // 단계가 하나씩 켜지는 간격
-const STATUS = {
-  secret: ["기밀", "s-secret"], fallback: ["판정 불가 → 가림", "s-fallback"], public: ["공개", "s-public"],
-  nostmt: ["통과 · 진술 안 함", "s-passed"], passed: ["Solar 판정 대기", "s-passed"], filtered: ["관련성 낮음", "s-filtered"],
-  unscored: ["채점 안 됨", "s-unscored"], cand: ["후보", "s-cand"],
-};
-const ORDER = ["secret", "fallback", "public", "nostmt", "passed", "filtered", "unscored", "cand"];
+Copyright (c) 2026 Lucide Icons and Contributors
 
-let cy = null, delta = -10, kgCount = 0, globalPos = {};
-const edgeOf = new Map();          // 사실 키 → 그래프 간선 id
-const nodeOf = new Map();          // 엔티티 이름 → 노드 id
-const scans = new Map();           // 검사 번호 → 상태
-const seen = new Set();            // "검사/단계" — 재접속 스냅샷과 실시간이 겹쳐도 한 번만
-let selected = null, follow = true, focusMode = true, pumping = false, lastFocusKey = "", shownNewest = null;
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
 
-// ── KG 그래프 ─────────────────────────────────────────────────────────────
-async function loadKg() {
-  const r = await fetch("/demo/kg", { cache: "no-store" });
-  const kg = await r.json();
-  delta = kg.delta; kgCount = kg.triples.length;
-  $("#f-kg").textContent = kgCount;
-  $("#f-kg-sub").textContent = `엔티티 ${new Set(kg.triples.flatMap((t) => [t[0], t[2]])).size}개`;
-  if (!kgCount) {
-    $("#cy").innerHTML = '<div class="empty">KG 파일이 설정되지 않았습니다 — 앱 설정에서 KG 경로를 지정하세요</div>';
-    return;
-  }
-  const elements = [];
-  kg.triples.forEach(([s, p, o], i) => {
-    for (const n of [s, o]) {
-      if (!nodeOf.has(n)) { nodeOf.set(n, `n${nodeOf.size}`); elements.push({ data: { id: nodeOf.get(n), label: n } }); }
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+const ICONS={"align-left": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"align-left\" aria-hidden=\"true\" class=\"lucide lucide-align-left\">\u003cpath d=\"M21 5H3\">\u003c/path>\u003cpath d=\"M15 12H3\">\u003c/path>\u003cpath d=\"M17 19H3\">\u003c/path>\u003c/svg>", "arrow-left": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"arrow-left\" aria-hidden=\"true\" class=\"lucide lucide-arrow-left\">\u003cpath d=\"m12 19-7-7 7-7\">\u003c/path>\u003cpath d=\"M19 12H5\">\u003c/path>\u003c/svg>", "building-2": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"building-2\" aria-hidden=\"true\" class=\"lucide lucide-building-2\">\u003cpath d=\"M10 12h4\">\u003c/path>\u003cpath d=\"M10 8h4\">\u003c/path>\u003cpath d=\"M14 21v-3a2 2 0 0 0-4 0v3\">\u003c/path>\u003cpath d=\"M6 10H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-2\">\u003c/path>\u003cpath d=\"M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16\">\u003c/path>\u003c/svg>", "calendar-days": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"calendar-days\" aria-hidden=\"true\" class=\"lucide lucide-calendar-days\">\u003cpath d=\"M8 2v4\">\u003c/path>\u003cpath d=\"M16 2v4\">\u003c/path>\u003crect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\">\u003c/rect>\u003cpath d=\"M3 10h18\">\u003c/path>\u003cpath d=\"M8 14h.01\">\u003c/path>\u003cpath d=\"M12 14h.01\">\u003c/path>\u003cpath d=\"M16 14h.01\">\u003c/path>\u003cpath d=\"M8 18h.01\">\u003c/path>\u003cpath d=\"M12 18h.01\">\u003c/path>\u003cpath d=\"M16 18h.01\">\u003c/path>\u003c/svg>", "calendar-range": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"calendar-range\" aria-hidden=\"true\" class=\"lucide lucide-calendar-range\">\u003crect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\">\u003c/rect>\u003cpath d=\"M16 2v4\">\u003c/path>\u003cpath d=\"M3 10h18\">\u003c/path>\u003cpath d=\"M8 2v4\">\u003c/path>\u003cpath d=\"M17 14h-6\">\u003c/path>\u003cpath d=\"M13 18H7\">\u003c/path>\u003cpath d=\"M7 14h.01\">\u003c/path>\u003cpath d=\"M17 18h.01\">\u003c/path>\u003c/svg>", "car-front": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"car-front\" aria-hidden=\"true\" class=\"lucide lucide-car-front\">\u003cpath d=\"m21 8-2 2-1.5-3.7A2 2 0 0 0 15.646 5H8.4a2 2 0 0 0-1.903 1.257L5 10 3 8\">\u003c/path>\u003cpath d=\"M7 14h.01\">\u003c/path>\u003cpath d=\"M17 14h.01\">\u003c/path>\u003crect width=\"18\" height=\"8\" x=\"3\" y=\"10\" rx=\"2\">\u003c/rect>\u003cpath d=\"M5 18v2\">\u003c/path>\u003cpath d=\"M19 18v2\">\u003c/path>\u003c/svg>", "chevron-left": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"chevron-left\" aria-hidden=\"true\" class=\"lucide lucide-chevron-left\">\u003cpath d=\"m15 18-6-6 6-6\">\u003c/path>\u003c/svg>", "chevron-right": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"chevron-right\" aria-hidden=\"true\" class=\"lucide lucide-chevron-right\">\u003cpath d=\"m9 18 6-6-6-6\">\u003c/path>\u003c/svg>", "coins": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"coins\" aria-hidden=\"true\" class=\"lucide lucide-coins\">\u003cpath d=\"M13.744 17.736a6 6 0 1 1-7.48-7.48\">\u003c/path>\u003cpath d=\"M15 6h1v4\">\u003c/path>\u003cpath d=\"m6.134 14.768.866-.5 2 3.464\">\u003c/path>\u003ccircle cx=\"16\" cy=\"8\" r=\"6\">\u003c/circle>\u003c/svg>", "file-text": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"file-text\" aria-hidden=\"true\" class=\"lucide lucide-file-text\">\u003cpath d=\"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z\">\u003c/path>\u003cpath d=\"M14 2v5a1 1 0 0 0 1 1h5\">\u003c/path>\u003cpath d=\"M10 9H8\">\u003c/path>\u003cpath d=\"M16 13H8\">\u003c/path>\u003cpath d=\"M16 17H8\">\u003c/path>\u003c/svg>", "flame": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"flame\" aria-hidden=\"true\" class=\"lucide lucide-flame\">\u003cpath d=\"M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4\">\u003c/path>\u003c/svg>", "folder-open": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"folder-open\" aria-hidden=\"true\" class=\"lucide lucide-folder-open\">\u003cpath d=\"m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2\">\u003c/path>\u003c/svg>", "git-branch": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"git-branch\" aria-hidden=\"true\" class=\"lucide lucide-git-branch\">\u003cpath d=\"M15 6a9 9 0 0 0-9 9V3\">\u003c/path>\u003ccircle cx=\"18\" cy=\"6\" r=\"3\">\u003c/circle>\u003ccircle cx=\"6\" cy=\"18\" r=\"3\">\u003c/circle>\u003c/svg>", "landmark": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"landmark\" aria-hidden=\"true\" class=\"lucide lucide-landmark\">\u003cpath d=\"M10 18v-7\">\u003c/path>\u003cpath d=\"M11.119 2.205a2 2 0 0 1 1.762 0l7.84 3.846A.5.5 0 0 1 20.5 7h-17a.5.5 0 0 1-.22-.949z\">\u003c/path>\u003cpath d=\"M14 18v-7\">\u003c/path>\u003cpath d=\"M18 18v-7\">\u003c/path>\u003cpath d=\"M3 22h18\">\u003c/path>\u003cpath d=\"M6 18v-7\">\u003c/path>\u003c/svg>", "link-2": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"link-2\" aria-hidden=\"true\" class=\"lucide lucide-link-2\">\u003cpath d=\"M9 17H7A5 5 0 0 1 7 7h2\">\u003c/path>\u003cpath d=\"M15 7h2a5 5 0 1 1 0 10h-2\">\u003c/path>\u003cline x1=\"8\" x2=\"16\" y1=\"12\" y2=\"12\">\u003c/line>\u003c/svg>", "minus": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"minus\" aria-hidden=\"true\" class=\"lucide lucide-minus\">\u003cpath d=\"M5 12h14\">\u003c/path>\u003c/svg>", "mouse-pointer-2": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"mouse-pointer-2\" aria-hidden=\"true\" class=\"lucide lucide-mouse-pointer-2\">\u003cpath d=\"M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z\">\u003c/path>\u003c/svg>", "package": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"package\" aria-hidden=\"true\" class=\"lucide lucide-package\">\u003cpath d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\">\u003c/path>\u003cpath d=\"M12 22V12\">\u003c/path>\u003cpolyline points=\"3.29 7 12 12 20.71 7\">\u003c/polyline>\u003cpath d=\"m7.5 4.27 9 5.15\">\u003c/path>\u003c/svg>", "plus": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"plus\" aria-hidden=\"true\" class=\"lucide lucide-plus\">\u003cpath d=\"M5 12h14\">\u003c/path>\u003cpath d=\"M12 5v14\">\u003c/path>\u003c/svg>", "search": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"search\" aria-hidden=\"true\" class=\"lucide lucide-search\">\u003cpath d=\"m21 21-4.34-4.34\">\u003c/path>\u003ccircle cx=\"11\" cy=\"11\" r=\"8\">\u003c/circle>\u003c/svg>", "workflow": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"workflow\" aria-hidden=\"true\" class=\"lucide lucide-workflow\">\u003crect width=\"8\" height=\"8\" x=\"3\" y=\"3\" rx=\"2\">\u003c/rect>\u003cpath d=\"M7 11v4a2 2 0 0 0 2 2h4\">\u003c/path>\u003crect width=\"8\" height=\"8\" x=\"13\" y=\"13\" rx=\"2\">\u003c/rect>\u003c/svg>", "box": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"package\" aria-hidden=\"true\" class=\"lucide lucide-package\">\u003cpath d=\"M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z\">\u003c/path>\u003cpath d=\"M12 22V12\">\u003c/path>\u003cpolyline points=\"3.29 7 12 12 20.71 7\">\u003c/polyline>\u003cpath d=\"m7.5 4.27 9 5.15\">\u003c/path>\u003c/svg>", "network": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"git-branch\" aria-hidden=\"true\" class=\"lucide lucide-git-branch\">\u003cpath d=\"M15 6a9 9 0 0 0-9 9V3\">\u003c/path>\u003ccircle cx=\"18\" cy=\"6\" r=\"3\">\u003c/circle>\u003ccircle cx=\"6\" cy=\"18\" r=\"3\">\u003c/circle>\u003c/svg>", "server": "\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"building-2\" aria-hidden=\"true\" class=\"lucide lucide-building-2\">\u003cpath d=\"M10 12h4\">\u003c/path>\u003cpath d=\"M10 8h4\">\u003c/path>\u003cpath d=\"M14 21v-3a2 2 0 0 0-4 0v3\">\u003c/path>\u003cpath d=\"M6 10H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-2\">\u003c/path>\u003cpath d=\"M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16\">\u003c/path>\u003c/svg>"};
+window.lucide={createIcons(){document.querySelectorAll('i[data-lucide]').forEach(el=>{const template=document.createElement('template');template.innerHTML=ICONS[el.dataset.lucide]||ICONS['file-text'];const svg=template.content.firstElementChild;svg.setAttribute('aria-hidden','true');el.replaceWith(svg);});}};
+
+;
+/* Schema verified against campfire v0.2.50: demo.py /kg and confidential/kg.py. */
+(function(scope){
+  function parse(text){
+    let payload;
+    try { payload=JSON.parse(text.replace(/^\uFEFF/,'')); }
+    catch { payload=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(s=>s.trim()).map((s,i)=>{try{return JSON.parse(s);}catch{throw Error((i+1)+'번째 줄의 JSON 형식을 확인하세요.');}}); }
+    const rows=Array.isArray(payload)?payload:payload&&Array.isArray(payload.triples)?payload.triples:payload&&payload.s?[payload]:null;
+    if(!rows)throw Error('KG JSONL 또는 triples 배열이 포함된 JSON 파일을 선택하세요.');
+    const triples=[],seen=new Set(),aliases=new Map();let skipped=0,duplicates=0;
+    for(const row of rows){
+      if(row&&typeof row==='object'&&!Array.isArray(row)&&row.aliases&&typeof row.aliases==='object'){
+        for(const [name,raw] of Object.entries(row.aliases)){const forms=typeof raw==='string'?[raw]:Array.isArray(raw)?raw:[];if(!aliases.has(name))aliases.set(name,new Set());forms.forEach(x=>aliases.get(name).add(String(x)));}
+      }
+      const t=Array.isArray(row)?row:row&&[row.s,row.p,row.o];
+      if(!t||t.length!==3||t.some(v=>v==null||typeof v==='object'||!String(v).trim())){skipped++;continue;}
+      const triple=t.map(String),key=JSON.stringify(triple);
+      if(seen.has(key)){duplicates++;continue;}seen.add(key);triples.push(triple);
     }
-    const id = `e${i}`;
-    edgeOf.set(K(s, p, o), id);
-    elements.push({ data: { id, source: nodeOf.get(s), target: nodeOf.get(o), label: p, key: K(s, p, o) } });
-  });
-  cy = cytoscape({
-    container: $("#cy"), elements, wheelSensitivity: 0.25, minZoom: 0.2, maxZoom: 3,
-    layout: { name: "cose", animate: false, randomize: false, padding: 30, nodeDimensionsIncludeLabels: true,
-              boundingBox: { x1: 0, y1: 0, w: $("#cy").clientWidth * 1.6, h: $("#cy").clientHeight * 1.6 },
-              nodeRepulsion: () => 200000, idealEdgeLength: () => 60, edgeElasticity: () => 100, gravity: 1.5, numIter: 2500,
-              componentSpacing: 40 },
-    style: [
-      { selector: "node", style: {
-        label: "data(label)", "font-size": 10, color: "#9CA3AF", "background-color": "#D1D5DB", width: 15, height: 15,
-        "text-valign": "bottom", "text-margin-y": 3, opacity: 0.45, "font-family": "Pretendard, Malgun Gothic, sans-serif",
-        "transition-property": "opacity, background-color, width, height", "transition-duration": "300ms" } },
-      { selector: "edge", style: {
-        width: 1, "line-color": "#E5E7EB", "curve-style": "bezier", opacity: 0.6, "font-size": 10.5,
-        "font-family": "Pretendard, Malgun Gothic, sans-serif", "text-rotation": "autorotate",
-        "text-background-color": "#FFFFFF", "text-background-opacity": 0.9, "text-background-padding": 2,
-        "transition-property": "line-color, width, opacity", "transition-duration": "400ms" } },
-      { selector: "node.in-doc", style: { opacity: 1, "background-color": "#584CDC", color: "#111827", "font-size": 16, "font-weight": 700, width: 28, height: 28,
-        "text-background-color": "#FFFFFF", "text-background-opacity": 0.85, "text-background-padding": 2 } },
-      { selector: "node.faded", style: { opacity: 0.12 } },
-      { selector: "edge.faded", style: { opacity: 0.12 } },
-      { selector: "edge.cand", style: { "line-color": "#9CA3AF", width: 2, opacity: 0.95 } },
-      { selector: "edge.unscored", style: { "line-color": "#D1D5DB", width: 1.5, opacity: 0.95 } },
-      { selector: "edge.filtered", style: { "line-color": "#C7CBD1", "line-style": "dashed", width: 2, opacity: 1, label: "data(scoreLabel)", color: "#9CA3AF", "font-size": 12 } },
-      // 리트리버 통과 — Solar 판정 전, 그리고 판정 후에도 '진술 안 함' 이면 주황으로 남는다 (최종 화면에서도 통과가 보이게)
-      { selector: "edge.passed, edge.nostmt", style: { "line-color": "#FF9500", width: 3.5, opacity: 1, label: "data(label)", color: "#A85F00", "font-weight": 600, "font-size": 13 } },
-      { selector: "edge.public", style: { "line-color": "#09AE4B", width: 4, opacity: 1, label: "data(label)", color: "#067A35", "font-weight": 700, "font-size": 14 } },
-      { selector: "edge.secret", style: { "line-color": "#F04452", width: 5, opacity: 1, label: "data(label)", color: "#B4232F", "font-weight": 800, "font-size": 14 } },
-      { selector: "edge.fallback", style: { "line-color": "#F04452", "line-style": "dashed", width: 4.5, opacity: 1, label: "data(label)", color: "#B4232F", "font-size": 13 } },
-      { selector: ".hl", style: { "overlay-color": "#584CDC", "overlay-opacity": 0.18, "overlay-padding": 7 } },
-      { selector: ".hidden", style: { display: "none" } },
-    ],
-  });
-  globalPos = Object.fromEntries(cy.nodes().map((n) => [n.id(), { ...n.position() }]));  // "전체 KG" 로 돌아갈 자리
-  cy.on("mouseover", "edge", (e) => hoverFact(e.target.data("key"), true));
-  cy.on("mouseout", "edge", (e) => hoverFact(e.target.data("key"), false));
-  cy.on("mouseover", "node", (e) => e.target.connectedEdges().addClass("hl"));
-  cy.on("mouseout", "node", (e) => e.target.connectedEdges().removeClass("hl"));
-}
-
-// ── 검사 상태 ─────────────────────────────────────────────────────────────
-function newScan(id, at) {
-  return { id, at, stage: null, pending: [], sentences: [], entities: [], candidates: [], masked: {}, scores: new Map(),
-           passed: new Map(), scored: true, facts: [], pairs: [], publics: new Set(), fallback: false,
-           flagged: [], piiKeep: [], t: {}, shownAt: {} };
-}
-
-function applyEvent(sc, ev) {
-  sc.stage = ev.stage; sc.t[ev.stage] = ev.at;
-  sc.shownAt[ev.stage] = Date.now() / 1000;  // 경과 시간은 화면 시계로 — 엔진 시각(at)은 재접속·재생 때 과거일 수 있다
-  if (ev.stage === "start") {
-    sc.sentences = ev.sentences || []; sc.entities = ev.entities || []; sc.masked = ev.masked || {};
-    sc.piiKeep = ev.piiKeep || [];
-    sc.candidates = (ev.candidates || []).map((t) => K(...t));
-  } else if (ev.stage === "retriever") {
-    sc.scored = ev.scored !== false;
-    for (const [s, p, o, m] of ev.scores || []) sc.scores.set(K(s, p, o), m);
-    for (const [s, p, o, evs] of ev.passed || []) sc.passed.set(K(s, p, o), evs);
-  } else if (ev.stage === "solar") {
-    sc.facts = (ev.facts || []).map((t) => K(...t));
-  } else if (ev.stage === "verdict") {
-    sc.fallback = !!ev.fallback;
-    sc.pairs = (ev.pairs || []).map(([s, t]) => [s, K(...t)]);
-    sc.publics = new Set((ev.public || []).map((t) => K(...t)));
-  } else if (ev.stage === "done") {
-    sc.flagged = ev.flagged || [];
+    return {triples,aliases,skipped,duplicates};
   }
-}
-
-const reached = (sc, stage) => ["start", "retriever", "solar", "verdict", "done"].indexOf(sc.stage) >= ["start", "retriever", "solar", "verdict", "done"].indexOf(stage);
-
-function statusOf(sc, key) {
-  if (reached(sc, "verdict") && sc.t.verdict !== undefined) {
-    if (sc.fallback && sc.passed.has(key)) return "fallback";
-    if (sc.pairs.some(([, k]) => k === key)) return "secret";
-    if (sc.publics.has(key)) return "public";
-    if (sc.facts.includes(key)) return "nostmt";
+  function components(triples){
+    const adj=new Map();triples.forEach(([s,,o])=>{if(!adj.has(s))adj.set(s,new Set());if(!adj.has(o))adj.set(o,new Set());adj.get(s).add(o);adj.get(o).add(s);});
+    const seen=new Set(),groups=[];
+    for(const start of adj.keys()){if(seen.has(start))continue;const names=[start];seen.add(start);for(let i=0;i<names.length;i++)for(const n of adj.get(names[i]))if(!seen.has(n)){seen.add(n);names.push(n);}const set=new Set(names);groups.push({names,triples:triples.filter(t=>set.has(t[0]))});}
+    return groups;
   }
-  if (reached(sc, "retriever") && sc.t.retriever !== undefined) {
-    if (sc.passed.has(key)) return "passed";
-    return sc.scores.has(key) && sc.scores.get(key) !== null ? "filtered" : "unscored";
+  const api={parse,components};if(typeof module==='object'&&module.exports)module.exports=api;else scope.CampfireKGModel=api;
+})(typeof globalThis==='object'?globalThis:this);
+
+;
+/* Visible relations are the union of expansions reachable from the base graph.
+   Recompute from the base on collapse, so detached cycles cannot retain themselves. */
+(function(scope){
+  function project(triples,base,root,expanded,batchSize=8){
+    const index=new Map(),key=t=>JSON.stringify(t);
+    triples.forEach(t=>{for(const n of new Set([t[0],t[2]])){if(!index.has(n))index.set(n,[]);index.get(n).push(t);}});
+    const nodes=new Set(root?[root]:[]),edges=new Map(),owners=new Map(),processed=new Set();
+    const add=(t,owner)=>{edges.set(key(t),t);for(const n of [t[0],t[2]]){if(!nodes.has(n)&&owner)owners.set(n,owner);nodes.add(n);}};
+    base.forEach(t=>add(t,null));
+    let changed=true;
+    while(changed){changed=false;for(const [n,limit] of expanded){if(!nodes.has(n)||processed.has(n))continue;processed.add(n);changed=true;
+      const incident=index.get(n)||[],neighbors=[...new Set(incident.map(t=>t[0]===n?t[2]:t[0]))].sort((a,b)=>(index.get(b)||[]).length-(index.get(a)||[]).length);
+      const visible=new Set(neighbors.slice(0,limit||batchSize));incident.filter(t=>visible.has(t[0]===n?t[2]:t[0])).forEach(t=>add(t,n));
+    }}
+    return {triples:[...edges.values()],nodes,owners,expanded:new Map([...expanded].filter(([n])=>processed.has(n)))};
   }
-  return "cand";
-}
+  const api={project};if(typeof module!=='undefined'&&module.exports)module.exports=api;else scope.CampfireKGExpansion=api;
+})(typeof globalThis!=='undefined'?globalThis:this);
 
-// ── 그리기 ────────────────────────────────────────────────────────────────
-function render(sc, animate = true) {
-  renderFunnel(sc);
-  renderGraph(sc, animate);
-  renderDoc(sc);
-  renderFacts(sc);
-}
-
-function setStage(cls, on, flash) {
-  const el = document.querySelector(`.stage.${cls}`);
-  el.classList.toggle("on", on);
-  if (flash) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
-}
-
-function renderFunnel(sc) {
-  const st = sc.stage;
-  const secretFacts = new Set(sc.pairs.map(([, k]) => k));
-  const r = reached(sc, "retriever") && sc.t.retriever !== undefined;
-  const v = reached(sc, "verdict") && sc.t.verdict !== undefined;
-  const d = sc.stage === "done";
-  $("#f-cand").textContent = sc.candidates.length;
-  $("#f-cand-sub").textContent = `문서에서 찾은 엔티티 ${sc.entities.length}개`;
-  const count = (x) => sc.candidates.filter((k) => statusOf(sc, k) === x).length;
-  $("#f-pass").textContent = r ? sc.passed.size : (d ? 0 : "–");
-  $("#f-pass-sub").textContent = !r ? "" : !sc.scored ? "리트리버 없음 — Solar 로 보내지 않음"
-    : `${count("filtered")}개는 문서와 관련성 낮음` + (count("unscored") ? ` · ${count("unscored")}개 채점 안 됨` : "");
-  if (st === "solar") {
-    $("#f-secret").textContent = "–";  // 도는 표시는 단계 이름 옆 원 하나만
-    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 전송`;
-  } else if (v) {
-    $("#f-secret").textContent = sc.fallback ? "–" : secretFacts.size;
-    $("#f-secret-sub").textContent = sc.fallback ? "판정 불가 — 근거 문장을 낮은 신뢰도로 가림"
-      : `공개 ${sc.publics.size} · 진술 안 함 ${sc.facts.length - secretFacts.size - sc.publics.size}`;
-  } else {
-    $("#f-secret").textContent = d ? 0 : "–";
-    $("#f-secret-sub").textContent = d ? "Solar 로 보낼 사실 없음" : "";
+;
+/* v0.2.50 /demo/trace/stream contract. No document data is persisted. */
+(function(scope){
+  'use strict';
+  const stages=['start','retriever','solar','verdict','done'];
+  const key=t=>JSON.stringify(t), triple=t=>Array.isArray(t)&&t.length===3&&t.every(x=>typeof x==='string');
+  const triples=xs=>Array.isArray(xs)?xs.filter(triple):[];
+  const sentIndex=(i,sc)=>Number.isInteger(i)&&i>=0&&i<sc.sentences.length;
+  function derive(id,events){
+    const ordered=stages.map(s=>events.get(s)).filter(Boolean),sc={id,at:ordered[0]?.at||0,stage:ordered.at(-1)?.stage||null,complete:events.has('done'),hasStart:events.has('start'),sentences:[],entities:[],candidates:[],scores:new Map(),passed:new Map(),facts:[],pairs:[],publics:new Set(),flagged:[],fallback:false,scored:null,masked:{},delta:null,cached:false,piiKeep:[],events};
+    const start=events.get('start');if(start){sc.sentences=Array.isArray(start.sentences)?start.sentences.map(x=>typeof x==='string'?x:''):[];sc.entities=Array.isArray(start.entities)?start.entities.filter(x=>typeof x==='string'):[];sc.candidates=triples(start.candidates);sc.masked=start.masked&&typeof start.masked==='object'?start.masked:{};sc.piiKeep=Array.isArray(start.piiKeep)?start.piiKeep.filter(k=>k&&sentIndex(k.sentence,sc)&&typeof k.text==='string'&&k.text):[];sc.delta=typeof start.delta==='number'?start.delta:null;}
+    const retriever=events.get('retriever');if(retriever){sc.scored=retriever.scored!==false;for(const r of retriever.scores||[]){if(Array.isArray(r)&&triple(r.slice(0,3)))sc.scores.set(key(r.slice(0,3)),typeof r[3]==='number'&&Number.isFinite(r[3])?r[3]:null);}for(const r of retriever.passed||[]){if(Array.isArray(r)&&triple(r.slice(0,3))&&Array.isArray(r[3]))sc.passed.set(key(r.slice(0,3)),r[3].filter(i=>sentIndex(i,sc)));}}
+    const solar=events.get('solar');if(solar)sc.facts=triples(solar.facts);
+    const verdict=events.get('verdict');if(verdict){sc.fallback=verdict.fallback===true;sc.cached=verdict.cached===true;sc.pairs=(Array.isArray(verdict.pairs)?verdict.pairs:[]).filter(r=>Array.isArray(r)&&sentIndex(r[0],sc)&&triple(r[1]));sc.publics=new Set(triples(verdict.public).map(key));}
+    const done=events.get('done');if(done)sc.flagged=(Array.isArray(done.flagged)?done.flagged:[]).filter(r=>Array.isArray(r)&&sentIndex(r[0],sc)).map(r=>[r[0],typeof r[1]==='number'?r[1]:null,r[2]]);
+    return sc;
   }
-  $("#f-masked").textContent = d ? sc.flagged.length : "–";
-  const m = sc.masked;
-  $("#f-masked-sub").textContent = d ? `전체 ${sc.sentences.length}문장 중 · PII ${m.pii || 0} · 인젝션 ${m.injection || 0}` : "";
-  const prev = sc._shown || "";
-  const done = { cand: !!st, pass: r || d, secret: v || d, masked: d };  // 끝난 검사는 건너뛴 단계도 완료
-  const running = d ? null : ["cand", "pass", "secret", "masked"].find((k) => !done[k]);  // 지금 도는 단계
-  setStage("cand", done.cand, st === "start" && prev !== "start");
-  setStage("pass", done.pass, st === "retriever" && prev !== "retriever");
-  setStage("secret", done.secret, st === "verdict" && prev !== "verdict");
-  setStage("masked", done.masked, st === "done" && prev !== "done");
-  for (const k of ["cand", "pass", "secret", "masked"]) document.querySelector(`.stage.${k}`).classList.toggle("run", k === running);
-  sc._shown = st;
-}
+  function status(sc,t){const k=key(t);if(sc.events.has('verdict')){if(sc.fallback&&sc.passed.has(k))return 'fallback';if(sc.pairs.some(r=>key(r[1])===k))return 'secret';if(sc.publics.has(k))return 'public';if(sc.facts.some(x=>key(x)===k))return 'nostmt';}if(sc.events.has('retriever')){if(sc.passed.has(k))return sc.scored===false?'unscored':'passed';return sc.scores.has(k)&&sc.scores.get(k)!==null?'filtered':'unscored';}return 'candidate';}
+  function sentenceFacts(sc,i){if(sc.fallback){return [...sc.passed].filter(([,ids])=>ids.includes(i)).map(([k])=>JSON.parse(k));}const unique=new Map(sc.pairs.filter(r=>r[0]===i).map(r=>[key(r[1]),r[1]]));return [...unique.values()];}
+  function sentenceStatus(sc,i){const f=sc.flagged.find(r=>r[0]===i);if(f)return f[2]==='llm'?'secret':'fallback';if(sc.fallback&&sentenceFacts(sc,i).length)return 'fallback';if(sentenceFacts(sc,i).length)return 'secret';return 'none';}
+  function reviewIds(sc){return [...new Set([...sc.pairs.map(r=>r[0]),...sc.flagged.map(r=>r[0]),...(sc.fallback?[...sc.passed.values()].flat():[])])].sort((a,b)=>a-b);}
+  function refs(sc,t){const k=key(t);return sc.fallback?(sc.passed.get(k)||[]):sc.pairs.filter(r=>key(r[1])===k).map(r=>r[0]);}
+  function store(max=20){let scans=new Map();
+    function add(ev){if(!ev||ev.type!=='trace'||!Number.isInteger(ev.scan)||!stages.includes(ev.stage)||!Number.isFinite(ev.at))return false;let old=scans.get(ev.scan),events=old?new Map(old.events):new Map();const prev=events.get(ev.stage);if(prev&&prev.at>=ev.at)return false;events.set(ev.stage,ev);scans.set(ev.scan,derive(ev.scan,events));while(scans.size>max)scans.delete([...scans.values()].sort((a,b)=>a.at-b.at||a.id-b.id)[0].id);return true;}
+    return {get scans(){return scans;},ingest(payload){if(payload?.type==='snapshot'){if(!Array.isArray(payload.events))return false;scans=new Map();payload.events.forEach(add);return true;}return add(payload);}};
+  }
+  const api={stages,key,status,sentenceFacts,sentenceStatus,reviewIds,refs,store};if(typeof module!=='undefined'&&module.exports)module.exports=api;else scope.CampfireTrace=api;
+})(typeof globalThis!=='undefined'?globalThis:this);
 
-function renderGraph(sc, animate) {
-  if (!cy) return;
-  const classes = "in-doc faded cand unscored filtered passed nostmt public secret fallback hl";
-  cy.batch(() => {
-    cy.elements().removeClass(classes);
-    const ents = new Set(sc.entities);
-    const cands = new Set(sc.candidates);
-    cy.nodes().forEach((n) => n.addClass(ents.has(n.data("label")) ? "in-doc" : (sc.stage ? "faded" : "")));
-    cy.edges().forEach((e) => {
-      const key = e.data("key");
-      if (!cands.has(key)) { if (sc.stage) e.addClass("faded"); return; }
-      const st = statusOf(sc, key);
-      e.addClass(st);
-      const m = sc.scores.get(key);
-      e.data("scoreLabel", m === undefined || m === null ? "" : `${e.data("label")} ${fmtScore(m)}`);
+;
+window.createCampfireGraph=function(root){
+  const panel=root.querySelector('.kg-explorer');
+  const $=s=>panel.querySelector(s),$$=s=>[...panel.querySelectorAll(s)],model=globalThis.CampfireKGModel;
+  const initialRows=[];
+  let config={allBase:false,extraNodes:[],canExpand:true,context:null};
+  let data=model.parse(JSON.stringify(initialRows)),source='엔진 KG',query='',predicate='',center='',home='',history=[],page=0,selectedGroup=null,shown=[],groups=[],zoom=1,tx=0,ty=0,worldW=950,worldH=500;
+  let index=new Map(),names=[],neighbors=[],pageNames=[],expanded=new Map(),positions=new Map(),selectedNode='',resetViewport=true;
+  const expansion=globalThis.CampfireKGExpansion,edgeKey=t=>JSON.stringify(t);
+  const pageSize=8,viewport=$('.kg-viewport'),world=$('.kg-world'),svg=$('.kg-wires'),ns='http://www.w3.org/2000/svg';
+  const make=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;};
+  const button=(cls,text)=>{const e=make('button',cls,text);e.type='button';return e;};
+  const degree=n=>(index.get(n)||[]).length;
+  const other=t=>t[0]===center?t[2]:t[0];
+  const iconFor=n=>/프로젝트|오로라/.test(n)?'box':/테크|기업|주식회사|은행/.test(n)?'building-2':/팀|부문|조직|본부/.test(n)?'network':/서버|시스템|게이트웨이|레지스트리/.test(n)?'server':/년|개월|월$|일$/.test(n)?'calendar-days':/[0-9].*원|금액|단가/.test(n)?'coins':degree(n)>1?'workflow':'file-text';
+  const shape=(tag,attrs)=>{const e=document.createElementNS(ns,tag);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,String(v)));return e;};
+  function icons(){if(window.lucide)lucide.createIcons({attrs:{width:16,height:16}});}
+  function transform(){world.style.transform=`translate(${tx}px,${ty}px) scale(${zoom})`;$('[data-kg-zoom-label]').textContent=Math.round(zoom*100)+'%';}
+  function fit(){if(!viewport.clientWidth)return;const ps=[...positions.values()];if(!ps.length)return;const minX=Math.min(...ps.map(p=>p.x-110)),minY=Math.min(...ps.map(p=>p.y-40)),w=Math.max(300,Math.max(...ps.map(p=>p.x+110))-minX),h=Math.max(200,Math.max(...ps.map(p=>p.y+70))-minY);zoom=Math.max(.12,Math.min(1,(viewport.clientWidth-40)/w,(viewport.clientHeight-30)/h));tx=(viewport.clientWidth-w*zoom)/2-minX*zoom;ty=(viewport.clientHeight-h*zoom)/2-minY*zoom;transform();}
+  function setZoom(next){const old=zoom;zoom=Math.max(.12,Math.min(2,next));const cx=viewport.clientWidth/2,cy=viewport.clientHeight/2;tx=cx-(cx-tx)*zoom/old;ty=cy-(cy-ty)*zoom/old;transform();}
+  function buildIndex(){index=new Map();data.triples.forEach(t=>{for(const n of new Set([t[0],t[2]])){if(!index.has(n))index.set(n,[]);index.get(n).push(t);}});for(const n of config.extraNodes)if(!index.has(n))index.set(n,[]);names=[...index.keys()].sort((a,b)=>degree(b)-degree(a));home=names[0]||'';}
+  function filters(){const select=$('.kg-filter select');select.replaceChildren();const first=make('option','','모든 관계 · '+degree(center));first.value='';select.append(first);const counts=new Map();(index.get(center)||[]).forEach(t=>counts.set(t[1],(counts.get(t[1])||0)+1));[...counts].sort((a,b)=>b[1]-a[1]).forEach(([p,n])=>{const o=make('option','',p+' · '+n);o.value=p;select.append(o);});select.value=predicate;}
+  function list(){const q=query.toLocaleLowerCase(),list=$('.kg-entity-list');list.replaceChildren();names.filter(n=>[n,...(data.aliases.get(n)||[])].some(s=>s.toLocaleLowerCase().includes(q))).forEach(n=>{const b=button('','');b.dataset.kgName=n;b.append(make('span','',n),make('span','',degree(n)+'개'));b.setAttribute('aria-label',n+' 중심으로 탐색');b.setAttribute('aria-pressed',String(n===center));b.addEventListener('click',()=>focus(n));list.append(b);});if(!list.children.length)list.append(make('p','','일치하는 엔티티가 없습니다.'));}
+  function focus(n,record=true){if(!index.has(n))return;if(record&&center&&center!==n)history.push(center);if(history.length>40)history.shift();center=n;predicate='';page=0;selectedGroup=null;selectedNode=n;expanded.clear();positions.clear();resetViewport=true;filters();list();render();}
+  function refreshData(){buildIndex();history=[];query='';$('.kg-search input').value='';$('[data-kg-source]').textContent=source;$('[data-kg-summary]').textContent='전체 '+names.length+'개 엔티티 · '+data.triples.length+'개 관계';$('[data-kg-entity-count]').textContent=names.length+'개';$('[data-kg-scope]').textContent=source==='사용자 제공 KG'?'제공하신 KG 전체를 불러왔습니다. 이름과 관계는 원문 그대로입니다.':'파일 전체 로드 · '+data.duplicates+'개 중복 제거'+(data.skipped?' · '+data.skipped+'개 유효하지 않은 행 제외':'');center='';if(home)focus(home,false);else{filters();list();render();}}
+  function navigation(){const trail=$('[data-kg-history]');trail.replaceChildren();history.slice(-3).forEach((n,i)=>{const b=button('',n);b.setAttribute('aria-label',n+' 다시 탐색');b.addEventListener('click',()=>focus(n));trail.append(b,make('span','','/'));});trail.append(make('strong','',center||'KG 없음'));$('[data-kg-back]').disabled=!history.length;$('[data-kg-home]').disabled=center===home||!home;$('[data-kg-center]').textContent=center||'KG 없음';$('[data-kg-degree]').textContent=degree(center)+'개 직접 연결 · '+expanded.size+'개 노드 펼침';$('[data-kg-collapse-all]').disabled=!expanded.size;}
+  function render(){
+    navigation();if(root.dataset.view==='all')root.querySelector('.mr-doc-count').textContent=data.triples.length+'개 관계';
+    const incident=(index.get(center)||[]).filter(t=>!predicate||t[1]===predicate);
+    neighbors=[...new Set(incident.map(other).filter(n=>n!==center))].sort((a,b)=>degree(b)-degree(a));
+    const pages=Math.max(1,Math.ceil(neighbors.length/pageSize));page=Math.max(0,Math.min(page,pages-1));pageNames=neighbors.slice(page*pageSize,(page+1)*pageSize);
+    const base=config.allBase?data.triples:incident.filter(t=>pageNames.includes(other(t))||other(t)===center);
+    const projection=expansion.project(data.triples,base,center,expanded,pageSize);expanded=projection.expanded;shown=projection.triples;for(const n of config.extraNodes)projection.nodes.add(n);navigation();
+    for(const n of positions.keys())if(!projection.nodes.has(n))positions.delete(n);
+    if(!projection.nodes.has(selectedNode))selectedNode=center;
+    groups=[];shown.forEach(t=>{const n=t[2],incoming=false,k=JSON.stringify([t[0],t[2]]);let g=groups.find(g=>g.key===k);if(!g){g={key:k,name:n,subject:t[0],incoming,triples:[]};groups.push(g);}g.triples.push(t);});
+    if(!groups.some(g=>g.key===selectedGroup))selectedGroup=null;
+    $('[data-kg-page-label]').textContent=(page+1)+' / '+pages;$('[data-kg-page="prev"]').disabled=page===0;$('[data-kg-page="next"]').disabled=page>=pages-1;
+    $('[data-kg-visible]').textContent=neighbors.length?`시작점 주변 ${neighbors.length}개 중 ${page*pageSize+1}–${page*pageSize+pageNames.length}개 · 화면 전체 ${projection.nodes.size}개 노드 / ${shown.length}개 관계`:'주변 노드 0개';
+    $('.kg-empty').hidden=projection.nodes.size>0;$('.kg-empty').textContent=config.emptyText|| (data.triples.length?'선택한 관계에 연결된 노드가 없습니다.':'불러온 KG에 관계가 없습니다.');
+    if(config.allBase&&resetViewport){
+      positions.clear();let y=60;
+      const components=model.components(shown);const placed=new Set();
+      for(const group of components){
+        const first=[...group.names].sort((a,b)=>degree(b)-degree(a))[0],queue=[first],depth=new Map([[first,0]]),adj=new Map(group.names.map(n=>[n,new Set()]));
+        group.triples.forEach(([s,,o])=>{adj.get(s).add(o);adj.get(o).add(s);});
+        for(let i=0;i<queue.length;i++)for(const n of adj.get(queue[i]))if(!depth.has(n)){depth.set(n,depth.get(queue[i])+1);queue.push(n);}
+        const levels=[];for(const n of group.names)(levels[depth.get(n)]??=[]).push(n);
+        const height=Math.max(160,...levels.map(l=>l.length*110));levels.forEach((l,d)=>l.forEach((n,i)=>{positions.set(n,{x:110+d*250,y:y+height*(i+.5)/l.length});placed.add(n);}));y+=height+70;
+      }
+      config.extraNodes.filter(n=>!placed.has(n)).forEach((n,i)=>positions.set(n,{x:110+(i%4)*220,y:y+Math.floor(i/4)*110}));
+    }
+    const half=Math.ceil(pageNames.length/2);
+    if(!positions.has(center))positions.set(center,{x:475,y:250});
+    pageNames.forEach((n,i)=>{if(positions.has(n))return;const left=i<half,j=left?i:i-half,count=left?half:pageNames.length-half;positions.set(n,{x:left?125:825,y:count===1?250:65+j*350/(count-1)});});
+    let added=false;projection.nodes.forEach(n=>{if(positions.has(n))return;added=true;const owner=projection.owners.get(n)||center,a=positions.get(owner)||positions.get(center),c=positions.get(center),direction=a.x<c.x?-1:1;let found;
+      for(let col=1;col<=projection.nodes.size+1&&!found;col++)for(const offset of (col%2?[-.5,.5,-1.5,1.5]:[0,-1,1])){const p={x:a.x+direction*col*265,y:a.y+offset*112};if([...positions.values()].every(v=>Math.abs(v.x-p.x)>=190||Math.abs(v.y-p.y)>=108)){found=p;break;}}
+      positions.set(n,found);
     });
-  });
-  const focusKey = `${sc.id}:${focusMode}`;
-  if (focusKey !== lastFocusKey) {  // 검사·보기 방식이 바뀔 때만 다시 배치 (단계마다는 색만 바꾼다)
-    lastFocusKey = focusKey;
-    const dur = animate ? 600 : 0;
-    if (focusMode && sc.entities.length) {
-      // 전체 KG 배치를 그대로 확대하면 문서 속 엔티티끼리 겹친다 — 관련 부분만 남겨 따로 배치
-      const cands = new Set(sc.candidates);
-      const sub = cy.nodes(".in-doc").union(cy.edges().filter((e) => cands.has(e.data("key"))));
-      cy.elements().removeClass("hidden");
-      cy.elements().not(sub).addClass("hidden");
-      sub.layout({ name: "cose", animate: dur > 0, animationDuration: dur, fit: true, padding: 40, randomize: true,
-                   boundingBox: { x1: 0, y1: 0, w: cy.width(), h: cy.height() },  // 화면 비율대로 퍼뜨려 축소를 줄인다
-                   nodeDimensionsIncludeLabels: true, nodeRepulsion: () => 120000, idealEdgeLength: () => 60,
-                   edgeElasticity: () => 100, gravity: 2.5, numIter: 2500, nodeOverlap: 20, componentSpacing: 30 }).run();
-    } else {
-      cy.elements().removeClass("hidden");
-      cy.layout({ name: "preset", positions: (n) => globalPos[n.id()], animate: dur > 0, animationDuration: dur,
-                  fit: true, padding: 30 }).run();
+    const pos=positions,coords=[...pos.values()];worldW=Math.max(950,...coords.map(p=>p.x+150));worldH=Math.max(500,...coords.map(p=>p.y+100));
+    world.style.width=worldW+'px';world.style.height=worldH+'px';svg.setAttribute('width',worldW);svg.setAttribute('height',worldH);svg.setAttribute('viewBox',`0 0 ${worldW} ${worldH}`);svg.replaceChildren();
+    const defs=shape('defs',{});for(const [id,color] of [['kg-arrow','var(--mr-secondary)'],['kg-arrow-active','var(--mr-green)']]){const marker=shape('marker',{id,viewBox:'0 0 8 8',refX:7,refY:4,markerWidth:5,markerHeight:5,orient:'auto-start-reverse'});marker.append(shape('path',{d:'M0 0 L8 4 L0 8 Z',fill:color}));defs.append(marker);}svg.append(defs);
+    const nodes=$('.kg-nodes'),edges=$('.kg-edges');nodes.replaceChildren();edges.replaceChildren();$('.kg-groups').replaceChildren();
+    if(center)pos.forEach((p,n)=>{const isCenter=n===center,isOpen=expanded.has(n),hidden=(index.get(n)||[]).filter(t=>!shown.some(v=>edgeKey(v)===edgeKey(t))).length,b=button('kg-node'+(isCenter?' kg-center':'')+(isOpen?' kg-expanded':''),''),i=make('i');i.dataset.lucide=iconFor(n);i.setAttribute('aria-hidden','true');b.append(i,make('span','',n));b.dataset.kgName=n;b.style.left=p.x+'px';b.style.top=p.y+'px';b.setAttribute('aria-label',n+(isOpen?' 주변 접기':isCenter?' 시작 노드':hidden?' 주변 펼치기':' 관계 보기'));b.setAttribute('aria-expanded',String(isOpen));b.setAttribute('aria-pressed',String(n===selectedNode));if(isCenter)b.append(make('small','kg-center-tag','시작점'));if(isOpen)b.append(make('small','kg-more','− 접기'));else if(hidden&&!isCenter)b.append(make('small','kg-more','+'+hidden));b.addEventListener('click',()=>toggle(n));nodes.append(b);});
+    groups.forEach(g=>{const a=pos.get(g.subject),b=pos.get(g.name),left=b.x<a.x,sign=left?-1:1,ax=a.x+sign*24,bx=b.x-sign*22,c1=ax+sign*112,c2=bx-sign*112;let d,lx,ly;
+      if(g.name===g.subject){d=`M${a.x-22} ${a.y} C${a.x-95} ${a.y-110} ${a.x+95} ${a.y-110} ${a.x+22} ${a.y}`;lx=a.x;ly=a.y-80;}
+      else{const shift=groups.some(x=>x.subject===g.name&&x.name===g.subject)?(g.subject<g.name?-24:24):0;d=`M${ax} ${a.y} C${c1} ${a.y+shift} ${c2} ${b.y+shift} ${bx} ${b.y}`;const t=.64,u=1-t;lx=u*u*u*ax+3*u*u*t*c1+3*u*t*t*c2+t*t*t*bx;ly=u*u*u*a.y+3*u*u*t*(a.y+shift)+3*u*t*t*(b.y+shift)+t*t*t*b.y;}
+      const path=shape('path',{d,class:'kg-wire',[g.incoming?'marker-start':'marker-end']:'url(#kg-arrow)'});path.dataset.kgGroup=g.key;svg.append(path);
+      const label=button('kg-edge',g.triples.length>1?g.triples.length+'개 관계':g.triples[0][1]);label.style.left=lx+'px';label.style.top=ly+'px';label.dataset.kgGroup=g.key;label.setAttribute('aria-label','관계 확인: '+g.triples.map(t=>t.join(' → ')).join(' / '));label.addEventListener('click',()=>{selectedGroup=selectedGroup===g.key?null:g.key;paint();root.dispatchEvent(new CustomEvent('kg:fact-selected',{detail:{triples:selectedGroup?g.triples:[]}}));});edges.append(label);
+    });if(config.allBase){$('[data-kg-visible]').textContent='현재 '+projection.nodes.size+'개 엔티티 · '+shown.length+'개 관계';$('[data-kg-degree]').textContent='연결된 사실 '+shown.length+'개';}icons();paint();if(resetViewport||added){fit();resetViewport=false;}else transform();
+  }
+  function toggle(n){selectedNode=n;selectedGroup=null;if(!config.canExpand){paint();return;}if(expanded.has(n))expanded.delete(n);else if(n!==center&&(index.get(n)||[]).some(t=>!shown.some(v=>edgeKey(v)===edgeKey(t))))expanded.set(n,pageSize);render();}
+  function paint(){const g=groups.find(g=>g.key===selectedGroup),active=g?g.triples:shown.filter(t=>t[0]===selectedNode||t[2]===selectedNode);
+    $$('[data-kg-group]').forEach(e=>{const lit=e.dataset.kgGroup===selectedGroup;e.classList.toggle('active',lit);e.classList.toggle('dim',!!g&&!lit);if(e.tagName.toLowerCase()==='path'){for(const a of ['marker-start','marker-end'])if(e.hasAttribute(a))e.setAttribute(a,lit?'url(#kg-arrow-active)':'url(#kg-arrow)');}else e.setAttribute('aria-pressed',String(lit));});
+    $$('.kg-node').forEach(n=>{n.classList.toggle('active',n.dataset.kgName===selectedNode||!!g&&(n.dataset.kgName===g.name||n.dataset.kgName===g.subject));n.classList.toggle('dim',!!g&&n.dataset.kgName!==g.subject&&n.dataset.kgName!==g.name);});
+    $('.kg-selection h3').textContent=g?'선택한 관계':selectedNode||'연결 살펴보기';$('.kg-selection>p').textContent=g?g.triples.length+'개 원본 관계':'직접 연결 '+degree(selectedNode)+'개 · 현재 표시 '+active.length+'개';const details=$('[data-kg-selection]');details.replaceChildren();if(data.aliases.get(selectedNode)?.size)details.append(make('p','','별칭 · '+[...data.aliases.get(selectedNode)].join(', ')));
+    active.forEach(t=>{const row=make('div','kg-fact');row.append(make('span','',t[0]),make('strong','',t[1]),make('span','',t[2]));details.append(row);});
+    if(!g&&selectedNode){
+      const hidden=(index.get(selectedNode)||[]).some(t=>!shown.some(v=>edgeKey(v)===edgeKey(t)));
+      if(expanded.has(selectedNode)&&hidden){const b=button('kg-jump','연결 8개 더 펼치기');b.addEventListener('click',()=>{expanded.set(selectedNode,expanded.get(selectedNode)+pageSize);render();});details.prepend(b);}
+      if(expanded.has(selectedNode)){const b=button('kg-jump','이 노드 주변 접기');b.addEventListener('click',()=>toggle(selectedNode));details.prepend(b);}
+      if(config.canExpand&&selectedNode!==center){const b=button('kg-jump','이 노드로 새 탐색 시작');b.addEventListener('click',()=>focus(selectedNode));details.append(b);}
     }
   }
-  $("#graph-sub").textContent = sc.candidates.length
-    ? `검사 #${sc.id} — 문서 속 엔티티 ${sc.entities.length}개, 후보 사실 ${sc.candidates.length}개`
-    : `검사 #${sc.id} — 문서에서 KG 엔티티 쌍을 찾지 못함`;
-}
-
-function fmtPlain(t) {
-  return esc(t).replace(/\[([^\[\]]{1,14}마스킹)\]/g, '<span class="mask">$1</span>');
-}
-
-function fmtSentence(t, keep) {
-  const ranges = [];
-  const seen = new Set();
-  for (const item of keep || []) {
-    const needle = String(item.text || "");
-    if (!needle) continue;
-    const exactStart = Number(item.start), exactEnd = Number(item.end);
-    if (Number.isInteger(exactStart) && Number.isInteger(exactEnd) && exactStart >= 0 && exactEnd > exactStart
-        && exactEnd <= t.length && t.slice(exactStart, exactEnd) === needle) {
-      const key = `${exactStart}:${exactEnd}`;
-      if (!seen.has(key)) { ranges.push({ start: exactStart, end: exactEnd, item }); seen.add(key); }
-      continue;
-    }
-    let at = 0;
-    while ((at = t.indexOf(needle, at)) !== -1) {
-      const key = `${at}:${at + needle.length}`;
-      if (!seen.has(key)) { ranges.push({ start: at, end: at + needle.length, item }); seen.add(key); }
-      at += Math.max(1, needle.length);
-    }
-  }
-  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
-  const selected = [];
-  let cursor = -1;
-  for (const range of ranges) {
-    if (range.start >= cursor) { selected.push(range); cursor = range.end; }
-  }
-  if (!selected.length) return fmtPlain(t);
-  let html = "", offset = 0;
-  for (const range of selected) {
-    html += fmtPlain(t.slice(offset, range.start));
-    const probability = Number(range.item.maskProbability);
-    const score = Number.isFinite(probability) ? ` · MASK 확률 ${(probability * 100).toFixed(1)}%` : "";
-    const title = `PII MLP: KEEP · ${range.item.type || "OTHER_PII"}${score}`;
-    html += `<span class="pii-keep" title="${esc(title)}">${esc(t.slice(range.start, range.end))}</span>`;
-    offset = range.end;
-  }
-  return html + fmtPlain(t.slice(offset));
-}
-
-function renderDoc(sc) {
-  if (!sc.sentences.length) { $("#doc").innerHTML = '<div class="empty">문장이 없습니다</div>'; return; }
-  const flagged = new Map(sc.flagged.map(([i, , src]) => [i, src]));
-  const bySent = new Map();
-  for (const [s, k] of sc.pairs) { if (!bySent.has(s)) bySent.set(s, []); bySent.get(s).push(k); }
-  const keepBySent = new Map();
-  for (const item of sc.piiKeep) {
-    if (!keepBySent.has(item.sentence)) keepBySent.set(item.sentence, []);
-    keepBySent.get(item.sentence).push(item);
-  }
-  const ev = new Set();
-  if (reached(sc, "retriever") && !reached(sc, "done")) for (const evs of sc.passed.values()) evs.forEach((i) => ev.add(i));
-  const html = sc.sentences.map((t, i) => {
-    const cls = flagged.has(i) ? (flagged.get(i) === "llm" ? "secret" : "fallback") : (ev.has(i) ? "ev" : "");
-    const chips = (sc.stage === "done" ? bySent.get(i) || [] : []).map((k) => {
-      const [s, p, o] = k.split("␟");
-      return `<span class="chip" data-key="${esc(k)}" title="${esc(`(${s}, ${p}, ${o})`)}">${esc(p)} · ${esc(o)}</span>`;
-    }).join("");
-    return `<div class="sent ${cls}" data-i="${i}"><span class="sn">S${i + 1}</span><span class="st"><span class="tx">${fmtSentence(t, keepBySent.get(i))}</span></span>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
-  }).join("");
-  const box = $("#doc");
-  const keep = box.dataset.scan === String(sc.id) ? box.scrollTop : 0;
-  box.innerHTML = html; box.dataset.scan = sc.id; box.scrollTop = keep;
-  if (sc.stage === "done" && sc._scrolled !== true && sc.flagged.length) {
-    sc._scrolled = true;
-    box.querySelector(".sent.secret, .sent.fallback")?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }
-  box.querySelectorAll(".sent").forEach((el) => {
-    const keys = bySent.get(Number(el.dataset.i)) || [];
-    el.onmouseenter = () => { el.classList.add("hover"); keys.forEach((k) => markFact(k, true)); };
-    el.onmouseleave = () => { el.classList.remove("hover"); keys.forEach((k) => markFact(k, false)); };
-  });
-}
-
-function sentencesOf(sc, key) {
-  const fromVerdict = sc.pairs.filter(([, k]) => k === key).map(([s]) => s);
-  return fromVerdict.length ? fromVerdict : (sc.fallback ? sc.passed.get(key) || [] : []);
-}
-
-function renderFacts(sc) {
-  if (!sc.candidates.length) { $("#facts").innerHTML = '<div class="empty">이 문서에는 KG 후보 사실이 없습니다</div>'; $("#facts-sub").textContent = ""; return; }
-  const rows = sc.candidates.map((k) => ({ k, st: statusOf(sc, k), m: sc.scores.get(k) }));
-  rows.sort((a, b) => ORDER.indexOf(a.st) - ORDER.indexOf(b.st) || (b.m ?? -99) - (a.m ?? -99));
-  const lo = -30, hi = 5, pct = (x) => Math.max(0, Math.min(100, ((x - lo) / (hi - lo)) * 100));
-  const html = `<table><thead><tr><th>판정</th><th>KG 사실 (주어 · 관계 · 목적어)</th><th>리트리버 점수</th><th>문장</th></tr></thead><tbody>` +
-    rows.map(({ k, st, m }) => {
-      const [s, p, o] = k.split("␟");
-      const [label, cls] = STATUS[st];
-      const score = m === undefined || m === null ? '<span class="refs">–</span>'
-        : `<div class="score"><div class="bar ${m > delta ? "ok" : ""}"><span style="width:${pct(m)}%"></span><em style="left:${pct(delta)}%"></em></div>${fmtScore(m)}</div>`;
-      const refs = sentencesOf(sc, k).map((i) => `S${i + 1}`).join(", ");
-      return `<tr data-key="${esc(k)}"><td><span class="st-chip ${cls}">${label}</span></td>` +
-        `<td class="fact"><b>${esc(s)}</b> <span class="p">· ${esc(p)} ·</span> <b>${esc(o)}</b></td><td>${score}</td><td class="refs">${refs}</td></tr>`;
-    }).join("") + "</tbody></table>";
-  $("#facts").innerHTML = html;
-  const c = (x) => rows.filter((r) => r.st === x).length;
-  $("#facts-sub").textContent = `후보 ${rows.length} · 통과 ${sc.passed.size}` + (c("secret") ? ` · 기밀 ${c("secret")}` : "");
-  $("#facts").querySelectorAll("tr[data-key]").forEach((tr) => {
-    tr.onmouseenter = () => hoverFact(tr.dataset.key, true);
-    tr.onmouseleave = () => hoverFact(tr.dataset.key, false);
-  });
-}
-
-function markFact(key, on) {
-  const id = edgeOf.get(key);
-  if (cy && id) cy.getElementById(id).toggleClass("hl", on);
-  document.querySelectorAll(`#facts tr[data-key="${CSS.escape(key)}"]`).forEach((tr) => tr.classList.toggle("hover", on));
-}
-
-function hoverFact(key, on) {
-  markFact(key, on);
-  const sc = scans.get(selected);
-  if (!sc) return;
-  for (const i of sentencesOf(sc, key)) document.querySelector(`.sent[data-i="${i}"]`)?.classList.toggle("hover", on);
-}
-
-function scanTitle(sc) {  // 메일이면 제목 줄, 아니면 첫 문장
-  const subject = sc.sentences.find((t) => /^(Subject|제목):/i.test(t.trim()));
-  const first = subject ? subject.replace(/^\s*(Subject|제목):\s*/i, "")
-    : sc.sentences.find((t) => t.trim().length >= 6 && !/^\[[^\]]*\]$/.test(t.trim())) || sc.sentences.find((t) => t.trim()) || "(빈 문서)";
-  return first.replace(/\[[^\[\]]{1,14}마스킹\]/g, "▒").slice(0, 40);
-}
-
-const fmtScore = (m) => (Math.abs(m) < 0.05 ? "0.0" : `${m > 0 ? "+" : ""}${m.toFixed(1)}`);
-const fmtTime = (at) => new Date((at || 0) * 1000).toTimeString().slice(0, 8);
-
-function renderHistory() {
-  const box = $("#history");
-  if (!scans.size) return;
-  const ids = [...scans.keys()].sort((a, b) => b - a);
-  box.innerHTML = ids.map((id) => {
-    const sc = scans.get(id);
-    const time = fmtTime(sc.at);
-    let badges = "";
-    if (sc.stage !== "done" || sc.pending.length) badges += '<span class="badge b-run">진행 중</span>';
-    else if (sc.fallback) badges += `<span class="badge b-fb">판정 불가 · ${sc.flagged.length}문장</span>`;
-    else if (sc.flagged.length) badges += `<span class="badge b-secret">기밀 ${sc.flagged.length}문장</span>`;
-    else badges += `<span class="badge b-none">${sc.candidates.length ? "기밀 없음" : "KG 후보 없음"}</span>`;
-    return `<div class="scan ${id === selected ? "sel" : ""}" data-id="${id}"><div class="t"><span>#${id}</span><span>${time}</span></div>` +
-      `<div class="n" title="${esc(scanTitle(sc))}">${esc(scanTitle(sc))}</div>${badges}</div>`;
-  }).join("");
-  box.querySelectorAll(".scan").forEach((el) => el.onclick = () => {
-    selected = Number(el.dataset.id);
-    follow = selected === Math.max(...scans.keys());  // 지난 검사를 보는 중 — 다음 새 검사가 시작되면 다시 따라간다
-    lastFocusKey = "";
-    render(scans.get(selected), false);
-    renderHistory();
-  });
-  const newest = ids[0];
-  if (follow && newest !== shownNewest) box.scrollTo({ left: 0, behavior: "smooth" });  // 새 검사는 맨 앞에 생긴다
-  shownNewest = newest;
-  updatePager();
-}
-
-function updatePager() {  // 검사 목록 한 화면 = 한 쪽
-  const box = $("#history");
-  const w = Math.max(1, box.clientWidth);
-  const pages = Math.max(1, Math.ceil((box.scrollWidth - 2) / w));
-  const page = Math.min(pages, Math.round(box.scrollLeft / w) + 1);
-  $("#hist-page").textContent = scans.size ? `${page} / ${pages}` : "";
-  $("#hist-prev").disabled = box.scrollLeft <= 2;
-  $("#hist-next").disabled = box.scrollLeft + box.clientWidth >= box.scrollWidth - 2;
-}
-
-// ── 이벤트 받기 ───────────────────────────────────────────────────────────
-function take(ev, instant) {
-  const tag = `${ev.scan}/${ev.stage}`;
-  if (seen.has(tag)) return;
-  seen.add(tag);
-  if (!scans.has(ev.scan)) {
-    scans.set(ev.scan, newScan(ev.scan, ev.at));
-    while (scans.size > 20) scans.delete(Math.min(...scans.keys()));
-    if (!instant) follow = true;  // 새 검사가 시작되면 화면이 그 검사로 넘어간다
-  }
-  const sc = scans.get(ev.scan);
-  if (instant) { applyEvent(sc, ev); return; }
-  sc.pending.push(ev);
-  if (follow) selected = ev.scan;
-  if (!pumping) pump();
-}
-
-async function pump() {  // 단계를 하나씩 간격을 두고 적용 — 이벤트가 몰려 와도 화면에서는 차례로 켜진다
-  pumping = true;
-  for (;;) {
-    const sc = [...scans.values()].sort((a, b) => a.id - b.id).find((s) => s.pending.length);
-    if (!sc) break;
-    const ev = sc.pending.shift();
-    applyEvent(sc, ev);
-    if (follow && selected !== sc.id) { selected = sc.id; lastFocusKey = ""; }
-    if (sc.id === selected) render(sc);
-    renderHistory();
-    await sleep(sc.id === selected ? STEP_MS[ev.stage] || 500 : 0);
-  }
-  pumping = false;
-}
-
-setInterval(() => {  // Solar 판정 중 경과 시간
-  const sc = scans.get(selected);
-  if (sc && sc.stage === "solar" && sc.shownAt.solar) {
-    $("#f-secret-sub").textContent = `Solar 판정 중 — 사실 ${sc.facts.length}개 · ${Math.max(0, Date.now() / 1000 - sc.shownAt.solar).toFixed(1)}초`;
-  }
-}, 200);
-
-function connect() {
-  const es = new EventSource("/demo/trace/stream");
-  const conn = $("#conn");
-  es.onopen = () => { conn.className = "pill live"; conn.lastElementChild.textContent = "실시간 연결됨"; };
-  es.onerror = () => { conn.className = "pill down"; conn.lastElementChild.textContent = "연결 끊김 — 다시 연결 중"; };
-  es.onmessage = (m) => {
-    const ev = JSON.parse(m.data);
-    if (ev.type === "snapshot") {
-      for (const e of ev.events || []) take(e, true);
-      if (scans.size && (follow || selected === null)) selected = Math.max(...scans.keys());
-      if (selected !== null && scans.has(selected)) { lastFocusKey = ""; render(scans.get(selected), false); }
-      renderHistory();
-    } else if (ev.type === "trace") {
-      take(ev, false);
-    }
+  $('.kg-search input').addEventListener('input',e=>{query=e.target.value;list();});$('.kg-filter select').addEventListener('change',e=>{predicate=e.target.value;page=0;selectedGroup=null;expanded.clear();positions.clear();resetViewport=true;render();});
+  $('[data-kg-collapse-all]').addEventListener('click',()=>{expanded.clear();selectedNode=center;selectedGroup=null;render();});
+  $('[data-kg-back]').addEventListener('click',()=>{const n=history.pop();if(n)focus(n,false);});$('[data-kg-home]').addEventListener('click',()=>focus(home));
+  $$('[data-kg-page]').forEach(b=>b.addEventListener('click',()=>{page+=b.dataset.kgPage==='next'?1:-1;selectedGroup=null;expanded.clear();positions.clear();resetViewport=true;render();}));
+  $('.kg-import input')?.addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;const error=$('.kg-error');error.hidden=true;try{if(file.size>8*1024*1024)throw Error('8MB 이하의 KG 파일을 선택하세요.');const next=model.parse(await file.text());data=next;source=file.name;refreshData();}catch(err){error.textContent=err.message;error.hidden=false;}finally{e.target.value='';}});
+  $$('[data-kg-zoom]').forEach(b=>b.addEventListener('click',()=>setZoom(zoom*(b.dataset.kgZoom==='in'?1.2:1/1.2))));$('[data-kg-fit]').addEventListener('click',fit);
+  let drag=null;viewport.addEventListener('pointerdown',e=>{if(e.target.closest('button')||e.button!==0)return;drag={x:e.clientX,y:e.clientY,tx,ty};viewport.setPointerCapture(e.pointerId);});viewport.addEventListener('pointermove',e=>{if(!drag)return;tx=drag.tx+e.clientX-drag.x;ty=drag.ty+e.clientY-drag.y;transform();});const end=()=>{drag=null;};viewport.addEventListener('pointerup',end);viewport.addEventListener('pointercancel',end);
+  viewport.addEventListener('wheel',e=>{if(!e.ctrlKey&&!e.metaKey)return;e.preventDefault();setZoom(zoom*(e.deltaY<0?1.1:1/1.1));},{passive:false});root.addEventListener('campfire:view',()=>{if(root.dataset.view==='all')render();});let lastW=0,lastH=0;const observer=new ResizeObserver(()=>{if(panel.hidden)return;const w=viewport.clientWidth,h=viewport.clientHeight;if(w!==lastW||h!==lastH){lastW=w;lastH=h;fit();}});observer.observe(viewport);
+  refreshData();
+  return {
+    setData(rows,options={}){
+      const next=model.parse(JSON.stringify({triples:rows})),stamp=JSON.stringify([options.context,rows,options.extraNodes]);
+      if(config.stamp===stamp)return;
+      config={allBase:false,extraNodes:[],canExpand:true,...options,stamp};data=next;source=options.source||'엔진 KG';refreshData();
+      $('[data-kg-scope]').textContent=options.description||'설정된 엔진 KG 전체 · 노드를 눌러 연결을 펼치세요.';
+      $('.kg-canvas-footer>span').textContent=config.canExpand?'노드 클릭 → 펼치기 / 접기 · 기존 연결 유지':'연결선의 관계를 누르면 상세 근거를 확인합니다';$('.kg-focus-bar').hidden=config.allBase;$('.kg-history').hidden=config.allBase;$('.kg-pagination').hidden=config.allBase;
+    },
+    show(){render();},
+    fit,
+    destroy(){observer.disconnect();}
   };
-}
+};
 
-$("#hist-prev").onclick = () => $("#history").scrollBy({ left: -$("#history").clientWidth, behavior: "smooth" });
-$("#hist-next").onclick = () => $("#history").scrollBy({ left: $("#history").clientWidth, behavior: "smooth" });
-$("#history").addEventListener("scroll", () => requestAnimationFrame(updatePager));
-window.addEventListener("resize", updatePager);
-updatePager();
-$("#btn-focus").onclick = () => { focusMode = true; $("#btn-focus").classList.add("on"); $("#btn-all").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); };
-$("#btn-all").onclick = () => { focusMode = false; $("#btn-all").classList.add("on"); $("#btn-focus").classList.remove("on"); lastFocusKey = ""; if (scans.get(selected)) renderGraph(scans.get(selected), true); else cy?.animate({ fit: { padding: 30 }, duration: 400 }); };
-
-loadKg().catch((e) => { $("#cy").innerHTML = `<div class="empty">KG 를 불러오지 못했습니다: ${esc(e.message)}</div>`; }).finally(connect);
+;
+(()=>{
+  'use strict';
+  const root=document.getElementById('campfire-disconnected-review'),$=s=>root.querySelector(s),$$=s=>[...root.querySelectorAll(s)],T=window.CampfireTrace,store=T.store(20),graph=window.createCampfireGraph(root);
+  let kg=[],kgVersion=0,selectedScan=null,selectedSentence=null,mode='all',follow=true,stream=null,loadController=null,kgRequest=0,related=[],renderQueued=false,scrollToSentence=false,selectedContext='';
+  const demo=window.CAMPFIRE_DEMO||null;
+  const labels={secret:'기밀',fallback:'판정 불가 · 보호 가림',public:'공개',nostmt:'문서에서 진술 안 함',passed:'Solar 판정 대기',filtered:'관련성 낮음',unscored:'채점되지 않음',candidate:'후보'};
+  const make=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;};
+// PII 모델이 KEEP(가리지 않음)으로 둔 구간을 초록 테두리로 — 엔진 start 이벤트의 piiKeep(문장 번호·문장 안 위치·글자).
+// 글자는 textContent 로만 넣는다(문서 글을 HTML 로 해석하지 않는다).
+const keepText=(tag,cls,text,sc,i)=>{const e=make(tag,cls),ranges=[],seen=new Set();const add=(s,n,k)=>{const key=s+':'+n;if(!seen.has(key)){seen.add(key);ranges.push([s,n,k]);}};for(const k of sc.piiKeep||[]){if(k.sentence!==i)continue;const s=Number(k.start),n=Number(k.end);if(Number.isInteger(s)&&Number.isInteger(n)&&s>=0&&n>s&&text.slice(s,n)===k.text){add(s,n,k);continue;}for(let at=text.indexOf(k.text);at!==-1;at=text.indexOf(k.text,at+k.text.length))add(at,at+k.text.length,k);}ranges.sort((a,b)=>a[0]-b[0]||b[1]-a[1]);let at=0;for(const [s,n,k] of ranges){if(s<at)continue;if(s>at)e.append(text.slice(at,s));const p=Number(k.maskProbability);const m=make('span','pii-keep',text.slice(s,n));m.title=`PII MLP: KEEP · ${k.type||'OTHER_PII'}${Number.isFinite(p)?` · MASK 확률 ${(p*100).toFixed(1)}%`:''}`;e.append(m);at=n;}if(at<text.length)e.append(text.slice(at));return e;};
+  const current=()=>store.scans.get(selectedScan)||null;
+  const title=sc=>sc.sentences.find(t=>t.trim().length>3)?.slice(0,55)||'문서 내용 대기';
+  function alertText(selector,text){const el=$(selector);el.textContent=text;el.hidden=!text;}
+  function setTheme(value){document.documentElement.style.colorScheme=value==='system'?'light dark':value;try{localStorage.setItem('campfire-dashboard-theme',value);}catch{}}
+  try{const saved=localStorage.getItem('campfire-dashboard-theme');if(['dark','light','system'].includes(saved))$('#theme').value=saved;}catch{}
+  setTheme($('#theme').value);$('#theme').addEventListener('change',e=>setTheme(e.target.value));
+  function schedule(){if(renderQueued)return;renderQueued=true;requestAnimationFrame(()=>{renderQueued=false;render();});}
+  function renderScanPicker(){const el=$('#scan-select');el.replaceChildren();const scans=[...store.scans.values()].sort((a,b)=>b.at-a.at||b.id-a.id);if(!scans.length){const opt=make('option','','검사 대기 중');opt.value='';el.append(opt);el.disabled=true;return;}el.disabled=false;scans.forEach(sc=>{const opt=make('option','',`#${sc.id} · ${title(sc)}`);opt.value=String(sc.id);el.append(opt);});el.value=String(selectedScan);$('#follow-latest').setAttribute('aria-pressed',String(follow));}
+  function pipeline(sc){const el=$('#pipeline');el.replaceChildren();const facts=sc?new Set(sc.pairs.map(r=>T.key(r[1]))).size:0;const steps=[['회사 KG',kg.length,true],['문서 후보',sc?.candidates.length,sc?.hasStart],['리트리버',sc?.passed.size,sc?.events.has('retriever')],['Solar 기밀',sc?.fallback?'판정 불가':facts,sc?.events.has('verdict')],['가린 문장',sc?.flagged.length,sc?.complete]];steps.forEach(([label,n,done],i)=>{const li=make('li',done?'done':'',label);li.append(make('b','',done?String(n??0):'—'));if(sc&&!sc.complete&&i>0&&!done&&steps[i-1][2])li.classList.add('running');el.append(li);});}
+  function renderReviewSidebar(sc){const box=$('[data-review-sidebar]');box.replaceChildren();box.hidden=mode==='all';$$('[data-entity-controls]').forEach(el=>el.hidden=mode!=='all');if(mode==='all')return;
+    box.append(make('h3','',mode==='review'?'검토 문장':'문서 전체 후보'));
+    if(!sc){box.append(make('p','empty-note','앱이나 확장 프로그램에서 문서를 검사하면 표시됩니다.'));return;}
+    if(mode==='candidates'){box.append(make('p','empty-note',`${sc.entities.length}개 엔티티 · ${sc.candidates.length}개 후보 관계`),make('p','empty-note','이 문서에서 찾은 후보 전체입니다. 후보나 리트리버 통과만으로 기밀 판정을 의미하지 않습니다.'));return;}
+    const ids=T.reviewIds(sc);if(!ids.includes(selectedSentence))selectedSentence=ids[0]??null;
+    if(!ids.length){box.append(make('p','empty-note',sc.complete?'이 검사에서 기밀 또는 보호 가림 문장이 없습니다.':'판정을 기다리는 중입니다. 후보 그래프에서 검색 과정을 확인할 수 있습니다.'));return;}
+    ids.forEach(i=>{const b=make('button','sentence-choice');b.type='button';b.setAttribute('aria-label',`S${i+1} 검토 문장 선택`);b.setAttribute('aria-pressed',String(i===selectedSentence));const top=make('span');top.append(make('strong','',`S${i+1}`),make('span','',T.sentenceFacts(sc,i).length+'개 관계'));b.append(top,keepText('p','',sc.sentences[i],sc,i),make('small','state-badge '+T.sentenceStatus(sc,i),labels[T.sentenceStatus(sc,i)]||'연결 없음'));b.addEventListener('click',()=>{selectedSentence=i;related=[];scrollToSentence=true;render();});box.append(b);});
+  }
+  function documentView(sc){const panel=$('[data-document-panel]');panel.hidden=mode!=='review'||!sc;if(panel.hidden)return;const box=$('[data-document-body]'),keep=box.dataset.scan===String(sc.id)?box.scrollTop:0;box.replaceChildren();box.dataset.scan=String(sc.id);$('[data-document-caption]').textContent=selectedSentence===null?'':`S${selectedSentence+1} · ${labels[T.sentenceStatus(sc,selectedSentence)]||'판정 연결 없음'}`;
+    sc.sentences.forEach((text,i)=>{const b=make('button','doc-sentence '+T.sentenceStatus(sc,i));b.type='button';b.dataset.sentence=String(i);b.classList.toggle('selected',i===selectedSentence);b.classList.toggle('related',related.includes(i));b.append(make('small','',`S${i+1}`),keepText('span','',text,sc,i));b.setAttribute('aria-label',`원문 S${i+1}`);b.addEventListener('click',()=>{if(T.reviewIds(sc).includes(i)){selectedSentence=i;related=[];scrollToSentence=true;render();}});box.append(b);});box.scrollTop=keep;if(scrollToSentence){const target=box.querySelector('.doc-sentence.selected');if(target)box.scrollTop=target.offsetTop-box.firstElementChild.offsetTop-12;scrollToSentence=false;}
+  }
+  function decorate(sc){if(!sc||mode==='all')return;$$('.kg-fact').forEach(el=>{el.querySelector('.fact-state')?.remove();const values=[...el.children].map(e=>e.textContent);if(values.length!==3)return;const state=T.status(sc,values),k=T.key(values);el.dataset.status=state;const badge=make('div','fact-state');badge.append(make('b','',labels[state]),make('span','',sc.scores.get(k)!=null?'점수 '+sc.scores.get(k).toFixed(2):''));el.append(badge);});}
+  function render(){const scans=[...store.scans.values()].sort((a,b)=>b.at-a.at||b.id-a.id);if(follow||!store.scans.has(selectedScan))selectedScan=scans[0]?.id??null;const sc=current(),context=sc?`${sc.id}:${sc.at}`:'';if(context!==selectedContext){selectedContext=context;selectedSentence=null;related=[];}renderScanPicker();pipeline(sc);root.dataset.view=mode;
+    $$('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===mode)));
+    $('#view-title').textContent=mode==='all'?'전체 KG 탐색':mode==='candidates'?'문서 후보 그래프':'문장별 기밀 근거';
+    $('#view-description').textContent=mode==='all'?'노드를 눌러 주변 관계를 펼치고, 다시 눌러 접으세요.':mode==='candidates'?'문서에서 찾은 후보 관계와 판정 진행 상태를 확인하세요.':'문장을 선택하면 연결된 KG 사실과 마스킹된 원문을 함께 확인합니다.';
+    $('#scan-status').textContent=!sc?'아직 검사한 문서가 없습니다':!sc.hasStart?'일부 추적 이벤트가 없습니다':sc.complete?(sc.fallback?'검사 완료 · 판정 실패로 보호 가림':'검사 완료'):({start:'리트리버 검색 중',retriever:sc.scored===false?'리트리버 사용 불가 · 보호 가림 처리 중':'Solar 판정 대기',solar:'Solar 판정 중',verdict:'마스킹 반영 중'}[sc.stage]||'검사 중');
+    renderReviewSidebar(sc);
+    if(mode==='all')graph.setData(kg,{context:'kg:'+kgVersion,source:'엔진 전체 KG',description:'설정된 회사 KG 전체 · 펼친 노드의 연결을 유지하며 탐색합니다.'});
+    else if(mode==='candidates')graph.setData(sc?.candidates||[],{context:`candidate:${sc?.id}:${sc?.at}`,allBase:true,canExpand:false,extraNodes:sc?.entities||[],source:'문서 전체 후보',description:'판정 전 후보를 포함합니다. 고립 엔티티는 연결선을 만들지 않습니다.',emptyText:sc?'이 문서에는 KG 후보 관계가 없습니다.':'검사를 기다리는 중입니다.'});
+    else{const facts=sc&&selectedSentence!==null?T.sentenceFacts(sc,selectedSentence):[];graph.setData(facts,{context:`sentence:${sc?.id}:${sc?.at}:${selectedSentence}:${sc?.fallback}`,allBase:true,canExpand:false,source:sc?.fallback?'보호 가림 근거':'Solar 문장별 판정',description:sc?.fallback?'판정 불가로 가린 문장입니다. 아래 연결은 리트리버 근거이며 기밀 확정이 아닙니다.':selectedSentence!==null?`S${selectedSentence+1}에 연결된 판정 사실 · 기밀 판단은 문장 전체가 단위입니다.`:'판정된 문장을 선택하세요.',emptyText:'이 문장에 연결된 KG 판정 사실이 없습니다.'});}
+    $('.mr-doc-count').textContent=mode==='all'?kg.length+'개 관계':mode==='review'?(sc?T.reviewIds(sc).length:0)+'개 검토 문장':(sc?.candidates.length||0)+'개 후보';
+    documentView(sc);decorate(sc);window.lucide.createIcons();
+  }
+  root.addEventListener('kg:fact-selected',e=>{const sc=current();if(!sc||mode!=='review')return;related=[...new Set(e.detail.triples.flatMap(t=>T.refs(sc,t)))];documentView(sc);decorate(sc);});
+  // Graph selection updates details without triggering a full scan rerender.
+  root.querySelector('.kg-edges').addEventListener('click',()=>decorate(current()));root.querySelector('.kg-nodes').addEventListener('click',()=>decorate(current()));
+  $$('button[data-view]').forEach(b=>b.addEventListener('click',()=>{mode=b.dataset.view;related=[];render();graph.fit();}));
+  $('#scan-select').addEventListener('change',e=>{selectedScan=Number(e.target.value);selectedSentence=null;follow=false;related=[];render();});$('#follow-latest').addEventListener('click',()=>{follow=!follow;selectedSentence=null;render();});
+  async function loadKg(){if(demo){kg=window.CampfireKGModel.parse(JSON.stringify(demo.kg)).triples;kgVersion++;schedule();return;}const request=++kgRequest;loadController?.abort();const abort=new AbortController();loadController=abort;const timeout=setTimeout(()=>abort.abort(),10000);const button=$('[data-reload-kg]');button.disabled=true;alertText('#kg-alert','');try{const res=await fetch('/demo/kg',{signal:abort.signal,cache:'no-store'});if(!res.ok)throw Error(res.status===404?'대시보드가 비활성화됐습니다. SECUREDOC_DEMO_TRACE 설정을 확인하세요.':`KG 요청 실패 (${res.status})`);const payload=await res.json();if(!Array.isArray(payload.triples))throw Error('KG 응답 형식이 올바르지 않습니다.');const parsed=window.CampfireKGModel.parse(JSON.stringify(payload));if(request!==kgRequest)return;kg=parsed.triples;kgVersion++;if(payload.confidentialEnabled===false)alertText('#kg-alert','기밀 탐지가 비활성화되어 있습니다. KG 탐색은 가능하지만 새 판정은 발생하지 않습니다.');else if(!kg.length)alertText('#kg-alert','설정된 KG가 비어 있습니다. 엔진의 SECUREDOC_KG_PATH를 확인하세요.');schedule();}catch(error){if(request!==kgRequest)return;alertText('#kg-alert',(error.name==='AbortError'?'KG 요청 시간이 초과됐습니다.':error.message)+(kg.length?' 마지막으로 받은 KG를 표시합니다.':''));}finally{clearTimeout(timeout);if(request===kgRequest)button.disabled=false;}}
+  function connect(){stream?.close();stream=new EventSource('/demo/trace/stream');const conn=$('#connection');stream.onopen=()=>{conn.textContent='검사 실시간 연결';conn.className='live';alertText('#trace-alert','');};stream.onerror=()=>{conn.textContent='검사 연결 끊김 · 재연결 중';conn.className='down';};stream.onmessage=message=>{try{const payload=JSON.parse(message.data);if(store.ingest(payload)){schedule();alertText('#trace-alert','');}}catch{alertText('#trace-alert','검사 이벤트 형식을 읽지 못했습니다. 다음 이벤트를 기다립니다.');}};}
+  $('[data-reload-kg]').addEventListener('click',loadKg);window.addEventListener('pagehide',()=>{stream?.close();loadController?.abort();});window.addEventListener('pageshow',e=>{if(e.persisted&&!demo){loadKg();connect();}});
+  render();if(demo){$('#connection').hidden=true;$('.app-footer span').hidden=true;store.ingest(demo.snapshot);loadKg();schedule();}else if(location.protocol==='file:'){alertText('#kg-alert','이 파일은 앱의 /demo/dashboard에서 열어야 실제 엔진과 연결됩니다.');$('#connection').textContent='엔진 연결 필요';}else{loadKg();connect();}
+})();
 </script>
-</body>
-</html>
+</body></html>
