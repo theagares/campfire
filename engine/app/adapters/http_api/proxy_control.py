@@ -45,6 +45,16 @@ def _prune_extension_routes(now: float) -> None:
         _extension_routes.pop(key, None)
 
 
+def _proxy_covers(host: str) -> bool:
+    """프록시(PAC·TLS 풀기)가 이 사이트를 맡는가. 프록시 모듈이 없으면(라이트 판) 맡는다고 보고 지금처럼 센다."""
+    try:
+        from app.adapters.proxy.addon import intercept_hosts
+    except ImportError:
+        return True
+    exact, suffixes = intercept_hosts()
+    return host in exact or any(host == s or host.endswith("." + s) for s in suffixes)
+
+
 def extension_route_status(now: float | None = None) -> dict:
     """Summarize fresh, actively verified routes reported by extension tabs."""
 
@@ -54,7 +64,11 @@ def extension_route_status(now: float | None = None) -> dict:
     counts = {"proxy": 0, "extension": 0, "fallback": 0, "off": 0}
     for report in reports:
         counts[report["mode"]] += 1
-    active_modes = [mode for mode, count in counts.items() if count]
+    # 프록시가 맡지 않는 사이트(copilot.com — 요청이 작업자로 다른 호스트에 나간다)는 프록시가 켜져도 확장이 맡는 게
+    # 맞다. 그 탭의 확장·폴백 보고까지 섞어 "탭별 경로 다름" 으로 보였고 새로고침해도 안 풀렸다(v0.2.57 Windows PX-7).
+    # 판단에서만 빼고 counts·sites 에는 그대로 남긴다. 그런 탭만 있으면 지금처럼 모두 본다.
+    judged = [r for r in reports if r["mode"] in ("proxy", "off") or _proxy_covers(r["host"])] or reports
+    active_modes = [m for m in counts if any(r["mode"] == m for r in judged)]
     mode = active_modes[0] if len(active_modes) == 1 else ("mixed" if active_modes else "unknown")
     latest = max((report["seenAt"] for report in reports), default=None)
     sites = [
