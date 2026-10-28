@@ -218,6 +218,12 @@ def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int
             mps = getattr(torch, "mps", None)
             if mps is not None and hasattr(mps, "recommended_max_memory"):
                 total = mps.recommended_max_memory()
+        elif device == "cuda":
+            # 전체 용량이 아니라 이 사이드카가 쓸 수 있는 양(남은 VRAM + 이미 올린 모델) — PII·인젝션 작업자와
+            # 브라우저가 같은 카드를 쓴다. 예전엔 CUDA 를 아예 재지 않아 12GB 카드에서도 큰 묶음(8·6000)으로 돌다
+            # CUDA out of memory 로 그림을 못 읽었다(v0.2.57 Windows RTX 5070 실측, 다른 프로세스가 약 7GB 사용).
+            free, _total = torch.cuda.mem_get_info()
+            total = free + torch.cuda.memory_allocated()
     except (AttributeError, RuntimeError):
         pass
     if total is not None and total < 10 * 1024**3:
