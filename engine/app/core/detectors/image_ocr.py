@@ -17,6 +17,7 @@ import base64
 import contextlib
 import hashlib
 import io
+import logging
 import os
 from typing import Any
 
@@ -28,6 +29,12 @@ from .gpu_residency import GpuResidency
 from .pii.encoder import EncoderPiiDetector
 
 UNCHECKED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — GPU 실행 환경이 없거나 이미지 검사 모델이 준비되지 않았습니다"
+# 모델 파일·GPU 는 있는데 사이드카가 죽은 경우. v0.2.56 Windows 실측(EN-6): 15GB PC 에서 VARCO(약 5.5GB)를 띄우다
+# 가상 메모리(커밋)가 바닥나 사이드카가 죽었는데, 오류를 로그 없이 삼키고 위의 "GPU 없음" 문구를 붙여 원인을 못 찾았다.
+LAUNCH_FAILED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — 이미지 검사 모델을 띄우지 못했습니다(PC 메모리가 부족할 수 있습니다)"
+READ_FAILED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — 이미지 검사 모델이 그림을 읽다 멈췄습니다(PC 메모리가 부족할 수 있습니다)"
+
+logger = logging.getLogger("securedoc.engine.image_ocr")
 
 
 class VarcoOcrProcess(EncoderPiiDetector):
@@ -45,6 +52,7 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self._request_lock = asyncio.Lock()
         self._next_id = 0
         self.no_gpu = False  # 사이드카가 GPU 를 못 찾았다 — 다시 띄우지 않는다(매번 띄워 보며 시간을 쓰지 않게)
+        self.last_failure: str | None = None  # 마지막 read() 가 None 을 준 까닭(없으면 GPU·모델 미준비)
         self._idle_task: asyncio.Task | None = None
 
     def _spawn_args(self) -> list[str]:
@@ -78,18 +86,24 @@ class VarcoOcrProcess(EncoderPiiDetector):
     async def read(self, blob: bytes) -> dict[str, Any] | None:
         """이미지 한 장 → {"text", "tiles", "secs"}. 못 읽으면 None (GPU 없음·모델 없음·실패).
         한 요청에 한 장 — 응답 대기 상한(DETECT_INFER_TIMEOUT_SEC)이 요청 단위라 여러 장을 묶으면 넘는다."""
+        self.last_failure = None
         if self.no_gpu or not model_status.image_ocr_ready():
             return None
         try:
             await self._ensure_process()
         except RuntimeError as exc:
+            logger.warning("[image_ocr] 사이드카를 띄우지 못함: %s", exc)
             if "no_gpu" in str(exc) or "no_accelerator" in str(exc):
                 self.no_gpu = True
+            else:
+                self.last_failure = LAUNCH_FAILED_REASON
             return None
         try:
             result = await self._rpc({"images": [base64.b64encode(blob).decode("ascii")]})
             return result["results"][0]
-        except Exception:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
+        except Exception as exc:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
+            logger.warning("[image_ocr] 그림을 읽지 못함: %s", exc)
+            self.last_failure = READ_FAILED_REASON
             return None
         finally:
             self.residency.touch()
@@ -159,6 +173,7 @@ async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dic
     ocr = get()
     infos: list[dict[str, Any]] = []
     read_cache: dict[str, dict[str, Any] | None] = {}
+    failed_why: dict[str, str | None] = {}
     targets = 0
     for i, blob in enumerate(images):
         ok, why = _target(blob)
@@ -173,9 +188,11 @@ async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dic
                     if emit:
                         await emit({"type": "step", "step": 1, "label": f"이미지 속 글자 읽는 중 ({targets}번째)..."})
                     read_cache[key] = await ocr.read(blob)
+                    failed_why[key] = getattr(ocr, "last_failure", None)
             got = read_cache[key]
             if got is None:
-                info.update(status="unchecked", reason=UNCHECKED_REASON if targets <= config.IMAGE_OCR_MAX_IMAGES
+                info.update(status="unchecked", reason=(failed_why.get(key) or UNCHECKED_REASON)
+                            if targets <= config.IMAGE_OCR_MAX_IMAGES
                             else f"이미지가 {config.IMAGE_OCR_MAX_IMAGES}장을 넘어 나머지는 검사하지 못했습니다")
             else:
                 info.update(status="read", reason=None, ocr=got)

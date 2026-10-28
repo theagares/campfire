@@ -180,6 +180,24 @@ def test_GPU_가_없다고_한_번_보면_다시_띄우지_않는다(monkeypatch
     assert asyncio.run(proc.read(_png())) is None and spawned == [1]
 
 
+def test_사이드카를_못_띄우면_로그를_남기고_GPU_없음이_아니라_그_이유로_막는다(monkeypatch, caplog):
+    # v0.2.56 Windows 실측(EN-6): 메모리 부족으로 사이드카가 죽었는데 "GPU 실행 환경이 없거나…" 로 막고 로그도 없었다.
+    proc = image_ocr.VarcoOcrProcess()
+    monkeypatch.setattr(image_ocr, "_process", proc)
+    monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)
+
+    async def ensure():
+        raise RuntimeError("image_ocr: 서브프로세스가 준비 전 종료됨: OSError: [WinError 1455] 페이징 파일이 너무 작습니다")
+
+    monkeypatch.setattr(proc, "_ensure_process", ensure)
+    with caplog.at_level("WARNING", logger="securedoc.engine.image_ocr"):
+        _text, infos = asyncio.run(image_ocr.fill("0", [_png()]))
+    assert infos[0]["status"] == "unchecked"
+    assert infos[0]["reason"] == image_ocr.LAUNCH_FAILED_REASON
+    assert not proc.no_gpu  # GPU 가 없는 게 아니다 — 다음 그림에서 다시 띄워 본다
+    assert "WinError 1455" in caplog.text
+
+
 def test_GPU_torch_는_이미지_검사_사이드카에만_앞세우고_따로_지정한_파이썬이면_그대로(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "IMAGE_OCR_GPU_TORCH_DIR", tmp_path / "gpu_torch")
     monkeypatch.setattr(config, "IMAGE_OCR_PYTHON_OVERRIDE", "")
