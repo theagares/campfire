@@ -36,7 +36,9 @@ def _decode(part) -> str:
 
 
 def extract_eml(file_bytes: bytes) -> str:
-    msg: EmailMessage = message_from_bytes(file_bytes, policy=policy.default)
+    # 메모장·PowerShell 로 저장한 메일은 맨 앞에 UTF-8 BOM 이 붙는다. 그대로 넘기면 첫 헤더를 못 읽어
+    # 파일 전체를 헤더 없는 본문으로 보고, base64 본문을 풀지 않은 채 검사·마스킹본에 넘겼다(v0.2.56 Windows FM-4).
+    msg: EmailMessage = message_from_bytes(file_bytes.removeprefix(b"\xef\xbb\xbf"), policy=policy.default)
 
     parts: list[str] = []
     for name in _HEADERS:
