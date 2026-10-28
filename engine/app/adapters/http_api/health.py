@@ -12,6 +12,7 @@ GET /health — 시그니처 필드 필수 (PLAN §11).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -52,6 +53,10 @@ async def health(request: Request):
         "blocksTargetUse": False,
         "scoreAffectsAppBehavior": False,
     }
+    # KG 는 사용자가 고른 경로다. macOS 는 ~/Desktop·문서·다운로드 안 파일을 처음 건드리면 접근 승인
+    # 창을 띄우고, 답할 때까지 그 호출이 멈춘다. 이벤트 루프에서 부르면 엔진 전체가 멈춰 확장 검사도
+    # 끝없이 기다렸다(v0.2.56 맥 실측: 판 교체·키체인 승인 직후 확장이 5분 넘게 "검사 준비 중").
+    kg_ok = await asyncio.to_thread(_kg_file_ok)
 
     return {
         "service": config.SERVICE_NAME,       # 고정 시그니처 (PLAN §11)
@@ -68,8 +73,8 @@ async def health(request: Request):
         # KG 파일이 없으면 탐지는 아무것도 안 하므로 가중치가 있어도 작동 중이 아니다.
         "confidential": {
             "enabled": config.CONFIDENTIAL_ENABLED,
-            "ready": model_status.confidential_ready() and _kg_file_ok(),
-            "kgReady": _kg_file_ok(),
+            "ready": model_status.confidential_ready() and kg_ok,
+            "kgReady": kg_ok,
         },
         # 이미지 속 글자 검사(선택 기능) — noGpu 는 사이드카를 한 번 띄워 봐야 안다(None = 아직 모름)
         "imageOcr": image_ocr.status(),
