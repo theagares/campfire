@@ -568,6 +568,10 @@ class CampfireAddon:
             if path in CLAUDE_USER_TEXT_PATHS
             and f.message is None and f.value is not None and pb.looks_like_text(f.value)
         ]
+        # 확장이 검토해 사람이 승인한 마스킹본을 Claude 는 업로드하지 않고 여기(2.15.4)에 글로 넣는다(맥 실측: files 요청
+        # 없이 이 RPC 하나). 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 또 묻는다 — 해시가 같은 바이트만
+        # 뺀다. 프롬프트 칸은 승인 대상이 아니라 그대로 검사한다.
+        picked = [(path, f) for path, f in picked if path == CLAUDE_PROMPT_PATH or not _approved_bytes(f.value)]
         if not picked:
             return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
 
