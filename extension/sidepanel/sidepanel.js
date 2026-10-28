@@ -1219,6 +1219,15 @@ function pullSnapshot() {
   });
 }
 
+// 이 패널이 열려 있다고 SW 에 알린다 — 결정 없이 닫히면 SW 가 이 탭의 검토를 취소로 푼다(SW 의 onConnect 주석).
+// SW 가 쉬다 꺼지면 포트도 끊기므로 다시 잇는다. 패널이 닫힌 뒤에는 이을 페이지가 남지 않는다.
+function holdPanelPort() {
+  if (state.myTabId == null) return;
+  chrome.runtime.connect({ name: `panel:${state.myTabId}` })
+    .onDisconnect.addListener(() => setTimeout(holdPanelPort, 200));
+}
+
 renderProgress(null);
 refreshCapabilities();
 pullSnapshot();
+holdPanelPort();

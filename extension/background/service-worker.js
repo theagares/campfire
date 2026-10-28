@@ -937,7 +937,8 @@ function disablePanelForTab(tabId) {
 function cancelSessionsForTab(tabId) {
   if (tabId == null) return;
   for (const [sid, s] of [...sessions]) {
-    if (s?.tabId !== tabId) continue;
+    // 결정을 받아 주입 중인 배치는 기다리는 세션이 아니다 — 풀면 산출물이 사라져 주입이 깨진다.
+    if (s?.tabId !== tabId || s.status === 'awaiting-injection') continue;
     if (s.kind === 'multi') {
       // 다중 첨부 배치는 CONTENT_BATCH_DECISION 을 기다린다 — PANEL_DECISION 으로는 안 풀려
       // 그 탭의 전송이 10분 동안 막혔다. 쥐고 있던 검사 차례·예약·산출물도 함께 놓는다.
@@ -974,6 +975,20 @@ function closePanelForTab(tabId) {
   try { chrome.sidePanel?.close?.({ tabId })?.catch?.(() => {}); } catch (_) { /* ignore */ }
   disablePanelForTab(tabId);
 }
+
+// 결정 없이 닫힌 검토 패널. content 는 결정을 10분 기다리며 그 사이 그 탭의 전송을 전부 조용히 삼킨다 — 검사가
+// 멎은 패널을 닫자 다음 전송 버튼이 아무 반응이 없었다(v0.2.57 Windows EX-2, Copilot). 패널이 잇는 포트가 끊길 때
+// 그 탭이 여전히 보이는 탭이면 사용자가 닫은 것이라 남은 검토를 취소로 푼다. 다른 탭으로 옮겨 끊긴 것이면 그대로
+// 두고, 돌아오면 패널이 스냅샷으로 이어 간다. 결정 뒤 스스로 닫힌 패널은 세션이 이미 지워져 아무 일도 없다.
+chrome.runtime.onConnect?.addListener((port) => {
+  const tabId = port.name.startsWith('panel:') ? asTabId(port.name.slice(6)) : null;
+  if (tabId == null) return;
+  port.onDisconnect.addListener(() => {
+    chrome.tabs.get(tabId)
+      .then(tab => tab?.active && ensureHydrated().then(() => cancelSessionsForTab(tabId)))
+      .catch(() => { /* 탭이 닫혔다 — 기다릴 content 도 없다 */ });
+  });
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 // 메시지 핸들러

@@ -29,6 +29,7 @@ const sessionStore = {};
 const panelMessages = [];
 const tabMessages = [];
 let swListener = null;
+let connectListener = null;
 
 // 엔진 응답. 파일마다 다른 결과를 주기 위해 fileName 으로 갈라 놓는다.
 const engineResults = {
@@ -56,6 +57,7 @@ const sandbox = {
   chrome: {
     runtime: {
       onMessage: { addListener: (l) => { swListener = l; }, removeListener() {} },
+      onConnect: { addListener: (l) => { connectListener = l; } },
       onInstalled: { addListener() {} },
       onStartup: { addListener() {} },
       lastError: null,
@@ -668,5 +670,53 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
     await settle();
   }
 
-  console.log('multi-attach.test.js: 17개 블록 통과');
+  // ── 18) 결정 없이 닫힌 패널(Windows EX-2): 검사가 멎은 패널을 닫자 그 탭의 전송이 10분 동안 조용히 막혔다 ──
+  //     패널 포트가 끊길 때 그 탭이 보이는 탭이면 남은 검토를 취소로 푼다. 다른 탭으로 옮겨 끊긴 것이면 두고,
+  //     결정을 받아 주입 중인 다중 배치는 건드리지 않는다(풀면 산출물이 사라진다).
+  {
+    tabMessages.length = 0;
+    let active = false;
+    sandbox.chrome.tabs.get = (id) => Promise.resolve({ id, active });
+    const closePanel = async (tabId) => {
+      const port = { name: `panel:${tabId}`, onDisconnect: { addListener: (fn) => { port.close = fn; } } };
+      connectListener(port);
+      port.close();
+      await settle();
+    };
+    const cancels = (sid) => tabMessages.filter(m => m.decision?.action === 'cancel' && m.sessionId === sid);
+
+    sandbox.__scanPrompt = vm.runInContext('scanPrompt', ctx);
+    vm.runInContext('scanPrompt = () => new Promise(() => {});', ctx); // 엔진 응답이 오지 않는 검사
+    await send({ type: 'START_SCAN', sessionId: 'stuck', kind: 'prompt', payload: { text: '안녕' } }, { tab: { id: 5 } });
+    await settle();
+    vm.runInContext('scanPrompt = __scanPrompt;', ctx); // 아래 다중 배치의 프롬프트 검사는 끝나야 한다
+    await closePanel(5);
+    assert.strictEqual(cancels('stuck').length, 0, '다른 탭으로 옮겨 패널이 내려간 것인데 검토를 취소했다');
+    active = true;
+    await closePanel(5);
+    assert.strictEqual(cancels('stuck')[0]?.type, 'PANEL_DECISION', '결정 없이 닫힌 패널의 검토를 풀지 않았다 — 그 탭 전송이 10분 막힌다');
+
+    const one = [{ id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }];
+    await send({ type: 'START_MULTI_SCAN', sessionId: 'inj', payload: { items: one } });
+    await settle();
+    const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED' && m.sessionId === 'inj').leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'inj', leaseId: lease, text: '요약해줘' });
+    await send({
+      type: 'SCAN_MULTI_ITEM', sessionId: 'inj', leaseId: lease,
+      payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', file: binaryFile('a.pdf'), userPrompt: '요약해줘' },
+    });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'inj', leaseId: lease });
+    await settle();
+    const sent = await send({
+      type: 'PANEL_MULTI_DECISION', sessionId: 'inj',
+      decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'masked', unmaskedKeys: [] }] },
+    });
+    assert.strictEqual(sent.ok, true);
+    await closePanel(7); // 결정 뒤 패널이 스스로 닫힌다
+    assert.strictEqual(cancels('inj').length, 0, '결정을 받아 주입 중인 배치를 패널이 닫혔다고 취소했다');
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'inj' });
+    await settle();
+  }
+
+  console.log('multi-attach.test.js: 18개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });

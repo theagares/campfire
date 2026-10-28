@@ -104,6 +104,7 @@ function loadPanel(opts = {}) {
       runtime: {
         lastError: null,
         onMessage: { addListener: (fn) => listeners.push(fn) },
+        connect: () => ({ onDisconnect: { addListener() {} } }),
         // PANEL_READY 응답은 "세션 없음" 으로 둔다 — 이 테스트의 관심사는 로드 이후의
         // 브로드캐스트 처리이지 스냅샷 복구가 아니다.
         sendMessage: (msg, cb) => {

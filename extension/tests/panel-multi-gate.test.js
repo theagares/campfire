@@ -70,6 +70,7 @@ const sandbox = {
   chrome: {
     runtime: {
       onMessage: { addListener: (l) => { panelListener = l; }, removeListener: noop },
+      connect: () => ({ onDisconnect: { addListener: noop } }),
       sendMessage: (m, cb) => { sent.push(m); cb?.({ ok: true }); },
       lastError: null,
     },
