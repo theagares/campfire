@@ -136,6 +136,25 @@ def test_previously_missed_credential_is_detected(name, text, secret):
     assert secret not in _masked(text), f"{name} 이 마스킹되지 않았다 — 그대로 외부로 나간다"
 
 
+@pytest.mark.parametrize(
+    "text, secret",
+    [
+        # 유니코드 \b 는 한글도 단어문자로 봐서, 키 앞뒤에 한글이 붙으면 통째로 미탐이었다(v0.2.56 FM-3).
+        ("AWS 키 AKIAIOSFODNN7EXAMPLE이번 분기", "AKIAIOSFODNN7EXAMPLE"),
+        ("키는AKIAIOSFODNN7EXAMPLE입니다", "AKIAIOSFODNN7EXAMPLE"),
+        ("토큰 ghp_16C7e42F292c6912E7710c838347Ae178B4a을 써", "ghp_16C7e42F292c6912E7710c838347Ae178B4a"),
+    ],
+)
+def test_token_touching_hangul_is_masked(text, secret):
+    assert secret not in _masked(text), "한글이 붙은 자격증명이 그대로 외부로 나간다"
+
+
+def test_token_inside_longer_ascii_word_is_not_matched():
+    # re.ASCII 로 바꿔도 영문·숫자에 붙은 경우는 여전히 경계가 아니다(오탐 방지).
+    for text in ("XAKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLEX"):
+        assert not credentials.detect(text), text
+
+
 def test_quoted_value_with_spaces_is_masked_to_the_closing_quote():
     """따옴표로 연 값은 공백이 있어도 끝까지 가린다.
 
