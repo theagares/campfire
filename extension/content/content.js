@@ -1560,6 +1560,10 @@
       editorSel: '#ask-input, [data-lexical-editor="true"], [contenteditable="true"][role="textbox"]',
       sendBtnSel: 'button[aria-label="제출"], button[aria-label="Submit"], button[aria-label*="submit" i]',
       editorType: 'lexical',
+      // 2026-10-28 맥 실측: execCommand 로 넣으면 줄바꿈을 버려("…마스킹]이메일…") 넣은 글이
+      // 마스킹본과 달라지고, 여러 줄 프롬프트는 Enter 로 보낼 수 없었다(막힘, 원문은 안 나감).
+      // copilot.com 처럼 편집기 상태로 넣으면 줄바꿈이 linebreak 노드로 남는다. 안 먹으면 아래 수단으로 넘어간다.
+      setVia: 'lexical-state',
     },
     'copilot.microsoft.com': {
       // 2026-09-06 실측 정정: 전송 버튼 aria-label 이 "메시지 제출" 로 바뀌어 "제출"
