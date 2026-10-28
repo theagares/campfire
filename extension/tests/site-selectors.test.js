@@ -43,7 +43,7 @@ function readConfigs() {
       const r = new RegExp(`${key}:\\s*'([^']*)'`).exec(block);
       return r ? r[1] : null;
     };
-    out[host] = { editorSel: pick('editorSel'), sendBtnSel: pick('sendBtnSel') };
+    out[host] = { editorSel: pick('editorSel'), sendBtnSel: pick('sendBtnSel'), setVia: pick('setVia') };
   }
   return out;
 }
@@ -62,6 +62,13 @@ for (const host of SITES) {
   assert.ok(cfg.editorSel, `${host}: editorSel 이 비었다`);
   assert.ok(cfg.sendBtnSel, `${host}: sendBtnSel 이 비었다`);
 }
+
+// ── perplexity.ai — 2026-10-28 맥 실측 ───────────────────────────────────────
+// execCommand 로 넣으면 줄바꿈이 사라져 여러 줄 프롬프트를 Enter 로 보낼 수 없었다.
+assert.strictEqual(
+  CONFIGS['perplexity.ai'].setVia, 'lexical-state',
+  'perplexity: 편집기 상태로 넣기(setVia)가 빠졌다 — 여러 줄 마스킹본의 줄바꿈이 사라진다',
+);
 
 // ── perplexity.ai — 2026-09-06 실측 ──────────────────────────────────────────
 {
