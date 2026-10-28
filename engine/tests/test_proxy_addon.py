@@ -53,6 +53,30 @@ def test_정상검사_탐지0건은_사람판단없이_즉시_원본통과(monke
     assert got is _ORIGINAL
 
 
+@pytest.mark.parametrize("can_replace, want", [(True, b"hello"), (False, "unreplaceable")])
+def test_이미지_검사가_꺼져_그림을_뺀_문서는_깨끗해도_원본_대신_글만(monkeypatch, can_replace, want):
+    import app.core.pipeline.orchestrator as orch
+
+    async def clean_with_images(**_kwargs):
+        return {
+            "originalText": "hello", "maskedText": "hello", "imagesRemoved": 2,
+            "piiItems": [], "injectionItems": [], "forcedMaskItems": [], "blocked": False,
+            "scanStatus": "ok", "truncated": False,
+            "stats": {"piiCount": 0, "injectionCount": 0, "forcedMaskCount": 0},
+        }
+
+    async def must_not_wait(**_kwargs):
+        raise AssertionError("그림만 뺀 깨끗한 문서인데 사람 판단을 기다렸다")
+
+    monkeypatch.setattr(orch, "run_pipeline", clean_with_images)
+    monkeypatch.setattr(addon_mod.broker, "wait", must_not_wait)
+    got = _run(CampfireAddon()._scan_and_decide(
+        data=b"PK\x03\x04", file_name="pic.docx", mime="application/octet-stream", host="claude.ai",
+        can_replace=can_replace,
+    ))
+    assert got == want if isinstance(want, bytes) else got is addon_mod._UNREPLACEABLE
+
+
 def test_미검사0건은_자동통과하지_않는다(monkeypatch):
     """파싱 실패/모델 미준비의 0건은 clean이 아니라 판단 불가다."""
     import app.core.pipeline.orchestrator as orch

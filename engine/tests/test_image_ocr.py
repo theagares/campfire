@@ -12,6 +12,7 @@ from app import config
 from app.core.detectors import image_ocr
 from app.core.parser import STATUS_OK, STATUS_UNSUPPORTED, parse_document
 from app.core.parser.docx import extract_docx
+from app.core.parser import images as image_marks
 from app.core.parser.images import MARK_RE
 from app.core.parser.pptx import extract_pptx
 
@@ -50,6 +51,16 @@ def test_기능을_끄면_파서_결과가_그대로고_이미지_파일은_미�
     b = _docx_with_picture()
     assert extract_docx(b) == extract_docx(b, None) == "첫 문단\n\n끝 문단"
     assert parse_document(_png(), "image/png", "shot.png")[1] == STATUS_UNSUPPORTED
+
+
+def test_꺼져_있으면_문서_속_그림은_세고_표시만_지워_글은_지금과_같다():
+    # 이미지 속 글자 검사가 꺼져 있어도 그림을 센다 — orchestrator 가 imagesRemoved 로 원본 대신 글만 보내게 한다.
+    data = _docx_with_picture()
+    plain, _, _ = parse_document(data, "", "a.docx")
+    images: list[bytes] = []
+    marked, status, _ = parse_document(data, "", "a.docx", images)
+    assert status == STATUS_OK and len(images) == 1
+    assert image_marks.strip_marks(marked) == plain
 
 
 def test_DOCX_표_칸_안의_그림도_그_자리에_표시가_남는다():

@@ -731,11 +731,16 @@ function refreshSummary() {
 
   const total = allItemSegments().length;
   const maskCount = allItemSegments().filter(s => s.locked || !state.unmasked.has(s.key)).length;
+  // 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 SW 가 원본 대신 그림을 뺀 글만 보낸다(사용자 결정 2026-10-28).
+  const removed = state.result?.imagesRemoved > 0
+    ? ` · 그림 ${state.result.imagesRemoved}개는 빼고 보냄(이미지 검사 꺼짐)` : '';
   if (maskCount > 0) {
-    el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송`;
+    el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송${removed}`;
     el.maskSummary.classList.remove('clear');
   } else {
-    el.maskSummary.textContent = total > 0 ? '마스킹 없이 원본 전송' : '안전 — 원본 전송';
+    el.maskSummary.textContent = removed
+      ? `글만 전송${removed}`
+      : (total > 0 ? '마스킹 없이 원본 전송' : '안전 — 원본 전송');
     el.maskSummary.classList.add('clear');
   }
 }

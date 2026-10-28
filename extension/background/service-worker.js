@@ -802,7 +802,10 @@ async function scanMultiItem(sessionId, session, payload) {
         piiItems: result.piiItems || [],
         injectionItems: result.injectionItems || [],
         forcedMaskItems: result.forcedMaskItems || [],
+        // 이미지 속 글자 검사가 꺼져 검사하지 못한 문서 속 그림 수 — 있으면 "원본" 결정도 그림을 뺀 글로 보낸다.
+        imagesRemoved: result.imagesRemoved || 0,
       };
+      doc.imagesRemoved = result.imagesRemoved || 0;
       doc.truncated = !!result.truncated;
       doc.scannedChars = result.scannedChars ?? 0;
       doc.originalChars = result.originalChars ?? 0;
@@ -830,12 +833,25 @@ async function scanMultiItem(sessionId, session, payload) {
 }
 
 /** 결정 하나를 최종 파일로 만든다. 패널 미리보기와 같은 순수 함수를 쓴다. */
-function buildArtifact(session, sessionId, file) {
+function bytesToBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin);
+}
+
+/** 글을 .md 로 감싼 업로드 결정 — content.js 의 'upload' 모양 그대로. */
+function textUpload(text, mimeType, fileName) {
+  const wrapped = wrapMaskedFile(text, mimeType, fileName);
+  return { action: 'upload', maskedBase64: bytesToBase64(wrapped.bytes), mimeType: wrapped.mimeType, fileName: wrapped.fileName };
+}
+
+function buildArtifact(session, sessionId, file, { original = false } = {}) {
   const src = session.results[file.id];
   const doc = session.docs.find(d => d.id === file.id);
   if (!src || !doc) return null;
 
-  const text = finalTextFrom(
+  // original: "원본 그대로" 를 골랐지만 원본 파일을 보낼 수 없는 경우(검사 못 한 그림이 든 문서) — 원문 글을 .md 로.
+  const text = original ? (src.originalText || '') : finalTextFrom(
     src.originalText, src.piiItems, src.injectionItems, file.id, file.unmaskedKeys || [],
     src.forcedMaskItems,
   );
@@ -1071,6 +1087,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (nameForced && outFile?.fileName) outFile.fileName = 'document_masked.md';
+      // 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 원본(그림째)을 보내지 않는다 — 그림을 뺀 원문 글만
+      // .md 로 보낸다(사용자 결정 2026-10-28, 엔진이 imagesRemoved 로 알린다). 가릴 것이 없거나 전부 풀었을 때가 이 경우다.
+      if (res0.imagesRemoved > 0) {
+        const asText = () => textUpload(res0.originalText || '', session.meta?.mimeType, session.meta?.fileName);
+        if (session.kind === 'combined' && decision?.file?.action === 'passthrough') decision.file = asText();
+        else if (session.kind === 'file' && decision?.action === 'passthrough') Object.assign(decision, asText());
+      }
 
       if (session.tabId != null) {
         chrome.tabs.sendMessage(session.tabId, {
@@ -1304,6 +1327,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ ok: false, reason: 'mandatory-mask', id: file.id });
             return;
           }
+          if (src?.imagesRemoved > 0) {
+            // 검사 못 한 그림이 든 문서는 원본 대신 그림을 뺀 원문 글을 보낸다(위 PANEL_DECISION 과 같은 규칙).
+            const artifactId = buildArtifact(session, sessionId, file, { original: true });
+            if (!artifactId) {
+              dropArtifactsOf(sessionId);
+              sendResponse({ ok: false, reason: 'artifact-failed', id: file.id });
+              return;
+            }
+            files.push({ id: file.id, action: 'masked', artifactId });
+            continue;
+          }
           files.push({ id: file.id, action: 'original' });
           continue;
         }
@@ -1408,11 +1442,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const { text, mimeType, fileName } = message.payload;
     try {
       const wrapped = wrapMaskedFile(text, mimeType, fileName);
-      let bin = '';
-      for (let i = 0; i < wrapped.bytes.length; i += 8192) {
-        bin += String.fromCharCode(...wrapped.bytes.subarray(i, i + 8192));
-      }
-      sendResponse({ success: true, base64: btoa(bin), mime: wrapped.mimeType, name: wrapped.fileName });
+      sendResponse({ success: true, base64: bytesToBase64(wrapped.bytes), mime: wrapped.mimeType, name: wrapped.fileName });
     } catch (e) {
       sendResponse({
         success: true,

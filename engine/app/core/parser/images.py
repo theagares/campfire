@@ -16,11 +16,18 @@ from app.config import IMAGE_OCR_EXTENSIONS as IMAGE_EXTENSIONS
 
 IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/bmp"})
 MARK_RE = re.compile("(\\d+)")
+_MARK_PARAGRAPH_RE = re.compile(r"(?:\n\n)?" + MARK_RE.pattern)
 _BLIP_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
 
 
 def is_image(ext: str, mime_type: str) -> bool:
     return ext in IMAGE_EXTENSIONS or mime_type in IMAGE_MIMES
+
+
+def strip_marks(text: str) -> str:
+    """이미지 표시를 지운 글. 이미지 속 글자 검사가 꺼져 있을 때 — 그림을 세기만 하고 글은 지금과 같게 둔다.
+    그림만 든 문단은 표시가 문단 하나를 차지하므로 앞의 문단 구분도 함께 지운다(안 그러면 빈 줄이 늘어난다)."""
+    return _MARK_PARAGRAPH_RE.sub("", text)
 
 
 def mark(images: list[bytes], blob: bytes) -> str:

@@ -52,7 +52,11 @@ function bootWorker(storageBacking) {
     crypto: { randomUUID: () => 'uuid-' + Math.random().toString(16).slice(2) },
 
     // import 로 들어오던 심볼들
-    wrapMaskedFile: noop,
+    // 실제(utils/docwrapper.js)처럼 글을 .md 로 감싼 모양만 흉내 낸다.
+    wrapMaskedFile: (text, _mime, name) => ({
+      bytes: new TextEncoder().encode(text), mimeType: 'text/markdown',
+      fileName: String(name || 'document').replace(/\.[^.]+$/, '') + '_masked.md',
+    }),
     REMOTE_URL: 'https://example.invalid',
     LOCAL_HOST: '127.0.0.1',
     BASE_PORT: 48200,
@@ -227,6 +231,23 @@ const pendingState = () => ({
       decision: { action: 'upload', maskedBase64: 'eA==', fileName: 'Aurora_plan_masked.md' } }, {});
     const routed = w.tabsSent.find(t => t.msg?.type === 'PANEL_DECISION');
     assert.strictEqual(routed?.msg.decision.fileName, 'document_masked.md', '나가는 파일 이름에 등록어가 남았다');
+  }
+
+  // ── 이미지 속 글자 검사가 꺼져 그림을 검사하지 못한 문서: 깨끗해도 원본(그림째) 대신 그림을 뺀 글만 ──
+  {
+    const picSession = {
+      tabId: 7, kind: 'file', status: 'ready', progress: [], error: null, seq: 4,
+      meta: { fileName: 'pic.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      result: { originalText: '그림 옆 설명', forcedMaskItems: [], piiItems: [], imagesRemoved: 2 },
+    };
+    const w = bootWorker({ [SESSION_KEY]: { sessions: { P1: picSession }, activeSessionId: 'P1', sessionSeq: 4 } });
+    const res = await w.send({ type: 'PANEL_DECISION', sessionId: 'P1', tabId: 7, decision: { action: 'passthrough' } }, {});
+    assert.strictEqual(res?.ok, true);
+    const routed = w.tabsSent.find(t => t.msg?.type === 'PANEL_DECISION');
+    const d = routed?.msg.decision;
+    assert.strictEqual(d?.action, 'upload', '그림을 검사하지 못한 문서를 원본(그림째)으로 보냈다');
+    assert.ok(/\.md$/.test(d.fileName), `글 문서로 보내지 않았다: ${d.fileName}`);
+    assert.ok(Buffer.from(d.maskedBase64, 'base64').toString('utf8').includes('그림 옆 설명'), '원문 글이 빠졌다');
   }
 
   console.log('sw-session-persistence ok');
