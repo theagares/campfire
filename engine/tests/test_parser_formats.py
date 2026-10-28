@@ -78,6 +78,18 @@ def test_eml_headers_body_and_attachment_name():
     assert "계약서.pdf" in out                                      # 첨부는 이름만
 
 
+def test_eml_bom_prefixed_base64_body_is_decoded():
+    # 메모장·PowerShell 로 저장한 메일은 BOM 으로 시작한다 — 본문 base64 가 풀리지 않으면 원문이 그대로 나간다.
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "hong@corp.co.kr"
+    msg.set_content("주민번호 900101-1234568", charset="utf-8", cte="base64")
+    out = extract_eml(b"\xef\xbb\xbf" + msg.as_bytes())
+    assert "900101-1234568" in out and "hong@corp.co.kr" in out
+    assert "Content-Transfer-Encoding" not in out  # 원문 통째 통과가 아님
+
+
 def test_html_strips_script_and_keeps_inline_text():
     html = (
         '<html><head><style>.a{color:red}</style>'
