@@ -9,8 +9,8 @@ mitmproxy 애드온 — 업로드 요청을 붙들고, 검사하고, 마스킹�
 사이트별 코드가 사라지는 건 아니다 — DOM 대신 와이어 포맷을 알아야 한다.
 지금 상태:
   - multipart 로 올리는 곳(Claude/Copilot/Perplexity/Grok)은 한 처리로 덮는다.
-  - ChatGPT 는 등록→PUT 2단계라 전용 처리가 있다. 흐름이 둘이고 크기 선언 여부가
-    다르다 — upload_reservations 쪽은 선언이 없어 패딩도 필요 없다.
+  - ChatGPT 는 등록→PUT 뒤 확정하는 전용 처리가 있다. 흐름이 둘이고 크기 선언 여부가
+    다르다 — upload_reservations 쪽은 선언이 없어 패딩 대신 claim_and_finish 를 실제 PUT 과 맞춘다.
   - Gemini 는 push.clients6.google.com 으로 resumable 업로드를 한다. 크기를 먼저
     선언한다는 점에서 ChatGPT 와 같은 모양이라 같은 방법(선언값 재작성 + 패딩)을 쓴다.
   - Grok 의 예전 JSON+base64 업로드는 못 다뤄 **차단**한다(UNSUPPORTED_UPLOADS). 지금 쓰는
@@ -153,6 +153,11 @@ _UNSCANNED_FILE = "검사를 끝내지 못한 파일이라 보내지 않았습�
 CHATGPT_REGISTER_PATHS = (
     "/backend-api/files",
     "/backend-api/files/upload_reservations",
+)
+# upload_reservations 는 등록 때 파일 크기를 받지 않고, PUT 뒤 이 요청에서 실제 크기·이름·형식을 확정한다.
+# file_id 는 등록 응답에서 받은 값만 허용한다. 경로 전체를 느슨하게 찾으면 다른 ChatGPT API 본문까지 고칠 수 있다.
+_CHATGPT_CLAIM_PATH = re.compile(
+    r"^/backend-api/files/upload_reservations/(?P<file_id>[^/]+)/claim_and_finish$"
 )
 
 # ChatGPT 이미지(2026-10-29 맥 캡처): ① POST /backend-api/files {"file_name":"image.png","mime_type":"image/png",
@@ -518,6 +523,9 @@ class CampfireAddon:
         # 등록 응답에서 받은 upload_url 의 경로 → 그 업로드의 약속값.
         # PUT 은 완전히 다른 호스트(oaiusercontent.com)로 가기 때문에 경로로 잇는다.
         self._chatgpt: dict[str, ChatGptUpload] = {}
+        # upload_reservations 의 마지막 claim_and_finish 는 PUT URL 이 아니라 file_id 로 온다.
+        # 같은 약속값을 두 키로 찾아야 실제 PUT 바이트와 확정 메타데이터를 정확히 맞출 수 있다.
+        self._chatgpt_by_id: dict[str, ChatGptUpload] = {}
         # 사이트 → 올렸지만 아직 안 보낸 첨부(인젝션 2단계)
         self._pending: dict[str, list[PendingFile]] = {}
         # Gemini WebChannel 세션(SID) → 그 세션 POST 를 들어온 순서대로 내보내는 자물쇠(_on_request 참고)
@@ -585,6 +593,10 @@ class CampfireAddon:
         key = flow.request.path.split("?")[0]
         if host in CHATGPT_HOSTS and key in CHATGPT_REGISTER_PATHS:
             self._chatgpt_register(flow)
+            return
+        claim = _CHATGPT_CLAIM_PATH.fullmatch(key) if host in CHATGPT_HOSTS else None
+        if claim is not None and flow.request.method == "POST":
+            self._chatgpt_claim_and_finish(flow, claim.group("file_id"))
             return
         if host in PERPLEXITY_HOSTS and key == PERPLEXITY_REGISTER_PATH and flow.request.method == "POST":
             self._perplexity_register(flow)
@@ -1225,6 +1237,7 @@ class CampfireAddon:
             return
         if isinstance(data.get("file_id"), str):
             pending.file_id = data["file_id"]
+            self._chatgpt_by_id[pending.file_id] = pending
         # PUT 은 chatgpt.com 이 아니라 oaiusercontent.com 으로 간다. 경로만 키로 쓴다.
         path = url.split("?", 1)[0]
         idx = path.find("/", path.find("://") + 3)
@@ -1232,6 +1245,49 @@ class CampfireAddon:
         # 재시도를 위해 남겨 두는 항목이라 스스로는 안 줄어든다. 오래된 것부터 버린다.
         while len(self._chatgpt) > _MAX_TRACKED_UPLOADS:
             self._chatgpt.pop(next(iter(self._chatgpt)))
+        while len(self._chatgpt_by_id) > _MAX_TRACKED_UPLOADS:
+            self._chatgpt_by_id.pop(next(iter(self._chatgpt_by_id)))
+
+    def _chatgpt_claim_and_finish(self, flow: http.HTTPFlow, file_id: str) -> None:
+        """upload_reservations 확정값을 실제 PUT 한 바이트와 맞춘다.
+
+        이 흐름은 등록 요청에 크기가 없고, 마지막 claim_and_finish 에서 원래 파일의
+        이름·크기·MIME 을 다시 보낸다. PUT 본문을 마스킹 Markdown 으로 바꾼 뒤 이 값을
+        그대로 두면 ChatGPT 가 HTTP 200 스트림 안에서 file_size_mismatch 로 거부한다.
+        """
+        promise = self._chatgpt_by_id.get(file_id)
+        if promise is None:
+            # 우리가 보지 못한 업로드의 확정 메타데이터를 추측해 고치지 않는다. 원본 PUT 은
+            # 준비되지 않은 oaiusercontent 요청에서 이미 fail-closed 로 막힌다.
+            logger.warning("[proxy] 알 수 없는 ChatGPT 업로드 확정 — 그대로 둠 file_id=%s", file_id)
+            return
+        if promise.blocked or promise.settled is None:
+            # 정상 순서는 PUT 뒤 claim 이다. 판단이 끝나지 않았거나 이미 막힌 업로드를
+            # 확정시키면 사이트 상태만 어긋나므로 여기서도 일관되게 막는다.
+            self._block(flow, "업로드 검사가 끝나지 않아 전송을 막았습니다")
+            return
+        if promise.image:
+            # 사용자 결정 1안: 깨끗한 그림은 원본 그대로 올린다. 이름·형식·크기도 원본과
+            # 이미 일치하므로 확정 본문을 한 글자도 바꾸지 않는다.
+            return
+        try:
+            body = json.loads(flow.request.get_text() or "{}")
+        except json.JSONDecodeError:
+            self._block(flow, "업로드 확정 정보를 읽지 못해 전송을 막았습니다")
+            return
+        if not isinstance(body, dict):
+            self._block(flow, "업로드 확정 정보가 올바르지 않아 전송을 막았습니다")
+            return
+
+        body["file_size"] = len(promise.settled)
+        body["file_name"] = promise.masked_name
+        body["mime_type"] = MASKED_MIME
+        # 계정·UI 버전에 따라 같은 MIME 을 보조 칸에도 싣는다. 존재하는 칸만 맞춰
+        # 아직 관찰하지 않은 새 필드를 만들어 서버 계약을 넓히지는 않는다.
+        for field in ("client_resolved_mime_type", "content_type"):
+            if field in body:
+                body[field] = MASKED_MIME
+        flow.request.set_text(json.dumps(body))
 
     async def _chatgpt_put(self, flow: http.HTTPFlow, key: str) -> None:
         # pop 하지 않는다 — 재시도된 PUT 이 분기를 못 타고 원본으로 나가는 것을 막는다.

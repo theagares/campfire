@@ -34,9 +34,9 @@ def _run(c):
     return asyncio.run(c)
 
 
-def _register(a, body=None):
+def _register(a, body=None, path="/backend-api/files"):
     body = dict(REGISTER if body is None else body)
-    f = tflow.tflow(req=tutils.treq(method="POST", host="chatgpt.com", path="/backend-api/files",
+    f = tflow.tflow(req=tutils.treq(method="POST", host="chatgpt.com", path=path,
                                     content=json.dumps(body).encode()))
     f.request.headers["content-type"] = "application/json"
     _run(a.request(f))
@@ -98,6 +98,44 @@ def test_깨끗한_그림은_원본_그대로_올린다(scan):
     f = _put(a)
     assert f.response is None
     assert f.request.content == PNG and f.request.headers["content-type"] == "image/png"
+
+
+def test_upload_reservations_깨끗한_그림은_claim_메타데이터도_원본_그대로_둔다(scan):
+    a = CampfireAddon()
+    registration = dict(REGISTER)
+    registration.pop("file_size")
+    _register(a, registration, "/backend-api/files/upload_reservations")
+    put = _put(a)
+    assert put.response is None and put.request.content == PNG
+
+    original = {
+        "entry_surface": "chat_composer",
+        "file_name": "image.png",
+        "file_size": len(PNG),
+        "mime_type": "image/png",
+        "client_resolved_mime_type": "image/png",
+        "use_case": "multimodal",
+    }
+    claim = tflow.tflow(req=tutils.treq(
+        method="POST", host="chatgpt.com",
+        path=f"/backend-api/files/upload_reservations/{FID}/claim_and_finish",
+        content=json.dumps(original).encode(),
+    ))
+    claim.request.headers["content-type"] = "application/json"
+    _run(a.request(claim))
+    assert claim.response is None
+    assert json.loads(claim.request.get_text()) == original
+
+
+def test_upload_reservations_PII_그림은_claim전에_막는다(scan):
+    scan["pii"] = 1
+    registration = dict(REGISTER)
+    registration.pop("file_size")
+    a = CampfireAddon()
+    _register(a, registration, "/backend-api/files/upload_reservations")
+    put = _put(a)
+    assert put.response is not None and put.response.status_code == 403
+    assert scan["notices"] == [addon_mod._IMAGE_HAS_PII]
 
 
 def test_가릴_것이_있는_그림은_막고_알린다(scan):

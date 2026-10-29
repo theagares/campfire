@@ -567,6 +567,72 @@ def test_본문을_바꾸면_타입도_바꾼다():
     assert f.request.headers["content-type"] == "text/markdown"
 
 
+def test_upload_reservations_확정은_실제_PUT한_마스킹본_메타데이터로_바꾼다():
+    """Windows v0.2.60 실측 흐름: 등록에는 크기가 없고 claim_and_finish 에서 다시 확정한다."""
+    a = CampfireAddon()
+    file_id = "file_00000000000000000000000000000001"
+    raw_path = "/files/claim-flow/raw"
+    original_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    register = _req(
+        "chatgpt.com",
+        "/backend-api/files/upload_reservations",
+        content=json.dumps({"file_name": "pii.docx", "mime_type": original_mime, "use_case": "my_files"}).encode(),
+    )
+    _run(a.request(register))
+    register.response = tutils.tresp(content=json.dumps({
+        "upload_url": f"https://files.oaiusercontent.com{raw_path}?sig=fixture",
+        "file_id": file_id,
+    }).encode())
+    a.response(register)
+
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
+        assert data == b"ORIGINAL-DOCX" and file_name == "pii.docx"
+        return b"# masked\n"
+
+    a._scan_and_decide = fake  # type: ignore[assignment]
+    put = _put_flow(raw_path, b"ORIGINAL-DOCX")
+    put.request.headers["content-type"] = original_mime
+    _run(a.request(put))
+    assert put.request.content == b"# masked\n"
+
+    claim_body = {
+        "entry_surface": "chat_composer",
+        "file_name": "pii.docx",
+        "file_size": 8074,
+        "mime_type": original_mime,
+        "client_resolved_mime_type": original_mime,
+        "content_type": original_mime,
+        "use_case": "my_files",
+    }
+    claim = _req(
+        "chatgpt.com",
+        f"/backend-api/files/upload_reservations/{file_id}/claim_and_finish",
+        content=json.dumps(claim_body).encode(),
+    )
+    _run(a.request(claim))
+
+    sent = json.loads(claim.request.get_text())
+    assert claim.response is None
+    assert sent["file_name"] == "pii_masked.md"
+    assert sent["file_size"] == len(put.request.content)
+    assert sent["mime_type"] == sent["client_resolved_mime_type"] == sent["content_type"] == "text/markdown"
+    assert sent["entry_surface"] == "chat_composer" and sent["use_case"] == "my_files"
+
+
+def test_upload_reservations_확정이_PUT보다_먼저_오면_막는다():
+    a = CampfireAddon()
+    file_id = "file_before_put"
+    promise = ChatGptUpload(declared=None, masked_name="a_masked.md", original_name="a.docx", file_id=file_id)
+    a._chatgpt_by_id[file_id] = promise
+    claim = _req(
+        "chatgpt.com",
+        f"/backend-api/files/upload_reservations/{file_id}/claim_and_finish",
+        content=b'{"file_name":"a.docx","file_size":10,"mime_type":"application/octet-stream"}',
+    )
+    _run(a.request(claim))
+    assert claim.response is not None and claim.response.status_code == 403
+
+
 def test_한번_막은_업로드는_재시도도_막는다():
     a = CampfireAddon()
     _armed(a, "/files/xyz/raw")
@@ -632,10 +698,14 @@ def test_추적_목록은_무한히_자라지_않는다():
             declared=10, masked_name="m.md", original_name="o.docx"
         )
         f.response = tutils.tresp(
-            content=('{"upload_url":"https://x.oaiusercontent.com/files/%d/raw?sig=1"}' % i).encode()
+            content=(
+                '{"upload_url":"https://x.oaiusercontent.com/files/%d/raw?sig=1","file_id":"file_%d"}'
+                % (i, i)
+            ).encode()
         )
         a.response(f)
     assert len(a._chatgpt) == addon_mod._MAX_TRACKED_UPLOADS
+    assert len(a._chatgpt_by_id) == addon_mod._MAX_TRACKED_UPLOADS
 
 
 def test_Claude_메시지도_사용자지정_마스킹은_원본판단으로_우회할수없다(monkeypatch):

@@ -302,6 +302,7 @@ MutationObserverStub.instances = [];
 // content.js 가 한 일의 "순서"를 검증하기 위한 로그 (테스트 4).
 const actionLog = [];
 const dispatchedWindowEvents = [];
+const isolatedWindowMessages = [];
 let decisionListener = null;
 let nextDecision = null; // 설정해두면 다음 검사 완료에 이 결정을 즉시 회신한다
 let lastMultiSession = null;
@@ -340,6 +341,7 @@ const windowStub = {
     return true;
   },
   postMessage(data) {
+    isolatedWindowMessages.push(data);
     if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
     if (data?.type === 'SECUREDOC_SET_EDITOR_STATE' && editorStateReply) {
       const reply = editorStateReply;
@@ -3140,6 +3142,70 @@ cancelScan(stuckScan);
       if (!started41) throw new Error('(41) 프록시가 프롬프트를 보는 사이트에서 붙들어 둔 첨부를 전송 때 검사하지 않았다');
     } finally {
       await route41('extension');
+      sandbox.location.hostname = 'chatgpt.com';
+    }
+  }
+
+  // (41-1) MAIN world가 stale 표식 때문에 파일을 먼저 붙들어도, isolated world가 패널을 열기 전에 같은 HEAD 결과를
+  //      기다린다. 재확인 성공이면 프록시만 맡고, 실패면 확장이 맡는다(Windows v0.2.60 빠른 파일 선택 경합).
+  {
+    const route42 = (mode, expected = mode === 'proxy') => dispatchWindowMessage({
+      __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: expected, markAt: mode === 'proxy' ? clock.now() : 0,
+    });
+    const select42 = async (inputId) => {
+      const pending = dispatchWindowMessage({
+        __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+        type: 'SECUREDOC_FILE_SELECTED',
+        payload: {
+          inputId,
+          file: new FileStub(['pdf bytes'], `${inputId}.pdf`, { type: 'application/pdf' }),
+          mimeType: 'application/pdf', fileName: `${inputId}.pdf`, fileSize: 9,
+        },
+      });
+      await flush();
+      await pending;
+      await flush();
+    };
+    try {
+      sandbox.location.hostname = 'www.perplexity.ai';
+
+      await route42('proxy');
+      await clock.tick(20000);
+      proxyExpectedReply = true;
+      mainRouteReply = 'proxy';
+      const beforeSuccessRuntime = runtimeMessages.length;
+      const beforeSuccessResult = isolatedWindowMessages.length;
+      await select42('reconfirm-proxy');
+      const successResult = isolatedWindowMessages.slice(beforeSuccessResult)
+        .find(m => m.type === 'SECUREDOC_RESULT' && m.payload?.inputId === 'reconfirm-proxy');
+      if (successResult?.payload?.action !== 'passthrough') {
+        throw new Error('(41-1) 재확인에서 프록시 표식을 봤는데 확장이 파일을 넘겨받았다');
+      }
+      if (runtimeMessages.slice(beforeSuccessRuntime).some(m => m.type === 'OPEN_PANEL')) {
+        throw new Error('(41-1) 프록시가 맡기로 한 파일에 확장 패널을 열었다');
+      }
+
+      await clock.tick(20000);
+      proxyExpectedReply = true;
+      mainRouteReply = 'fallback';
+      nextDecision = { action: 'cancel' };
+      const beforeFallbackRuntime = runtimeMessages.length;
+      const beforeFallbackResult = isolatedWindowMessages.length;
+      await select42('reconfirm-fallback');
+      const fallbackResult = isolatedWindowMessages.slice(beforeFallbackResult)
+        .find(m => m.type === 'SECUREDOC_RESULT' && m.payload?.inputId === 'reconfirm-fallback');
+      if (!runtimeMessages.slice(beforeFallbackRuntime).some(m => m.type === 'OPEN_PANEL')) {
+        throw new Error('(41-1) 프록시 재확인이 실패했는데 확장이 파일 검사를 맡지 않았다');
+      }
+      if (fallbackResult?.payload?.action !== 'cancel') {
+        throw new Error('(41-1) 재확인 실패 뒤 확장 판단 결과를 MAIN world에 돌려주지 않았다');
+      }
+    } finally {
+      nextDecision = null;
+      proxyExpectedReply = false;
+      mainRouteReply = null;
+      await route42('extension', false);
       sandbox.location.hostname = 'chatgpt.com';
     }
   }
