@@ -5,12 +5,30 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import sys
 from typing import Any
 
 from app import config
 from app.core import model_status
 from app.core.detectors.injection import backbone
+
+logger = logging.getLogger("securedoc.engine.combined_gpu")
+
+
+def cuda_torch_path() -> str | None:
+    """Windows 에서 모델 받기가 따로 깔아 둔 CUDA torch(이미지 검사가 쓰는 gpu_torch) 폴더 — 있으면 통합 worker 도 앞세운다.
+
+    엔진 venv 의 torch 는 CPU 판이라 그대로 띄우면 worker 가 "CUDA 없음" 으로 끝나 이번 실행 동안 꺼지고, PII·인젝션이
+    GPU 가 있는 PC 에서도 CPU 사이드카로 돌았다(v0.2.62 Windows RTX 5070: nvidia-smi 에 OCR 만 있었다). 이미지 검사
+    사이드카는 같은 폴더를 앞세워 CUDA 로 돈다(image_ocr._spawn_env). 따로 지정한 파이썬이면 그 파이썬을 그대로 쓴다.
+    """
+    if config.COMBINED_GPU_PYTHON_EXECUTABLE != sys.executable or config.IMAGE_OCR_PYTHON_OVERRIDE:
+        return None
+    if model_status.image_ocr_accelerator() != "cuda" or not model_status.image_ocr_runtime_ready():
+        return None
+    return str(config.IMAGE_OCR_GPU_TORCH_DIR)
 
 
 class CombinedGpuUnavailable(RuntimeError):
@@ -75,6 +93,9 @@ class CombinedGpuClient:
         if backbone.is_cached():
             env["HF_HUB_OFFLINE"] = "1"
             env["TRANSFORMERS_OFFLINE"] = "1"
+        if gpu_torch := cuda_torch_path():
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [gpu_torch, os.environ.get("PYTHONPATH")]))
+            logger.info("[combined_gpu] CUDA torch(gpu_torch)를 앞세워 통합 worker 를 띄운다")
         self._process = await asyncio.create_subprocess_exec(
             *self._args(),
             stdin=asyncio.subprocess.PIPE,
@@ -122,7 +143,9 @@ class CombinedGpuClient:
             except asyncio.CancelledError:
                 self._drop_process()
                 raise
-            except CombinedGpuNoCuda:
+            except CombinedGpuNoCuda as exc:
+                # 예전엔 이 길을 조용히 탔다 — PII·인젝션이 CPU 로 도는 까닭을 로그에서 못 찾았다.
+                logger.warning("[combined_gpu] CUDA 를 못 써 이번 실행 동안 끈다 — PII·인젝션은 개별(CPU) 사이드카로: %s", exc)
                 await self.stop()
                 self._disabled = True
                 raise
