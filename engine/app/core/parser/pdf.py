@@ -21,9 +21,13 @@ PyMuPDF 상자는 회전 전·CropBox 기준이고 pdfplumber 는 회전 후·Me
 from __future__ import annotations
 
 import io
+import logging
 import re
 
 from .hidden import color_reason, wrap
+
+# 파서 작업자(자식 프로세스)는 로그 설정이 없어 경고가 엔진 stderr → engine.log 로 그대로 간다
+logger = logging.getLogger("securedoc.engine.parser.pdf")
 
 # 쪽당 (글 묶음 × 칠한 도형) 비교 상한 — 넘으면 그 쪽은 색 비교만 건너뛴다. 도면·차트(도형 수천 개)가 파싱 시간 상한에
 # 걸려 문서가 미검사로 막히지 않게(합성 도형 5,000 + 글 2,000 쪽: 상한 없이 16.5초).
@@ -108,7 +112,9 @@ def _hidden_spans(file_bytes: bytes) -> dict[int, list[tuple[tuple, str, str]]]:
                     text = "".join(c["c"] for c in span.get("chars", ())).strip()
                     if text and (code := _span_code(span, vertical, page_box, images, fills)):
                         out.setdefault(pno, []).append((_to_plumber(span["bbox"], page), text, code))
-    except Exception:  # noqa: BLE001 - 숨긴 글을 못 찾아도 본문 추출은 지금처럼
+    except Exception as exc:  # noqa: BLE001 - 숨긴 글을 못 찾아도 본문 추출은 지금처럼
+        # 조용히 넘기면 숨긴 글 탐지가 깨져도 알 길이 없다. 문서 글은 싣지 않는다(예외 종류와 짧은 메시지만).
+        logger.warning("[pdf] 숨긴 글 탐지를 건너뜀(본문 추출은 그대로): %s: %.200s", type(exc).__name__, exc)
         return {}
     return out
 
