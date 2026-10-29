@@ -229,3 +229,31 @@ test('맥은 확인창을 대시보드 창에 붙인다(부모 없는 창은 앱
   }).checkNow();
   assert.equal(typeof calls[0][0].message, 'string', 'Windows 는 지금처럼 부모 없이 띄운다');
 });
+
+test('프록시가 묻지 않고 막은 전송은 새 것만 운영체제 알림으로 띄운다(처음 받은 목록은 기준으로만)', async () => {
+  let listed = { pending: [], version: 1, notices: [{ id: 3, host: 'chatgpt.com', reason: '앱 시작 전 일' }] };
+  const notified = [];
+  let dialogs = 0;
+  const ui = new ProxyDecisionController({
+    engineManager: manager(),
+    dialog: { showMessageBox: async () => { dialogs += 1; return { response: 0 }; } },
+    fetchImpl: async () => response(listed),
+    notify: (title, body) => notified.push({ title, body }),
+  });
+  await ui.checkNow();
+  assert.deepEqual(notified, [], '앱이 뜨기 전의 지난 알림을 띄웠다');
+  listed = {
+    pending: [], version: 2,
+    notices: [
+      { id: 3, host: 'chatgpt.com', reason: '앱 시작 전 일' },
+      { id: 4, host: 'chatgpt.com', reason: '검사를 끝내지 못한 그림이라 보내지 않았습니다' },
+    ],
+  };
+  await ui.checkNow();
+  assert.equal(notified.length, 1);
+  assert.match(notified[0].title, /chatgpt\.com/);
+  assert.equal(notified[0].body, '검사를 끝내지 못한 그림이라 보내지 않았습니다');
+  await ui.checkNow();
+  assert.equal(notified.length, 1, '같은 알림을 또 띄웠다');
+  assert.equal(dialogs, 0, '알림인데 확인창을 띄웠다');
+});

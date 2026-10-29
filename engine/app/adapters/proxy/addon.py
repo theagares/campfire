@@ -492,7 +492,8 @@ class CampfireAddon:
         try:
             await self._on_request(flow)
         except DecisionTimeout as exc:
-            self._block(flow, f"검토 시간이 지나 전송을 취소했습니다 ({exc})")
+            # 확인창이 떠 있던 건이라 데스크톱이 이미 "검토 시간이 지나" 를 알린다 — 알림을 또 띄우지 않는다.
+            self._block(flow, f"검토 시간이 지나 전송을 취소했습니다 ({exc})", notify=False)
         except Exception:
             # 여기서 통과시키면 원본이 그대로 나간다. 그게 이 제품이 막아야 하는
             # 단 하나의 사고라, 알 수 없는 예외는 전부 차단으로 떨어뜨린다.
@@ -663,7 +664,7 @@ class CampfireAddon:
             flow=flow,
         )
         if masked is None:
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         if masked is _ORIGINAL:
             return  # 사람이 원본 전송을 택했다 — 본문 그대로 보낸다.
@@ -717,7 +718,7 @@ class CampfireAddon:
             prompts = [f for _, _, fields in found for f in fields]
             masked = await self._scan_texts_and_decide(prompts, host=GEMINI_ROUTE_HOST, prompt_fields=prompts, flow=flow)
             if masked is None:
-                self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+                self._block(flow, _CANCELLED)
                 return
             if masked is not _ORIGINAL:
                 for fld, new_bytes in masked:
@@ -748,7 +749,7 @@ class CampfireAddon:
             return
         replaced = await self._mask_prompt_texts(flow, host, [pairs[i][1] for i in idx])
         if replaced is None:
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         for i in idx:
             pairs[i] = (field, replaced.get(pairs[i][1], pairs[i][1]))
@@ -798,6 +799,9 @@ class CampfireAddon:
             # 통과시키면 원본이 나간다. 그 메시지만 버린다(사이트는 답을 못 받고 멈춘다).
             logger.warning("[proxy] 웹소켓 프롬프트 차단 %s%s (%s)", host, key, exc)
             msg.drop()
+            reason = flow.metadata.pop("campfire_block_reason", None)  # 첨부 인젝션 등 — 사이트는 이유를 못 보여 준다
+            if reason:
+                broker.notify(_site(host), reason)
 
     async def _mask_slots(self, flow, host, slots) -> bool:
         """(dict/list, 키) 칸의 글을 검사해 그 자리에 마스킹본을 넣는다. 보내도 되면 True.
@@ -875,7 +879,7 @@ class CampfireAddon:
             self._block(flow, "업로드 세션을 확인하지 못해 전송을 막았습니다")
             return
         if promise.blocked:
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         if promise.settled is not None:
             flow.request.content = promise.settled
@@ -897,7 +901,7 @@ class CampfireAddon:
             return
         if masked is None:
             promise.blocked = True
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         if masked is _ORIGINAL:
             masked = flow.request.content or b""
@@ -987,7 +991,7 @@ class CampfireAddon:
                 data=part.body, file_name=name, mime=part.content_type, host=host, flow=flow
             )
             if masked is None:
-                self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+                self._block(flow, _CANCELLED)
                 return
             if masked is _ORIGINAL:
                 continue  # 사람이 원본 전송을 택했다 — 이 파트는 그대로 둔다
@@ -1095,7 +1099,7 @@ class CampfireAddon:
         # pop 하지 않는다 — 재시도된 PUT 이 분기를 못 타고 원본으로 나가는 것을 막는다.
         promise = self._chatgpt[key]
         if promise.blocked:
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         if promise.settled is not None:
             # 이미 판단이 끝난 업로드의 재시도. 사람에게 다시 묻지 않는다.
@@ -1125,7 +1129,7 @@ class CampfireAddon:
             return
         if masked is None:
             promise.blocked = True
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            self._block(flow, _CANCELLED)
             return
         if masked is _ORIGINAL:
             # 원본을 보내기로 했는데 등록은 이미 N' 으로 고쳐 버렸다. 원본 크기와
@@ -1363,13 +1367,18 @@ class CampfireAddon:
 
     # ── 차단 ─────────────────────────────────────────────────────────────────
 
-    def _block(self, flow: http.HTTPFlow, reason: str) -> None:
+    def _block(self, flow: http.HTTPFlow, reason: str, *, notify: bool = True) -> None:
         """요청을 사이트에 보내지 않고 여기서 끝낸다.
 
         상태 코드는 403 이다. 사이트 JS 가 이걸 업로드 실패로 보여 주는 게, 조용히
         성공한 척하는 것보다 낫다. 검사 단계가 더 구체적인 이유를 남겼으면(첨부 인젝션 등) 그걸 쓴다.
+        사이트는 이유를 보여 주지 않으므로 데스크톱 알림으로 알린다(broker.notify) — 사람이 확인창에서 직접
+        취소한 건은 알리지 않는다.
         """
-        reason = flow.metadata.get("campfire_block_reason") or reason
+        specific = flow.metadata.get("campfire_block_reason")
+        reason = specific or reason
+        if notify and (specific or reason != _CANCELLED):
+            broker.notify(_site(flow.request.pretty_host), reason)
         flow.response = http.Response.make(
             403,
             json.dumps({"error": "campfire_blocked", "reason": reason}, ensure_ascii=False).encode(),
@@ -1390,6 +1399,8 @@ class CampfireAddon:
 _ORIGINAL = object()
 # "가릴 것이 있는데 이 업로드 자리에는 가린 글을 넣을 수 없다" — 이유를 붙여 막는다(_scan_and_decide can_replace).
 _UNREPLACEABLE = object()
+# 사람이 확인창에서 보내지 않기로 한 차단 이유 — 데스크톱 알림을 띄우지 않는다(_block).
+_CANCELLED = "검토 결과 전송하지 않기로 했습니다"
 
 
 class _TextSlot:
