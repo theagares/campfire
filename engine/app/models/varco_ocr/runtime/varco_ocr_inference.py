@@ -303,13 +303,18 @@ def load_model(model_dir: Path, device: str):
         unknown = [k for k in header if key(k) not in targets]
         if missing or unknown:
             raise RuntimeError(f"VARCO 가중치 키 불일치: 없음 {sorted(missing)[:3]}, 남음 {unknown[:3]}")
+        # 버퍼 하나(가장 큰 텐서, 임베딩 약 0.6GB)에 차례로 읽는다 — 텐서마다 bytes + bytearray 두 벌을 만들면 불러오기 RAM
+        # 최고치가 0.6GB 더 크고 4.3GB 를 한 번 더 복사했다(A100 측정: 8.6 → 5.1초, 최고 RSS 2.43 → 1.85GB).
+        buf = memoryview(bytearray(max(m["data_offsets"][1] - m["data_offsets"][0] for m in header.values())))
         for k, meta in header.items():
             t = targets[key(k)]
             if meta["dtype"] != "F16" or list(t.shape) != meta["shape"]:
                 raise RuntimeError(f"VARCO 가중치 모양 불일치: {k}")
             b0, b1 = meta["data_offsets"]
             f.seek(base + b0)
-            t.copy_(torch.frombuffer(bytearray(f.read(b1 - b0)), dtype=torch.float16).reshape(meta["shape"]))
+            if f.readinto(buf[:b1 - b0]) != b1 - b0:
+                raise RuntimeError(f"VARCO 가중치 파일이 잘렸다: {k}")
+            t.copy_(torch.frombuffer(buf[:b1 - b0], dtype=torch.float16).reshape(meta["shape"]))  # 동기 복사라 버퍼를 다시 써도 된다
     emb = model.get_input_embeddings().weight
     if model.lm_head.weight.data_ptr() != emb.data_ptr():  # tie_word_embeddings
         model.lm_head.weight = emb
@@ -352,6 +357,9 @@ class Reader:
         from transformers import AutoProcessor
         self.device = device
         self.model = load_model(model_dir, device)
+        # 불러오며 따로 만든 lm_head(약 0.6GB)를 임베딩과 묶어 버린 자리가 할당기 캐시에 남는다 — mem_get_info 가 그만큼을
+        # '쓰는 중' 으로 봐 묶음이 작아졌다(A100 에 12GB+통합 worker 흉내: 2/1736 → 비운 뒤 4/4112, 그림 44장 705 → 455초).
+        _empty_cache(device)
         self.proc = AutoProcessor.from_pretrained(model_dir)
         self.proc.tokenizer.padding_side = "left"
         self.batch, self.budget = _memory_safe_limits(device, batch, token_budget)
