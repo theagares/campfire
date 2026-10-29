@@ -37,7 +37,8 @@ async def list_decisions(
     """
     if after is not None and wait_ms:
         await broker.wait_for_change(after, wait_ms / 1000)
-    return {"pending": broker.list_pending(), "version": broker.version}
+    # notices: 묻지 않고 막은 전송의 이유(최근 20건, id 가 늘어난다) — 데스크톱이 새 것만 알림으로 띄운다.
+    return {"pending": broker.list_pending(), "version": broker.version, "notices": broker.list_notices()}
 
 
 @router.get("/decisions/{decision_id}")

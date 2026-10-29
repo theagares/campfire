@@ -23,8 +23,12 @@ class ProxyDecisionController {
     engineManager, dialog, fetchImpl = globalThis.fetch, pollMs = POLL_MS,
     watchMs = WATCH_MS, getParentWindow = () => null, platform = process.platform,
     autoSendMasked = () => false, // 설정 "마스킹본 바로 전송" — 켜면 묻지 않고 마스킹본을 보낸다
+    notify = () => {}, // (title, body) — 프록시가 묻지 않고 막은 전송을 알린다(운영체제 알림)
   }) {
     this.autoSendMasked = autoSendMasked;
+    this.notify = notify;
+    // 이미 알린 차단 알림의 마지막 id. null = 아직 목록을 못 받음(앱이 엔진보다 늦게 떴으면 지난 알림은 띄우지 않는다).
+    this.lastNoticeId = null;
     this.engineManager = engineManager;
     this.dialog = dialog;
     this.fetch = fetchImpl;
@@ -135,6 +139,7 @@ class ProxyDecisionController {
       this.requestAbort = null;
     }
     if (Number.isInteger(listed?.version)) this.version = listed.version;
+    this._showNotices(Array.isArray(listed?.notices) ? listed.notices : []);
     const pending = Array.isArray(listed?.pending) ? listed.pending : [];
     const summary = pending.find((p) => p?.id && !this.handled.has(p.id));
     if (!summary) return false;
@@ -146,6 +151,21 @@ class ProxyDecisionController {
       this.currentId = null;
     }
     return true;
+  }
+
+  /** 엔진이 새로 쌓은 차단 알림만 띄운다. 처음 받은 목록은 기준으로만 쓴다. */
+  _showNotices(notices) {
+    const ids = notices.map((n) => Number(n?.id)).filter(Number.isInteger);
+    const maxId = ids.length ? Math.max(...ids) : 0;
+    if (this.lastNoticeId === null) {
+      this.lastNoticeId = maxId;
+      return;
+    }
+    for (const n of notices) {
+      if (!(Number(n?.id) > this.lastNoticeId)) continue;
+      try { this.notify(`Campfire — ${n.host || 'AI 사이트'} 전송을 막았습니다`, String(n.reason || '')); } catch { /* 알림 실패로 판단을 멈추지 않는다 */ }
+    }
+    this.lastNoticeId = Math.max(this.lastNoticeId, maxId);
   }
 
   /** 결정을 엔진에 보낸다. 이미 끝난 건(404/409)도 보낸 것으로 친다. 그 밖의 실패는 다음에 다시. */
