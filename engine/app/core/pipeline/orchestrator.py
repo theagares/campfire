@@ -622,6 +622,9 @@ async def run_pipeline(
             truncated=truncated,
             original_chars=original_chars,
             forced_policy=forced_policy,
+            images=image_infos,
+            images_removed=images_removed,
+            images_removed_reason=images_removed_reason,
         )
 
     # 파싱 실패/미지원은 기존에는 미검사 통과였다. 강제 규칙이 하나라도 켜져 있으면
@@ -640,6 +643,9 @@ async def run_pipeline(
             masked_file=None,
             original_chars=original_chars,
             forced_policy=forced_policy,
+            images=image_infos,
+            images_removed=images_removed,
+            images_removed_reason=images_removed_reason,
         )
 
     # 룰베이스 폴백을 없앴다 — pii/injection 모두 실 모델(encoder/llm_mcp)만 남아서,
@@ -686,6 +692,9 @@ async def run_pipeline(
             user_prompt_pii_items=[],
             user_prompt_forced_mask_items=user_prompt_forced_items,
             forced_policy=forced_policy,
+            images=image_infos,
+            images_removed=images_removed,
+            images_removed_reason=images_removed_reason,
         )
 
     # ── Step 2~4: PII + 선택적 로컬 인젝션 병렬 탐지 ─────────────────────────

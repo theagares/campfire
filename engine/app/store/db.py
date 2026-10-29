@@ -79,10 +79,18 @@ def init_db() -> None:
             pii_count     INTEGER,
             injection_count INTEGER,
             type_counts   TEXT,           -- JSON {type: count}
-            detections    TEXT            -- JSON [{type,start,end,source}]  (원문 스니펫 없음)
+            detections    TEXT,           -- JSON [{type,start,end,source}]  (원문 스니펫 없음)
+            image_ocr_read_count INTEGER NOT NULL DEFAULT 0 -- VARCO가 읽은 그림 수(원문 없음)
         )
         """
     )
+    # v0.2.63 이하 DB에는 이 칸이 없다. SQLite의 상수 기본값 ADD COLUMN은 기존 행을
+    # 다시 쓰지 않으며, 읽기 전용 대시보드는 칸이 생기기 전에도 0으로 폴백한다.
+    columns = {row[1] for row in _conn.execute("PRAGMA table_info(jobs)")}
+    if "image_ocr_read_count" not in columns:
+        _conn.execute(
+            "ALTER TABLE jobs ADD COLUMN image_ocr_read_count INTEGER NOT NULL DEFAULT 0"
+        )
     _conn.commit()
 
 
@@ -93,6 +101,21 @@ def _type_counts(items: list[dict]) -> dict[str, int]:
     return counts
 
 
+def _image_ocr_read_count(result: dict[str, Any]) -> int:
+    """VARCO가 실제로 읽은 그림 수.
+
+    대시보드의 "문서 탐지량" 기준은 이 값이 1 이상인 job 한 행이다. 그림이 여러 장이어도
+    문서 집계는 1건이며, 기준을 바꾸려면 이 함수와 데스크톱의 > 0 집계만 보면 된다.
+    """
+    images = result.get("images")
+    if not isinstance(images, list):
+        return 0
+    return sum(
+        1 for image in images
+        if isinstance(image, dict) and image.get("status") == "read"
+    )
+
+
 def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, Any]) -> None:
     """job 메타데이터를 저장. 원문/마스킹 텍스트는 저장하지 않는다 (PLAN §9.1)."""
     if _conn is None:
@@ -101,6 +124,7 @@ def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, An
     inj = result.get("injectionItems", [])
     forced = result.get("forcedMaskItems", [])
     all_items = list(pii) + list(inj) + list(forced)
+    image_ocr_read_count = _image_ocr_read_count(result)
     # 탐지 위치/유형/소스만 저장 (원문 스니펫 text 필드 제거)
     detections = [
         {"type": it["type"], "start": it["start"], "end": it["end"], "source": it.get("source")}
@@ -119,11 +143,19 @@ def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, An
         len(inj),
         json.dumps(_type_counts(all_items), ensure_ascii=False),
         json.dumps(detections, ensure_ascii=False),
+        image_ocr_read_count,
     )
     with _lock:
         assert _conn is not None
         _conn.execute(
-            "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row
+            """
+            INSERT OR REPLACE INTO jobs (
+                job_id, file_name, source, created_at, scan_status, reason, blocked,
+                injection_policy, pii_count, injection_count, type_counts, detections,
+                image_ocr_read_count
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            row,
         )
         _conn.commit()
 
@@ -138,6 +170,7 @@ def record_job(job_id: str, *, file_name: str, source: str, result: dict[str, An
             "piiCount": len(pii),
             "injectionCount": len(inj),
             "forcedMaskCount": len(forced),
+            "imageOcrReadCount": image_ocr_read_count,
         }
     )
 

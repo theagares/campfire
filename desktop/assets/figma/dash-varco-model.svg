@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="VARCO 이미지 모델 임시 일러스트">
+  <defs>
+    <linearGradient id="bg" x1="12" y1="12" x2="84" y2="84" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7569ED"/>
+      <stop offset="1" stop-color="#42B8A5"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="30" y1="28" x2="66" y2="68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff" stop-opacity=".96"/>
+      <stop offset="1" stop-color="#E8F9F5" stop-opacity=".78"/>
+    </linearGradient>
+  </defs>
+  <circle cx="48" cy="48" r="44" fill="url(#bg)"/>
+  <path d="M22 48c7.6-12 16.3-18 26-18s18.4 6 26 18c-7.6 12-16.3 18-26 18S29.6 60 22 48Z" fill="url(#shine)"/>
+  <circle cx="48" cy="48" r="11" fill="#584CDC"/>
+  <circle cx="52" cy="44" r="3.5" fill="#fff" fill-opacity=".9"/>
+  <path d="m69 19 2.2 5.8L77 27l-5.8 2.2L69 35l-2.2-5.8L61 27l5.8-2.2L69 19Z" fill="#fff" fill-opacity=".86"/>
+</svg>

@@ -11,6 +11,7 @@ const state = {
   stats: null,
   metrics: null,
   mcpInfo: null,
+  lite: false,
 };
 
 // ── 전역 배너(설정 모달 밖에서도 보여야 하는 알림 — 설치 직후 자동 모델 설치 진행/실패 등) ──
@@ -389,14 +390,26 @@ function renderDashboard() {
   $('#tile-inj-month').textContent = fmt(inj.month);
   $('#tile-inj-total').textContent = fmt(inj.total);
 
+  const documentStats = s.document || {};
+  $('#tile-document-today').textContent = fmt(documentStats.today);
+  $('#tile-document-week').textContent = fmt(documentStats.week);
+  $('#tile-document-month').textContent = fmt(documentStats.month);
+  $('#tile-document-total').textContent = fmt(documentStats.total);
+
   // 모델 상태
   const m = s.models || {};
   setModelDot('#dash-pii-dot', '#dash-pii-label', m.pii, 'A.X Encoder base 0.1B');
   setModelDot('#dash-inj-dot', '#dash-inj-label', m.injection, 'EXAONE 4.0 1.2B');
 
-  // 기밀 탐지(선택 기능) — 켜져 있을 때만. 건수는 PII 와 따로 센다(engine-stats.js)
+  // 기밀 탐지(선택 기능)는 켜져 있을 때만, VARCO/문서 탐지량은 정식 판에서 항상 보인다.
   const confShown = confidentialOn();
-  $('#dash-conf-row').style.display = confShown ? '' : 'none';
+  const imageShown = !state.lite;
+  $('#dash-conf-card').style.display = confShown ? '' : 'none';
+  $('#dash-conf-detect-card').style.display = confShown ? '' : 'none';
+  $('#dash-image-card').style.display = imageShown ? '' : 'none';
+  $('#dash-document-detect-card').style.display = imageShown ? '' : 'none';
+  $('#dash-model-optional-row').style.display = confShown || imageShown ? '' : 'none';
+  $('#dash-detect-optional-row').style.display = confShown || imageShown ? '' : 'none';
   if (confShown) {
     const conf = s.confidential || {};
     $('#tile-conf-today').textContent = fmt(conf.today);
@@ -405,6 +418,10 @@ function renderDashboard() {
     $('#tile-conf-total').textContent = fmt(conf.total);
     setModelDot('#dash-conf-dot', '#dash-conf-label', m.confidential, 'A.X 리트리버 · Solar Pro 4 판정');
     renderTrendChart('#dc-chart-conf', s.trend, 'confidential', '#E8890C');
+  }
+  if (imageShown) {
+    setModelDot('#dash-image-dot', '#dash-image-label', m.imageOcr, 'VARCO-VISION 2.0 1.7B');
+    renderTrendChart('#dc-chart-document', s.trend, 'document', '#2F8C7C');
   }
 
   // 최근 14일 탐지 추이(engine store 실측, main/engine-stats.js trend) — 오늘 버킷은
@@ -446,7 +463,8 @@ function setModelDot(dotSel, labelSel, model, fallbackCaption) {
   // 사라지기도 함"의 원인). setModelPill과 동일한 관용구로 통일.
   const dot = $(dotSel);
   dot.classList.toggle('on', !!ready);
-  dot.classList.toggle('off', !ready);
+  dot.classList.toggle('warn', !!(model && model.warning && !ready));
+  dot.classList.toggle('off', !ready && !(model && model.warning));
   $(labelSel).textContent = model ? `${model.name} · ${model.label}` : fallbackCaption;
 }
 

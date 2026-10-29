@@ -208,6 +208,7 @@ img { display:block; }
 .model-card .mc-title { position:absolute; left:4.643%; top:9.559%; font-size:15px; line-height:16px; font-weight:600; color:#000; }
 .model-card .mc-dot { position:absolute; top:9.559%; width:10px; height:10px; border-radius:9999px; border:1px solid #fff; box-shadow:var(--pill-shadow); }
 .model-card .mc-dot.on { background:var(--purple); }
+.model-card .mc-dot.warn { background:#d88a16; }
 .model-card .mc-dot.off { background:var(--grey-400); }
 .model-card .mc-photo { position:absolute; border-radius:9999px; object-fit:cover; }
 /* 캡션은 이미지 폭에 맞춘 고정폭이면 텍스트가 2줄로 줄바꿈됐다 — 항상 한 줄로,
@@ -225,6 +226,11 @@ img { display:block; }
    꽉 차 있어 제목 줄과의 여백이 PII 카드보다 훨씬 타이트했다(§위 mc-title 주석). */
 .model-card.inj .mc-photo { left:33.571%; top:25%; width:31.071%; height:63.971%; }
 .model-card.inj .mc-caption { top:77.206%; }
+
+/* VARCO 이미지는 회사 로고를 복제하지 않은 임시 추상 일러스트다. */
+.model-card.image .mc-dot { right:3.571%; }
+.model-card.image .mc-photo { left:33.571%; top:20.588%; width:31.071%; height:63.971%; }
+.model-card.image .mc-caption { top:77.206%; }
 
 /* 탐지량 카드 (Figma 63:255/63:256 좌표를 280×176 기준 %로 환산)
    — 기존엔 flex-column 자유배치라 콘텐츠 총합이 176px 를 넘어 footer(누적 N건)가

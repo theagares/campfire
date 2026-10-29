@@ -35,7 +35,7 @@ function broadcast(channel, payload) {
  * 동안은 엔진이 죽지 않고 검사만 통과 처리하므로(§PLAN 9.2), pill 은 "준비 중"으로
  * 보여준다.
  */
-function deriveModelStatus(engineStatus, confidentialSetting = false) {
+function deriveModelStatus(engineStatus, confidentialSetting = false, imageOcrSetting = false, lite = false) {
   const running = engineStatus.state === 'running';
   const detectors = (engineStatus.health && engineStatus.health.detectors) || {};
   const modelsReady = (engineStatus.health && engineStatus.health.modelsReady) || {};
@@ -47,6 +47,16 @@ function deriveModelStatus(engineStatus, confidentialSetting = false) {
   const conf = (engineStatus.health && engineStatus.health.confidential) || {};
   const confEnabled = engineStatus.health ? running && !!conf.enabled : !!confidentialSetting;
   const confActive = confEnabled && !!conf.ready;
+  const healthImage = engineStatus.health && engineStatus.health.imageOcr;
+  const image = healthImage || {};
+  const imageEnabled = !lite && (healthImage ? !!image.enabled : !!imageOcrSetting);
+  const imageActive = running && imageEnabled && !!image.ready;
+  const imageAccelerator = image.accelerator ? String(image.accelerator).toUpperCase() : null;
+  let imageLabel = '꺼짐';
+  if (imageEnabled && !running) imageLabel = '중지됨';
+  else if (imageActive) imageLabel = `작동 중${imageAccelerator ? ` · ${imageAccelerator}` : ''}`;
+  else if (imageEnabled && (image.noGpu === true || image.gpu === false || !image.accelerator)) imageLabel = 'GPU 없음';
+  else if (imageEnabled) imageLabel = '준비 중';
   return {
     confidential: {
       name: 'confidential_retriever',
@@ -64,6 +74,14 @@ function deriveModelStatus(engineStatus, confidentialSetting = false) {
       ready: injectionActive,
       label: !running ? '중지됨' : injectionActive ? '작동 중' : '준비 중',
     },
+    imageOcr: {
+      name: 'VARCO-VISION 2.0 1.7B',
+      enabled: imageEnabled,
+      ready: imageActive,
+      warning: imageEnabled && !imageActive,
+      accelerator: image.accelerator || null,
+      label: imageLabel,
+    },
   };
 }
 
@@ -71,10 +89,13 @@ function deriveModelStatus(engineStatus, confidentialSetting = false) {
 function buildStats(engineManager) {
   const engineStatus = engineManager.getStatus();
   const stats = engineStats.readStats(app);
+  const lite = isLite(app.getVersion());
   return {
     ...stats,
     models: deriveModelStatus(engineStatus,
-      !isLite(app.getVersion()) && !!engineManager.config?.get('confidentialEnabled')),
+      !lite && !!engineManager.config?.get('confidentialEnabled'),
+      !lite && !!engineManager.config?.get('imageOcrEnabled'),
+      lite),
     injectionPolicy:
       (engineStatus.health && engineStatus.health.injectionPolicy) || null,
     engineState: engineStatus.state,
@@ -92,7 +113,9 @@ function bindEngineStatus(engineManager) {
     broadcast('engine:status', status);
     const confidentialSetting = !isLite(app.getVersion())
       && !!engineManager.config?.get('confidentialEnabled');
-    const nextModels = deriveModelStatus(status, confidentialSetting);
+    const lite = isLite(app.getVersion());
+    const imageOcrSetting = !lite && !!engineManager.config?.get('imageOcrEnabled');
+    const nextModels = deriveModelStatus(status, confidentialSetting, imageOcrSetting, lite);
     const signature = JSON.stringify(nextModels);
     if (signature === lastModels) return;
     lastModels = signature;
