@@ -1989,12 +1989,22 @@
     // 없다 — 공백만 다르다는 건 바뀐 게 없다는 뜻이다.)
     if (done()) return true;
 
-    // 편집기 상태를 직접 바꾸는 사이트(copilot.com). 아래 수단들은 거기서 전부 무시된다.
-    // 결과는 다른 수단과 똑같이 화면 글로 확인한다 — 안 바뀌었으면 아래로 넘어가 실패로 끝난다.
+    // 편집기 상태를 직접 바꾸는 사이트(copilot.com·Perplexity). 결과는 화면 글로 확인한다.
+    // 상태를 바꿨는데(또는 화면이 바뀌었는데) 마스킹본과 다르면 **다른 수단으로 덧넣지 않고 멈춘다** — 아래 수단은
+    // 지금 있는 글 위에 또 넣어 쌓는다(Windows v0.2.59 PP-1: 승인 뒤 전송은 안 되고 마스킹 문장 뒤에 원본 이메일과
+    // 둘째 줄이 다시 들어갔다). 아무것도 바뀌지 않았을 때만(편집기를 못 찾음 등) 아래 수단으로 넘어간다.
     if (cfg?.setVia === 'lexical-state') {
       const before = current();
-      if (await setViaEditorState(cfg, text)) await settle(before);
+      const applied = await setViaEditorState(cfg, text);
+      // 첫 변화에서 끝내지 않고 목표가 될 때까지 기다린다 — 편집기가 다시 그리는 사이 중간 모양을 볼 수 있다.
+      for (const deadline = Date.now() + 800; !done() && Date.now() < deadline;) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
       if (done()) return true;
+      if (applied || current() !== before) {
+        console.warn('[SecureDoc] 편집기 상태로 넣은 글이 마스킹본과 달라 멈췄습니다 — 다른 수단으로 덧넣지 않습니다');
+        return false;
+      }
     }
 
     // ★ "지우고 나서 넣는다" 가 아니라 "전체를 선택한 채로 넣는다".
