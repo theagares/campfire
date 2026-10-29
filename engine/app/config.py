@@ -433,7 +433,12 @@ SUPPORTED_EXTENSIONS: set[str] = {
     ".odt", ".ods", ".odp",
     ".eml", ".mht", ".mhtml",
     ".html", ".htm",
-    ".csv", ".tsv", ".md", ".json", ".xml", ".log",
+    ".csv", ".tsv", ".md", ".json", ".jsonl", ".xml", ".log",
+    # UTF-8/평문으로 읽을 수 있는 코드·설정 파일. 파서는 _looks_textual 폴백으로
+    # 이미 검사할 수 있었지만 지원 목록에 없어 확장 프로그램이 붙들지 못했다.
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".example",
+    ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".go", ".rs", ".sh", ".ps1", ".bat", ".sql",
 }
 UNSUPPORTED_EXTENSIONS: set[str] = {".ppt", ".xls"}
 

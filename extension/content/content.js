@@ -234,9 +234,18 @@
     'application/vnd.oasis.opendocument.presentation',
     'message/rfc822',
     'text/html',
+    'text/plain',
+    'text/csv',
+    'text/markdown',
+    'text/x-python',
+    'text/javascript',
+    'application/javascript',
+    'application/json',
+    'application/xml',
+    'application/x-yaml',
   ]);
   const SUPPORTED_EXTS =
-    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
+    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|jsonl?|xml|log|ya?ml|toml|ini|cfg|conf|env|example|css|jsx?|tsx?|py|java|c|cpp|h|hpp|cs|go|rs|sh|ps1|bat|sql)$/i;
   // 이미지 속 글자 검사를 켰을 때만(imageScanEnabled) 엔진이 받는 그림 형식 — engine config.py IMAGE_OCR_EXTENSIONS
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
   const IMAGE_EXTS = /\.(png|jpe?g|webp|bmp)$/i;
@@ -2817,9 +2826,9 @@
           if (staged) clearPendingBatch();
           showBlockedBadge(`⚠️ 확장 프로그램이 다시 로드돼 이 탭과 연결이 끊겼습니다. 원본은 보내지 않았습니다 — 탭을 새로고침한 뒤 ${staged ? '파일을 다시 첨부해 ' : ''}보내주세요.`);
         } else if (staged && pendingBatch === staged) {
-          showBlockedBadge(`⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본은 보내지 않았습니다. 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+          showBlockedBadge(`⚠️ 보호 확인을 완료하지 못해 전송을 멈췄습니다. 원본은 보내지 않았습니다. 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
         } else {
-          showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+          showBlockedBadge('⚠️ 보호 확인을 완료하지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
         }
         return;
       }
@@ -3059,7 +3068,7 @@
       if (!protectionEnabled) { sendResultToMain({ inputId, action: 'passthrough' }); return; }
 
       if (!(await openSidePanel())) {
-        showBlockedBadge('⚠️ 검토 패널을 열지 못해 업로드를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
+        showBlockedBadge('⚠️ 보호 확인을 완료하지 못해 업로드를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
         sendResultToMain({ inputId, action: 'cancel' });
         return;
       }
@@ -3083,7 +3092,7 @@
       if (!protectionEnabled) { sendPromptResultToMain({ promptId, action: 'passthrough' }); return; }
 
       if (!(await openSidePanel())) {
-        showBlockedBadge('⚠️ 검토 패널을 열지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
+        showBlockedBadge('⚠️ 보호 확인을 완료하지 못해 전송을 멈췄습니다. 원본이 그대로 나가지 않도록 막았습니다 — 다시 보내주세요.');
         sendPromptResultToMain({ promptId, action: 'cancel' });
         return;
       }
