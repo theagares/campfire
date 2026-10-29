@@ -101,6 +101,24 @@ def test_ChatGPT_취소하면_막는다(monkeypatch):
     assert f.response is not None and f.response.status_code == 403
 
 
+def test_정책으로_막힌_프롬프트는_이유를_알린다(monkeypatch):
+    # 인젝션 차단 정책 등으로 파이프라인이 blocked 를 돌려주면 사람이 취소한 것이 아니다 — 알림을 띄운다(맥 v0.2.60 M-7 과 같은 결함).
+    import app.adapters.proxy.addon as addon_mod
+    import app.core.pipeline.orchestrator as orch
+
+    async def blocked(*, text=None, **_kw):
+        return {"maskedText": text, "piiItems": [], "injectionItems": [], "blocked": True, "scanStatus": "ok",
+                "reason": "인젝션 차단 정책", "truncated": False}
+
+    notices = []
+    monkeypatch.setattr(orch, "run_pipeline", blocked)
+    monkeypatch.setattr(addon_mod.broker, "notify", lambda host, reason: notices.append(reason))
+    f = _flow(*CHATGPT, _chatgpt_body(PII), FORM)
+    asyncio.run(CampfireAddon().request(f))
+    assert f.response is not None and f.response.status_code == 403
+    assert notices == ["정책에 따라 전송을 막았습니다 — 인젝션 차단 정책"]
+
+
 PPLX = ("www.perplexity.ai", "/rest/sse/perplexity_ask")
 
 

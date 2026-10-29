@@ -1352,6 +1352,8 @@ class CampfireAddon:
                                          record_name="prompt.txt" if is_prompt else "message.txt")
             if result.get("blocked"):
                 logger.info("[proxy] 정책 차단 (Claude 메시지)")
+                if flow is not None:
+                    flow.metadata["campfire_block_reason"] = _policy_block_reason(result)
                 return None
             masked_text = result.get("maskedText", text)
             per_field.append((fld, masked_text))
@@ -1515,6 +1517,9 @@ class CampfireAddon:
         )
         if result.get("blocked"):
             logger.info("[proxy] 정책 차단 host=%s", host)  # 파일명엔 등록어가 있을 수 있다
+            if flow is not None:
+                flow.metadata["campfire_block_reason"] = _policy_block_reason(
+                    result, image=not can_replace or mime.lower().startswith("image/"))
             return None
         if flow is not None and result.get("scanStatus") == "ok":
             # 전송 때 판정에는 원문을 쓴다 — 확장 경로(/jobs userPrompt)와 같은 기준이 되게(로컬 1차 판정은 원문, 외부
@@ -1655,6 +1660,18 @@ _ORIGINAL = object()
 _UNREPLACEABLE = object()
 # 사람이 확인창에서 보내지 않기로 한 차단 이유 — 데스크톱 알림을 띄우지 않는다(_block).
 _CANCELLED = "검토 결과 전송하지 않기로 했습니다"
+
+
+def _policy_block_reason(result: dict, *, image: bool = False) -> str:
+    """파이프라인이 정책으로 막은(blocked) 이유 — 사람이 취소한 것(_CANCELLED)과 달리 알림을 띄운다(_block).
+
+    맥 v0.2.60 M-7: 이미지 검사 꺼짐·사용자 지정 단어 켜짐에서 ChatGPT 스크린샷이 "검사 못 한 파일" 로 막혔는데 None 이
+    _CANCELLED 로 이어져 알림이 없었다. 그림이면 파서 사유("지원하지 않는 포맷입니다: .png")보다 그림 문구가 알기 쉽다.
+    """
+    if image and result.get("scanStatus") in ("unsupported", "failed"):
+        return _IMAGE_UNSCANNED
+    why = result.get("reason")
+    return f"정책에 따라 전송을 막았습니다 — {why}" if why else "정책에 따라 전송을 막았습니다"
 # 가린 뒤 다시 싼 본문에 찾은 원문 값이 남았다(_raw_left).
 _RAW_LEFT = "가리지 못한 칸이 있어 전송을 막았습니다 — 원문이 그대로 나갈 뻔했습니다"
 # 앞서 가려 보낸 원문 값이 같은 사이트의 다른 요청에 실렸다(_remembered_left).
