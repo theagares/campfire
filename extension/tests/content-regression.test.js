@@ -308,6 +308,8 @@ let lastMultiSession = null;
 let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 // SW 가 sidePanel.open() 에 실패했다고 답하는 상황(제스처 전파 실패 등)을 만든다.
 let failNextOpenPanel = false;
+// 다음 SCAN_MULTI_PROMPT 를 이 이유로 실패시킨다(엔진을 못 찾음 등).
+let failNextMultiPrompt = null;
 // content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
 let contentBridgeToken = '';
 
@@ -473,6 +475,12 @@ const chromeStub = {
         return;
       }
       if (message.type === 'SCAN_MULTI_PROMPT') {
+        if (failNextMultiPrompt) {
+          const error = failNextMultiPrompt;
+          failNextMultiPrompt = null;
+          cb?.({ ok: true, prompt: { status: 'error', error, counts: null } });
+          return;
+        }
         cb?.({ ok: true, prompt: { status: 'done', counts: { pii: 0, injection: 0 } } });
         return;
       }
@@ -3033,6 +3041,49 @@ cancelScan(stuckScan);
     const b = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
     const text = b ? (b.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
     if (!text.includes('탭을 새로고침')) throw new Error(`(42) 확장이 다시 로드되기 전에 새로고침 안내가 없다: ${text}`);
+  }
+
+  // (43) 맥 실측(v0.2.58): 앱이 꺼진 채 보내면 "검사하지 못해" 만 보여 이유를 몰랐고, 그 뒤 같은 파일을 다시 붙이면
+  //      "pii.docx, pii.docx 대기 중" 으로 두 벌이 대기했다. 이유를 함께 알리고, 이미 대기 중인 파일은 다시 넣지 않는다.
+  {
+    await clock.tick(9000);
+    const attach43 = () => {
+      const f = new FileStub(['pdf'], 'dup43.pdf', { type: 'application/pdf' });
+      const inp = new HTMLInputElementStub(f, 'dup43.pdf');
+      dispatchDocumentEvent('change', {
+        target: inp, composedPath: () => [inp, documentStub], preventDefault() {}, stopImmediatePropagation() {},
+      });
+    };
+    const badge43 = () => {
+      const b = appendedToRoot.filter(el => el?.id === '__ups_pending_badge').pop();
+      return b ? (b.children || []).map(c => String(c?.textContent || '')).join(' ') : '';
+    };
+    domBySelector.set('#prompt-textarea', promptEditorStub);
+    promptEditorStub.value = '요약해 줘';
+    documentStub.activeElement = promptEditorStub;
+
+    attach43();
+    await flush();
+    failNextMultiPrompt = '로컬 엔진을 찾을 수 없습니다. Campfire 앱이 실행 중인지 확인하세요.';
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(20000);
+    if (!badge43().includes('Campfire 앱이 실행 중인지')) throw new Error(`(43) 검사 실패 이유를 알리지 않았다: ${badge43()}`);
+
+    attach43(); // 같은 파일을 다시 붙인다
+    await flush();
+    if (badge43().split('dup43.pdf').length - 1 !== 1) throw new Error(`(43) 대기 중인 파일을 또 넣었다: ${badge43()}`);
+    nextDecision = { action: 'cancel' };
+    const before43 = runtimeMessages.length;
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(20000);
+    const start43 = runtimeMessages.slice(before43).find(m => m.type === 'START_MULTI_SCAN');
+    if (start43?.payload?.items?.length !== 1) throw new Error(`(43) 같은 파일이 두 번 검사로 갔다: ${start43?.payload?.items?.length}`);
   }
 
   console.log('content regression ok');

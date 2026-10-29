@@ -1025,14 +1025,18 @@
     // 합칠 때는 이미 들고 있는 것까지 합쳐 상한을 본다. 새로 온 것만 세면
     // 하나씩 여섯 번 붙여 5개 제한을 넘길 수 있다.
     const kept = pendingBatch ? pendingBatch.items : [];
-    const merged = kept.length + fresh.length;
+    // 이미 대기 중인 파일을 또 붙이면(검사 실패·취소 뒤 다시 첨부 등) 두 번 넣지 않는다 — 같은 문서가 두 벌
+    // 올라간다(v0.2.58 맥 실측: "pii.docx, pii.docx 대기 중").
+    const same = (a, b) => a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+    const incoming = fresh.filter(f => !kept.some(i => same(i.file, f)));
+    const merged = kept.length + incoming.length;
     if (merged > MAX_BATCH_FILES) {
       showBlockedBadge(`⚠️ 한 번에 최대 ${MAX_BATCH_FILES}개까지 첨부할 수 있습니다 `
-        + `(첨부된 것: ${fileNames(kept) || '없음'} / 새로 고른 것: ${fileNames(fresh)}). 나눠서 보내주세요.`);
+        + `(첨부된 것: ${fileNames(kept) || '없음'} / 새로 고른 것: ${fileNames(incoming)}). 나눠서 보내주세요.`);
       return true;
     }
     const total = kept.reduce((sum, i) => sum + (i.fileSize || 0), 0)
-      + fresh.reduce((sum, f) => sum + (f.size || 0), 0);
+      + incoming.reduce((sum, f) => sum + (f.size || 0), 0);
     if (total > MAX_BATCH_BYTES) {
       showBlockedBadge(`⚠️ 첨부 용량이 큽니다 (${Math.round(total / 1048576)}MB). `
         + `합계 ${MAX_BATCH_BYTES / 1048576}MB 이하로 나눠서 보내주세요.`);
@@ -1042,7 +1046,7 @@
     // 파일 id 는 배치 안에서만 유일하면 된다. 합칠 때 인덱스를 다시 매기면 앞 파일의
     // id 가 바뀌어(f0 → f1) 이미 붙은 것과 어긋나므로, 한 번 쓴 번호는 다시 쓰지 않는다.
     const seq = pendingBatch ? pendingBatch.nextId : 0;
-    const added = fresh.map((file, i) => ({
+    const added = incoming.map((file, i) => ({
       id: `f${seq + i}`,
       file,
       fileName: file.name,
@@ -1149,10 +1153,10 @@
     });
     // 아래에서 일찍 끝나는 경로는 결정 대기 타이머를 반드시 거둔다. 남겨 두면 10분 뒤
     // 타이머가 closeSidePanel() 을 불러, 그때 열려 있는 **다른** 검토 패널을 닫는다.
-    const abandon = (reason) => {
+    const abandon = (reason, detail) => {
       const entry = pendingBatchDecisions.get(sessionId);
       if (entry) { clearTimeout(entry.timeout); pendingBatchDecisions.delete(sessionId); }
-      return { action: 'cancel', reason };
+      return { action: 'cancel', reason, detail };
     };
 
     // lease 대기를 **보내기 전에** 등록한다. grant 는 SW 가 임의 시점에 밀어 넣는
@@ -1191,7 +1195,8 @@
     const promptRes = await sendToSW({ type: 'SCAN_MULTI_PROMPT', sessionId, leaseId, text });
     if (!promptRes?.ok || promptRes.prompt?.status === 'error') {
       await sendToSW({ type: 'FINISH_MULTI_SCAN', sessionId, leaseId });
-      return abandon('prompt-scan-failed');
+      // 이유(예: 앱이 꺼져 엔진을 못 찾음)를 같이 알린다 — 맥 실측: "검사하지 못해" 만 보여 왜인지 몰랐다.
+      return abandon('prompt-scan-failed', promptRes?.prompt?.error);
     }
 
     for (const item of items) {
@@ -2782,7 +2787,8 @@
       // 다시 보내면 함께 다시 검사한다.
       const why = staged && decision?.reason && BATCH_CANCEL_REASONS[decision.reason];
       if (why && pendingBatch === staged) {
-        showBlockedBadge(`⚠️ ${why} 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
+        const detail = decision.detail ? ` (${decision.detail})` : '';
+        showBlockedBadge(`⚠️ ${why}${detail} 첨부한 파일(${fileNames(staged.items)})은 그대로 대기 중입니다 — 다시 보내면 함께 검사합니다.`);
       } else if (staged) {
         clearPendingBatch();
       }
