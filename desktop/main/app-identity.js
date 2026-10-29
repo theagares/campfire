@@ -1,8 +1,9 @@
 'use strict';
 
-const { build } = require('../package.json');
-
-const APP_USER_MODEL_ID = build.appId;
+// electron-builder가 설치본의 app.asar를 만들 때 package.json의 build 필드를
+// 제거하므로 런타임에는 패키지 메타데이터를 읽지 않는다. 이 값은
+// package.json build.appId와 함께 테스트에서 동기화 여부를 검증한다.
+const APP_USER_MODEL_ID = 'com.airookie.campfire';
 
 /**
  * Windows 알림 센터는 실행 중인 프로세스의 AppUserModelID가 설치 바로가기의
