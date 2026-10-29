@@ -43,7 +43,10 @@ function readConfigs() {
       const r = new RegExp(`${key}:\\s*'([^']*)'`).exec(block);
       return r ? r[1] : null;
     };
-    out[host] = { editorSel: pick('editorSel'), sendBtnSel: pick('sendBtnSel'), setVia: pick('setVia') };
+    out[host] = {
+      editorSel: pick('editorSel'), sendBtnSel: pick('sendBtnSel'),
+      setVia: pick('setVia'), lexicalLineMode: pick('lexicalLineMode'),
+    };
   }
   return out;
 }
@@ -68,6 +71,14 @@ for (const host of SITES) {
 assert.strictEqual(
   CONFIGS['perplexity.ai'].setVia, 'lexical-state',
   'perplexity: 편집기 상태로 넣기(setVia)가 빠졌다 — 여러 줄 마스킹본의 줄바꿈이 사라진다',
+);
+assert.strictEqual(
+  CONFIGS['perplexity.ai'].lexicalLineMode, 'linebreak',
+  'perplexity: 여러 줄을 linebreak 노드로 넣지 않는다 — 문단을 쓰면 전송 때 줄이 붙는다',
+);
+assert.strictEqual(
+  CONFIGS['copilot.com'].lexicalLineMode, 'paragraph',
+  'copilot.com: 여러 줄을 문단으로 넣지 않는다 — linebreak 노드는 전송 때 사라진다',
 );
 
 // ── perplexity.ai — 2026-09-06 실측 ──────────────────────────────────────────
