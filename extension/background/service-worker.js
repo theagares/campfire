@@ -866,9 +866,11 @@ function bytesToBase64(bytes) {
 
 /** 사람이 검토해 승인한 마스킹본을 사이트에 넣기 직전에 엔진(프록시)에 알린다 — 같은 바이트는 프록시가 다시 검사하지
  *  않는다. 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 말없이 바꾸고, ChatGPT 등록의 이름·크기까지
- *  고쳤다(맥 v0.2.58 실측). 알리지 못해도 막지 않는다 — 프록시가 예전처럼 한 번 더 검사할 뿐이다. */
+ *  고쳤다(맥 v0.2.58 실측). 알리지 못해도 막지 않는다 — 프록시가 예전처럼 한 번 더 검사할 뿐이다.
+ *  확장 방식(프록시 꺼짐)에서는 다시 검사할 프록시가 없으니 알리지 않는다 — 엔진이 이미 알려 준 상태로 가른다. */
 async function approveUploads(files) {
   try {
+    if (!(await checkEngineHealth())?.health?.proxy?.running) return;
     const items = await Promise.all(files.map(async ({ bytes, fileName }) => ({
       sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
         (b) => b.toString(16).padStart(2, '0')).join(''),

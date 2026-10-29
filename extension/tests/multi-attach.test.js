@@ -721,46 +721,62 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
   // ── 19) 사람이 승인한 마스킹본은 탭에 넘기기 전에 엔진(프록시)에 해시로 알린다 ──
   //     맥 v0.2.58: 프록시가 그 마스킹본을 프롬프트 없이 다시 검사해 마지막 줄을 인젝션으로 바꿔 보냈고(ChatGPT),
   //     Gemini 는 바꿔 넣을 수 없어 막혀 첨부가 오류로 떴다.
-  {
+  // 승인까지 한 배치를 돌리고, 엔진에 보낸 승인 알림과 탭에 넘긴 산출물을 돌려준다. proxyRunning: 엔진 /health 의 proxy.running.
+  async function approveBatch(sid, proxyRunning) {
     sandbox.crypto.subtle = require('crypto').webcrypto.subtle;
     sandbox.Headers = Headers; // 하니스에 없는 전역 — 엔진 호출(fetchServer)이 쓴다
     const posts = [];
     sandbox.fetch = (url, opts = {}) => {
       if (String(url).endsWith('/proxy/approved-uploads')) {
-        posts.push({ ...JSON.parse(opts.body), relayedFirst: tabMessages.some(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === 'appr') });
+        posts.push({ ...JSON.parse(opts.body), relayedFirst: tabMessages.some(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === sid) });
       }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ service: 'campfire', forcedMask: { managed: true, ready: true } }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({
+        service: 'campfire', forcedMask: { managed: true, ready: true }, proxy: { running: proxyRunning },
+      }) });
     };
     delete sessionStore.srv;
+    vm.runInContext('healthCache = null;', ctx); // 앞 블록이 남긴 /health 결과(1초 캐시)를 쓰지 않게
     tabMessages.length = 0;
     const one = [{ id: 'f0', fileName: 'a.pdf', fileSize: 10, mimeType: 'application/pdf', supported: true }];
-    await send({ type: 'START_MULTI_SCAN', sessionId: 'appr', payload: { items: one } });
+    await send({ type: 'START_MULTI_SCAN', sessionId: sid, payload: { items: one } });
     await settle();
-    const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED' && m.sessionId === 'appr').leaseId;
-    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: 'appr', leaseId: lease, text: '요약해줘' });
+    const lease = tabMessages.find(m => m.type === 'SCAN_LEASE_GRANTED' && m.sessionId === sid).leaseId;
+    await send({ type: 'SCAN_MULTI_PROMPT', sessionId: sid, leaseId: lease, text: '요약해줘' });
     await send({
-      type: 'SCAN_MULTI_ITEM', sessionId: 'appr', leaseId: lease,
+      type: 'SCAN_MULTI_ITEM', sessionId: sid, leaseId: lease,
       payload: { docId: 'f0', fileName: 'a.pdf', mimeType: 'application/pdf', file: binaryFile('a.pdf'), userPrompt: '요약해줘' },
     });
-    await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'appr', leaseId: lease });
+    await send({ type: 'FINISH_MULTI_SCAN', sessionId: sid, leaseId: lease });
     await settle();
     await send({
-      type: 'PANEL_MULTI_DECISION', sessionId: 'appr',
+      type: 'PANEL_MULTI_DECISION', sessionId: sid,
       decision: { action: 'send', prompt: { unmaskedKeys: [] }, files: [{ id: 'f0', action: 'masked', unmaskedKeys: [] }] },
     });
     await settle();
-    const relay = tabMessages.find(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === 'appr');
+    const relay = tabMessages.find(m => m.type === 'CONTENT_BATCH_DECISION' && m.sessionId === sid);
     const artifact = await send({
-      type: 'GET_SCAN_ARTIFACT', sessionId: 'appr', docId: 'f0', artifactId: relay.decision.files[0].artifactId,
+      type: 'GET_SCAN_ARTIFACT', sessionId: sid, docId: 'f0', artifactId: relay.decision.files[0].artifactId,
     });
+    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: sid });
+    await settle();
+    return { posts, artifact };
+  }
+
+  {
+    const { posts, artifact } = await approveBatch('appr', true);
     const bytes = Buffer.from(await artifact.blob.arrayBuffer());
     const sha = require('crypto').createHash('sha256').update(bytes).digest('hex');
     assert.strictEqual(posts.length, 1, '승인한 마스킹본을 엔진에 알리지 않았다 — 프록시가 다시 검사해 바꾸거나 막는다');
     assert.deepStrictEqual(posts[0].items, [{ sha256: sha, name: artifact.fileName, size: bytes.length }]);
     assert.strictEqual(posts[0].relayedFirst, false, '탭에 먼저 넘겨 사이트가 올리기 전에 알리지 못할 수 있다');
-    await send({ type: 'FINALIZE_MULTI_SESSION', sessionId: 'appr' });
-    await settle();
   }
 
-  console.log('multi-attach.test.js: 19개 블록 통과');
+  // ── 20) 확장 방식(프록시 꺼짐)에서는 승인 알림을 보내지 않는다 — 다시 검사할 프록시가 없다 ──
+  {
+    const { posts, artifact } = await approveBatch('appr-noproxy', false);
+    assert.ok(artifact?.blob, '프록시가 꺼져도 승인한 마스킹본은 그대로 탭에 넘어가야 한다');
+    assert.strictEqual(posts.length, 0, '프록시가 안 도는데 엔진에 승인 알림을 보냈다');
+  }
+
+  console.log('multi-attach.test.js: 20개 블록 통과');
 })().catch((e) => { console.error(e); process.exit(1); });
