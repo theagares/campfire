@@ -221,6 +221,9 @@ class EngineManager extends EventEmitter {
       // Windows 에서 같은 코드가 멀쩡했던 건 번들 서명 검증이 없어서일 뿐이다.
       PYTHONPYCACHEPREFIX: paths.resolvePycacheDir(),
       SECUREDOC_STORE_DIR: paths.resolveStoreDir(),
+      // Chrome은 실행 중인 확장 패키지의 manifest 스냅샷만 보여 설치 폴더 교체를 못 알아챈다.
+      // 엔진 /health가 이 경로를 직접 읽어 옛 확장에 새 판을 알려준다(RL-1).
+      SECUREDOC_EXTENSION_DIR: paths.resolveExtensionDir(app),
       // cwd 를 번들 밖으로 뺐으므로 app 패키지를 PYTHONPATH 로 알려준다(아래 주석).
       PYTHONPATH: this.engineDir,
       // 프록시를 켜 둔 상태로 엔진이 재시작되면 엔진이 스스로 프록시를 다시 띄운다.

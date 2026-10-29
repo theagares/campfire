@@ -198,7 +198,13 @@
     if (event.data.type === 'SECUREDOC_SET_EDITOR_STATE') {
       if (!fromIsolated(event.data)) return;
       let ok = false;
-      try { ok = _setLexicalText(event.data.selector, String(event.data.text ?? '')); } catch { ok = false; }
+      try {
+        ok = _setLexicalText(
+          event.data.selector,
+          String(event.data.text ?? ''),
+          event.data.lineMode,
+        );
+      } catch { ok = false; }
       window.postMessage({
         __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
         type: 'SECUREDOC_SET_EDITOR_STATE_RESULT', nonce: event.data.nonce, ok,
@@ -259,7 +265,7 @@
   /** Lexical 편집기 내용을 글 하나로 바꾼다. 성공하면 true.
    *  노드 모양(문단·글 노드 속성, Copilot 의 sentinel 같은 자체 노드)은 지금 상태에서 빌려 쓴다 —
    *  모르는 노드를 새로 만들지 않는다. 줄바꿈은 사이트가 쓰는 모양을 따른다(아래). */
-  function _setLexicalText(selector, text) {
+  function _setLexicalText(selector, text, lineMode = 'auto') {
     const ed = document.querySelector(selector)?.__lexicalEditor;
     if (!ed || typeof ed.parseEditorState !== 'function') return false;
     const json = ed.getEditorState().toJSON();
@@ -269,10 +275,11 @@
     const tmpl = para.children.find((n) => n.type === 'text')
       || { detail: 0, format: 0, mode: 'normal', style: '', type: 'text', version: 1 };
     const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak');
-    // Copilot(copilot.com)은 Shift+Enter 마다 문단을 새로 만들고(문단마다 sentinel), 보낼 때 linebreak 노드는 버린다 —
-    // 여러 줄 프롬프트가 한 줄로 붙어 나갔다(v0.2.56 Windows: "…[이메일 마스킹]이번 분기…"). 사용자가 친 글이 문단 여럿이면
-    // 줄마다 문단으로 넣는다. 그 글은 innerText 라 문단 사이가 "\n\n" 이다.
-    if (paras.length > 1) {
+    // 같은 Lexical이라도 사이트의 전송 직렬화가 다르다. Copilot은 linebreak를 버려 문단을 써야 하지만,
+    // Perplexity는 반대로 여러 문단을 붙여 보내고 linebreak를 보존한다. 현재 상태의 문단 수로 추측하면
+    // 한 사이트 수정이 다른 사이트를 깨므로 content.js의 실측 사이트 설정을 따른다.
+    const useParagraphs = lineMode === 'paragraph' || (lineMode === 'auto' && paras.length > 1);
+    if (useParagraphs) {
       json.root.children = text.split(/\n\n|\n/).map((line) => ({
         ...para, children: [...(line ? [{ ...tmpl, text: line }] : []), ...keep],
       }));

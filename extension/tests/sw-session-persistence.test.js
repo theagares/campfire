@@ -261,10 +261,17 @@ const pendingState = () => ({
   {
     const engine = { target: 'local', baseUrl: 'http://127.0.0.1:48200', port: 48200,
       health: { forcedMask: { managed: true, ready: true } } };
-    const boot = (state, local, disk = '{"version":"9.9.9"}') => bootWorker({ k: engine, ...state }, {
+    // chrome-extension://.../manifest.json 은 폴더가 바뀌어도 실행 중인 판을 돌려준다.
+    // 설치 폴더를 직접 읽는 엔진 /health 의 판을 기준으로 해야 새 판을 알아챈다(Windows RL-1).
+    const boot = (state, local, installedVersion = '9.9.9') => bootWorker({ k: engine, ...state }, {
       local, tabs: [{ id: 7 }],
       manifest: { version: '0.2.57', content_scripts: [{ matches: ['https://chatgpt.com/*'] }] },
-      fetch: async (url) => ({ ok: true, json: async () => JSON.parse(url.endsWith('/health') ? '{"service":"campfire"}' : disk) }),
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (url.endsWith('/health')
+          ? { service: 'campfire', installedExtensionVersion: installedVersion }
+          : { version: '0.2.57' }),
+      }),
     });
     const healthCheck = async (w) => {
       await w.send({ type: 'GET_PROXY_EXPECTATION' }, { tab: { id: 7 } });
@@ -277,8 +284,8 @@ const pendingState = () => ({
     assert.strictEqual(w.tabsSent[0].msg.type, 'EXTENSION_RELOADING');
     assert.deepStrictEqual(await healthCheck(boot({}, local)), [], '다시 로드해도 판이 그대로면 되풀이하면 안 된다');
     assert.deepStrictEqual(await healthCheck(boot(pendingState(), {})), [], '검토 중인 세션을 날렸다');
-    assert.deepStrictEqual(await healthCheck(boot({}, {}, '{"version":"0.2.57"}')), [], '같은 판인데 다시 로드했다');
-    assert.deepStrictEqual(await healthCheck(boot({}, {}, '{"vers')), [], '설치 중 반쯤 쓰인 manifest 로 다시 로드했다');
+    assert.deepStrictEqual(await healthCheck(boot({}, {}, '0.2.57')), [], '같은 판인데 다시 로드했다');
+    assert.deepStrictEqual(await healthCheck(boot({}, {}, null)), [], '설치 중이라 판을 못 읽었는데 다시 로드했다');
   }
 
   console.log('sw-session-persistence ok');

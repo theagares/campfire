@@ -1596,6 +1596,7 @@
       // 마스킹본과 달라지고, 여러 줄 프롬프트는 Enter 로 보낼 수 없었다(막힘, 원문은 안 나감).
       // copilot.com 처럼 편집기 상태로 넣으면 줄바꿈이 linebreak 노드로 남는다. 안 먹으면 아래 수단으로 넘어간다.
       setVia: 'lexical-state',
+      lexicalLineMode: 'linebreak',
     },
     'copilot.microsoft.com': {
       // 2026-09-06 실측 정정: 전송 버튼 aria-label 이 "메시지 제출" 로 바뀌어 "제출"
@@ -1617,6 +1618,7 @@
       // execCommand·합성 paste·DOM 직접 수정을 전부 무시한다(실측: execCommand 는 true 를 돌려주고
       // 아무것도 안 바뀐다). 편집기 상태를 MAIN world 에서 직접 바꾼다(setViaEditorState).
       setVia: 'lexical-state',
+      lexicalLineMode: 'paragraph',
     },
   };
 
@@ -1812,7 +1814,7 @@
       editorStateWaits.set(nonce, (ok) => { clearTimeout(timer); editorStateWaits.delete(nonce); resolve(ok); });
       window.postMessage({
         __campfire_config: true, direction: 'isolated-to-main', type: 'SECUREDOC_SET_EDITOR_STATE',
-        bridgeToken, selector: cfg.editorSel, text, nonce,
+        bridgeToken, selector: cfg.editorSel, text, nonce, lineMode: cfg.lexicalLineMode,
       }, '*');
     });
   }

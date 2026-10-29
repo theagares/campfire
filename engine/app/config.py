@@ -42,6 +42,12 @@ def _default_models_root() -> Path:
 
 MODELS_ROOT: Path = Path(os.environ.get("SECUREDOC_MODELS_DIR", str(_default_models_root())))
 
+# 데스크톱 앱과 함께 설치된 확장 폴더. 실행 중인 Chrome은 chrome-extension://manifest.json을
+# 패키지 스냅샷에서 읽어 앱 업데이트로 디스크 파일이 바뀐 것을 못 본다. /health가 이 경로의
+# manifest를 매번 직접 읽어 주면 옛 확장이 새 판을 감지해 스스로 다시 로드할 수 있다.
+_extension_dir = os.environ.get("SECUREDOC_EXTENSION_DIR", "").strip()
+EXTENSION_DIR: Path | None = Path(_extension_dir) if _extension_dir else None
+
 # ── 서비스 시그니처 (PLAN §11) ────────────────────────────────────────────────
 # 익스텐션이 포트 스캔 시 "우리 엔진"임을 식별하는 고정 시그니처.
 SERVICE_NAME: str = "campfire"
