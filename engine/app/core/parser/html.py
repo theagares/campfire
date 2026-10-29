@@ -25,11 +25,19 @@ HTMLParser 는 주석·속성·textarea 를 문맥으로 구분하므로(실측)
 `<script>` 가 안 닫히면 깊이가 영원히 남아 전부 빈 문자열이 됐던 그 버그)은, 건너뛴
 내용을 버퍼에 담아 두었다가 닫히지 않은 채 끝나면 본문으로 방출해 막는다 — 보안
 게이트웨이에서 잡음은 침묵보다 낫다.
+
+숨긴 글(parser/hidden.py): hidden 속성과 인라인 style 의 display:none·visibility:hidden·opacity:0·color:transparent,
+font-size 1 이하, 화면 밖 위치(absolute·fixed 로 -500px 밖, text-indent -500px 밖), 글자색 = 배경색(조상 요소의
+background·bgcolor, 없으면 흰색)인 요소의 글을 표식으로 감싼다. <style> 의 클래스 규칙·외부 CSS 는 보지 않는다(브라우저 없이는
+계산할 수 없다).
 """
 
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
+
+from .hidden import color_reason, wrap
 
 # 문맥으로 건너뛸 요소. 내용이 화면에 안 보이고 토큰만 오염시킨다.
 _SKIP = {"script", "style"}
@@ -39,6 +47,58 @@ _BLOCK = {
     "p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
     "section", "article", "header", "footer", "blockquote", "pre", "table",
 }
+# 닫는 태그가 없는 요소 — 숨김 문맥 스택에 쌓지 않는다.
+_VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+_NAMED = {"white": "FFFFFF", "black": "000000", "red": "FF0000", "blue": "0000FF", "green": "008000",
+          "yellow": "FFFF00", "gray": "808080", "grey": "808080", "silver": "C0C0C0", "navy": "000080"}
+_NUM = re.compile(r"^(-?\d+(?:\.\d+)?)(px|pt|em|rem|%)?$")
+
+
+def _css_color(value: str | None) -> str | None:
+    """CSS 색 → RGB 16진, 투명이면 'transparent', 모르면 None."""
+    v = (value or "").strip().lower().replace(" ", "")
+    if v == "transparent":
+        return v
+    if m := re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", v):
+        h = m.group(1)
+        return ("".join(c * 2 for c in h) if len(h) == 3 else h).upper()
+    if m := re.fullmatch(r"rgba?\((\d+),(\d+),(\d+)(?:,([\d.]+))?\)", v):
+        if m.group(4) is not None and float(m.group(4)) == 0:
+            return "transparent"
+        return "".join(f"{min(255, int(x)):02X}" for x in m.groups()[:3])
+    return _NAMED.get(v)
+
+
+def _px(value: str | None) -> float | None:
+    m = _NUM.match((value or "").strip().lower())
+    return float(m.group(1)) if m else None
+
+
+def _style(attrs: dict) -> dict[str, str]:
+    out = {}
+    for decl in (attrs.get("style") or "").split(";"):
+        if ":" in decl:
+            k, v = decl.split(":", 1)
+            out[k.strip().lower()] = v.strip().lower().replace("!important", "").strip()
+    return out
+
+
+def _element_code(attrs: dict, style: dict, bg: str | None) -> str | None:
+    if "hidden" in attrs or style.get("display") == "none" or style.get("visibility") in ("hidden", "collapse"):
+        return "h"
+    if (opacity := _px(style.get("opacity"))) is not None and opacity <= 0.01:
+        return "h"
+    if (size := _px(style.get("font-size"))) is not None and size <= 1:
+        return "s"
+    if style.get("position") in ("absolute", "fixed") and any(
+            (v := _px(style.get(k))) is not None and v <= -500 for k in ("left", "top", "right")):
+        return "o"
+    if (indent := _px(style.get("text-indent"))) is not None and indent <= -500:
+        return "o"
+    color = _css_color(style.get("color") or attrs.get("color"))
+    if color == "transparent":
+        return "h"
+    return color_reason(color, bg)
 
 
 class _Extractor(HTMLParser):
@@ -47,12 +107,23 @@ class _Extractor(HTMLParser):
         self.parts: list[str] = []
         self._skip = 0             # script/style 안에 있는 깊이
         self._buf: list[str] = []  # 건너뛴 내용 — 안 닫히면 방출한다
+        self._stack: list[tuple[str, str | None, str | None]] = []  # (요소, 숨긴 이유, 배경색)
 
     def handle_starttag(self, tag, attrs):
         if tag in _SKIP:
             self._skip += 1
         elif tag in _BLOCK:
             self.parts.append("\n")
+        if tag in _SKIP or tag in _VOID:
+            return
+        if tag == "p" and self._stack and self._stack[-1][0] == "p":
+            self._stack.pop()  # 안 닫은 <p> — 브라우저처럼 다음 <p> 가 닫는다
+        a = {k.lower(): (v or "") for k, v in attrs}
+        style = _style(a)
+        parent_code, parent_bg = self._stack[-1][1:] if self._stack else (None, "FFFFFF")
+        own_bg = _css_color(style.get("background-color") or style.get("background", "").split(" ")[0] or a.get("bgcolor"))
+        bg = parent_bg if own_bg in (None, "transparent") else own_bg
+        self._stack.append((tag, parent_code or _element_code(a, style, bg), bg))
 
     def handle_endtag(self, tag):
         if tag in _SKIP:
@@ -62,10 +133,22 @@ class _Extractor(HTMLParser):
                     self._buf.clear()  # 제대로 닫힌 블록의 내용은 버린다
         elif tag in _BLOCK:
             self.parts.append("\n")
+        for i in range(len(self._stack) - 1, -1, -1):  # 짝이 맞는 요소까지 닫는다(안 닫은 자식 포함)
+            if self._stack[i][0] == tag:
+                del self._stack[i:]
+                break
 
     def handle_data(self, data):
         # script/style 안이면 버퍼로. 닫히면 버려지고, 안 닫히면 close 에서 방출된다.
-        (self._buf if self._skip else self.parts).append(data)
+        if self._skip:
+            self._buf.append(data)
+            return
+        code = self._stack[-1][1] if self._stack else None
+        core = data.strip()
+        if code and core:  # 앞뒤 공백은 밖에 둔다 — 줄 정리(strip_tags) 뒤 표식만 남은 줄이 생기지 않게
+            start = data.index(core)
+            data = data[:start] + wrap(core, code) + data[start + len(core):]
+        self.parts.append(data)
 
     def close(self):
         try:

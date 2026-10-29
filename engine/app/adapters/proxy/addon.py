@@ -1621,8 +1621,10 @@ class CampfireAddon:
         )
         if action == "cancel":
             return None
-        if (action == "send_original" and not result.get("forcedMaskItems") and not name_forced and not images_removed
-                and not always_text):
+        # 사용자 지정 단어와 숨긴 글(흰 바탕 흰 글씨 등, parser/hidden.py)은 잠금 — "원본 보내기" 를 골라도 가린 글로 보낸다
+        locked = bool(result.get("forcedMaskItems")) or any(
+            i.get("type") == "HIDDEN_TEXT" for i in result.get("injectionItems") or [])
+        if action == "send_original" and not locked and not name_forced and not images_removed and not always_text:
             self._forget_raws(host, [result.get("originalText") or ""])
             return _ORIGINAL
         return (result.get("maskedText") or "").encode("utf-8")

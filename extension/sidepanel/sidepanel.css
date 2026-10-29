@@ -10,6 +10,7 @@
   --purple: #584cdc;
   --pii: #ff3336;         /* PII = 빨강 (Figma MaskedSpan) */
   --inj: #ffff1b;         /* 인젝션 = 노랑 (Figma MaskedSpan) */
+  --inj-strong: #a68a00;  /* 숨긴 글 테두리 = 인젝션 노랑의 진한 톤(기밀 빨강과 헷갈리지 않게) */
   --conf: #f04452;        /* 기밀 = 빨간 테두리 (시연 대시보드 demo_dashboard.html 의 --red 와 같다) */
   --green: #09ae4b;
 }
@@ -317,6 +318,7 @@ body {
 .sw-pii { background: var(--pii); }
 .sw-conf { border: 1.5px solid var(--conf); }
 .sw-inj { background: var(--inj); }
+.sw-hidden { background: var(--inj); border: 1.5px solid var(--inj-strong); }
 .hint { font-size: 10.5px; font-weight: 400; color: var(--muted-2); margin: 0 2px 8px; line-height: 1.5; }
 
 /* ── 문서 diff 미리보기 — Figma처럼 화면 위아래 전체를 채운다 ── */
@@ -347,6 +349,10 @@ body {
 .mark.inj .mark { padding: 1px 4px; }
 .mark.forced { background: #5c3fbf; color: #fff; cursor: not-allowed; }
 .mark.forced:hover { box-shadow: none; }
+/* 사람이 못 보게 숨긴 글(흰 바탕 흰 글씨 등) = 인젝션 색 + 기밀처럼 테두리. 늘 가리고 풀 수 없다 */
+.mark.hidden { background: var(--inj); color: var(--text); border: 1.5px solid var(--inj-strong); border-radius: 3px; padding: 1px 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; cursor: not-allowed; }
+.mark.hidden:hover { box-shadow: none; }
+.mark.hidden .mark { padding: 1px 4px; }
 /* 마스킹을 해제한 구간 — 원문이 그대로 보이는 상태다.
    취소선은 쓰지 않는다: "지워졌다" 로 읽혀서, 해제가 아니라 삭제를 누른 것처럼 보인다.
    흐리게 두지도 않는다 — 이 상태의 목적이 원문을 확인하는 것이라 오히려 잘 보여야 한다.
@@ -395,6 +401,7 @@ body {
 .group .cat.inj { background: var(--inj); }
 .group .cat.conf { border: 2px solid var(--conf); }
 .group .cat.forced { background: #5c3fbf; }
+.group .cat.hidden { background: var(--inj); border: 1.5px solid var(--inj-strong); border-radius: 3px; }
 
 .g-text { flex: 1; min-width: 0; }
 .g-label {
@@ -434,6 +441,7 @@ body {
 .solo .cat.inj { background: var(--inj); }
 .solo .cat.conf { border: 2px solid var(--conf); }
 .solo .cat.forced { background: #5c3fbf; }
+.solo .cat.hidden { background: var(--inj); border: 1.5px solid var(--inj-strong); border-radius: 3px; }
 .s-text { flex: 1; min-width: 0; }
 .s-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
 .s-snip {

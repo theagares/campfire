@@ -22,6 +22,7 @@ from app.core.detectors.pii import credentials
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_FAILED, STATUS_OK, STATUS_TIMEOUT
+from app.core.parser import hidden as hidden_marks
 from app.core.parser import images as image_marks
 from app.core.parser.process_pool import (
     ParserPoolBusy,
@@ -121,6 +122,28 @@ def _prefer_injection_for_nested_pii(
             for injection_start, injection_end in injection_spans
         )
     ]
+
+
+def _hidden_items(text: str, spans: list[dict]) -> list[Detection]:
+    """숨긴 구간(parser/hidden.py) → 인젝션 계열 항목 HIDDEN_TEXT. 잘린 글 밖은 버린다.
+    mandatory 는 넣지 않는다 — masker 가 겹친 강제 항목을 사용자 지정으로 바꾼다. 잠금은 확장이 유형으로 건다."""
+    items: list[Detection] = []
+    for s in spans:
+        end = min(s["end"], len(text))
+        if s["start"] < end:
+            items.append({"type": hidden_marks.TYPE, "start": s["start"], "end": end, "confidence": 1.0,
+                          "text": text[s["start"]:end], "source": "hidden_format", "reason": s["reason"]})
+    return items
+
+
+def _hidden_policy(items: list[Detection]) -> tuple[bool, str | None]:
+    """숨긴 글로 문서를 막는가와 그 이유 — 정책 분기는 여기 하나(마스터 가정, 사용자 확인 중).
+    mask(기본): 늘 가리고 잠근다(확장이 HIDDEN_TEXT 를 잠금). 인젝션 정책이 block 이면 인젝션처럼 문서를 막는다.
+    block: 숨긴 글이 있으면 문서를 막는다."""
+    if not items or "block" not in (config.HIDDEN_TEXT_POLICY, config.INJECTION_POLICY):
+        return False, None
+    why = "·".join(dict.fromkeys(it["reason"] for it in items))
+    return True, f"사람이 못 보게 숨긴 글이 있어 보내지 않습니다 — {why}"
 
 
 async def _detect_pii(text: str) -> list[Detection]:
@@ -539,6 +562,7 @@ async def run_pipeline(
     image_infos: list[dict[str, Any]] = []
     images_removed = 0
     images_removed_reason: str | None = None
+    hidden_spans: list[dict] = []
     if text is None:
         # 꺼져 있어도 문서 속 그림은 센다 — 검사 못 한 그림째 원본을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28,
         # 확장·프록시가 imagesRemoved 를 보고 원본 대신 글 .md 를 보낸다). 이미지 파일 자체는 꺼져 있으면 지금처럼 미지원이다
@@ -556,6 +580,15 @@ async def run_pipeline(
             else:
                 text, images_removed = image_marks.strip_marks(text), len(images)
                 images_removed_reason = "off"
+        if scan_status == STATUS_OK:
+            # 파서가 숨긴 글을 감싼 표식을 지우고 구간으로 남긴다. 그림 글을 넣은 뒤라 그림 위치도 함께 옮긴다.
+            text, hidden_spans, remap = hidden_marks.extract(text)
+            for info in image_infos:
+                for key in ("start", "end"):
+                    if key in info:
+                        info[key] = remap(info[key])
+    # 보이지 않는 유니코드는 형식과 관계없이 모든 글(프롬프트·txt·코드 포함)에서 찾는다
+    hidden_spans = hidden_marks.merge(hidden_spans + hidden_marks.invisible_spans(text or ""))
     images_unchecked = any(i["status"] == "unchecked" for i in image_infos)
     images_read = [i for i in image_infos if i["status"] == "read"]
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
@@ -573,6 +606,9 @@ async def run_pipeline(
             "partial": True,
             "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {original_chars:,}자)",
         })
+    hidden_items = _hidden_items(text or "", hidden_spans)
+    user_prompt_hidden = _hidden_items(user_prompt, hidden_marks.invisible_spans(user_prompt)) if user_prompt else []
+    hidden_block, hidden_reason = _hidden_policy(hidden_items + user_prompt_hidden)
 
     # Mandatory literal rules do not depend on either ML model.  Capture one
     # immutable snapshot per request so a settings update cannot mix old and
@@ -671,25 +707,26 @@ async def run_pipeline(
         user_prompt_masked = None
         if user_prompt is not None:
             user_prompt_masked = masker.apply_masking(
-                user_prompt, list(user_prompt_forced_items)
+                user_prompt, list(user_prompt_forced_items) + user_prompt_hidden
             )["masked_text"]
         return _build_result(
             original_text=text,
             masked_text=masker.apply_masking(
-                text, list(cred_items) + list(forced_items)
+                text, list(cred_items) + list(forced_items) + hidden_items
             )["masked_text"],
-            pii_items=cred_items,
-            injection_items=[],
+            pii_items=_prefer_injection_for_nested_pii(cred_items, hidden_items),
+            injection_items=hidden_items,  # 숨긴 글은 모델 없이 규칙으로 잡는다
             forced_mask_items=forced_items,
             scan_status=MODELS_NOT_READY,
-            reason=f"{missing_models} 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
-            blocked=forced_snapshot.active and truncated,
+            reason=hidden_reason if hidden_block
+            else f"{missing_models} 모델이 아직 준비되지 않았습니다 — 다운로드가 끝나면 다시 시도하세요.",
+            blocked=(forced_snapshot.active and truncated) or hidden_block,
             masked_file=None,
             truncated=truncated,
             original_chars=original_chars,
             user_prompt=user_prompt,
             user_prompt_masked=user_prompt_masked,
-            user_prompt_pii_items=[],
+            user_prompt_pii_items=user_prompt_hidden,
             user_prompt_forced_mask_items=user_prompt_forced_items,
             forced_policy=forced_policy,
             images=image_infos,
@@ -814,6 +851,7 @@ async def run_pipeline(
     # user_prompt도 Solar에 들어갈 수 있으므로 PII 결과가 준비된 뒤 마스킹한다.
     user_prompt_masked: str | None = None
     if user_prompt:
+        user_prompt_pii_items = list(user_prompt_pii_items) + user_prompt_hidden  # 확장이 유형으로 숨긴 글을 가른다
         user_prompt_masked = masker.apply_masking(
             user_prompt, list(user_prompt_pii_items) + list(user_prompt_forced_items)
         )["masked_text"]
@@ -850,6 +888,11 @@ async def run_pipeline(
             item["text"] = text[item["start"] : item["end"]]
         pii_items = _prefer_injection_for_nested_pii(pii_items, injection_items)
         await emit({"type": "step", "step": 4, "label": f"인젝션 탐지 완료 ({len(injection_items)}개)", "done": True})
+    if hidden_items:
+        # 모델 인젝션을 합친(merge_overlapping) 뒤에 붙인다 — 먼저 넣으면 겹친 인젝션 덩어리에 먹혀 유형·잠금을 잃는다.
+        # 인젝션 모델이 깨끗하다고 해도 여기서 인젝션 계열로 들어간다(집계·가림·인젝션 정책 차단이 그대로 따른다).
+        injection_items = list(injection_items) + hidden_items
+        pii_items = _prefer_injection_for_nested_pii(pii_items, hidden_items)
 
     # ── Step 3: 기밀 탐지 (회사 KG, 선택 기능) ────────────────────────────────
     # PII·인젝션 다음 — Solar 로 보내는 문서에서 PII·사용자 지정 단어·인젝션 구간을 가린다.
@@ -859,7 +902,9 @@ async def run_pipeline(
     # ── 정책: block 이면 인젝션 탐지 시 차단 ──────────────────────────────────
     blocked = (
         bool(injection_items) and config.INJECTION_POLICY == "block"
-    ) or (forced_snapshot.active and truncated)
+    ) or (forced_snapshot.active and truncated) or hidden_block
+    if hidden_block:
+        reason = reason or hidden_reason  # 프록시·데스크톱 알림이 이 이유를 그대로 보여 준다(_policy_block_reason)
     # 이미지 속 글자 검사가 켜졌는데 글자 검사 대상 이미지를 못 읽었으면(GPU·모델 없음, 실패) 보내지 않는다(사용자 결정).
     # 이미지 글이 든 문서가 잘렸으면 이미지 글 일부가 검사 밖이라 같은 이유로 막는다.
     if images_unchecked or (truncated and images_read):

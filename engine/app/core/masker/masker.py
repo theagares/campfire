@@ -29,6 +29,7 @@ TYPE_LABELS: dict[str, str] = {
     "CONFIDENTIAL": "기밀",
     "USER_DEFINED_TERM": "사용자 지정",
     "OTHER_PII": "개인정보",
+    "HIDDEN_TEXT": "숨긴 글",  # parser/hidden.py — 인젝션 계열로 집계하지만 자리표시자는 따로
 }
 
 # 인젝션 유형 전체 — 어떤 유형이든 [인젝션 마스킹] 으로 치환 (PLAN §4)
@@ -124,7 +125,7 @@ def merge_overlapping(items: list[Item]) -> list[Item]:
             # 높아도 문장이 [이름 마스킹] 등으로 바뀌면 안 된다. 강제 여부는 표시로만 남긴다.
             # 인젝션 구간도 같다. 솔라 없이 잡힌 인젝션은 128토큰 덩어리라 안쪽 PII·사용자 지정 단어와 겹치기
             # 쉬운데, 예전엔 덩어리 전체가 [사용자 지정 마스킹] 등 다른 유형으로 바뀌었다.
-            container = last["type"] == "CONFIDENTIAL" or last["type"] in INJECTION_TYPES
+            container = last["type"] in ("CONFIDENTIAL", "HIDDEN_TEXT") or last["type"] in INJECTION_TYPES
             if container and cur["end"] <= last["end"]:
                 if mandatory:
                     last["mandatory"] = True

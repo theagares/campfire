@@ -192,6 +192,10 @@ DETECT_CONCURRENCY: int = max(
 # ── 인젝션 정책 (PLAN §4 / §8) ────────────────────────────────────────────────
 # mask: 구간을 [인젝션 마스킹]으로 치환 후 통과 (기본). block: 인젝션 탐지 시 차단.
 INJECTION_POLICY: str = os.environ.get("SECUREDOC_INJECTION_POLICY", "mask")
+# 사람이 못 보게 숨긴 글(흰 바탕 흰 글씨·숨김 서식·보이지 않는 문자, parser/hidden.py) — 인젝션 판정과 무관하게 규칙으로.
+# mask(기본): 늘 가리고 잠그며, 인젝션 정책이 block 이면 인젝션처럼 문서를 막는다. block: 숨긴 글이 있으면 문서를 막는다.
+# 분기는 orchestrator._hidden_policy 한곳(사용자 확인 중 — 문서 통째 차단으로 바뀔 수 있다).
+HIDDEN_TEXT_POLICY: str = os.environ.get("SECUREDOC_HIDDEN_TEXT_POLICY", "mask")
 
 # ── GPU 상주 정책 (PLAN §4.1, Phase 6) ───────────────────────────────────────
 # PII 인코더: 항시 상주(always_on) — 크기가 작아 모든 요청 1차 검사에 지연 없이

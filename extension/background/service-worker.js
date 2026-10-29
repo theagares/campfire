@@ -329,6 +329,9 @@ function noteImageScan(enabled) {
   chrome.storage.local.set({ imageScanEnabled: enabled }).catch(() => {});
 }
 
+/** 사람이 못 보게 숨긴 글(엔진 HIDDEN_TEXT, 흰 바탕 흰 글씨 등)이 있는가 — 사용자 지정 단어처럼 잠금이라 원본 경로를 막는다. */
+const hasHiddenText = (items) => (items || []).some(i => i?.type === 'HIDDEN_TEXT');
+
 /** 강제 항목의 원문(엔진 위치 = 코드포인트)이 나가는 텍스트에 남았는가. 자리표시자
  *  "[… 마스킹]" 은 빼고 본다 — 등록어가 "마스킹" 같은 말이면 자리표시자에 걸려 영영 못 보낸다. */
 function leaksForced(out, original, items) {
@@ -1174,8 +1177,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const res0 = session.result || {};
       // 파일명에 등록어가 있으면 원본(원래 이름) 전송도 우회다.
       const nameForced = !!res0.policy?.forcedMask?.fileNameForced;
-      const docForced = (res0.forcedMaskItems || []).length > 0 || nameForced;
-      const promptForced = (res0.userPromptForcedMaskItems || []).length > 0;
+      const docForced = (res0.forcedMaskItems || []).length > 0 || nameForced || hasHiddenText(res0.injectionItems);
+      const promptForced = (res0.userPromptForcedMaskItems || []).length > 0 || hasHiddenText(res0.userPromptPiiItems);
       const bypassesMandatory = session.kind === 'combined'
         ? (docForced && decision?.file?.action === 'passthrough')
           || (promptForced && decision?.action !== 'send')
@@ -1441,7 +1444,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (file.action === 'original') {
           const src = session.results?.[file.id];
           const doc = session.docs.find(d => d.id === file.id);
-          if (doc?.forcedMaskActive || doc?.fileNameForced || (src?.forcedMaskItems || []).length > 0) {
+          if (doc?.forcedMaskActive || doc?.fileNameForced || (src?.forcedMaskItems || []).length > 0
+              || hasHiddenText(src?.injectionItems)) {
             sendResponse({ ok: false, reason: 'mandatory-mask', id: file.id });
             return;
           }
