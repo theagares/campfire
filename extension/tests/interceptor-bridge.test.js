@@ -142,9 +142,20 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
     return origFetchCalls.length > 0;
   }
 
+  /** 임의 본문(Blob·File)을 보내고 "인터셉트 없이 통과했는지"를 돌려준다. */
+  async function bodyPassedThrough(body) {
+    origFetchCalls.length = 0;
+    sandbox.fetch('https://www.perplexity.ai/rest/event', { method: 'POST', body }).catch(() => {});
+    await settle();
+    return origFetchCalls.length > 0;
+  }
+
   return {
     config,
     passedThrough,
+    bodyPassedThrough,
+    blob: (type) => Object.assign(new store.Blob(), { type }),
+    file: (name, type) => new store.File(name, type),
     posted,
     sandbox,
     setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
@@ -200,6 +211,22 @@ async function main() {
       await t.passedThrough(), false,
       '페이지가 토큰을 덮어쓴 뒤 보호를 껐다 — 토큰 검사 자체가 무의미해진다',
     );
+  }
+
+  // (4-1) 이름 없는 평문 Blob 본문은 업로드가 아니다 — 맥 v0.2.60 M-8: #323 이 text/plain 을 형식 목록에 넣자 Perplexity 가
+  //       페이지를 열 때 스스로 보내는 text/plain Blob(분석·기록)까지 "upload" 로 붙들어 막았다. 사용자가 넣은 이름 있는
+  //       .py·.txt 파일과 이름 없는 문서(PDF) Blob 은 예전처럼 가로챈다.
+  {
+    const t = withToken();
+    for (const type of ['text/plain', 'text/plain;charset=UTF-8', 'application/json', 'text/html']) {
+      assert.strictEqual(await t.bodyPassedThrough(t.blob(type)), true, `이름 없는 ${type} Blob 본문을 업로드로 붙들었다`);
+    }
+    assert.strictEqual(await t.bodyPassedThrough(t.file('blob', 'application/json')), true,
+      'FormData 가 Blob 에 붙이는 이름("blob")의 평문을 업로드로 붙들었다');
+    assert.strictEqual(await t.bodyPassedThrough(t.file('pii.py', 'text/x-python')), false, '사용자가 넣은 .py 파일이 검사 없이 나갔다');
+    assert.strictEqual(await t.bodyPassedThrough(t.file('notes.txt', 'text/plain')), false, '사용자가 넣은 .txt 파일이 검사 없이 나갔다');
+    assert.strictEqual(await t.bodyPassedThrough(t.file('README', 'text/plain')), false, '이름 있는 평문 파일(확장자 없음)이 검사 없이 나갔다');
+    assert.strictEqual(await t.bodyPassedThrough(t.blob('application/pdf')), false, '이름 없는 PDF Blob 본문이 검사 없이 나갔다(예전 동작)');
   }
 
   // (4-2) 그림은 엔진에서 이미지 속 글자 검사를 켰을 때만 가로챈다(content.js 가 imageScan 으로 알린다).

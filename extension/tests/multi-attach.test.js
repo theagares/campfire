@@ -633,6 +633,22 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
     assert.ok(none && none.includes('로컬 엔진을 찾을 수 없습니다'), `엔진이 없을 때 문구가 바뀌었다: ${none}`);
     const ready = await discoverError({ service: 'campfire', forcedMask: { managed: true, ready: true } });
     assert.strictEqual(ready, null, '준비된 엔진을 찾지 못했다');
+    // 맥 v0.2.60 M-8: 엔진이 검사로 바빠 /health 가 제한 시간을 넘겼는데 "엔진을 찾을 수 없습니다" 로 알렸다(엔진은 살아 있었다).
+    const discoverFail = async (err) => {
+      sandbox.fetch = () => Promise.reject(err);
+      delete sessionStore.srv;
+      try {
+        await vm.runInContext('discoverServer()', ctx);
+      } catch (e) {
+        return e.message;
+      }
+      return null;
+    };
+    const busy = await discoverFail(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    assert.ok(busy && busy.includes('응답하지 않습니다') && busy.includes('검사 없이 전송하지 않습니다'),
+      `시간 초과를 엔진 없음으로 알렸다: ${busy}`);
+    const refused = await discoverFail(new TypeError('Failed to fetch'));
+    assert.ok(refused && refused.includes('로컬 엔진을 찾을 수 없습니다'), `연결 거부 문구가 바뀌었다: ${refused}`);
 
     // 팝업이 "미연결" 대신 "키체인 승인 대기" 로 보이게 연결 정보에 waiting 을 싣는다(검사는 계속 막힘).
     sandbox.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ service: 'campfire', forcedMask: { managed: true, ready: false } }) });

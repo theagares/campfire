@@ -619,10 +619,17 @@
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
   const IMAGE_EXTS = /\.(png|jpe?g|webp|bmp)$/i;
 
+  // 평문 형식(text/*·json·xml·js·yaml)은 이름 있는 파일일 때만 본다. #323 에서 이 형식들을 넣자 사이트가 페이지를 열 때
+  // 스스로 보내는 이름 없는 Blob 본문(분석·기록 SDK 의 text/plain·json 묶음)까지 "upload" 파일로 붙들어 막았다(맥 v0.2.60
+  // M-8: 첨부 없이 Perplexity 탭을 열기만 해도 "업로드를 멈췄습니다"). FormData 에 Blob 을 넣으면 이름이 "blob" 이 된다.
+  // 사용자가 고른 파일은 이름이 있다 — content.js 는 그런 파일(선택·끌어 놓기·붙여넣기)만 보므로 형식으로 받아도 된다.
+  const TEXT_TYPES = /^(text\/|application\/(json|xml|javascript|x-yaml))/i;
+
   function isSupportedFile(b) {
     if (!isProtectionEnabled() || !isFileInterceptEnabled()) return false;
     if (!b) return false;
-    return SUPPORTED_TYPES.has(b.type) || SUPPORTED_EXTS.test(b.name || '')
+    const named = typeof b.name === 'string' && b.name !== '' && b.name !== 'blob';
+    return (SUPPORTED_TYPES.has(b.type) && (named || !TEXT_TYPES.test(b.type))) || SUPPORTED_EXTS.test(b.name || '')
       || (_imageScanEnabled && (IMAGE_TYPES.has(b.type) || IMAGE_EXTS.test(b.name || '')));
   }
 
