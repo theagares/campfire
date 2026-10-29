@@ -332,12 +332,14 @@ GEMINI_ROUTE_HOST = "gemini.google.com"
 #      (서버는 여기서 형식을 보지 않는다)
 #   ③ POST gemini.google.com …/BardFrontendService/ProcessFile  f.req 안 [[경로, null, 1, "text/plain"], "cfprobe.txt"]
 #      → 파일 id. **형식(MIME)과 이름은 여기 적힌다.**
-#   ④ 전송 processSession ofs=0 세션 설정 안 첨부 항목 {1: {1: 경로, 2: 3, 4: MIME, 5: 파일 id}, 2: 이름, 7: 0}
+#   ④ 전송 processSession ofs=0 세션 설정 안 첨부 항목 {1: {1: 경로, 2: 종류, 4: MIME, 5: 파일 id}, 2: 이름}
+#      (맥 v0.2.60 캡처: 경로 (1,8,5,1,1,4,1,1), 종류 png=1·docx=10, 그 밖의 칸은 같다)
 # 예전엔 ②만 보고 가린 글을 넣으면 Gemini 가 docx 로 읽으려다 깨진 파일로 거부해 막기만 했다(맥: docx·png·py 전부 막힘).
 # 확장처럼 등록부터 _masked.md 로 보이게 ①의 이름, ②의 본문, ③·④의 형식·이름을 함께 바꾸고, 경로로 잇는다.
 _GEMINI_NAME_PREFIX = "File name: "
 GEMINI_PROCESS_FILE_PATH = "/_/BardChatUi/data/assistant.lamda.BardFrontendService/ProcessFile"
 GEMINI_MASKED_MIME = "text/plain"
+_GEMINI_KIND_IMAGE, _GEMINI_KIND_DOC = 1, 10  # ④ 첨부 항목 1.2 — 그림이면 가린 글을 그림으로 읽는다(M-1)
 _GOOG_CMD = "x-goog-upload-command"
 _GOOG_LEN = "x-goog-upload-header-content-length"
 _GOOG_URL = "x-goog-upload-url"
@@ -791,6 +793,10 @@ class CampfireAddon:
                 logger.warning("[proxy] Gemini 사용자 턴인데 글 칸이 없다 — 차단")
                 self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
                 return
+            # 바꿔 올린 파일이 실린 세션 데이터의 칸 구조를 남긴다(글 없이) — 맥 v0.2.60 M-1: 그림은 형식·이름을 바꿨는데도
+            # Gemini 가 가린 글을 그림으로 읽었다. 그림 항목에만 있는 칸을 다음 시험 로그로 바로 찾는다.
+            if self._gemini_files and any(p.encode() in raw for p in self._gemini_files):
+                logger.info("[proxy] Gemini 세션 데이터 칸(바꾼 첨부 있음) %s", _pb_shape(msg)[:120])
             # 우리가 _masked.md 로 바꿔 올린 첨부는 세션 설정 안 형식·이름도 맞춘다(④) — 원래 형식(docx 등)으로 두면
             # Gemini 가 가린 글을 그 형식으로 읽으려다 깨진 파일로 본다.
             if self._gemini_files and _rename_gemini_items(msg, self._gemini_files):
@@ -943,6 +949,9 @@ class CampfireAddon:
         cmd = flow.request.headers.get(_GOOG_CMD, "").lower()
 
         if "start" in cmd:
+            # 그림이 형식을 여기 헤더로 알리는지 보려고 남긴다(M-1). 값은 명령·길이·형식뿐이라 이름이 남지 않는다.
+            logger.info("[proxy] Gemini 시작 요청 헤더 %s",
+                        {k: v for k, v in flow.request.headers.items() if k.lower().startswith("x-goog-upload")})
             # 크기를 미리 선언하는 자리. ChatGPT 의 file_size 와 같은 역할이라
             # 여기서 N' 으로 올려 두고 나중에 본문을 그 크기에 맞춘다.
             declared = int(flow.request.headers.get(_GOOG_LEN) or 0)
@@ -1064,6 +1073,7 @@ class CampfireAddon:
                 inner = json.loads(outer[1])
             except (ValueError, TypeError, IndexError, KeyError):
                 return
+            logger.info("[proxy] Gemini ProcessFile 칸 %s", str(_json_shape(inner))[:600])  # 글 없이 — 그림 칸 찾기(M-1)
             if _rename_gemini_file(inner, self._gemini_files):
                 outer[1] = _dumps(inner)
                 pairs[idx] = (k, _dumps(outer))
@@ -1744,8 +1754,47 @@ def _rename_gemini_file(node, files: dict[str, str]) -> bool:
     return any([_rename_gemini_file(child, files) for child in node])  # 목록으로 — 하나 고쳐도 나머지도 본다
 
 
+_MIME_LIKE = re.compile(r"[a-z]+/[\w.+-]+")
+
+
+def _pb_shape(msg) -> list[str]:
+    """protobuf 칸 구조를 글 없이 낸다 — 칸 번호=숫자, MIME 처럼 보이는 값만 그대로, 나머지 글은 길이만(이름·경로가 남지 않게)."""
+    out, mime = [], None
+    for path, f in msg.walk():
+        if mime and path[:len(mime)] == mime:
+            continue  # MIME 글을 메시지로 잘못 푼 하위 칸("image/png" 9바이트가 13번 fixed64 로 읽힌다)
+        key = ".".join(map(str, path))
+        if f.value is not None and _MIME_LIKE.fullmatch(f.value.decode("latin-1")):
+            out.append(f"{key}={f.value.decode('latin-1')}")
+            mime = path
+        elif f.message is not None:
+            continue
+        elif f.value is not None:
+            out.append(f"{key}=len{len(f.value)}")
+        elif f.wire_type == 0:
+            out.append(f"{key}={f.varint}")
+        else:
+            out.append(f"{key}=wt{f.wire_type}")
+    return out
+
+
+def _json_shape(node):
+    """JSON 구조를 글 없이 낸다 — MIME 처럼 보이는 글만 그대로, 나머지 글은 s<길이>."""
+    if isinstance(node, list):
+        return [_json_shape(x) for x in node]
+    if isinstance(node, dict):
+        return {k: _json_shape(v) for k, v in node.items()}
+    if isinstance(node, str):
+        return node if _MIME_LIKE.fullmatch(node) else f"s{len(node)}"
+    return node
+
+
 def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
-    """④ processSession 세션 설정의 첨부 항목 {1: {1: 경로, 4: MIME}, 2: 이름} 에서 MIME·이름을 고친다. 고쳤으면 True."""
+    """④ processSession 세션 설정의 첨부 항목 {1: {1: 경로, 2: 종류, 4: MIME}, 2: 이름} 에서 종류·MIME·이름을 고친다. 고쳤으면 True.
+
+    종류가 그림(1)이면 문서(10)로 바꾼다 — 형식·이름만 바꾸면 Gemini 가 가린 글 바이트를 그림으로 읽어 첨부와 무관한
+    엉터리 답을 냈다(맥 v0.2.60 M-1). 문서(10)+text/plain+가린 글은 docx 에서 정상 요약으로 확인한 조합이다. 다른 종류는 둔다.
+    """
     changed = False
     items = [f.message for _, f in msg.walk() if f.message is not None]
     for item in items:
@@ -1757,6 +1806,8 @@ def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
         for f in ref.fields:
             if f.number == 4 and f.wire_type == 2:
                 f.set_bytes(GEMINI_MASKED_MIME.encode())
+            elif f.number == 2 and f.varint == _GEMINI_KIND_IMAGE:
+                f.set_varint(_GEMINI_KIND_DOC)
         for f in item.fields:
             if f.number == 2 and f.wire_type == 2:
                 f.set_bytes(name.encode("utf-8"))
