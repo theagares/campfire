@@ -58,6 +58,20 @@ function openEngineLog(p, maxBytes = ENGINE_LOG_MAX_BYTES) {
   return fs.openSync(p, 'a');
 }
 
+/** 앱을 새로 시작할 때 직전 엔진 로그 한 벌을 남긴다.
+ * 빈 현재 로그로 기존 백업을 덮지 않으며, 백업은 한 세대만 유지한다. */
+function rotateEngineLog(p) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  try {
+    if (fs.statSync(p).size <= 0) return false;
+  } catch (_) {
+    return false;
+  }
+  fs.copyFileSync(p, `${p}.1`);
+  fs.truncateSync(p, 0);
+  return true;
+}
+
 /** 로그 파일 끝부분의 줄들(비정상 종료 단서용). */
 function readLogTail(p, maxBytes = 16 * 1024) {
   let fd = null;
@@ -105,6 +119,7 @@ class EngineManager extends EventEmitter {
     this.restartAttempts = 0;
     this.maxRestartAttempts = 3;
     this.intentionalStop = false;
+    this.logRotated = false;
     this.recentLog = [];
     this.engineDir = paths.resolveEngineDir(app);
     this.pythonExe = paths.resolvePythonExe(this.engineDir);
@@ -261,7 +276,14 @@ class EngineManager extends EventEmitter {
       // 개발 중에는 터미널로 보려고 파이프로 받는다. 파일을 못 열면 예전처럼 파이프로 받는다.
       let logFd = null;
       if (!DEV) {
-        try { logFd = openEngineLog(paths.resolveEngineLogPath()); } catch (_) { logFd = null; }
+        try {
+          const logPath = paths.resolveEngineLogPath();
+          if (!this.logRotated) {
+            rotateEngineLog(logPath);
+            this.logRotated = true;
+          }
+          logFd = openEngineLog(logPath);
+        } catch (_) { logFd = null; }
       }
       const out = logFd ?? 'pipe';
       try {
@@ -647,4 +669,4 @@ class EngineManager extends EventEmitter {
   }
 }
 
-module.exports = { EngineManager, openEngineLog, capEngineLog, readLogTail };
+module.exports = { EngineManager, openEngineLog, rotateEngineLog, capEngineLog, readLogTail };
