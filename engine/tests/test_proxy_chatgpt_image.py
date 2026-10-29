@@ -60,7 +60,7 @@ def scan(monkeypatch):
     """그림 OCR 결과를 흉내 낸다 — state 의 pii·status 로. 알림은 notices 로."""
     import app.core.pipeline.orchestrator as orch
 
-    state = {"pii": 0, "status": "ok", "notices": []}
+    state = {"pii": 0, "status": "ok", "notices": [], "blocked": False}
 
     async def run(**kw):
         if kw.get("text") is not None:  # 전송 메시지의 프롬프트
@@ -68,7 +68,7 @@ def scan(monkeypatch):
                     "blocked": False, "scanStatus": "ok", "truncated": False}
         items = [{"type": "PHONE", "start": 0, "end": 1}] * state["pii"]
         return {"originalText": "CFPROBE", "maskedText": "[가림]" if state["pii"] else "CFPROBE", "piiItems": items,
-                "injectionItems": [], "forcedMaskItems": [], "blocked": False, "scanStatus": state["status"],
+                "injectionItems": [], "forcedMaskItems": [], "blocked": state["blocked"], "scanStatus": state["status"],
                 "truncated": False, "stats": {"piiCount": state["pii"], "injectionCount": 0, "forcedMaskCount": 0}}
 
     async def wait(**_kw):
@@ -118,6 +118,18 @@ def test_검사를_끝내지_못한_그림은_보내지_않고_이유를_알린�
     _register(a)
     f = _put(a)
     assert f.response is not None and f.response.status_code == 403
+    assert scan["notices"] == [addon_mod._IMAGE_UNSCANNED]
+
+
+def test_사용자_지정_단어가_켜져_정책으로_막힌_그림도_알린다(scan):
+    # 맥 v0.2.60 M-7: 이미지 검사 꺼짐 + 사용자 지정 단어 켜짐 — 파이프라인이 검사 못 한 그림을 blocked 로 돌려줘
+    # "정책 차단" 으로 막혔는데, 사람이 취소한 것(_CANCELLED)처럼 다뤄 운영체제 알림이 없었다.
+    scan["status"], scan["blocked"] = "unsupported", True
+    a = CampfireAddon()
+    _register(a)
+    f = _put(a)
+    assert f.response is not None and f.response.status_code == 403
+    assert json.loads(f.response.content)["reason"] == addon_mod._IMAGE_UNSCANNED
     assert scan["notices"] == [addon_mod._IMAGE_UNSCANNED]
 
 
