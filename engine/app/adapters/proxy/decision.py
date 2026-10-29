@@ -17,8 +17,11 @@ fail-closed: 타임아웃도, 취소도, 예외도 전부 "보내지 않음" 이
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
+import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -74,10 +77,27 @@ class DecisionBroker:
         # waiter 는 요청별 Future 라서 한 소비자가 깨어나도 다른 소비자의 알림을 뺏지 않는다.
         self._version = 0
         self._change_waiters: set[asyncio.Future[int]] = set()
+        # 프록시가 사람에게 묻지 않고 막은 전송(미지원·검사 실패·첨부 인젝션 등)의 이유. 사이트는 이유 없이 "업로드
+        # 실패" 만 보여 주므로(맥 v0.2.58: ChatGPT 그림 칩 "업로드 실패", 안내 없음) 데스크톱이 같은 장기 대기로 받아
+        # 알림으로 띄운다. 원문은 싣지 않는다 — 이유 문구와 호스트뿐이다.
+        self._notices: deque[dict[str, Any]] = deque(maxlen=20)
+        self._notice_ids = itertools.count(1)
 
     @property
     def version(self) -> int:
         return self._version
+
+    def notify(self, host: str, reason: str) -> None:
+        """사람에게 묻지 않고 막은 전송을 알린다. 같은 이유가 잇따르면(사이트의 업로드 재시도) 한 번만 남긴다."""
+        last = self._notices[-1] if self._notices else None
+        now = time.time()
+        if last and last["host"] == host and last["reason"] == reason and now - last["at"] < 10:
+            return
+        self._notices.append({"id": next(self._notice_ids), "host": host, "reason": reason, "at": now})
+        self._notify_change()
+
+    def list_notices(self) -> list[dict[str, Any]]:
+        return list(self._notices)
 
     def _notify_change(self) -> None:
         self._version += 1

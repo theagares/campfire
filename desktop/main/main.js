@@ -12,7 +12,7 @@
  */
 
 const path = require('path');
-const { app, BrowserWindow, Menu, safeStorage, dialog } = require('electron');
+const { app, BrowserWindow, Menu, safeStorage, dialog, Notification } = require('electron');
 
 const { ConfigStore } = require('./config-store');
 const { ForcedMaskStore } = require('./forced-mask-store');
@@ -306,6 +306,11 @@ app.whenReady().then(async () => {
       },
       // 설정 "마스킹본 바로 전송"(기본 켬). 저장 즉시 다음 판단부터 적용된다.
       autoSendMasked: () => config.get('proxyAutoSendMasked') !== false,
+      // 프록시가 묻지 않고 막은 전송(미지원·검사 실패·첨부 인젝션)의 이유 — 사이트는 "업로드 실패" 만 보여 준다.
+      // 창을 띄워 막지 않고 운영체제 알림으로 알린다.
+      notify: (title, body) => {
+        if (Notification.isSupported()) new Notification({ title, body }).show();
+      },
     });
     proxyDecisionUi.start();
   }
