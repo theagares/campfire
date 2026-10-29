@@ -3046,13 +3046,13 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of ['chatgpt.com', 'chat.openai.com', 'www.perplexity.ai']) {
+      for (const host of ['www.perplexity.ai']) {
         if (!(await intercepts41(host))) {
           throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
         }
       }
       // 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트는 프록시 방식에서 확장이 손을 뗀다(맥 v0.2.58 프록시 단독 실측).
-      for (const host of ['claude.ai', 'grok.com', 'gemini.google.com']) {
+      for (const host of ['claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com']) {
         if (await intercepts41(host)) {
           throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다`);
         }
