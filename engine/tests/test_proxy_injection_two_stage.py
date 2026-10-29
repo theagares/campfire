@@ -92,7 +92,23 @@ def test_전송_때_프롬프트와_함께_인젝션이면_전송을_막고_이�
     assert "회의록_masked.md" in reason and "인젝션" in reason
     judged = [c for c in calls if c.get("text") == DOC]
     assert judged and judged[0]["user_prompt"] == "이 회의록 요약해줘" and judged[0]["scan_injection"] is True
-    assert a._pending["claude.ai"], "빼지 않고 다시 보내면 또 막아야 한다"
+    # Claude 는 첨부 참조를 몰라 추정으로 잇는다 — 한 번 막고 대기 목록에서 빼, 이후 전송(첨부 없는 새 대화 포함)은 막지 않는다.
+    assert "지우고 다시 보내" in reason
+    assert a._pending["claude.ai"] == []
+    f2 = _claude_send("새 대화 질문")
+    _run(a.request(f2))
+    assert f2.response is None, "한 번 막은 추정 첨부가 남아 이후 전송까지 막았다"
+
+
+def test_올린_지_오래된_추정_첨부는_다음_전송에_붙이지_않는다(monkeypatch):
+    calls = _pipeline(monkeypatch, inject_when_prompt="요약해줘")
+    a = CampfireAddon()
+    _upload(a)
+    a._pending["claude.ai"][0].at -= addon_mod._GUESS_WINDOW_S + 1  # 올렸다 지운 첨부일 수 있다
+    f = _claude_send("요약해줘")
+    _run(a.request(f))
+    assert f.response is None and not [c for c in calls if c.get("text") == DOC]
+    assert a._pending["claude.ai"] == []
 
 
 def test_첨부가_깨끗하면_보내고_더는_판정하지_않는다(monkeypatch):
@@ -137,6 +153,14 @@ def test_ChatGPT_는_전송_본문에_실린_file_id_로만_잇는다(monkeypatc
     f2 = conv("file_A")
     _run(a.request(f2))
     assert f2.response is not None and f2.response.status_code == 403
+    # 참조로 이은 첨부는 남겨 둔다 — 빼지 않고 다시 보내면 또 막고, 뺀 전송은 참조가 없어 막지 않는다.
+    assert "빼고 다시 보내" in json.loads(f2.response.content)["reason"]
+    f3 = conv("file_A")
+    _run(a.request(f3))
+    assert f3.response is not None and f3.response.status_code == 403
+    f4 = conv(None)
+    _run(a.request(f4))
+    assert f4.response is None
 
 
 def test_메시지에_넣은_파일도_그_프롬프트로_판정한다(monkeypatch):
