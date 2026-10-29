@@ -208,29 +208,40 @@ def resolve_device() -> str | None:
     return None
 
 
-def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int, int]:
-    """VRAM/통합 메모리가 작은 GPU에서 묶음만 줄인다. 출력 상한·모델·정밀도는 바꾸지 않는다."""
-    total = None
+_BYTES_PER_TOKEN = 0.25 * 1024**2  # 묶음 입력 토큰당 더 쓰는 GPU 메모리(실측 약 0.25MB)
+_HEADROOM = 1.5 * 1024**3  # 출력 KV·작업 공간·조각 크기 흔들림 여유
+
+
+def _spare_memory(device: str) -> float | None:
+    """가중치를 올린 뒤 묶음에 쓸 수 있는 메모리(바이트) = 남은 메모리(+ 이미 쓴 양 − 가중치 — 이미 쓴 양이 가중치다).
+    모르면 None."""
     try:
+        if device == "cuda":
+            # 전체 용량이 아니라 남은 VRAM — PII·인젝션 작업자와 브라우저가 같은 카드를 쓴다(v0.2.57 RTX 5070: 다른
+            # 프로세스가 약 7GB 를 써 큰 묶음이 CUDA out of memory 로 그림을 못 읽었다).
+            return torch.cuda.mem_get_info()[0]
+        if device == "mps":
+            return torch.mps.recommended_max_memory() - torch.mps.current_allocated_memory()
         if device == "xpu":
-            total = torch.xpu.get_device_properties(0).total_memory
-        elif device == "mps":
-            mps = getattr(torch, "mps", None)
-            if mps is not None and hasattr(mps, "recommended_max_memory"):
-                total = mps.recommended_max_memory()
-        elif device == "cuda":
-            # 전체 용량이 아니라 이 사이드카가 쓸 수 있는 양(남은 VRAM + 이미 올린 모델) — PII·인젝션 작업자와
-            # 브라우저가 같은 카드를 쓴다. 예전엔 CUDA 를 아예 재지 않아 12GB 카드에서도 큰 묶음(8·6000)으로 돌다
-            # CUDA out of memory 로 그림을 못 읽었다(v0.2.57 Windows RTX 5070 실측, 다른 프로세스가 약 7GB 사용).
-            free, _total = torch.cuda.mem_get_info()
-            total = free + torch.cuda.memory_allocated()
+            return torch.xpu.get_device_properties(0).total_memory - torch.xpu.memory_allocated()
     except (AttributeError, RuntimeError):
         pass
-    if total is not None and total < 10 * 1024**3:
-        return min(batch, 2), min(token_budget, 1500)
-    if total is not None and total < 16 * 1024**3:
-        return min(batch, 4), min(token_budget, 3000)
-    return batch, token_budget
+    return None
+
+
+def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int, int]:
+    """묶음 크기를 남은 메모리로 정한다(batch·token_budget 은 상한). 출력 상한·모델·정밀도는 바꾸지 않는다.
+
+    예전엔 전체 용량 단계(10GB 미만 2/1500, 16GB 미만 4/3000)로 정해 12GB 카드는 비어 있어도 4/3000 이었다 — 그림 다섯 장
+    (조각 57개)에 generate 24회(다른 GPU 작업자가 있으면 57회)라, 문서 속 그림을 읽는 동안 Claude 업로드가 시간 초과됐다
+    (맥 v0.2.60). budget = (남은 메모리 − 여유) / 토큰당 메모리, 1500~상한 / batch 는 budget 에 맞춰 2·4·8·16.
+    """
+    spare = _spare_memory(device)
+    if spare is None:
+        return min(batch, 8), min(token_budget, 6000)  # 모르면 예전 기본값
+    budget = max(1500, min(token_budget, int((spare - _HEADROOM) / _BYTES_PER_TOKEN)))
+    size = 16 if budget >= 12000 else 8 if budget >= 6000 else 4 if budget >= 3000 else 2
+    return min(batch, size), budget
 
 
 def _empty_cache(device: str) -> None:
@@ -364,8 +375,8 @@ class Reader:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-dir", required=True)
-    ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--token-budget", type=int, default=6000)
+    ap.add_argument("--batch", type=int, default=16)  # 상한 — 실제 묶음은 남은 메모리로(_memory_safe_limits)
+    ap.add_argument("--token-budget", type=int, default=18000)
     args = ap.parse_args()
     # 엔진은 이 프로세스의 stderr 를 평소엔 읽지 않는다 — 경고가 쌓여 파이프가 차면 멈출 수 있어 조용히 한다
     import warnings
@@ -379,7 +390,7 @@ def main() -> None:
         print(json.dumps({"ready": False, "error": "no_accelerator"}), flush=True)
         return
     reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device)
-    print(json.dumps({"ready": True, "device": device}), flush=True)
+    print(json.dumps({"ready": True, "device": device, "batch": reader.batch, "budget": reader.budget}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:
