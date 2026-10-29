@@ -455,11 +455,20 @@ IMAGE_OCR_GPU_TORCH_DIR: Path = IMAGE_OCR_ENGINE_DIR / "gpu_torch"
 IMAGE_OCR_PYTHON_OVERRIDE: str = os.environ.get("SECUREDOC_IMAGE_OCR_PYTHON", "")
 IMAGE_OCR_PYTHON_EXECUTABLE: str = IMAGE_OCR_PYTHON_OVERRIDE or sys.executable
 IMAGE_OCR_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"})
-IMAGE_OCR_BATCH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_BATCH", "8"))
-# 묶음 하나의 (조각 수 × 가장 긴 입력 토큰) 상한 — 입력 토큰당 GPU 메모리 약 0.25MB(실측). 12GB GPU 에 다른 모델과 함께.
-IMAGE_OCR_TOKEN_BUDGET: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_TOKEN_BUDGET", "6000"))
+IMAGE_OCR_BATCH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_BATCH", "16"))
+# 묶음 하나의 (조각 수 × 가장 긴 입력 토큰) 상한 — 입력 토큰당 GPU 메모리 약 0.25MB(실측). 둘 다 상한이고, 사이드카가
+# 가중치를 올린 뒤 남은 메모리로 실제 묶음을 정한다(varco_ocr_inference._memory_safe_limits). 18000 이면 그림 한 장의 조각을
+# 한 번에(맥 v0.2.60 문서 속 그림 다섯 장: generate 24회 → 5회).
+IMAGE_OCR_TOKEN_BUDGET: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_TOKEN_BUDGET", "18000"))
 # 마지막으로 쓴 뒤 이만큼 지나면 사이드카를 내린다 — 가중치만 약 4.1GB 라 계속 두지 않는다.
 IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDLE_UNLOAD_SEC", "120"))
+# Windows 남은 시스템 커밋(MB)이 이보다 적으면 사이드카를 띄우지 않는다 / 떠 있어도 읽지 않고 내린다 — 문서 속 그림은 빼고
+# 글만 가려 보낸다(image_ocr.fill "removed", 사용자 결정 (가)). 커밋 한도를 넘으면 다른 프로그램까지 죽는다.
+# v0.2.62 측정(RTX 5070 12GB, RAM 15GB): 사이드카 커밋 최대 8,070MB 로 PC 남은 커밋이 10.4GB → 0.67GB 까지 떨어졌다.
+# 띄우기 = 사이드카 예상 커밋(약 8GB) + 여유 1GB. 그 PC 의 평소 남은 커밋은 9~11GB 라 10GB 면 거의 못 띄웠다.
+# 사이드카는 남은 커밋에 맞춰 묶음을 줄이므로(varco_ocr_inference._free_commit) 실제 몫은 대개 8GB 보다 작다. 측정이 바뀌면 env 로.
+IMAGE_OCR_LAUNCH_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_LAUNCH_FREE_COMMIT_MB", "9216"))
+IMAGE_OCR_READ_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_READ_FREE_COMMIT_MB", "2048"))
 IMAGE_OCR_MAX_IMAGES: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MAX_IMAGES", "20"))  # 넘으면 나머지는 미검사로 막는다
 # 이보다 작은 이미지는 아이콘·로고로 보고 건너뛴다(글자 검사 대상 아님).
 IMAGE_OCR_MIN_WIDTH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MIN_WIDTH", "120"))
