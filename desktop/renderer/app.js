@@ -139,27 +139,23 @@ function renderMcpClients() {
     list.innerHTML = `<div class="hint">엔진이 실행 중이어야 MCP 서버 URL을 확인할 수 있습니다.</div>`;
     return;
   }
+  // Claude 말고는 접어 둔다 — 다 펼치면 카드가 길어 아래 확장·프록시 카드가 안 보였다. 다시 그려도 펼친 것은 그대로.
+  const open = new Set([...list.querySelectorAll('details[open]')].map((d) => d.dataset.id));
   list.innerHTML = info.clients.map((c) => {
-    if (c.method === 'manual') {
-      return `
-        <div class="mcp-client-row manual" data-id="${c.id}">
-          <div class="mcp-client-head"><span class="mcp-client-name">${c.name}</span><span class="badge-plain">수동</span></div>
-          <div class="hint">${escapeHtml(c.hint)}</div>
-          <div class="codeblock-row"><code>${escapeHtml(c.snippet)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(c.snippet)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>
-        </div>`;
+    const manual = c.method === 'manual';
+    const statusText = manual ? '수동' : !c.available ? '미설치' : c.connected ? '연결됨' : '미연결';
+    const head = `<span class="mcp-client-name">${c.name}</span><span class="badge-plain">${statusText}</span>`;
+    const body = manual
+      ? `<div class="hint">${escapeHtml(c.hint)}</div>
+          <div class="codeblock-row"><code>${escapeHtml(c.snippet)}</code><button class="copy-btn" data-copy="${btoa(unescape(encodeURIComponent(c.snippet)))}"><img src="../assets/figma/copy-icon.svg" alt="copy" /></button></div>`
+      : `${c.error ? `<div class="hint error">${escapeHtml(c.error)}</div>` : ''}
+          <button class="conn-link mcp-action-btn" data-id="${c.id}" data-connected="${!!c.connected}" ${c.available ? '' : 'disabled'}>${c.connected ? '연결 해제' : '연결하기'}</button>`;
+    const cls = `mcp-client-row${manual ? ' manual' : ''}`;
+    if (c.id.startsWith('claude')) {
+      return `<div class="${cls}" data-id="${c.id}"><div class="mcp-client-head">${head}</div>${body}</div>`;
     }
-    const statusText = !c.available ? '미설치' : c.connected ? '연결됨' : '미연결';
-    const actionLabel = c.connected ? '연결 해제' : '연결하기';
-    const errorHint = c.error ? `<div class="hint error">${escapeHtml(c.error)}</div>` : '';
-    return `
-      <div class="mcp-client-row" data-id="${c.id}">
-        <div class="mcp-client-head">
-          <span class="mcp-client-name">${c.name}</span>
-          <span class="badge-plain">${statusText}</span>
-        </div>
-        ${errorHint}
-        <button class="conn-link mcp-action-btn" data-id="${c.id}" data-connected="${!!c.connected}" ${c.available ? '' : 'disabled'}>${actionLabel}</button>
-      </div>`;
+    return `<details class="${cls}" data-id="${c.id}" ${open.has(c.id) ? 'open' : ''}>
+        <summary class="mcp-client-head">${head}</summary><div class="mcp-client-body">${body}</div></details>`;
   }).join('');
 }
 $('#mcp-client-list').addEventListener('click', async (e) => {

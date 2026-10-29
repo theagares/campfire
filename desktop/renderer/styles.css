@@ -538,6 +538,13 @@ img { display:block; }
 .mcp-client-name { font-size:11.5px; font-weight:600; color:var(--ink-850); }
 .mcp-client-row .conn-link { align-self:flex-start; }
 .mcp-client-row.manual .codeblock-row { background:#fff; }
+details.mcp-client-row { display:block; }
+details.mcp-client-row > summary { cursor:pointer; list-style:none; }
+details.mcp-client-row > summary::-webkit-details-marker { display:none; }
+details.mcp-client-row > summary::after { content:'▸'; margin-left:auto; color:var(--ink-500); }
+details.mcp-client-row[open] > summary::after { content:'▾'; }
+.mcp-client-body { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+.mcp-client-body .conn-link { align-self:flex-start; }
 
 /* ── 프록시 게이트웨이 카드 ─────────────────────────────────────────────────── */
 .conn-head .conn-ico-glyph { width:39px; height:39px; flex:0 0 39px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:18px; background:#f5f3ff; color:var(--purple); }
