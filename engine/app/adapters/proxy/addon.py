@@ -117,9 +117,8 @@ MULTIPART_HOSTS = {
     "perplexity.ai",
     # 2026-10-26 실측: Perplexity 는 이제 파일을 자기 오리진이 아니라 S3 presigned POST(multipart, 파일 파트가 마지막,
     # key·policy·x-amz-* 칸이 앞)로 바로 올린다 — 이 호스트가 없어 원본이 검사 없이 나갔다. multipart 는 파일이 아닌
-    # 칸을 바이트 그대로 다시 싸므로 서명 칸이 깨지지 않는다. 등록(batch_create_upload_urls)의 이름·형식은 아직
-    # 못 바꿔서, 가린 글은 원래 형식 이름으로 저장된다 — 그래서 확장이 이 사이트 파일을 먼저 가린다(content.js
-    # PROXY_FILE_HOSTS 에 없음). 이 호스트는 확장이 없는 경로의 안전망이다. 허용 이름이 늘어 CA 가 새로 만들어진다.
+    # 칸을 바이트 그대로 다시 싸므로 서명 칸이 깨지지 않는다. 이름·형식은 등록(PERPLEXITY_REGISTER_PATH)에서 바꾼다.
+    # 허용 이름이 늘어 CA 가 새로 만들어진다.
     "ppl-ai-file-upload.s3.amazonaws.com",
     # 2026-10-22 실측: Grok 은 이제 POST /http/upload-file-v2/direct 로 파일 하나(name="file")를
     # multipart 로 올린다. 예전 JSON+base64 경로(UNSUPPORTED_UPLOADS)만 막고 있어 그대로 나갔다.
@@ -130,6 +129,20 @@ MULTIPART_HOSTS = {
 }
 
 CHATGPT_HOSTS = {"chatgpt.com", "chat.openai.com"}
+
+# Perplexity 파일(2026-10-29 맥 PX-P4 캡처):
+#   ① POST /rest/uploads/batch_create_upload_urls {"files":{"<id>":{"filename":"pii.py","content_type":"text/x-python-script",
+#      "file_size":179,"force_image":false,…}}} → S3 fields(key ".../<file_uuid>/pii.py", "Content-Type", policy, …)
+#   ② POST ppl-ai-file-upload.s3.amazonaws.com multipart — policy 가 key·Content-Type 을 eq 로 묶는다(크기는 0~50MB 범위).
+#   ③ perplexity_ask params.attachments = ["https://ppl-ai-file-upload.s3.amazonaws.com/<key>"]
+# 예전엔 ②의 본문만 가려 원래 이름·형식(.py·그림)으로 저장됐고, 그림은 처리를 못 해 첨부가 사라졌다(Windows WPX-3).
+# ①에서 이름·형식을 _masked.md·text/markdown 으로 바꾸면 S3 서명도 그 값으로 나온다.
+PERPLEXITY_HOSTS = {"www.perplexity.ai", "perplexity.ai"}
+PERPLEXITY_REGISTER_PATH = "/rest/uploads/batch_create_upload_urls"
+PERPLEXITY_UPLOAD_HOST = "ppl-ai-file-upload.s3.amazonaws.com"
+_S3_KEY_FIELD = re.compile(rb';\s*name="key"')
+# 등록 때 _masked.md 로 바꿔 둔 자리(Gemini·Perplexity)인데 검사를 끝내지 못했다 — 원본 바이트는 보낼 수 없다.
+_UNSCANNED_FILE = "검사를 끝내지 못한 파일이라 보내지 않았습니다 — 지원하지 않는 형식이거나 이미지 검사가 꺼져 있습니다"
 
 # 등록(크기를 선언하고 업로드 URL 을 받는) 엔드포인트. 하나가 아니다.
 #
@@ -571,6 +584,9 @@ class CampfireAddon:
         if host in CHATGPT_HOSTS and key in CHATGPT_REGISTER_PATHS:
             self._chatgpt_register(flow)
             return
+        if host in PERPLEXITY_HOSTS and key == PERPLEXITY_REGISTER_PATH and flow.request.method == "POST":
+            self._perplexity_register(flow)
+            return
         if flow.request.method == "PUT" and host.endswith(CHATGPT_BLOB_HOST_SUFFIX):
             if key not in self._chatgpt:
                 # 등록을 못 봤다 = 어떤 크기를 약속했는지 모른다. 예전엔 이 경우
@@ -974,7 +990,7 @@ class CampfireAddon:
         )
         if masked is _UNREPLACEABLE:
             promise.blocked = True
-            self._block(flow, "검사를 끝내지 못한 파일이라 보내지 않았습니다 — 지원하지 않는 형식이거나 이미지 검사가 꺼져 있습니다")
+            self._block(flow, _UNSCANNED_FILE)
             return
         if masked is None:
             promise.blocked = True
@@ -1065,12 +1081,23 @@ class CampfireAddon:
         if not file_idx:
             return  # 파일이 없는 평범한 폼. 건드릴 이유가 없다.
 
+        # Perplexity S3: key 의 file_uuid 가 전송(perplexity_ask params.attachments 의 S3 URL)에 실린다 — 그 전송의 첨부만
+        # 판정한다(_judge_attached). 등록에서 _masked.md 로 바꾼 자리면 깨끗해도 원본 바이트가 아니라 글을 올린다.
+        s3_key = next((p.body.decode("utf-8", "replace") for p in parts
+                       if host == PERPLEXITY_UPLOAD_HOST and _S3_KEY_FIELD.search(p.headers)), "")
+        if s3_key.count("/") >= 2:
+            flow.metadata["campfire_file_ids"] = (s3_key.rsplit("/", 2)[-2],)
+
         for i in file_idx:
             part = parts[i]
             name = part.filename or "upload.bin"
             masked = await self._scan_and_decide(
-                data=part.body, file_name=name, mime=part.content_type, host=host, flow=flow
+                data=part.body, file_name=name, mime=part.content_type, host=host, flow=flow,
+                always_text=s3_key.endswith("_masked.md"),
             )
+            if masked is _UNREPLACEABLE:
+                self._block(flow, _UNSCANNED_FILE)
+                return
             if masked is None:
                 self._block(flow, _CANCELLED)
                 return
@@ -1081,6 +1108,29 @@ class CampfireAddon:
             )
 
         flow.request.content = encode(parts, ctype)
+
+    def _perplexity_register(self, flow: http.HTTPFlow) -> None:
+        """① 등록의 이름·형식을 _masked.md·text/markdown 으로 바꾼다 — S3 서명이 이 값으로 나와 ②의 가린 글과 맞는다.
+
+        그림도 글(OCR)로 간다(force_image 끔). 크기는 S3 정책이 범위(0~50MB)라 그대로 둔다. 모르는 모양이면 손대지
+        않는다 — ②의 본문은 _multipart 가 그대로 가린다(원래 이름으로 저장될 뿐 내용은 새지 않는다)."""
+        try:
+            body = json.loads(flow.request.get_text() or "")
+        except json.JSONDecodeError:
+            return
+        files = body.get("files") if isinstance(body, dict) else None
+        if not isinstance(files, dict):
+            return
+        for f in files.values():
+            if not isinstance(f, dict) or not isinstance(f.get("filename"), str):
+                continue
+            if _approved_meta(f["filename"], int(f.get("file_size") or 0)):
+                continue  # 확장이 검토한 마스킹본 — 다시 바꾸면 x_masked_masked.md 가 된다
+            f["filename"] = masked_name_for(f["filename"])
+            f["content_type"] = MASKED_MIME
+            if f.get("force_image"):
+                f["force_image"] = False
+        flow.request.text = _dumps(body)
 
     # ── ChatGPT 경로 (등록 → PUT → 확인) ────────────────────────────────────
 
