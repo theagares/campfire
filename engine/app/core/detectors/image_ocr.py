@@ -259,7 +259,11 @@ async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dic
                     if read_cache[key] is not None:
                         _remember(key, read_cache[key])
             got = read_cache[key]
-            if got is None:
+            if got is None and failed_why.get(key) == LOW_MEMORY_REASON:
+                # PC 메모리가 모자라 읽지 않은 그림은 빼고 글만 가려 보낸다 — 이미지 검사 끔과 같은 길(orchestrator imagesRemoved,
+                # 사용자 결정 (가)). 그림이 나가지 않으니 그림 속 PII 도 나가지 않는다.
+                info.update(status="removed", reason=LOW_MEMORY_REASON)
+            elif got is None:
                 info.update(status="unchecked", reason=(failed_why.get(key) or UNCHECKED_REASON)
                             if targets <= config.IMAGE_OCR_MAX_IMAGES
                             else f"이미지가 {config.IMAGE_OCR_MAX_IMAGES}장을 넘어 나머지는 검사하지 못했습니다")

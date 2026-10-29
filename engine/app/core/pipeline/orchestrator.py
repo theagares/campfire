@@ -538,6 +538,7 @@ async def run_pipeline(
     images: list[bytes] | None = None
     image_infos: list[dict[str, Any]] = []
     images_removed = 0
+    images_removed_reason: str | None = None
     if text is None:
         # 꺼져 있어도 문서 속 그림은 센다 — 검사 못 한 그림째 원본을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28,
         # 확장·프록시가 imagesRemoved 를 보고 원본 대신 글 .md 를 보낸다). 이미지 파일 자체는 꺼져 있으면 지금처럼 미지원이다
@@ -549,8 +550,12 @@ async def run_pipeline(
         if images and scan_status == STATUS_OK:
             if config.IMAGE_OCR_ENABLED:
                 text, image_infos = await image_ocr.fill(text, images, emit)
+                # PC 메모리가 모자라 읽지 않은 그림은 빼고 글만 보낸다 — 아래 꺼짐과 같은 길(확장·프록시가 imagesRemoved 를 본다)
+                images_removed = sum(i["status"] == "removed" for i in image_infos)
+                images_removed_reason = "memory" if images_removed else None
             else:
                 text, images_removed = image_marks.strip_marks(text), len(images)
+                images_removed_reason = "off"
     images_unchecked = any(i["status"] == "unchecked" for i in image_infos)
     images_read = [i for i in image_infos if i["status"] == "read"]
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
@@ -900,6 +905,7 @@ async def run_pipeline(
         forced_policy=forced_policy,
         images=image_infos,
         images_removed=images_removed,
+        images_removed_reason=images_removed_reason,
     )
 
 
@@ -923,6 +929,7 @@ def _build_result(
     forced_policy: dict[str, Any] | None = None,
     images: list[dict[str, Any]] | None = None,
     images_removed: int = 0,
+    images_removed_reason: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         # originalText 는 세션 중 반환용(HITL diff). store 에는 저장 금지(PLAN §9.1).
@@ -964,8 +971,9 @@ def _build_result(
         result["maskedFile"] = masked_file
     if images:  # 이미지 속 글자 검사: 이미지마다 읽음/건너뜀/미검사와 본문 속 위치(화면에 "이미지에서 읽은 글" 표시용)
         result["images"] = images
-    if images_removed:  # 이미지 속 글자 검사가 꺼져 검사하지 않은 문서 속 그림 수 — 원본 대신 글만 보낸다
+    if images_removed:  # 검사하지 않고 뺀 문서 속 그림 수 — 원본 대신 글만 보낸다
         result["imagesRemoved"] = images_removed
+        result["imagesRemovedReason"] = images_removed_reason or "off"  # off = 이미지 검사 꺼짐, memory = PC 메모리 부족
     if user_prompt is not None:
         # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
         # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.

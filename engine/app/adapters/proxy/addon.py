@@ -1591,6 +1591,9 @@ class CampfireAddon:
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))
         # 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 원본(그림째)을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28).
         images_removed = bool(result.get("imagesRemoved"))
+        if result.get("imagesRemovedReason") == "memory":
+            # 업로드는 되는데 그림이 빠졌다 — 사용자가 모르면 AI 답이 그림 내용을 빠뜨린 까닭을 알 수 없다(사용자 결정 (가)).
+            broker.notify(_site(host), f"PC 메모리가 부족해 문서 속 그림 {result['imagesRemoved']}장은 빼고 글만 보냈습니다")
         if always_text:
             if result.get("scanStatus") != "ok":
                 logger.info("[proxy] 검사를 끝내지 못한 업로드 — 원본을 보낼 수 없어 차단 host=%s", host)

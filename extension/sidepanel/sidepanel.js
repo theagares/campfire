@@ -730,8 +730,10 @@ function refreshSummary() {
   const total = allItemSegments().length;
   const maskCount = allItemSegments().filter(s => s.locked || !state.unmasked.has(s.key)).length;
   // 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 SW 가 원본 대신 그림을 뺀 글만 보낸다(사용자 결정 2026-10-28).
+  // PC 메모리가 모자라 그림을 읽지 않았을 때도 같은 길이다(엔진 imagesRemovedReason = memory).
   const removed = state.result?.imagesRemoved > 0
-    ? ` · 그림 ${state.result.imagesRemoved}개는 빼고 보냄(이미지 검사 꺼짐)` : '';
+    ? ` · 그림 ${state.result.imagesRemoved}개는 빼고 보냄(${
+      state.result.imagesRemovedReason === 'memory' ? 'PC 메모리 부족' : '이미지 검사 꺼짐'})` : '';
   if (maskCount > 0) {
     el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송${removed}`;
     el.maskSummary.classList.remove('clear');
