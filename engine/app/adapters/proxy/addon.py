@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -65,6 +66,9 @@ PROXY_PROBE_PATH = "/.well-known/campfire-proxy-probe"
 
 
 def masked_name_for(original: str) -> str:
+    # 맥은 한글 파일 이름을 자모로 나눈 NFD 로 보낸다(맥 v0.2.59: Gemini 시작 요청 "File name: 보고서.docx" 가 NFD 날것
+    # UTF-8). 바꾼 이름은 NFC 로 낸다 — 서버·화면이 보통 합친 글자로 다루고, 확장이 알린 이름(NFC)과도 같아진다.
+    original = unicodedata.normalize("NFC", original)
     stem = original.rsplit(".", 1)[0] if "." in original else original
     # 이름에 사용자 지정 단어가 있으면 이름을 쓰지 않는다 — 내용을 가려도 이름으로 샌다.
     if forced_mask.registry.snapshot().find(stem):
@@ -348,7 +352,7 @@ def approve_uploads(items: list[tuple[str, str, int]]) -> None:
     for key in [k for k, v in _approved.items() if v[2] < now]:
         _approved.pop(key, None)
     for sha, name, size in items:
-        _approved[sha] = (name, size, now + _APPROVED_TTL_S)
+        _approved[sha] = (unicodedata.normalize("NFC", name), size, now + _APPROVED_TTL_S)
     while len(_approved) > _MAX_TRACKED_UPLOADS:
         _approved.pop(next(iter(_approved)))
 
@@ -359,6 +363,8 @@ def _approved_bytes(data: bytes) -> bool:
 
 
 def _approved_meta(name: str, size: int) -> bool:
+    # 이름은 NFC 로 견준다 — 확장은 NFC 로 알리는데 맥 사이트는 NFD 로 보내, 같은 마스킹본을 못 알아보고 이름을 또 바꿨다.
+    name = unicodedata.normalize("NFC", name)
     now = time.monotonic()
     return any(n == name and s == size and exp >= now for n, s, exp in _approved.values())
 
