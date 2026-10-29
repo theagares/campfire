@@ -229,6 +229,30 @@ def _spare_memory(device: str) -> float | None:
     return None
 
 
+_CUDA_SPARE = 0.5 * 1024**3  # 다른 프로세스·드라이버 몫으로 남겨 두는 VRAM
+
+
+def _cap_cuda_memory() -> None:
+    """이 사이드카가 지금 남은 VRAM 만큼만 쓰게 묶는다(가중치를 올리기 전에). 넘치면 드라이버가 시스템 RAM 으로 넘기는
+    대신(CUDA Sysmem Fallback — 프로세스 커밋으로 잡힌다) OOM 이 나고, 그 그림은 엔진이 미검사로 막는다.
+    v0.2.62 Windows(RTX 5070 12GB, RAM 15GB): 측정 중 사이드카 커밋이 8.4GB 까지 커져 PC 남은 커밋이 0.4GB 로 떨어졌다."""
+    free, total = torch.cuda.mem_get_info()
+    torch.cuda.set_per_process_memory_fraction(max(0.0, (free - _CUDA_SPARE) / total))
+
+
+def _read_shrinking(reader: "Reader", img: Image.Image, device: str) -> dict:
+    """묶음이 남은 메모리를 넘으면(OOM) 묶음을 반으로 줄여 다시 읽는다 — 가장 작은 묶음(2/1500)에서도 넘치면 그대로 실패
+    (그 그림은 미검사). 줄인 묶음은 이 프로세스가 내려갈 때까지 둔다(메모리가 빠듯한 PC 다)."""
+    while True:
+        try:
+            return reader.read(img)
+        except torch.cuda.OutOfMemoryError:
+            _empty_cache(device)
+            if reader.batch <= 2 and reader.budget <= 1500:
+                raise
+            reader.batch, reader.budget = max(2, reader.batch // 2), max(1500, reader.budget // 2)
+
+
 def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int, int]:
     """묶음 크기를 남은 메모리로 정한다(batch·token_budget 은 상한). 출력 상한·모델·정밀도는 바꾸지 않는다.
 
@@ -389,6 +413,8 @@ def main() -> None:
     if device is None:  # 지원 GPU 없는 PC는 이미지를 검사하지 않는다 — 엔진이 이미지를 막는다
         print(json.dumps({"ready": False, "error": "no_accelerator"}), flush=True)
         return
+    if device == "cuda":
+        _cap_cuda_memory()
     reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device)
     print(json.dumps({"ready": True, "device": device, "batch": reader.batch, "budget": reader.budget}), flush=True)
     for line in sys.stdin:
@@ -402,7 +428,7 @@ def main() -> None:
             results = []
             for b64 in req["images"]:
                 img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-                results.append(reader.read(img))
+                results.append(_read_shrinking(reader, img, device))
                 _empty_cache(device)
             out = {"id": req_id, "results": results}
         except Exception as e:  # noqa: BLE001 - 한 요청의 실패로 프로세스를 죽이지 않는다

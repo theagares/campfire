@@ -93,3 +93,42 @@ def test_Intel_XPU_는_전체에서_쓴_만큼을_빼고_정한다(monkeypatch):
     assert runtime._memory_safe_limits("xpu", *CAP) == (8, 9011)  # 8GB Arc — 예전 단계 규칙은 2/1500
     xpu.get_device_properties = lambda _index: SimpleNamespace(total_memory=16 * GIB)
     assert runtime._memory_safe_limits("xpu", *CAP) == (16, 18000)
+
+
+def test_CUDA_는_남은_VRAM_만큼만_쓰게_묶어_시스템_RAM으로_넘치지_않는다(monkeypatch):
+    # v0.2.62 Windows: 사이드카 커밋이 8.4GB 까지 커졌다(VRAM 이 모자라 드라이버가 시스템 RAM 으로 넘긴 것으로 본다).
+    caps = []
+    monkeypatch.setattr(runtime.torch.cuda, "set_per_process_memory_fraction", lambda f, *_a: caps.append(f))
+    monkeypatch.setattr(runtime.torch.cuda, "mem_get_info", lambda *_a: (5 * GIB, 12 * GIB))
+    runtime._cap_cuda_memory()
+    monkeypatch.setattr(runtime.torch.cuda, "mem_get_info", lambda *_a: (int(0.3 * GIB), 12 * GIB))
+    runtime._cap_cuda_memory()
+    assert caps == [(5 - 0.5) / 12, 0.0], "남은 VRAM − 여유 0.5GB 만큼만 쓰게 묶어야 한다(모자라면 0 → 띄우지 못함)"
+
+
+class _OomReader:
+    def __init__(self, fails: int):
+        self.batch, self.budget, self.fails, self.calls = 16, 18000, fails, []
+
+    def read(self, _img):
+        self.calls.append((self.batch, self.budget))
+        if self.fails:
+            self.fails -= 1
+            raise runtime.torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return {"text": "읽음", "tiles": [], "secs": 1.0}
+
+
+def test_OOM_이면_묶음을_반으로_줄여_다시_읽는다():
+    reader = _OomReader(fails=2)
+    assert runtime._read_shrinking(reader, None, "cuda")["text"] == "읽음"
+    assert reader.calls == [(16, 18000), (8, 9000), (4, 4500)]
+    assert (reader.batch, reader.budget) == (4, 4500), "줄인 묶음을 다음 그림에도 써야 한다"
+
+
+def test_가장_작은_묶음에서도_넘치면_실패를_그대로_올린다():
+    import pytest
+
+    reader = _OomReader(fails=99)
+    with pytest.raises(runtime.torch.cuda.OutOfMemoryError):
+        runtime._read_shrinking(reader, None, "cuda")
+    assert reader.calls == [(16, 18000), (8, 9000), (4, 4500), (2, 2250), (2, 1500)], "가장 작은 묶음까지 줄인 뒤 포기"
