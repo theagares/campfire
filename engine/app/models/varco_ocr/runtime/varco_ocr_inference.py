@@ -213,6 +213,12 @@ _BYTES_PER_TOKEN = 0.25 * 1024**2  # 묶음 입력 토큰당 더 쓰는 GPU 메�
 # 출력 KV·작업 공간·조각 크기 흔들림 여유. 1.5 → 1.0GB(서버 측정, 12GB 카드 + 통합 worker 흉내: 묶음 4 → 8, 그림 44장
 # 455 → 373초, 최고 예약이 상한 아래 0.27GB, CER 그대로). 0.5GB 는 넘쳤다. 넘치면 묶음을 줄여 다시 읽는다(_read_shrinking).
 _HEADROOM = 1.0 * 1024**3
+# CUDA 그래프 경로(GraphDecoder): 정적 KV 캐시에 잡는 출력 길이와, HF generate 보다 더 쓰는 VRAM. 서버 실측(그림 24장, 같은
+# 묶음을 HF·그래프로 읽은 최대 예약 차이): 묶음 2 174MB · 4 400MB · 8 742MB · 16 1510MB(할당은 줄당 약 56MB — 정적 캐시
+# 출력 몫 최대 512토큰 × 114.7KB). 예약 기준 줄당 약 95MB 라 0.1GB + 줄당 96MB 로 잡는다.
+_GRAPH_NEW = 256  # 서버 측정 44장의 묶음 최대 출력은 193토큰 — 넘는 묶음만 HF generate 로 다시
+_GRAPH_FIXED = 0.1 * 1024**3
+_GRAPH_PER_ROW = 96 * 1024**2
 # Windows 에서 남겨 둘 시스템 커밋. v0.2.62 측정: VRAM +4.8GB 일 때 사이드카 커밋 8GB — GPU 할당이 커밋으로도 잡힌다고 보고
 # (WDDM 백킹, 확인 중) 큰 묶음이 PC 커밋을 바닥내지 않게 묶음 메모리를 남은 커밋으로도 묶는다.
 _COMMIT_RESERVE = 2 * 1024**3
@@ -255,19 +261,30 @@ def _spare_memory(device: str) -> float | None:
     return None
 
 
-def _memory_safe_limits(device: str, batch: int, token_budget: int) -> tuple[int, int]:
+def _graph_bytes(batch: int) -> float:
+    """CUDA 그래프 경로가 HF generate 보다 더 쓰는 VRAM — 정적 KV 캐시의 출력 몫(_GRAPH_NEW + 256 단위 올림)과 그래프
+    메모리. 묶음 크기별 서버 실측(GraphDecoder 참고)에 맞춘 식이다."""
+    return _GRAPH_FIXED + batch * _GRAPH_PER_ROW
+
+
+def _memory_safe_limits(device: str, batch: int, token_budget: int, graph: bool = False) -> tuple[int, int]:
     """묶음 크기를 남은 메모리로 정한다(batch·token_budget 은 상한). 출력 상한·모델·정밀도는 바꾸지 않는다.
 
     예전엔 전체 용량 단계(10GB 미만 2/1500, 16GB 미만 4/3000)로 정해 12GB 카드는 비어 있어도 4/3000 이었다 — 그림 다섯 장
     (조각 57개)에 generate 24회(다른 GPU 작업자가 있으면 57회)라, 문서 속 그림을 읽는 동안 Claude 업로드가 시간 초과됐다
-    (맥 v0.2.60). budget = (남은 메모리 − 여유) / 토큰당 메모리, 1500~상한 / batch 는 budget 에 맞춰 2·4·8·16.
+    (맥 v0.2.60). budget = (남은 메모리 − 여유 − 그래프 몫) / 토큰당 메모리, 1500~상한 / batch 는 budget 에 맞춰 2·4·8·16.
+    그래프 몫은 묶음 크기에 따라 달라 큰 묶음부터 맞춰 본다.
     """
     spare = _spare_memory(device)
     if spare is None:
         return min(batch, 8), min(token_budget, 6000)  # 모르면 예전 기본값
-    budget = max(1500, min(token_budget, int((spare - _HEADROOM) / _BYTES_PER_TOKEN)))
-    size = 16 if budget >= 12000 else 8 if budget >= 6000 else 4 if budget >= 3000 else 2
-    return min(batch, size), budget
+    for size, need in ((16, 12000), (8, 6000), (4, 3000), (2, 0)):
+        size = min(batch, size)
+        extra = _graph_bytes(size) if graph else 0
+        budget = max(1500, min(token_budget, int((spare - _HEADROOM - extra) / _BYTES_PER_TOKEN)))
+        if budget >= need:
+            break
+    return size, budget
 
 
 def _empty_cache(device: str) -> None:
@@ -294,7 +311,7 @@ def _read_one(reader: "Reader", img: Image.Image, device: str, batch: int, token
     """그림마다 남은 메모리로 묶음을 다시 정하고 읽는다 — 통합 worker 가 잠깐 더 쓰면 작게, 풀리면 다시 크게. 서버 측정(12GB +
     worker 흉내, 다른 프로세스가 그림 3장 동안 1.5GB 를 더 씀, 44장): 넘친 뒤 줄인 묶음을 그대로 두면 722초, 처음 크기로
     되돌리면 406초(OOM 5번), 남은 메모리로 다시 정하면 413초(OOM 0번)."""
-    reader.batch, reader.budget = _memory_safe_limits(device, batch, token_budget)
+    reader.batch, reader.budget = _memory_safe_limits(device, batch, token_budget, reader.graph is not None)
     return _read_shrinking(reader, img, device)
 
 
@@ -375,8 +392,121 @@ def _stopper(limits: torch.Tensor, n_in: int):
     return StoppingCriteriaList([Stop()])
 
 
+def _stop_at(seq: list[int], n_in: int, limit: int, eos: int) -> int:
+    """_stopper·EOS 와 같은 규칙으로 생성 토큰 몇 개째에서 멈추는지(그 토큰 포함). seq = 프롬프트(패딩 포함) + 생성."""
+    gen = seq[n_in:]
+    end = gen.index(eos) + 1 if eos in gen else len(gen)
+    for k in range(1, end + 1):
+        s = seq[:n_in + k]
+        if len(set(s[-12:])) == 1:
+            return k
+        w = s[-32:]
+        if any(all(w[i] == w[i + p] for i in range(32 - p)) for p in (2, 3, 4)):
+            return k
+        if k >= 96:
+            w = s[-96:]
+            if any(all(w[i] == w[i + p] for i in range(96 - p)) for p in range(5, 17)):
+                return k
+        if k >= limit:
+            return k
+    return end
+
+
+class GraphFailed(RuntimeError):
+    """CUDA 그래프 경로 오류 — 이 프로세스의 CUDA 문맥을 더 믿지 않는다. 사이드카는 'graph_failed' 로 답하고 끝나고,
+    엔진이 그래프를 끈 사이드카로 다시 띄워 같은 그림을 다시 읽는다(image_ocr.VarcoOcrProcess)."""
+
+
+class GraphDecoder:
+    """HF generate 대신 직접 디코딩하고, 한 단계(토큰 → 언어 모델 → argmax → 위치·마스크 갱신)를 CUDA 그래프로 잡아
+    되풀이한다 — 단계마다 커널 수백 개를 띄우는 CPU 비용이 시간을 정했다(서버 A100: HF 단계당 묶음 16 35ms·묶음 4 39ms
+    → 그래프 20ms·11ms). torch.compile·Triton 없이 CUDA 드라이버 기능만 쓴다(Windows 앱에도 Triton 이 없다). 출력은 같은
+    묶음의 HF generate 와 글자 하나까지 같다(같은 _stopper 규칙으로 자른다). 묶음마다 정적 캐시·그래프를 만들고 버린다."""
+
+    def __init__(self, model, eos: int):
+        from transformers import StaticCache
+        self.model, self.eos, self.static_cache = model, eos, StaticCache
+        self.lm = model.model.language_model
+
+    def rows(self, inputs, limits: torch.Tensor) -> list[list[int]] | None:
+        """묶음의 줄마다 생성 토큰(EOS 앞까지, 멈춘 자리까지). _GRAPH_NEW 를 넘겨도 안 끝나면 None(HF 로 다시)."""
+        try:
+            return self._rows(inputs, limits)
+        except Exception as e:  # noqa: BLE001 - illegal memory access·OOM 무엇이든 이 프로세스를 버린다
+            raise GraphFailed(f"{type(e).__name__}: {e}") from e
+
+    def _rows(self, inputs, limits):
+        ids, am = inputs["input_ids"], inputs["attention_mask"]
+        B, n_in = ids.shape
+        dev, maxnew = ids.device, int(limits.max())
+        L = -(-(n_in + min(maxnew, _GRAPH_NEW) + 1) // 256) * 256
+        cache = self.static_cache(config=self.model.config.get_text_config(), max_cache_len=L)
+        pos = (am.long().cumsum(-1) - 1).masked_fill(am == 0, 1)  # 왼쪽 패딩 — HF generate 와 같은 위치
+        out = self.model(**inputs, position_ids=pos, past_key_values=cache, use_cache=True, logits_to_keep=1,
+                         cache_position=torch.arange(n_in, device=dev))
+        tok = out.logits[:, -1].argmax(-1, keepdim=True)
+        del out
+        room = min(maxnew, L - n_in - 1)
+        gen = torch.zeros((B, room + 1), dtype=torch.long, device=dev)
+        gen[:, :1] = tok
+        p, cpos = pos[:, -1:] + 1, torch.full((1,), n_in, dtype=torch.long, device=dev)
+        step_t = torch.ones((1,), dtype=torch.long, device=dev)
+        mask = torch.zeros((B, 1, 1, L), dtype=torch.bool, device=dev)
+        mask[:, 0, 0, :n_in] = am.bool()
+
+        def step():
+            mask.index_fill_(3, cpos, True)
+            h = self.lm(input_ids=tok, position_ids=p, attention_mask=mask, past_key_values=cache, cache_position=cpos,
+                        use_cache=True).last_hidden_state
+            nxt = self.model.lm_head(h[:, -1]).argmax(-1, keepdim=True)
+            tok.copy_(nxt)
+            gen.scatter_(1, step_t.expand(B, 1), nxt)
+            p.add_(1)
+            cpos.add_(1)
+            step_t.add_(1)
+
+        for _ in range(2):  # 데우기는 같은 스트림에서 — 옆 스트림에서 데우면 illegal memory access 가 났다(서버 시제품)
+            step()
+        steps = 3
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            step()
+        lim, finished = limits.to(dev), False
+        while steps < room:
+            graph.replay()
+            steps += 1
+            if steps % 4 == 0 and self._done(gen[:, :steps], lim):
+                finished = True
+                break
+        torch.cuda.synchronize()
+        if not finished and steps < maxnew and not self._done(gen[:, :steps], lim):
+            return None
+        prompt, got = ids.tolist(), gen[:, :steps].tolist()
+        rows = []
+        for j in range(B):
+            g = got[j][:_stop_at(prompt[j] + got[j], n_in, int(limits[j]), self.eos)]
+            rows.append(g[:g.index(self.eos)] if self.eos in g else g)
+        return rows
+
+    def _done(self, o: torch.Tensor, lim: torch.Tensor) -> bool:
+        """줄마다 EOS·상한·되풀이(_stopper 조건)를 지금 끝자리로 본다 — 되풀이는 이어지므로 몇 단계 늦게 봐도 같다."""
+        k = o.shape[1]
+        fin = (o == self.eos).any(1) | (k >= lim)
+        w = o[:, -12:]
+        fin |= (w == w[:, :1]).all(1) & (k >= 12)
+        if k >= 32:
+            w = o[:, -32:]
+            for p in (2, 3, 4):
+                fin |= (w[:, p:] == w[:, :-p]).all(1)
+        if k >= 96:
+            w = o[:, -96:]
+            for p in range(5, 17):
+                fin |= (w[:, p:] == w[:, :-p]).all(1)
+        return bool(fin.all())
+
+
 class Reader:
-    def __init__(self, model_dir: Path, batch: int, token_budget: int, device: str):
+    def __init__(self, model_dir: Path, batch: int, token_budget: int, device: str, cuda_graph: bool = False):
         from transformers import AutoProcessor
         self.device = device
         self.model = load_model(model_dir, device)
@@ -385,9 +515,10 @@ class Reader:
         _empty_cache(device)
         self.proc = AutoProcessor.from_pretrained(model_dir)
         self.proc.tokenizer.padding_side = "left"
-        self.batch, self.budget = _memory_safe_limits(device, batch, token_budget)
         self.eos = self.proc.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.pad = self.proc.tokenizer.pad_token_id
+        self.graph = GraphDecoder(self.model, self.eos) if cuda_graph and device == "cuda" else None  # MPS·XPU 는 HF 그대로
+        self.batch, self.budget = _memory_safe_limits(device, batch, token_budget, self.graph is not None)
         self._setup_token_count()
 
     def _setup_token_count(self) -> None:
@@ -430,17 +561,27 @@ class Reader:
             inputs = self._encode([crops[i] for i in idx]).to(self.device, torch.float16)
             n_in = inputs["input_ids"].shape[1]
             limits = torch.tensor([_tile_budget(boxes[i][1], MAX_NEW) for i in idx])
-            gen = self.model.generate(**inputs, max_new_tokens=int(limits.max()), do_sample=False,
-                                      stopping_criteria=_stopper(limits, n_in), pad_token_id=self.pad)
+            rows = self.graph.rows(inputs, limits) if self.graph is not None else None
+            if rows is None:
+                gen = self.model.generate(**inputs, max_new_tokens=int(limits.max()), do_sample=False,
+                                          stopping_criteria=_stopper(limits, n_in), pad_token_id=self.pad)
+                rows = [gen[j, n_in:].tolist() for j in range(len(idx))]
+                del gen
             for j, i in enumerate(idx):
-                ids = gen[j, n_in:].tolist()
+                ids = rows[j]
                 if self.eos in ids:  # 묶음에서 먼저 끝난 줄 뒤에는 패딩이 붙는다
                     ids = ids[:ids.index(self.eos)]
                 raws[i] = self.proc.decode([t for t in ids if t != self.pad], skip_special_tokens=False)
-            del inputs, gen
+            del inputs
         text, spans = join_blocks([clean(r) for r in raws], boxes)
         return {"text": text, "tiles": [{"box": list(boxes[i][1]), "start": s, "end": e} for i, s, e in spans],
                 "secs": round(time.perf_counter() - t0, 2)}
+
+
+def _fatal(reader: Reader, e: Exception) -> bool:
+    """그래프를 켠 프로세스에서 그래프가 CUDA 문맥을 망가뜨렸을 수 있는 오류 — illegal memory access 는 다음 동기화에서
+    다른 자리로도 나온다. 이 프로세스는 'graph_failed' 로 답하고 끝난다(엔진이 그래프를 끄고 다시 띄워 다시 읽는다)."""
+    return reader.graph is not None and (isinstance(e, GraphFailed) or "CUDA error" in str(e))
 
 
 def main() -> None:
@@ -448,6 +589,7 @@ def main() -> None:
     ap.add_argument("--model-dir", required=True)
     ap.add_argument("--batch", type=int, default=16)  # 상한 — 실제 묶음은 남은 메모리로(_memory_safe_limits)
     ap.add_argument("--token-budget", type=int, default=18000)
+    ap.add_argument("--cuda-graph", type=int, default=0)  # 1 이면 CUDA 에서 GraphDecoder(엔진 config.IMAGE_OCR_CUDA_GRAPH)
     args = ap.parse_args()
     # 엔진은 이 프로세스의 stderr 를 평소엔 읽지 않는다 — 경고가 쌓여 파이프가 차면 멈출 수 있어 조용히 한다
     import warnings
@@ -460,8 +602,9 @@ def main() -> None:
     if device is None:  # 지원 GPU 없는 PC는 이미지를 검사하지 않는다 — 엔진이 이미지를 막는다
         print(json.dumps({"ready": False, "error": "no_accelerator"}), flush=True)
         return
-    reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device)
-    print(json.dumps({"ready": True, "device": device, "batch": reader.batch, "budget": reader.budget}), flush=True)
+    reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device, bool(args.cuda_graph))
+    print(json.dumps({"ready": True, "device": device, "batch": reader.batch, "budget": reader.budget,
+                      "graph": reader.graph is not None}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -477,6 +620,10 @@ def main() -> None:
                 _empty_cache(device)
             out = {"id": req_id, "results": results}
         except Exception as e:  # noqa: BLE001 - 한 요청의 실패로 프로세스를 죽이지 않는다
+            if _fatal(reader, e):
+                print(json.dumps({"id": req_id, "error": f"graph_failed: {type(e).__name__}: {e}"}, ensure_ascii=False),
+                      flush=True)
+                os._exit(3)
             out = {"id": req_id, "error": f"{type(e).__name__}: {e}"}
         print(json.dumps(out, ensure_ascii=False), flush=True)
 

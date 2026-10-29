@@ -385,3 +385,56 @@ def test_켰을_때만_이미지_형식이_지원_목록에_있다(monkeypatch, 
     finally:
         monkeypatch.delenv("SECUREDOC_IMAGE_OCR_ENABLED", raising=False)
         importlib.reload(config)
+
+
+def _graph_proc(monkeypatch, first_error: str):
+    """CUDA 그래프를 켠 사이드카 — 첫 읽기는 first_error 로 실패하고 그 뒤로는 읽는다. 띄우기·내리기·요청을 기록한다."""
+    monkeypatch.setattr(config, "IMAGE_OCR_CUDA_GRAPH", True)
+    proc = image_ocr.VarcoOcrProcess()
+    monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)
+    calls = {"spawn": [], "kill": 0, "rpc": 0}
+
+    async def ensure():
+        if not proc._process_ready:
+            calls["spawn"].append(proc._spawn_args()[-1])  # --cuda-graph 값
+            proc._process_ready = True
+
+    async def kill():
+        calls["kill"] += 1
+
+    async def rpc(_payload):
+        calls["rpc"] += 1
+        if calls["rpc"] == 1:
+            raise RuntimeError(first_error)
+        return {"results": [{"text": "읽음", "tiles": [], "secs": 1.0}]}
+
+    monkeypatch.setattr(proc, "_ensure_process", ensure)
+    monkeypatch.setattr(proc, "_kill_process", kill)
+    monkeypatch.setattr(proc, "_rpc", rpc)
+    return proc, calls
+
+
+@pytest.mark.parametrize("error", [
+    "image_ocr: 추론 오류: graph_failed: AcceleratorError: CUDA error: an illegal memory access was encountered",
+    "image_ocr: 서브프로세스가 응답 없이 종료됨: ",  # 표식도 못 남기고 죽었다
+])
+def test_CUDA_그래프가_실패하면_그래프를_끈_사이드카로_다시_띄워_같은_그림을_다시_읽고_이후로도_끈다(monkeypatch, caplog, error):
+    proc, calls = _graph_proc(monkeypatch, error)
+    with caplog.at_level("WARNING", logger="securedoc.engine.image_ocr"):
+        assert asyncio.run(proc.read(_png()))["text"] == "읽음", "그림이 막히면 안 된다"
+    assert calls == {"spawn": ["1", "0"], "kill": 1, "rpc": 2} and not proc.cuda_graph
+    assert "CUDA 그래프 경로가 실패해 이번 실행 동안 끈다" in caplog.text
+    proc._process_ready = False  # 유휴로 내려간 뒤 다시 띄워도 그래프는 꺼진 채
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음"
+    assert calls["spawn"] == ["1", "0", "0"] and calls["kill"] == 1
+
+
+def test_그래프와_무관한_오류는_지금처럼_미검사로_다시_띄우지_않는다(monkeypatch):
+    proc, calls = _graph_proc(monkeypatch, "image_ocr: 추론 오류: ValueError: 그림을 열 수 없음")
+    assert asyncio.run(proc.read(_png())) is None and proc.last_failure == image_ocr.READ_FAILED_REASON
+    assert calls == {"spawn": ["1"], "kill": 0, "rpc": 1} and proc.cuda_graph
+
+
+def test_CUDA_그래프_env_를_끄면_처음부터_끈_사이드카로(monkeypatch):
+    monkeypatch.setattr(config, "IMAGE_OCR_CUDA_GRAPH", False)
+    assert image_ocr.VarcoOcrProcess()._spawn_args()[-2:] == ["--cuda-graph", "0"]

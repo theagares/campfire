@@ -84,6 +84,7 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.no_gpu = False  # 사이드카가 GPU 를 못 찾았다 — 다시 띄우지 않는다(매번 띄워 보며 시간을 쓰지 않게)
         self.last_failure: str | None = None  # 마지막 read() 가 None 을 준 까닭(없으면 GPU·모델 미준비)
         self._idle_task: asyncio.Task | None = None
+        self.cuda_graph = config.IMAGE_OCR_CUDA_GRAPH  # 그래프 경로가 한 번 실패하면 이번 실행 동안 끈다
 
     def _spawn_args(self) -> list[str]:
         return [
@@ -92,6 +93,7 @@ class VarcoOcrProcess(EncoderPiiDetector):
             "--model-dir", str(config.IMAGE_OCR_ENGINE_DIR / "models"),
             "--batch", str(config.IMAGE_OCR_BATCH),
             "--token-budget", str(config.IMAGE_OCR_TOKEN_BUDGET),
+            "--cuda-graph", "1" if self.cuda_graph else "0",
         ]
 
     def _spawn_env(self) -> dict[str, str]:
@@ -133,8 +135,23 @@ class VarcoOcrProcess(EncoderPiiDetector):
             else:
                 self.last_failure = LAUNCH_FAILED_REASON
             return None
+        request = {"images": [base64.b64encode(blob).decode("ascii")]}
         try:
-            result = await self._rpc({"images": [base64.b64encode(blob).decode("ascii")]})
+            try:
+                result = await self._rpc(request)
+            except RuntimeError as exc:
+                # CUDA 그래프 경로가 실패했다(사이드카가 'graph_failed' 로 답하고 끝났거나 답 없이 죽었다) — 그 CUDA 문맥은
+                # 믿지 않는다. 이번 실행 동안 그래프를 끄고 HF 경로로 다시 띄워 같은 그림을 다시 읽는다(그림이 막히지 않게).
+                if not self.cuda_graph or not ("graph_failed" in str(exc) or "응답 없이 종료됨" in str(exc)):
+                    raise
+                logger.warning("[image_ocr] CUDA 그래프 경로가 실패해 이번 실행 동안 끈다 — HF 경로로 다시 띄워 같은 그림을 "
+                               "다시 읽음: %s", exc)
+                self.cuda_graph = False
+                async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤
+                    await self._kill_process()
+                    self._process_ready = False
+                await self._ensure_process()
+                result = await self._rpc(request)
             return result["results"][0]
         except Exception as exc:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
             logger.warning("[image_ocr] 그림을 읽지 못함: %s", exc)
@@ -199,6 +216,7 @@ def status() -> dict[str, Any]:
         "gpu": model_status.image_ocr_gpu(),  # 기존 API 이름: CUDA·Intel XPU·Apple MPS 중 하나가 보이는가
         "accelerator": model_status.image_ocr_accelerator(),
         "noGpu": _process.no_gpu if _process is not None else None,  # 사이드카가 가속기를 못 썼다 — 한 번 띄워 봐야 안다
+        "cudaGraph": _process.cuda_graph if _process is not None else config.IMAGE_OCR_CUDA_GRAPH,  # 실패 뒤 꺼졌는가
     }
 
 
