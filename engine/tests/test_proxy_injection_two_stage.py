@@ -177,3 +177,16 @@ def test_사이트_묶음():
     assert addon_mod._site("chat.openai.com") == addon_mod._site("x.oaiusercontent.com") == "chatgpt.com"
     assert addon_mod._site("push.clients6.google.com") == addon_mod._site(addon_mod.GEMINI_PROMPT_HOST) == "gemini.google.com"
     assert addon_mod._site("ppl-ai-file-upload.s3.amazonaws.com") == addon_mod._site("www.perplexity.ai")
+
+
+def test_첨부_판정_근거를_로그에_남기되_글은_남기지_않는다(monkeypatch, caplog):
+    # 맥 v0.2.59 R-3: 판정 줄에 이유·점수가 안 찍혀 오탐인지 가릴 수 없었다.
+    _pipeline(monkeypatch, inject_when_prompt="요약해줘")
+    a = CampfireAddon()
+    _upload(a)
+    with caplog.at_level("INFO", logger="securedoc.proxy"):
+        _run(a.request(_claude_send("요약해줘")))
+    line = next(r.getMessage() for r in caplog.records if "첨부 판정" in r.getMessage())
+    assert "첨부=회의록_masked.md" in line and "인젝션=1" in line and "PROMPT_INJECTION" in line
+    assert f"첨부글자={len(DOC)}" in line
+    assert "회의록을" not in line and "시스템 프롬프트" not in line, "판정 로그에 문서 글을 남겼다"
