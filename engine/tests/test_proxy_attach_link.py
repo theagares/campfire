@@ -58,11 +58,15 @@ def _pipeline(monkeypatch, judged):
     async def run(*, text=None, user_prompt=None, **_kw):
         if user_prompt:
             judged.append(text)
+            prompts.append(user_prompt)
         inj = [{"type": "PROMPT_INJECTION", "start": 0, "end": 1}] if user_prompt and "이전 지시 무시" in text else []
         return {"originalText": text, "maskedText": text, "piiItems": [], "injectionItems": inj, "forcedMaskItems": [],
                 "blocked": False, "scanStatus": "ok", "truncated": False}
 
     monkeypatch.setattr(orch, "run_pipeline", run)
+
+
+prompts: list[str] = []  # 첨부 판정에 넘어간 사용자 요청(_pipeline 이 모은다)
 
 
 def _two_pending(a):
@@ -81,7 +85,9 @@ def test_Gemini_는_세션_설정에_실린_첨부만_판정한다_한_POST(monk
     f = _session_post(f"count=2&ofs=0&req0___data__={_b64(_config(PATH_A))}&req1___data__={_b64(_turn(PROMPT))}")
     asyncio.run(a.request(f))
     assert f.response is None, "실리지 않은 앞선 첨부(B)로 이 전송을 막았다"
+    # 판정 대상 글은 그 첨부의 업로드 글, 사용자 요청은 2.9.1 프롬프트 — 세션 설정의 다른 칸·파일 경로가 아니다.
     assert judged == ["A 본문"]
+    assert prompts[-1] == PROMPT
     assert [p.name for p in a._pending["gemini.google.com"]] == ["b_masked.md"], "판정한 A 만 보낸 것으로 지운다"
 
 
