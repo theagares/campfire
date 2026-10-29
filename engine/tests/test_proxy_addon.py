@@ -237,9 +237,10 @@ def _scan_result(*, status="ok", pii=0):
 @pytest.mark.parametrize("status, pii, asks, want", [
     ("ok", 2, False, addon_mod._UNREPLACEABLE),  # 끝까지 검사했고 가릴 것이 있다 → 묻지 않고 막는다
     ("ok", 0, False, _ORIGINAL),                 # 깨끗하면 원본
-    ("unsupported", 0, True, _ORIGINAL),         # 검사를 못 끝냈으면(이미지 검사 꺼짐 등) 지금처럼 묻는다
+    # 검사를 못 끝냈어도(이미지 검사 꺼짐 등) 원본 그림을 보내지 않고 막는다 — 묻지 않는다(사용자 결정 1안)
+    ("unsupported", 0, False, addon_mod._UNREPLACEABLE),
 ])
-def test_가린_글을_넣을_수_없는_업로드는_가릴_것이_있을_때만_묻지_않고_막는다(monkeypatch, status, pii, asks, want):
+def test_가린_글을_넣을_수_없는_업로드는_깨끗할_때만_원본_아니면_묻지_않고_막는다(monkeypatch, status, pii, asks, want):
     import app.core.pipeline.orchestrator as orch
     asked = []
 
@@ -301,7 +302,8 @@ def test_ChatGPT_이미지는_가린_글로_못_바꾸니_가릴_것이_있으�
     if replaceable:
         assert f.response is None and f.request.content.startswith(b"# masked")
     else:
-        assert f.response is not None and f.response.status_code == 403 and "ChatGPT".encode() in f.response.content
+        assert (f.response is not None and f.response.status_code == 403
+                and addon_mod._IMAGE_HAS_PII.encode() in f.response.content)
 
 
 def test_grok_의_다른_요청은_건드리지_않는다():
@@ -714,15 +716,15 @@ def test_확장이_검토한_마스킹본은_ChatGPT_등록의_이름과_크기�
     monkeypatch.setattr(addon_mod, "_approved", {})
     addon_mod.approve_uploads([("0" * 64, "image_masked.md", 406)])
 
-    def register(name: str, size: int) -> tuple[dict, object]:
+    def register(name: str, size: int, use_case: str = "multimodal") -> tuple[dict, object]:
         flow = _req("chatgpt.com", "/backend-api/files",
-                    content=json.dumps({"file_name": name, "file_size": size, "use_case": "multimodal"}).encode())
+                    content=json.dumps({"file_name": name, "file_size": size, "use_case": use_case}).encode())
         CampfireAddon()._chatgpt_register(flow)
         return json.loads(flow.request.get_text()), flow.metadata["campfire_upload"]
 
     body, promise = register("image_masked.md", 406)
     assert (body["file_name"], body["file_size"], promise.declared) == ("image_masked.md", 406, None)
-    body, promise = register("report.docx", 406)  # 알리지 않은 업로드는 지금처럼 고친다
+    body, promise = register("report.docx", 406, "my_files")  # 알리지 않은 문서는 지금처럼 고친다(그림은 그대로 둔다)
     assert body["file_name"] == "report_masked.md" and body["file_size"] == promise.declared > 406
 
 
