@@ -19,6 +19,8 @@ import hashlib
 import io
 import logging
 import os
+import time
+from collections import OrderedDict
 from typing import Any
 
 from app import config
@@ -150,6 +152,30 @@ def status() -> dict[str, Any]:
     }
 
 
+# 업로드 사이 OCR 결과 캐시(그림 해시 → 읽은 결과). 그림 든 문서가 OCR 을 기다리다 사이트 업로드 시간이 지나면(맥 v0.2.60:
+# Claude "업로드 시간 초과") 다시 붙이거나 같은 문서를 다른 사이트에 올릴 때 다시 읽지 않는다. 읽은 글은 원문이라 메모리에만
+# 30분 둔다 — 프록시가 올린 첨부 원문을 들고 있는 시간(_PENDING_TTL_S)과 같다. 못 읽은 결과(None)는 담지 않는다.
+_CACHE_TTL_SEC = 1800.0
+_CACHE_MAX = 64
+_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+
+
+def _cached(key: str) -> dict[str, Any] | None:
+    hit = _cache.get(key)
+    if hit is None or hit[0] < time.monotonic():
+        _cache.pop(key, None)
+        return None
+    _cache.move_to_end(key)
+    return {**hit[1], "secs": 0.0}  # 이번엔 읽지 않았다
+
+
+def _remember(key: str, got: dict[str, Any]) -> None:
+    _cache[key] = (time.monotonic() + _CACHE_TTL_SEC, got)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
+
+
 def _target(blob: bytes) -> tuple[bool, str | None]:
     """(글자 검사 대상인가, 건너뛰는 이유)."""
     from PIL import Image, UnidentifiedImageError
@@ -168,7 +194,7 @@ async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dic
     """본문의 이미지 표시를 읽은 글로 바꾼다. 돌려주는 값: (글, 이미지별 정보).
 
     정보: {"index", "status": read|skipped|unchecked, "reason", "start", "end", "secs"} — start/end 는 바꾼 뒤 글 기준.
-    같은 이미지(같은 해시)는 한 번만 읽는다.
+    같은 이미지(같은 해시)는 한 번만 읽는다 — 30분 안에 다른 업로드에서 읽은 그림도 다시 읽지 않는다(_cache).
     """
     ocr = get()
     infos: list[dict[str, Any]] = []
@@ -184,11 +210,15 @@ async def fill(text: str, images: list[bytes], emit=None) -> tuple[str, list[dic
             if key not in read_cache:
                 if targets > config.IMAGE_OCR_MAX_IMAGES:
                     read_cache[key] = None
+                elif (hit := _cached(key)) is not None:
+                    read_cache[key] = hit
                 else:
                     if emit:
                         await emit({"type": "step", "step": 1, "label": f"이미지 속 글자 읽는 중 ({targets}번째)..."})
                     read_cache[key] = await ocr.read(blob)
                     failed_why[key] = getattr(ocr, "last_failure", None)
+                    if read_cache[key] is not None:
+                        _remember(key, read_cache[key])
             got = read_cache[key]
             if got is None:
                 info.update(status="unchecked", reason=(failed_why.get(key) or UNCHECKED_REASON)
