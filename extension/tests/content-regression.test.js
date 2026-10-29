@@ -312,6 +312,10 @@ let failNextOpenPanel = false;
 let failNextMultiPrompt = null;
 // content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
 let contentBridgeToken = '';
+// GET_PROXY_EXPECTATION 에 엔진이 답하는 값, 그리고 content.js 가 MAIN world 에 프록시 기대를 알릴 때 MAIN 이 HEAD 로
+// 다시 확인해 돌려줄 경로('proxy' | 'fallback' | null=답 없음).
+let proxyExpectedReply = false;
+let mainRouteReply = null;
 
 let lastProtectionState = null;
 const windowStub = {
@@ -335,6 +339,13 @@ const windowStub = {
   },
   postMessage(data) {
     if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
+    if (data?.type === 'SECUREDOC_PROXY_EXPECTATION' && data.enabled && mainRouteReply) {
+      const mode = mainRouteReply;
+      setTimeout(() => dispatchWindowMessage({
+        __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+        type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: true, markAt: mode === 'proxy' ? clock.now() : 0,
+      }), 5);
+    }
     if (data?.type === 'UPS_PROTECTION_STATE') lastProtectionState = data;
     // 승인은 이제 배치 단위다 — batchId 가 붙어야 끝나고 나서 회수할 수 있다.
     if (data?.type === 'UPS_CONTENT_APPROVE_BATCH') {
@@ -462,6 +473,7 @@ const chromeStub = {
         return;
       }
       if (message.type === 'CLOSE_PANEL') { cb?.({ ok: true }); return; }
+      if (message.type === 'GET_PROXY_EXPECTATION') { cb?.({ expected: proxyExpectedReply }); return; }
 
       // ── 다중 첨부 프로토콜(SW 흉내) ──────────────────────────────────────
       // content 는 lease 를 받기 전에는 인코딩조차 하지 않는다. 그래서 하네스가
@@ -2936,7 +2948,7 @@ cancelScan(stuckScan);
     domBySelector.set('[data-testid="chat-input"]', promptEditorStub);
     const route40 = (mode) => dispatchWindowMessage({
       __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
-      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', ttlMs: 15000,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', markAt: clock.now(),
     });
     // 그 사이트에서 프롬프트를 보내 검사가 시작되는지. 시작됐으면 취소로 끝내 다음 시도를 막지 않는다.
     const scans40 = async (host, text) => {
@@ -2968,6 +2980,37 @@ cancelScan(stuckScan);
           throw new Error(`(40) ${host} 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)`);
         }
       }
+      // 표식 확인 뒤 20초가 지나 그 사이 앱이 꺼졌거나 프록시를 껐다 — 넘기면 글이 직결로 검사 없이 나간다.
+      // 엔진에 다시 묻고 프록시가 아니면 확장이 검사한다.
+      await route40('proxy');
+      await clock.tick(20000);
+      proxyExpectedReply = false;
+      mainRouteReply = null;
+      if (!(await scans40('claude.ai', '프록시를 끈 뒤 보내는 claude.ai 요청'))) {
+        throw new Error('(40) 표식이 오래됐고 엔진이 프록시를 껐는데 확장이 손을 떼 글이 검사 없이 나갔다');
+      }
+      // 맥 D-3: 20초 뒤에도 여전히 프록시 경로면 확장 패널 없이 그대로 다시 보낸다(두 번 검사하지 않는다).
+      await route40('proxy');
+      await clock.tick(20000);
+      proxyExpectedReply = true;
+      mainRouteReply = 'proxy';
+      let clicked40 = 0;
+      domBySelector.set('button[aria-label="Send message"]', { disabled: false, getAttribute: () => null, click() { clicked40 += 1; } });
+      try {
+        const opens40 = runtimeMessages.length;
+        if (await scans40('claude.ai', '20초 쉬고 보내는 claude.ai 요청')) {
+          throw new Error('(40) 프록시 경로를 다시 확인했는데 확장이 또 프롬프트를 검사했다(맥 D-3)');
+        }
+        if (runtimeMessages.slice(opens40).some(m => m.type === 'OPEN_PANEL')) {
+          throw new Error('(40) 프록시가 맡는 전송인데 확장 패널을 열었다');
+        }
+        if (clicked40 !== 1) throw new Error(`(40) 다시 확인한 뒤 붙들었던 전송을 다시 보내지 않았다 (click=${clicked40})`);
+      } finally {
+        domBySelector.delete('button[aria-label="Send message"]');
+        proxyExpectedReply = false;
+        mainRouteReply = null;
+        await clock.tick(3500); // 우리 재전송을 통과시키는 promptApproved(3초)가 풀릴 때까지
+      }
       // 프록시가 프롬프트를 안 보는 사이트(copilot.microsoft.com — 업로드만 프록시)는 프록시 경로여도 확장이 본다.
       await route40('proxy');
       if (!(await scans40('copilot.microsoft.com', '의뢰인 주민번호 900101-1234567'))) {
@@ -2985,7 +3028,7 @@ cancelScan(stuckScan);
   {
     const route41 = (mode) => dispatchWindowMessage({
       __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
-      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', ttlMs: 15000,
+      type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: mode === 'proxy', markAt: clock.now(),
     });
     const intercepts41 = async (host) => {
       sandbox.location.hostname = host;
@@ -3003,11 +3046,15 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of [
-        'chatgpt.com', 'chat.openai.com', 'claude.ai', 'gemini.google.com', 'grok.com', 'www.perplexity.ai',
-      ]) {
+      for (const host of ['chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'www.perplexity.ai']) {
         if (!(await intercepts41(host))) {
           throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
+        }
+      }
+      // 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트는 프록시 방식에서 확장이 손을 뗀다(맥 v0.2.58 프록시 단독 실측).
+      for (const host of ['claude.ai', 'grok.com']) {
+        if (await intercepts41(host)) {
+          throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다`);
         }
       }
       // Perplexity 는 프롬프트를 프록시가 보지만(PROXY_PROMPT_HOSTS), 확장이 붙들어 둔 첨부가 있으면 전송 때

@@ -241,14 +241,29 @@
   let promptInProcess = false;
   let promptApproved = false;
 
-  // 프록시 병행: MAIN world 가 프록시 표식을 본 마지막 시각. 그 동안 확장은 손을 뗀다.
+  // 프록시 방식인가 — MAIN world 가 정해 알려 준다(엔진이 프록시를 켰고 이 탭에서 표식을 확인함).
+  // 시간이 지나도 유지한다. 15초 TTL 이던 때는 20초 쉬고 Enter 하면 확장이 다시 맡았다(맥 D-3).
   // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
-  let proxyMarkAt = 0;
-  let proxyTtlMs = 15000;
+  let proxyRoute = false;
+  let proxyMarkAt = 0; // MAIN world 가 표식을 실제로 본 마지막 시각
+  const PROXY_FRESH_MS = 15000; // interceptor.js _PROXY_RECHECK_MS 와 같다
+  const proxyRouteWaiters = new Set();
   function proxyInPath() {
-    // proxyMarkAt 0 = 표식을 한 번도 못 봄 = 프록시 경로 아님. 이 명시 검사가 없으면
-    // Date.now() 가 작을 때(테스트의 가상 시계 등) 0-0<TTL 이 참이 돼 오판한다.
-    return proxyMarkAt > 0 && Date.now() - proxyMarkAt < proxyTtlMs;
+    return proxyRoute;
+  }
+  // 넘기는 순간의 기준 — 그 사이 앱이 꺼졌거나 프록시를 껐으면 브라우저는 직결로 보낸다. 오래된 표식이면 다시 확인한다.
+  function proxyEvidenceFresh() {
+    return proxyRoute && Date.now() - proxyMarkAt < PROXY_FRESH_MS;
+  }
+  /** 엔진에 프록시를 다시 묻고 MAIN world 의 경로 확인(HEAD)을 기다린다. 여전히 프록시 경로면 true.
+   *  답이 없으면 false — 확장이 검사한다(fail-closed). */
+  function reconfirmProxyRoute(timeoutMs = 2000) {
+    return new Promise((resolve) => {
+      const done = (ok) => { clearTimeout(timer); proxyRouteWaiters.delete(done); resolve(ok); };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      proxyRouteWaiters.add(done);
+      refreshProxyExpectation(true).then((expected) => { if (!expected) done(false); });
+    });
   }
 
   // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS·
@@ -261,15 +276,17 @@
     return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
   }
 
-  // 앱+확장이 함께 있을 때 사이트가 파일을 받는 시점은 확장이 맡는다. ChatGPT 는 이미 이미지로 등록한 뒤
-  // 본문만 MD 로 바꾸면 invalid_image_format 이 되고, Claude·Grok 은 첨부 즉시 업로드해서 전송 전에
-  // 마스킹본 칩이 생긴다. Gemini·Perplexity 도 등록 메타데이터를 프록시에서 일관되게 바꿀 수 없다.
-  // 그래서 이 사이트들은 확장이 전송 시점까지 원본을 보류한 뒤 처음부터 올바른 이름·형식의 마스킹본을
-  // 등록한다. 프록시는 재주입된 파일을 다시 확인하므로 우회가 아니며, 확장이 없을 때는 기존 프록시
-  // 파일 검사가 그대로 안전망이 된다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
-  const PROXY_FILE_HOSTS = ['copilot.microsoft.com'];
+  // 프록시 방식에서 업로드를 프록시가 맡는(확장이 손 떼는) 사이트. 확장 방식과 프록시 방식을 나눈다(사용자 결정):
+  // 프록시 방식이면 확장이 깔렸든 아니든 결과가 같아야 한다. 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트부터
+  // 넘긴다 — Claude·Grok(맥 v0.2.58 프록시 단독 실측: docx·png·py 모두 가린 판으로 올라감). Claude 는 첨부 즉시 올리니
+  // 칩이 전송 전에 마스킹본(*_masked.md)으로 바뀐다. ChatGPT(그림은 프록시가 못 바꿔 막힘)·Gemini(전부 막힘)·
+  // Perplexity(그림 미확인)는 프록시가 처리하게 될 때까지 확장이 전송 시점까지 보류해 맡는다.
+  // interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
+  const PROXY_FILE_HOSTS = ['copilot.microsoft.com', 'claude.ai', 'grok.com'];
   function proxyChecksFiles() {
-    return proxyInPath() && PROXY_FILE_HOSTS.includes(location.hostname);
+    // 표식이 오래됐으면 이 첨부는 확장이 맡는다 — 프록시는 확장이 승인한 마스킹본을 다시 검사하지 않는다(#301).
+    // 첨부 버튼을 누르면(pointerdown) 확인이 다시 돌아, 보통은 파일을 고르는 동안 표식이 새로 잡힌다.
+    return proxyEvidenceFresh() && PROXY_FILE_HOSTS.includes(location.hostname);
   }
 
   function isSupportedFile(file) {
@@ -2740,10 +2757,26 @@
     // 프록시가 프롬프트를 보는 사이트라도 확장이 붙들어 둔 첨부가 있으면 함께 검사한다 — Perplexity 는 파일은
     // 확장(PROXY_FILE_HOSTS 에 없음), 프롬프트는 프록시가 맡아, 여기서 돌아가면 첨부가 검사도 전송도 안 된 채
     // 프롬프트만 나간다. 확장이 가린 프롬프트는 프록시를 깨끗한 글로 지난다.
-    if (proxyChecksPrompts() && !pendingBatch) return;
+    if (proxyChecksPrompts() && !pendingBatch && proxyEvidenceFresh()) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
     if (!text || text.length < 2) return;
+
+    // 프록시 방식인데 마지막 표식이 오래됐다 — 그 사이 앱이 꺼졌거나 프록시를 껐으면 지금 보내는 글은 직결로 나간다.
+    // 붙든 채 엔진·경로를 다시 확인하고(수십 ms), 여전히 프록시면 패널 없이 그대로 다시 보낸다(맥 D-3: 확장이
+    // 다시 맡아 두 번 검사하지 않는다). 아니면 아래로 내려가 확장이 검사한다.
+    if (proxyChecksPrompts() && !pendingBatch) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      promptInProcess = true; // 확인하는 동안 들어온 전송 시도도 막는다(blockedWhileScanning)
+      let still = false;
+      try { still = await reconfirmProxyRoute(); } finally { promptInProcess = false; }
+      if (still && proxyChecksPrompts() && !pendingBatch) {
+        promptApproved = true; // 우리 재전송만 통과시킨다 — 아래 finally 와 같은 3초
+        try { await resubmitPrompt(cfg); } finally { setTimeout(() => { promptApproved = false; }, 3000); }
+        return;
+      }
+    }
 
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -2985,8 +3018,9 @@
 
     if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
-      proxyMarkAt = event.data.mode === 'proxy' ? Date.now() : 0;
-      proxyTtlMs = Number(event.data.ttlMs) || proxyTtlMs;
+      proxyRoute = event.data.mode === 'proxy';
+      proxyMarkAt = proxyRoute ? Number(event.data.markAt) || 0 : 0;
+      for (const done of [...proxyRouteWaiters]) done(proxyEvidenceFresh());
       if (window.top === window) {
         try {
           chrome.runtime.sendMessage({
