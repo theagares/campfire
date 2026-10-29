@@ -4,7 +4,7 @@ app/core/parser/hidden.py
 
 파서는 숨긴 구간을 표식(사용 영역 문자 HS + 이유 코드 한 글자 + 글 + HE)으로 감싸 본문에 남긴다 — 그림 표시(images.py)와
 같은 방식. orchestrator 가 extract() 로 표식을 지우고 구간을 HIDDEN_TEXT 항목으로 바꾼다. 보이지 않는 유니코드(폭 없는
-문자·태그 문자·방향 제어)는 형식과 관계없이 모든 글(프롬프트 포함)에서 invisible_spans() 로 찾는다.
+문자 4글자 이상·태그 문자·방향 제어)는 형식과 관계없이 모든 글(프롬프트 포함)에서 invisible_spans() 로 찾는다.
 오탐을 줄이려고 사람이 정말 못 보는 경우만 잡는다 — 글자색은 실제 배경과 비교한다(어두운 칸의 흰 글씨는 보인다).
 """
 
@@ -25,8 +25,11 @@ REASONS = {
     "u": "보이지 않는 문자",
 }
 _MARKS = re.compile(f"[{HS}{HE}]")
-# 폭 없는 문자 U+200B–200F·2060–2064·FEFF, 방향 제어 U+202A–202E·2066–2069, 태그 문자 U+E0000–E007F(ASCII smuggling)
-_INVISIBLE = re.compile("[​-‏⁠-⁤﻿‪-‮⁦-⁩\U000e0000-\U000e007f]+")
+# 폭 없는 문자 U+200B–200F·2060–2064·FEFF 는 4글자 이상 이어질 때만 — 3글자 이하는 숨길 내용이 없고 웹 복사·편집기 흔적
+# (단어 사이 U+200B, Copilot 끝 U+200B U+200C, 이모지 잇기 U+200D)이 흔하다(마스터 결정 2026-10-30). 잡지도 지우지도 않는다.
+_ZERO_WIDTH = re.compile("[​-‏⁠-⁤﻿]{4,}")
+# 방향 제어 U+202A–202E·2066–2069(글 순서 뒤집기)와 태그 문자 U+E0000–E007F(ASCII smuggling)는 한 글자도
+_ALWAYS = re.compile("[‪-‮⁦-⁩\U000e0000-\U000e007f]+")
 _TAGS_END = "\U000e007f"
 
 
@@ -71,26 +74,21 @@ def extract(text: str) -> tuple[str, list[dict], Callable[[int], int]]:
     return "".join(pieces), spans, lambda pos: pos - bisect_left(cuts, pos)
 
 
-def _pictograph(ch: str) -> bool:
-    return bool(ch) and (ord(ch) >= 0x2600 or ch == "️")
-
-
 def invisible_spans(text: str) -> list[dict]:
-    """보이지 않는 유니코드 구간. 글 맨 앞 BOM, 이모지를 잇는 U+200D(👨‍👩‍👧), 지역 깃발(🏴 + 태그 문자)은 뺀다."""
+    """보이지 않는 유니코드 구간. 글 맨 앞 BOM 은 세지 않고, 지역 깃발(🏴 + 태그 문자)은 뺀다."""
     out = []
-    for m in _INVISIBLE.finditer(text):
+    for m in _ZERO_WIDTH.finditer(text):
         s, e = m.span()
         if s == 0 and text[0] == "﻿":
             s = 1
-        run = text[s:e]
-        if not run:
-            continue
-        if run == "‍" and _pictograph(text[s - 1:s]) and _pictograph(text[e:e + 1]):
-            continue
-        if run.endswith(_TAGS_END) and text[s - 1:s] == "\U0001f3f4" and all(c >= "\U000e0020" for c in run):
+        if e - s >= 4:
+            out.append({"start": s, "end": e, "reason": REASONS["u"]})
+    for m in _ALWAYS.finditer(text):
+        s, e = m.span()
+        if m.group().endswith(_TAGS_END) and text[s - 1:s] == "\U0001f3f4" and all(c >= "\U000e0020" for c in m.group()):
             continue
         out.append({"start": s, "end": e, "reason": REASONS["u"]})
-    return out
+    return sorted(out, key=lambda x: x["start"])
 
 
 def merge(spans: list[dict]) -> list[dict]:

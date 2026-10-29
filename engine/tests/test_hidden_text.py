@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import re
 
 import pytest
 
@@ -44,13 +45,24 @@ def test_표식을_지우고_구간과_옛_위치를_새_위치로_옮긴다():
 
 
 def test_보이지_않는_유니코드는_잡고_BOM_이모지_깃발은_뺀다():
-    text = "﻿안녕​​하세요 ‮역방향 \U000e0049\U000e0047\U000e004e 끝"
+    zw8 = "​‌​‍⁠​‌﻿"  # 폭 없는 문자 8글자 — 숨긴 비트열
+    text = f"﻿안녕{zw8}하세요 ‮역방향 \U000e0049\U000e0047\U000e004e 끝"
     spans = hidden.invisible_spans(text)
-    assert [text[s["start"]:s["end"]] for s in spans] == ["​​", "‮", "\U000e0049\U000e0047\U000e004e"]
+    assert [text[s["start"]:s["end"]] for s in spans] == [zw8, "‮", "\U000e0049\U000e0047\U000e004e"]
     assert {s["reason"] for s in spans} == {"보이지 않는 문자"}
     family = "\U0001f468‍\U0001f469‍\U0001f467"  # 👨‍👩‍👧
     england = "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"  # 🏴 잉글랜드 깃발
     assert hidden.invisible_spans(f"가족 {family} 깃발 {england}") == []
+
+
+def test_폭_없는_문자는_4글자_이상만_잡는다():
+    # 마스터 결정: 3글자 이하는 숨길 내용이 없고 웹 복사·편집기 흔적이 흔하다 — 잡지도 지우지도 않는다
+    assert hidden.invisible_spans("단어​사이") == []
+    assert hidden.invisible_spans("Copilot 답 끝​‌") == []
+    assert hidden.invisible_spans("셋​​​까지") == []
+    assert hidden.invisible_spans("﻿​​​본문") == [], "글 맨 앞 BOM 은 세지 않는다"
+    assert hidden.invisible_spans("넷​​​​부터") == [{"start": 1, "end": 5, "reason": "보이지 않는 문자"}]
+    assert len(hidden.invisible_spans("방향 ⁦하나⁩도")) == 2, "방향 제어는 한 글자도"
 
 
 def test_글자색은_실제_배경과_거의_같을_때만():
@@ -142,6 +154,17 @@ def test_pptx():
     dark = rect.text_frame.paragraphs[0].add_run()
     dark.text = "어두운 칸 흰 글씨"
     dark.font.color.rgb = RGBColor(255, 255, 255)
+    # 회사소개서처럼 색 띠 도형·사진 위에 채움 없는 글상자를 올린 흰 글씨는 보인다(아래 도형이 배경)
+    band = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(5.5), Inches(4), Inches(1))
+    band.fill.solid()
+    band.fill.fore_color.rgb = RGBColor(0x0A, 0x7C, 0x8C)
+    box(slide, "띠 위 흰 글씨", 1.5, 5.5)[1].font.color.rgb = RGBColor(255, 255, 255)
+    png = io.BytesIO()
+    from PIL import Image
+
+    Image.new("RGB", (200, 80), (20, 40, 60)).save(png, "PNG")
+    slide.shapes.add_picture(png, Inches(5), Inches(5.5), Inches(4), Inches(1.5))
+    box(slide, "사진 위 흰 글씨", 5.5, 5.7)[1].font.color.rgb = RGBColor(255, 255, 255)
     hidden_slide = prs.slides.add_slide(prs.slide_layouts[6])
     box(hidden_slide, "숨긴 슬라이드 글")
     hidden_slide._element.set("show", "0")
@@ -154,6 +177,7 @@ def test_pptx():
         "슬라이드 밖 숨김": "화면 밖 글자", "숨긴 도형": "숨김 서식", "숨긴 슬라이드 글": "숨김 서식",
     }
     assert "어두운 칸 흰 글씨" in raw and "8pt 정상" in raw and "[슬라이드 2]" in raw
+    assert "띠 위 흰 글씨" in raw and "사진 위 흰 글씨" in raw
 
 
 def test_xlsx():
@@ -226,6 +250,72 @@ def test_pdf():
     assert clean.count("White on white text") == 1, "본문에서 빼고 쪽 끝에만 — 두 번 나오면 안 된다"
     for visible in ("Visible body text line", "White on dark box", "OCR layer over scan", "Footnote eight point"):
         assert visible in clean and visible not in _found(raw)
+
+
+def test_pdf_사진_위_흰_제목과_행렬로_키운_글자는_숨긴_글이_아니다():
+    # pptx 를 PDF 로 바꾼 회사 문서: 사진·배너 위 흰 제목은 보인다. `1 Tf` + `12 0 0 12 Tm` 은 글꼴 크기 1 이지만 12pt 로 그린다.
+    fitz = pytest.importorskip("fitz")
+    from PIL import Image
+
+    from app.core.parser.pdf import extract_pdf
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    png = io.BytesIO()
+    Image.new("RGB", (400, 120), (30, 60, 90)).save(png, "PNG")
+    page.insert_image(fitz.Rect(50, 50, 450, 170), stream=png.getvalue())
+    page.insert_text((70, 110), "White title on photo", fontsize=20, color=(1, 1, 1))
+    page.insert_text((72, 400), "Normal body", fontsize=12)
+    xref = page.get_contents()[-1]
+    stream = doc.xref_stream(xref)
+    font = re.search(rb"/(\S+) [\d.]+ Tf", stream).group(1)
+    doc.update_stream(xref, stream + b"\nBT /" + font + b" 1 Tf 12 0 0 12 72 300 Tm (Matrix scaled text) Tj ET\n")
+
+    raw = extract_pdf(doc.tobytes())
+    assert _found(raw) == {}
+    clean = hidden.extract(raw)[0]
+    assert "White title on photo" in clean and "Matrix scaled text" in clean and "Normal body" in clean
+
+
+@pytest.mark.parametrize("rotation, crop", [(90, None), (0, (50, 60, 545, 800)), (270, (30, 40, 500, 780))])
+def test_pdf_회전된_쪽과_CropBox_가_옮겨진_쪽에서도_숨긴_글이_본문에_남지_않는다(rotation, crop):
+    # PyMuPDF 상자(회전 전·CropBox 기준)와 pdfplumber(회전 후·MediaBox 기준)가 어긋나면 숨긴 글이 본문에 그대로 새고
+    # 꼬리에 가린 사본만 붙는다
+    fitz = pytest.importorskip("fitz")
+    from app.core.parser.pdf import extract_pdf
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((120, 160), "Secret white instruction", fontsize=12, color=(1, 1, 1))
+    page.insert_text((120, 200), "Visible paragraph", fontsize=12)
+    page.insert_text((120, 240), "Hidden render mode", fontsize=12, render_mode=3)
+    if crop:
+        page.set_cropbox(fitz.Rect(*crop))
+    page.set_rotation(rotation)
+
+    raw = extract_pdf(doc.tobytes())
+    assert _found(raw) == {"Secret white instruction": "흰 바탕 흰 글씨", "Hidden render mode": "숨김 서식"}
+    clean, spans, _ = hidden.extract(raw)
+    body = clean[:min(s["start"] for s in spans)]
+    # pdfplumber 는 회전된 쪽 글을 세로·거꾸로 뽑기도 한다(원래 동작) — 순서와 상관없이 본문에 보이는 글의 글자만 남았는지 본다
+    assert sorted(re.sub(r"\s", "", body)) == sorted("Visibleparagraph"), f"숨긴 글이 본문에 남았다: {body!r}"
+
+
+def test_pdf_도형이_많은_쪽은_색_비교만_건너뛴다(monkeypatch):
+    # 글자마다 칠한 도형을 훑으면 도면·차트에서 O(글자×도형) — 합성 도형 5,000 + 글 2,000 쪽이 16.5초였다(파싱 상한에 걸리면 미검사)
+    fitz = pytest.importorskip("fitz")
+    from app.core.parser import pdf as pdf_mod
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    for i in range(20):
+        page.draw_rect(fitz.Rect(400 + i, 400, 420 + i, 420), color=None, fill=(0.4, 0.3, 0.5))
+    page.insert_text((72, 100), "White on white text", fontsize=12, color=(1, 1, 1))
+    page.insert_text((72, 140), "Invisible note", fontsize=12, render_mode=3)
+    data = doc.tobytes()
+    assert {t for _b, t, _c in pdf_mod._hidden_spans(data)[0]} == {"White on white text", "Invisible note"}
+    monkeypatch.setattr(pdf_mod, "_MAX_FILL_CHECKS", 10)  # 글 묶음 2 × 도형 20 = 40 > 10
+    assert [t for _b, t, _c in pdf_mod._hidden_spans(data)[0]] == ["Invisible note"], "색 비교만 건너뛰고 다른 규칙은 그대로"
 
 
 HTML = """<html><body>
@@ -326,7 +416,7 @@ def test_숨긴_글이_없으면_막지_않는다(clean_models, monkeypatch):
 
 def test_모델_인젝션_덩어리와_겹쳐도_숨긴_글_항목은_따로_남는다(clean_models, monkeypatch):
     # 먼저 넣으면 merge_overlapping 이 인젝션 덩어리로 합쳐 유형·잠금을 잃는다(패널에서 풀 수 있게 된다)
-    text = "보고서. ​​​ 끝."
+    text = "보고서. ​​​​ 끝."
     monkeypatch.setattr(registry, "get_injection_detector",
                         lambda: _Clean([{"type": "OTHER_INJECTION", "start": 0, "end": len(text), "confidence": 0.9}]))
     result = asyncio.run(run_pipeline(text=text, file_name="p.txt"))
@@ -340,9 +430,13 @@ def test_프롬프트의_보이지_않는_문자도_빠진다(clean_models):
     assert result["maskedText"] == "요약해 줘[숨긴 글 마스킹]"
     assert [i["reason"] for i in result["injectionItems"]] == ["보이지 않는 문자"]
     # 문서와 함께 온 사용자 프롬프트(확장 보류 전송)도
-    result = asyncio.run(run_pipeline(text="본문", file_name="p.txt", user_prompt="정리​​해 줘"))
+    result = asyncio.run(run_pipeline(text="본문", file_name="p.txt", user_prompt="정리​​​​해 줘"))
     assert result["userPromptMasked"] == "정리[숨긴 글 마스킹]해 줘"
     assert [i["type"] for i in result["userPromptPiiItems"]] == ["HIDDEN_TEXT"]
+    # 웹에서 복사한 흔적(폭 없는 문자 한두 글자)은 그대로 둔다
+    result = asyncio.run(run_pipeline(text="Copilot 답​‌", file_name="p.txt", direct_prompt=True,
+                                      scan_injection=False))
+    assert result["maskedText"] == "Copilot 답​‌" and result["injectionItems"] == []
 
 
 def test_모델이_아직_없어도_숨긴_글은_가린다(monkeypatch):

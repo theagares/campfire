@@ -83,12 +83,19 @@ def _slide_bg(slide, scheme: dict) -> str | None:
     return "FFFFFF"
 
 
-def _shape_fill(shape, slide_bg: str | None, scheme: dict) -> str | None:
-    """글 뒤에 실제로 보이는 색: 도형 채움, 채움 없음이면 슬라이드 배경. 모르면 None."""
+_NO_FILL = object()  # 채움 없는 도형 — 뒤에 있는 것이 보인다
+
+
+def _own_fill(shape, scheme: dict):
+    """도형 자체의 채움: RGB, 채움 없음이면 _NO_FILL, 모르면(그림·그라데이션·묶음·표) None."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    if shape.shape_type in (MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.GROUP) or getattr(shape, "has_table", False):
+        return None
     sp_pr = shape._element.find(f"{_P}spPr")
     if sp_pr is not None:
         if sp_pr.find(f"{_A}noFill") is not None:
-            return slide_bg
+            return _NO_FILL
         if sp_pr.find(f"{_A}solidFill") is not None:
             return _solid(sp_pr, scheme)
         if any(sp_pr.find(f"{_A}{t}") is not None for t in ("gradFill", "blipFill", "pattFill", "grpFill")):
@@ -96,6 +103,23 @@ def _shape_fill(shape, slide_bg: str | None, scheme: dict) -> str | None:
     ref = shape._element.find(f"{_P}style/{_A}fillRef")
     if ref is not None and ref.get("idx") not in (None, "0"):
         return _color(ref[0], scheme) if len(ref) else None
+    return _NO_FILL
+
+
+def _backdrop(shape, below: list, slide_bg: str | None, scheme: dict) -> str | None:
+    """채움 없는 도형 뒤에 실제로 보이는 색 — 그 가운데를 덮는 바로 아래 도형(z-순서), 없으면 슬라이드 배경.
+    회사소개서처럼 색 띠·카드 도형 위에 채움 없는 글상자를 올린 흰 글씨를 흰 슬라이드 배경과 비교하지 않게."""
+    box = (shape.left, shape.top, shape.width, shape.height)
+    if None in box:
+        return slide_bg
+    cx, cy = shape.left + shape.width / 2, shape.top + shape.height / 2
+    for under in reversed(below):
+        ubox = (under.left, under.top, under.width, under.height)
+        if None in ubox or not (ubox[0] <= cx <= ubox[0] + ubox[2] and ubox[1] <= cy <= ubox[1] + ubox[3]):
+            continue
+        fill = _own_fill(under, scheme)
+        if fill is not _NO_FILL:
+            return fill
     return slide_bg
 
 
@@ -154,7 +178,8 @@ def _off_slide(shape, width: int, height: int) -> bool:
 
 def _shape_parts(shape, images: list[bytes] | None, look: dict, code: str | None = None) -> list[str]:
     """도형 하나의 글/표/그림을 반환한다. 묶음 도형은 내부 좌표순으로 재귀 처리.
-    code 는 도형째 숨긴 이유(숨긴 슬라이드·숨긴 묶음·슬라이드 밖) — 그 안의 글은 모두 그 이유로 감싼다."""
+    code 는 도형째 숨긴 이유(숨긴 슬라이드·숨긴 묶음·슬라이드 밖) — 그 안의 글은 모두 그 이유로 감싼다.
+    look["bg"] 는 이 도형 뒤에 보이는 색(맨 위 도형은 _backdrop, 묶음 안은 묶음의 것)."""
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
     code = code or ("h" if _shape_hidden(shape) else None)
@@ -172,7 +197,8 @@ def _shape_parts(shape, images: list[bytes] | None, look: dict, code: str | None
         parts.extend(mark(images, blob) for blob in pptx_shape_images(shape))
     texts: list[str] = []
     if shape.has_text_frame:
-        if text := _frame_text(shape.text_frame, _shape_fill(shape, look["bg"], look["scheme"]), look["scheme"]):
+        own = _own_fill(shape, look["scheme"])
+        if text := _frame_text(shape.text_frame, look["bg"] if own is _NO_FILL else own, look["scheme"]):
             texts.append(text)
     if shape.has_table:
         texts.extend(_table_rows(shape.table, look["bg"], look["scheme"]))
@@ -192,12 +218,14 @@ def extract_pptx(file_bytes: bytes, images: list[bytes] | None = None) -> str:
     for idx, slide in enumerate(prs.slides, start=1):
         master = slide.slide_layout.slide_master
         scheme = schemes.setdefault(id(master), _scheme(master))
-        look = {"scheme": scheme, "bg": _slide_bg(slide, scheme)}
+        slide_bg = _slide_bg(slide, scheme)
         slide_code = "h" if slide._element.get("show") in ("0", "false") else None
+        z_order = list(slide.shapes)  # 그리는 순서(아래 → 위)
         parts = [
             part
-            for shape in sorted(slide.shapes, key=_shape_position)
-            for part in _shape_parts(shape, images, look,
+            for z, shape in sorted(enumerate(z_order), key=lambda zs: _shape_position(zs[1]))
+            for part in _shape_parts(shape, images,
+                                     {"scheme": scheme, "bg": _backdrop(shape, z_order[:z], slide_bg, scheme)},
                                      slide_code or ("o" if _off_slide(shape, width, height) else None))
         ]
         if parts:

@@ -268,6 +268,17 @@ const pendingState = () => ({
       decision: { action: 'upload', maskedBase64: 'eA==', fileName: 'Aurora_plan_masked.md' } }, {});
     const routed = w.tabsSent.find(t => t.msg?.type === 'PANEL_DECISION');
     assert.strictEqual(routed?.msg.decision.fileName, 'document_masked.md', '나가는 파일 이름에 등록어가 남았다');
+
+    // 숨긴 글(흰 바탕 흰 글씨 등)도 잠금 — 원본(숨긴 글째) 전송을 받지 않는다
+    const hiddenSession = {
+      tabId: 7, kind: 'file', status: 'ready', progress: [], error: null, meta: {}, seq: 4,
+      result: { originalText: '본문 숨긴 지시', forcedMaskItems: [],
+                injectionItems: [{ start: 3, end: 8, type: 'HIDDEN_TEXT', reason: '흰 바탕 흰 글씨' }] },
+    };
+    w = bootWorker(forcedState(hiddenSession));
+    const hiddenPass = await w.send({ type: 'PANEL_DECISION', sessionId: 'F1', tabId: 7,
+      decision: { action: 'passthrough' } }, {});
+    assert.strictEqual(hiddenPass?.reason, 'mandatory-mask', '숨긴 글이 있는데 원본 전송을 받아들였다');
   }
 
   // ── 이미지 속 글자 검사가 꺼져 그림을 검사하지 못한 문서: 깨끗해도 원본(그림째) 대신 그림을 뺀 글만 ──
