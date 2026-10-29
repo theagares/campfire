@@ -273,32 +273,39 @@ const meta = (n) => ({ fileName: `file-${n}.docx` });
   assert.strictEqual(p.width('progress-fill'), '75%');
 }
 
-// ── (9) 설정이 켜져 있어도 이번 검사에서 기밀 탐지가 돌 때만 불을 켠다 ─────────
-// 엔진은 KG 후보가 있는 글에서만 3단계를 보낸다. KG 와 관계없는 글·프롬프트나 KG·모델이 준비 안 된
-// 엔진에서는 탐지가 돌지 않는데, 예전엔 검사 내내 켜진 모양이라 "기밀 탐지가 돌았다" 로 보였다(사용자 제보).
+// ── (9) 불은 기밀 모델 준비(/health confidential.enabled && ready)로 켠다 — 앱 홈 칩과 같은 기준 ─────
+// 예전(#266)엔 이 세션에서 3단계가 실제로 돌았을 때만 켜, KG 후보가 없는 글·프롬프트에서는 모델이 준비돼 있어도
+// 꺼진 채였다("기밀 모델이 연결된 상태에서도 불이 안 들어온다", 사용자 제보). 패널은 새 검사마다 /health 를 다시 읽는다.
 {
-  const p = loadPanel({
-    connectionInfo: { ok: true, health: { confidential: { enabled: true, ready: false } } },
-  });
-  for (const step of [1, 2, 4]) {
+  const conf = (c) => ({ ok: true, health: { confidential: c } });
+  const opts = { connectionInfo: conf({ enabled: true, ready: true }) };
+  const p = loadPanel(opts);
+  assert.strictEqual(p.hidden('confidential-pill'), false);
+  assert.ok(!p.hasClass('confidential-pill', 'off'), '기밀 모델이 준비됐는데 불이 꺼져 있다');
+  for (const step of [1, 2, 4, 5]) {
     p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1, event: { type: 'step', step, done: true } });
   }
-  assert.strictEqual(p.hidden('confidential-pill'), false, '설정이 켜졌는데 기밀 탐지 줄이 숨었다');
-  assert.ok(p.hasClass('confidential-pill', 'off'), '기밀 탐지가 돌지 않았는데 불이 켜져 있다');
-  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'A', seq: 1, event: { type: 'step', step: 5, done: true } });
-  assert.ok(p.hasClass('confidential-pill', 'off'), '기밀 탐지 없이 끝난 검사에서 불이 켜졌다');
+  assert.ok(!p.hasClass('confidential-pill', 'off'), 'KG 후보가 없어 3단계가 안 돌았다고 준비된 모델의 불을 껐다');
 
-  // 다음 검사(B)에서 KG 후보가 있어 기밀 탐지가 돈다 → 켜짐
+  opts.connectionInfo = conf({ enabled: true, ready: false });  // 모델 준비 전(받는 중·KG 없음)
   p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 1 } });
-  assert.ok(p.hasClass('confidential-pill', 'off'));
-  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 3, label: '기밀 탐지 중' } });
-  assert.ok(!p.hasClass('confidential-pill', 'off'), '기밀 탐지가 도는데 불이 꺼져 있다');
-  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'B', seq: 2, event: { type: 'step', step: 5, done: true } });
-  assert.ok(!p.hasClass('confidential-pill', 'off'), '같은 검사의 다음 단계에서 기밀 탐지 불이 꺼졌다');
+  assert.strictEqual(p.hidden('confidential-pill'), false, '설정이 켜졌는데 기밀 탐지 줄이 숨었다');
+  assert.ok(p.hasClass('confidential-pill', 'off'), '기밀 모델이 준비 전인데 불이 켜져 있다');
 
-  // 그다음 검사(C)는 다시 끈 채로 시작한다 — 앞 검사의 불이 남지 않는다
-  p.send({ type: 'PANEL_SCAN_STATE', tabId: TAB, sessionId: 'C', seq: 3, kind: 'file', meta: meta('C') });
-  assert.ok(p.hasClass('confidential-pill', 'off'), '앞 검사의 기밀 탐지 불이 새 검사에 남았다');
+  opts.connectionInfo = conf({ enabled: true, ready: true });
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'C', seq: 3, event: { type: 'step', step: 1 } });
+  assert.ok(!p.hasClass('confidential-pill', 'off'), '모델이 준비되자 다시 읽었는데 불이 켜지지 않았다');
+
+  opts.connectionInfo = { ok: false };  // 엔진 연결이 끊김
+  p.send({ type: 'PANEL_PROGRESS', tabId: TAB, sessionId: 'D', seq: 4, event: { type: 'step', step: 1 } });
+  assert.strictEqual(p.hidden('confidential-pill'), false, '연결이 끊기자 줄까지 숨겼다');
+  assert.ok(p.hasClass('confidential-pill', 'off'), '엔진 연결이 끊겼는데 불이 켜져 있다');
+}
+
+// ── (9-1) 기밀 탐지 설정이 꺼져 있으면 모델이 준비돼 있어도 줄을 숨긴다 ──────────────
+{
+  const p = loadPanel({ connectionInfo: { ok: true, health: { confidential: { enabled: false, ready: true } } } });
+  assert.strictEqual(p.hidden('confidential-pill'), true, '기밀 탐지를 껐는데 줄이 보인다');
 }
 
 console.log('panel-session ok');
