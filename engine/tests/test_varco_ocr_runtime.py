@@ -57,9 +57,9 @@ def test_CUDA_는_남은_VRAM으로_묶음을_정한다(monkeypatch):
     # 12GB 빈 카드 — 가중치를 올린 뒤 약 7.4GB 가 남는다: 그림 한 장의 조각을 한 번에(예전 단계 규칙은 4/3000).
     _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT)
     assert runtime._memory_safe_limits("cuda", *CAP) == (16, 18000)
-    # 다른 GPU 작업자가 4GB 를 쓰면 약 3.4GB 남음 → (3.4 − 1.5)GB / 0.25MB
+    # 다른 GPU 작업자가 4GB 를 쓰면 약 3.4GB 남음 → (3.4 − 1.0 여유)GB / 0.25MB
     _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT - 4 * GIB)
-    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 7782)
+    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 9830)
     # v0.2.57 실측처럼 다른 프로세스가 7GB 를 쓰면 거의 안 남는다 → 가장 작은 묶음(그때 OOM 이 난 자리)
     _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT - 7 * GIB)
     assert runtime._memory_safe_limits("cuda", *CAP) == (2, 1500)
@@ -98,7 +98,7 @@ def test_Intel_XPU_는_전체에서_쓴_만큼을_빼고_정한다(monkeypatch):
     xpu = SimpleNamespace(get_device_properties=lambda _index: SimpleNamespace(total_memory=8 * GIB),
                           memory_allocated=lambda *_a: int(4.3 * GIB))
     monkeypatch.setattr(runtime.torch, "xpu", xpu, raising=False)
-    assert runtime._memory_safe_limits("xpu", *CAP) == (8, 9011)  # 8GB Arc — 예전 단계 규칙은 2/1500
+    assert runtime._memory_safe_limits("xpu", *CAP) == (8, 11059)  # 8GB Arc — 예전 단계 규칙은 2/1500
     xpu.get_device_properties = lambda _index: SimpleNamespace(total_memory=16 * GIB)
     assert runtime._memory_safe_limits("xpu", *CAP) == (16, 18000)
 
@@ -107,7 +107,7 @@ def test_Windows_는_묶음_메모리를_남은_시스템_커밋으로도_묶는
     # v0.2.62 측정: VRAM +4.8GB 일 때 사이드카 커밋 8GB — VRAM 이 넉넉해도 PC 커밋이 모자라면 큰 묶음을 쓰지 않는다.
     _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT)  # VRAM 은 약 7.4GB 남음
     monkeypatch.setattr(runtime, "_free_commit", lambda: 5 * GIB)  # 남은 커밋 5GB → 5 − 2(남김) = 3GB
-    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 6144)
+    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 8192)
     monkeypatch.setattr(runtime, "_free_commit", lambda: 2.5 * GIB)
     assert runtime._memory_safe_limits("cuda", *CAP) == (2, 1500)
     monkeypatch.setattr(runtime, "_free_commit", lambda: 40 * GIB)  # 커밋이 넉넉하면 VRAM 기준 그대로
@@ -128,6 +128,45 @@ def test_불러온_뒤_캐시를_비우고_나서_남은_메모리로_묶음을_
     monkeypatch.setattr(runtime.Reader, "_setup_token_count", lambda self: None)
     runtime.Reader("models", 16, 18000, "cuda")
     assert order == ["load", "empty", "limits"]
+
+
+class _OomReader:
+    def __init__(self, fails: int):
+        self.batch, self.budget, self.fails, self.calls = 16, 18000, fails, []
+
+    def read(self, _img):
+        self.calls.append((self.batch, self.budget))
+        if self.fails:
+            self.fails -= 1
+            raise runtime.torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return {"text": "읽음", "tiles": [], "secs": 1.0}
+
+
+def test_OOM_이면_묶음을_반으로_줄여_다시_읽는다(monkeypatch):
+    # 여유분 1.0GB 는 같은 카드의 통합 worker·브라우저가 잠깐 더 쓰면 넘칠 수 있다 — 넘쳐도 그림을 막지 않고 작은 묶음으로 끝까지.
+    monkeypatch.setattr(runtime, "_empty_cache", lambda _d: None)
+    reader = _OomReader(fails=2)
+    assert runtime._read_shrinking(reader, None, "cuda")["text"] == "읽음"
+    assert reader.calls == [(16, 18000), (8, 9000), (4, 4500)]
+
+
+def test_가장_작은_묶음에서도_넘치면_실패를_그대로_올린다(monkeypatch):
+    monkeypatch.setattr(runtime, "_empty_cache", lambda _d: None)
+    reader = _OomReader(fails=99)
+    with pytest.raises(runtime.torch.cuda.OutOfMemoryError):
+        runtime._read_shrinking(reader, None, "cuda")
+    assert reader.calls == [(16, 18000), (8, 9000), (4, 4500), (2, 2250), (2, 1500)], "가장 작은 묶음까지 줄인 뒤 포기"
+
+
+def test_줄인_묶음은_다음_그림에서_남은_메모리로_다시_정한다(monkeypatch):
+    # 서버 측정: 잠깐 넘친 뒤 줄인 묶음을 그대로 두면 44장 722초, 그림마다 남은 메모리로 다시 정하면 413초(OOM 0번).
+    monkeypatch.setattr(runtime, "_empty_cache", lambda _d: None)
+    spare = iter([(8, 6160), (2, 1500), (8, 6160)])  # 다른 프로세스가 잠깐 더 썼다가 놓았다
+    monkeypatch.setattr(runtime, "_memory_safe_limits", lambda *_a: next(spare))
+    reader = _OomReader(fails=1)
+    for _ in range(3):
+        runtime._read_one(reader, None, "cuda", 16, 18000)
+    assert reader.calls == [(8, 6160), (4, 3080), (2, 1500), (8, 6160)], "넘치면 그 그림만 줄이고, 풀리면 다시 큰 묶음으로"
 
 
 class _Tiny(runtime.torch.nn.Module):

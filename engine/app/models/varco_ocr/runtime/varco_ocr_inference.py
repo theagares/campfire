@@ -210,7 +210,9 @@ def resolve_device() -> str | None:
 
 
 _BYTES_PER_TOKEN = 0.25 * 1024**2  # 묶음 입력 토큰당 더 쓰는 GPU 메모리(실측 약 0.25MB)
-_HEADROOM = 1.5 * 1024**3  # 출력 KV·작업 공간·조각 크기 흔들림 여유
+# 출력 KV·작업 공간·조각 크기 흔들림 여유. 1.5 → 1.0GB(서버 측정, 12GB 카드 + 통합 worker 흉내: 묶음 4 → 8, 그림 44장
+# 455 → 373초, 최고 예약이 상한 아래 0.27GB, CER 그대로). 0.5GB 는 넘쳤다. 넘치면 묶음을 줄여 다시 읽는다(_read_shrinking).
+_HEADROOM = 1.0 * 1024**3
 # Windows 에서 남겨 둘 시스템 커밋. v0.2.62 측정: VRAM +4.8GB 일 때 사이드카 커밋 8GB — GPU 할당이 커밋으로도 잡힌다고 보고
 # (WDDM 백킹, 확인 중) 큰 묶음이 PC 커밋을 바닥내지 않게 묶음 메모리를 남은 커밋으로도 묶는다.
 _COMMIT_RESERVE = 2 * 1024**3
@@ -273,6 +275,27 @@ def _empty_cache(device: str) -> None:
     empty = getattr(backend, "empty_cache", None)
     if empty is not None:
         empty()
+
+
+def _read_shrinking(reader: "Reader", img: Image.Image, device: str) -> dict:
+    """묶음이 남은 메모리를 넘으면(OOM) 묶음을 반으로 줄여 다시 읽는다 — 가장 작은 묶음(2/1500)에서도 넘치면 그대로
+    실패(그 그림은 미검사). 같은 카드의 통합 worker·브라우저가 잠깐 더 쓰면 여유분(_HEADROOM)을 넘을 수 있다."""
+    while True:
+        try:
+            return reader.read(img)
+        except torch.cuda.OutOfMemoryError:  # torch 2.5+ 에선 torch.OutOfMemoryError 와 같다(XPU 도 이것을 낸다)
+            _empty_cache(device)
+            if reader.batch <= 2 and reader.budget <= 1500:
+                raise
+            reader.batch, reader.budget = max(2, reader.batch // 2), max(1500, reader.budget // 2)
+
+
+def _read_one(reader: "Reader", img: Image.Image, device: str, batch: int, token_budget: int) -> dict:
+    """그림마다 남은 메모리로 묶음을 다시 정하고 읽는다 — 통합 worker 가 잠깐 더 쓰면 작게, 풀리면 다시 크게. 서버 측정(12GB +
+    worker 흉내, 다른 프로세스가 그림 3장 동안 1.5GB 를 더 씀, 44장): 넘친 뒤 줄인 묶음을 그대로 두면 722초, 처음 크기로
+    되돌리면 406초(OOM 5번), 남은 메모리로 다시 정하면 413초(OOM 0번)."""
+    reader.batch, reader.budget = _memory_safe_limits(device, batch, token_budget)
+    return _read_shrinking(reader, img, device)
 
 
 @torch.no_grad()
@@ -450,7 +473,7 @@ def main() -> None:
             results = []
             for b64 in req["images"]:
                 img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-                results.append(reader.read(img))
+                results.append(_read_one(reader, img, device, args.batch, args.token_budget))
                 _empty_cache(device)
             out = {"id": req_id, "results": results}
         except Exception as e:  # noqa: BLE001 - 한 요청의 실패로 프로세스를 죽이지 않는다
