@@ -624,12 +624,18 @@
   // M-8: 첨부 없이 Perplexity 탭을 열기만 해도 "업로드를 멈췄습니다"). FormData 에 Blob 을 넣으면 이름이 "blob" 이 된다.
   // 사용자가 고른 파일은 이름이 있다 — content.js 는 그런 파일(선택·끌어 놓기·붙여넣기)만 보므로 형식으로 받아도 된다.
   const TEXT_TYPES = /^(text\/|application\/(json|xml|javascript|x-yaml))/i;
+  // 사용자 파일만 올라가는 업로드 주소. 여기로 가는 파일은 이름(·형식)이 없어도 업로드로 본다 — Perplexity 는 여러 줄
+  // 붙여넣기를 첨부 파일로 바꿔 이 S3 로 올리는데, 그 파일이 이름 없는 평문이면 위 규칙에 걸려 검사 없이 나갈 수 있다.
+  // 분석·기록 요청(Datadog RUM·cdn-cgi·/rest/event/analytics)은 다른 주소라 걸리지 않는다.
+  const KNOWN_UPLOAD_URL = /^https:\/\/ppl-ai-file-upload\.s3\.amazonaws\.com\//i;
 
-  function isSupportedFile(b) {
+  function isSupportedFile(b, url = '') {
     if (!isProtectionEnabled() || !isFileInterceptEnabled()) return false;
     if (!b) return false;
-    const named = typeof b.name === 'string' && b.name !== '' && b.name !== 'blob';
+    const known = KNOWN_UPLOAD_URL.test(url);
+    const named = known || (typeof b.name === 'string' && b.name !== '' && b.name !== 'blob');
     return (SUPPORTED_TYPES.has(b.type) && (named || !TEXT_TYPES.test(b.type))) || SUPPORTED_EXTS.test(b.name || '')
+      || (known && !b.type)  // 붙여넣기 가상 파일이 형식 없이 올 수도 있다
       || (_imageScanEnabled && (IMAGE_TYPES.has(b.type) || IMAGE_EXTS.test(b.name || '')));
   }
 
@@ -1247,7 +1253,7 @@
     }
 
     // ── 원본 파일 (Blob body): 차단 후 처리 ─────────────────────────────────
-    if (body instanceof Blob && isSupportedFile(body) && !_inProcess.has(body)) {
+    if (body instanceof Blob && isSupportedFile(body, _xhrUrls.get(this) || '') && !_inProcess.has(body)) {
       const file = body instanceof File
         ? body
         : new File([body], 'upload.' + (body.type === 'application/pdf' ? 'pdf' : 'docx'), { type: body.type });
@@ -1288,7 +1294,7 @@
     // 첫 파일만 보지 않는다. 한 FormData 에 지원 파일이 여럿이면 예전 코드는 첫 번째만
     // 검사하고 나머지는 **원본 그대로** 같이 올려보냈다 — 다중 첨부에서는 그게 기본 상황이다.
     if (body instanceof FormData) {
-      const pending = unapprovedEntries(body);
+      const pending = unapprovedEntries(body, _xhrUrls.get(this) || '');
       if (pending.length) {
         const self = this;
         debugLog(`[SecureDoc] 📁 [2] XHR FormData: ${pending.length}개 파일`);
@@ -1332,17 +1338,17 @@
     return out;
   }
 
-  function findFileInFD(fd) {
+  function findFileInFD(fd, url = '') {
     for (const [, val] of fd.entries()) {
-      if (val instanceof File && isSupportedFile(val)) return val;
+      if (val instanceof File && isSupportedFile(val, url)) return val;
     }
     return null;
   }
 
-  /** 검사가 필요한(=아직 승인되지 않은) 파일 엔트리들. */
-  function unapprovedEntries(fd) {
+  /** 검사가 필요한(=아직 승인되지 않은) 파일 엔트리들. url: 알려진 업로드 주소면 이름 없는 파일도 본다(KNOWN_UPLOAD_URL). */
+  function unapprovedEntries(fd, url = '') {
     return fileEntriesOf(fd).filter(e => (
-      isSupportedFile(e.file) && !_inProcess.has(e.file)
+      isSupportedFile(e.file, url) && !_inProcess.has(e.file)
       && !_approvedFiles.has(e.file) && !_isContentApprovedBlob(e.file)
     ));
   }
@@ -1456,12 +1462,12 @@
       return _origFetch(input, init);
     }
     if (body instanceof FormData) {
-      const file = findFileInFD(body);
+      const file = findFileInFD(body, url);
       // 이름이 아니라 자리로 갈아끼우기 위해 이 파일이 몇 번째 엔트리인지 기억해 둔다
       // (같은 파일명이 두 개면 이름 기준 교체는 한 개로 두 자리를 덮어쓴다).
       const fileAt = file ? (fileEntriesOf(body).find(e => e.file === file)?.at ?? -1) : -1;
       const swapAt = (fd, f) => (fileAt >= 0 ? replaceEntriesAt(fd, [{ at: fileAt, file: f }]) : fd);
-      if (file && isSupportedFile(file)) _autoDetectUploadLayer('fetch-formdata');
+      if (file && isSupportedFile(file, url)) _autoDetectUploadLayer('fetch-formdata');
       if (file && _isContentApprovedBlob(file)) {
         debugLog(`[SecureDoc] ✅ content 검토 완료 파일 업로드 통과 (fetch FormData): ${file.name}`);
         return _origFetch(input, init);
@@ -1515,7 +1521,7 @@
         }
       }
     }
-    if (body instanceof Blob && isSupportedFile(body) && !_inProcess.has(body) && !_isContentApprovedBlob(body)) {
+    if (body instanceof Blob && isSupportedFile(body, url) && !_inProcess.has(body) && !_isContentApprovedBlob(body)) {
       const file = body instanceof File ? body : new File([body], 'upload', { type: body.type });
       debugLog(`[SecureDoc] 📁 [3] fetch Blob: ${file.name}`);
       const result = await requestProcessing(file);
