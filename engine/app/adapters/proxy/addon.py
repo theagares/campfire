@@ -670,6 +670,13 @@ class CampfireAddon:
         elif host == GEMINI_UPLOAD_HOST:
             self._gemini_start_response(flow)
             self._gemini_finalize_response(flow)
+        # multipart 업로드(Claude·Grok) 응답이 알려 주는 파일 id 로 대기 첨부를 묶는다 — 전송이 그 id 로 첨부를 가리키므로
+        # 그 전송에 실린 첨부만 판정한다(_judge_attached). 예전엔 "이 사이트의 다음 전송" 으로 추정했다(#316).
+        pending = flow.metadata.get("campfire_pending")
+        if pending is not None and not pending.ids and flow.response is not None:
+            ref = _upload_ref(flow.response.get_text())
+            if ref:
+                pending.ids = (ref,)
 
     # ── Claude 메시지 RPC 경로 ───────────────────────────────────────────────
 
@@ -883,6 +890,8 @@ class CampfireAddon:
             slots = find_slots(obj)
             if slots is None:
                 return
+            # 첨부 판정은 그 메시지에 실린 파일 id(Grok file_attachment_ids)로 잇는다 — 웹소켓 흐름의 요청 본문은 비어 있다.
+            flow.metadata["campfire_attach_refs"] = msg.content
             if not await self._mask_slots(flow, host, slots):
                 raise ValueError("글 칸이 없거나 검토 결과 전송하지 않기로 했다")
             msg.text = _dumps(obj)
@@ -1690,6 +1699,23 @@ class _TextSlot:
     def __init__(self, text: str) -> None:
         self.text = text
         self.value = text.encode("utf-8")
+
+
+def _upload_ref(text: str | None) -> str | None:
+    """업로드 응답에서 전송이 첨부를 가리키는 id(2026-10-29 맥 캡처).
+
+    Claude  POST /api/<org>/upload            {"file_uuid": …}  → PerformAction 첨부 칸에 그 uuid
+    Grok    POST /http/upload-file-v2/direct  {"fileMetadata": {"fileMetadataId": …}} → response.create 의 file_attachment_ids
+    """
+    try:
+        data = json.loads(text or "")
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    meta = data.get("fileMetadata")
+    ref = data.get("file_uuid") or (meta.get("fileMetadataId") if isinstance(meta, dict) else None)
+    return ref if isinstance(ref, str) and ref else None
 
 
 def _dumps(obj) -> str:
