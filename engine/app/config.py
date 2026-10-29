@@ -464,6 +464,10 @@ IMAGE_OCR_BATCH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_BATCH", "16"))
 # 가중치를 올린 뒤 남은 메모리로 실제 묶음을 정한다(varco_ocr_inference._memory_safe_limits). 18000 이면 그림 한 장의 조각을
 # 한 번에(맥 v0.2.60 문서 속 그림 다섯 장: generate 24회 → 5회).
 IMAGE_OCR_TOKEN_BUDGET: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_TOKEN_BUDGET", "18000"))
+# NVIDIA CUDA 에서 디코딩 한 단계를 CUDA 그래프로 되풀이한다(varco_ocr_inference.GraphDecoder, Triton 불필요). 출력은 같고
+# 서버 측정 12GB+통합 worker 흉내에서 그림 44장 387 → 221초(transformers 5.14.1). 그래프 경로가 한 번이라도 실패하면 엔진이 이번 실행 동안
+# 끄고 HF 경로로 다시 띄운다(image_ocr). 0 이면 처음부터 끈다. MPS·XPU 는 원래 HF 경로다.
+IMAGE_OCR_CUDA_GRAPH: bool = os.environ.get("SECUREDOC_IMAGE_OCR_CUDA_GRAPH", "1") != "0"
 # 마지막으로 쓴 뒤 이만큼 지나면 사이드카를 내린다 — 가중치만 약 4.1GB 라 계속 두지 않는다.
 IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDLE_UNLOAD_SEC", "120"))
 # Windows 남은 시스템 커밋(MB)이 이보다 적으면 사이드카를 띄우지 않는다 / 떠 있어도 읽지 않고 내린다 — 문서 속 그림은 빼고

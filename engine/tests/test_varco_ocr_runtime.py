@@ -132,7 +132,7 @@ def test_불러온_뒤_캐시를_비우고_나서_남은_메모리로_묶음을_
 
 class _OomReader:
     def __init__(self, fails: int):
-        self.batch, self.budget, self.fails, self.calls = 16, 18000, fails, []
+        self.batch, self.budget, self.fails, self.calls, self.graph = 16, 18000, fails, [], None
 
     def read(self, _img):
         self.calls.append((self.batch, self.budget))
@@ -261,3 +261,84 @@ def test_식으로_센_토큰이_실제_프로세서_인코딩과_같다():
     for wh in RESOLUTIONS:
         crop = Image.new("RGB", wh)
         assert reader._encode([crop])["input_ids"].shape[1] == reader._ntok(crop), wh
+
+
+# ── CUDA 그래프 경로(GraphDecoder) — 모델 없이 ───────────────────────────────────────────────────────────
+def _hf_stop(prompt: list[int], gen: list[int], limit: int, eos: int) -> int:
+    """HF generate + _stopper 가 줄 하나를 몇 번째 생성 토큰에서 멈추는지(포함) — 한 단계씩 그대로 돌려 본다."""
+    torch = runtime.torch
+    stop = runtime._stopper(torch.tensor([limit]), len(prompt))[0]
+    for k in range(1, len(gen) + 1):
+        if gen[k - 1] == eos or bool(stop(torch.tensor([prompt + gen[:k]]), None)[0]):
+            return k
+    return len(gen)
+
+
+@pytest.mark.parametrize("gen, limit", [
+    ([5, 6, 7, 1, 9, 9], 64),  # EOS(1)
+    ([5, 6] + [8] * 20, 64),  # 같은 토큰 12번
+    ([5, 6, 7] + [3, 4, 2] * 15, 64),  # 3토큰 주기
+    (list(range(10, 110)) + [11, 12, 13, 14, 15, 16, 17] * 20, 400),  # 96토큰 넘어 7토큰 주기
+    (list(range(10, 90)), 50),  # 조각별 상한
+    (list(range(10, 40)), 64),  # 안 끝남
+])
+def test_그래프_경로는_HF_generate_와_같은_자리에서_멈춘다(gen, limit):
+    prompt = [0, 0, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]  # 왼쪽 패딩 포함
+    assert runtime._stop_at(prompt + gen, len(prompt), limit, eos=1) == _hf_stop(prompt, gen, limit, eos=1)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("CUDA error: an illegal memory access was encountered"),
+                                   runtime.torch.cuda.OutOfMemoryError("CUDA out of memory")])
+def test_그래프_경로의_오류는_무엇이든_GraphFailed_로_올린다(error):
+    graph = runtime.GraphDecoder.__new__(runtime.GraphDecoder)
+
+    def boom(*_a):
+        raise error
+
+    graph._rows = boom
+    with pytest.raises(runtime.GraphFailed, match=type(error).__name__):
+        graph.rows(None, None)
+
+
+def test_그래프를_켠_프로세스만_CUDA_오류에_버린다():
+    on, off = SimpleNamespace(graph=object()), SimpleNamespace(graph=None)
+    assert runtime._fatal(on, runtime.GraphFailed("x"))
+    assert runtime._fatal(on, RuntimeError("CUDA error: an illegal memory access was encountered"))  # 다른 자리에서 나와도
+    assert not runtime._fatal(on, ValueError("그림을 열 수 없음"))
+    assert not runtime._fatal(off, RuntimeError("CUDA error: an illegal memory access was encountered"))
+
+
+class _Inputs(dict):
+    def to(self, *_a):
+        return self
+
+
+def test_그래프가_긴_묶음을_넘기면_그_묶음만_HF_generate_로(monkeypatch):
+    from PIL import Image
+
+    torch = runtime.torch
+    reader = runtime.Reader.__new__(runtime.Reader)
+    reader.device, reader.batch, reader.budget, reader.eos, reader.pad = "cuda", 16, 18000, 1, 0
+    reader._ntok = lambda _c: 10
+    reader.proc = SimpleNamespace(
+        apply_chat_template=lambda convs, **_k: _Inputs(input_ids=torch.zeros((len(convs), 4), dtype=torch.long)),
+        decode=lambda ids, **_k: "읽은 글 " + "-".join(map(str, ids)))
+    monkeypatch.setattr(runtime, "segment", lambda _img: [(0, (0, 0, 200, 40)), (0, (210, 0, 400, 40))])
+    calls = []
+    reader.model = SimpleNamespace(generate=lambda **_k: calls.append("hf") or torch.tensor([[0] * 4 + [7, 8, 1, 0]] * 2))
+    reader.graph = SimpleNamespace(rows=lambda inputs, limits: [[5, 6], [5]])
+    assert "5-6" in reader.read(Image.new("RGB", (400, 40)))["text"] and calls == []
+    reader.graph = SimpleNamespace(rows=lambda inputs, limits: None)  # _GRAPH_NEW 를 넘겨도 안 끝남
+    assert "7-8" in reader.read(Image.new("RGB", (400, 40)))["text"] and calls == ["hf"]
+
+
+def test_CUDA_그래프면_묶음_크기별_그래프_몫을_빼고_묶음을_정한다(monkeypatch):
+    # 서버 실측 그래프 몫(예약): 묶음 2 174MB · 4 400MB · 8 742MB · 16 1510MB → 0.1GB + 줄당 96MB.
+    _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT)  # 12GB 에 OCR 만 — 그래프 몫을 빼도 큰 묶음
+    assert runtime._memory_safe_limits("cuda", *CAP, graph=True) == (16, 18000)
+    _cuda(monkeypatch, 3.4 * GIB)  # 다른 GPU 작업자가 4GB
+    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 9830)
+    assert runtime._memory_safe_limits("cuda", *CAP, graph=True) == (8, 6348)
+    _cuda(monkeypatch, 2.5 * GIB)  # 서버 12GB + 통합 worker 흉내(상한 6.5GB − 가중치)
+    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 6144)
+    assert runtime._memory_safe_limits("cuda", *CAP, graph=True) == (4, 4198), "그래프 몫을 빼면 한 단계 작은 묶음"
