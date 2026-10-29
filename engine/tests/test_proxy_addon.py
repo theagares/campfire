@@ -607,7 +607,7 @@ def test_원본_전송을_골라도_선언값에_맞춰_채운다():
     a = CampfireAddon()
     _armed(a, "/files/orig/raw", declared=64)
 
-    async def original(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def original(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         return _ORIGINAL
 
     a._scan_and_decide = original  # type: ignore[assignment]
