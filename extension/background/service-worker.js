@@ -62,8 +62,9 @@ async function probePort(port, { noteWaiting = false } = {}) {
       return { port, waiting: true };
     }
     return null;
-  } catch (_) {
-    return null;
+  } catch (err) {
+    // 시간 초과는 엔진이 바쁜 것(검사 중)일 수 있다 — "없음" 과 구분해 알린다(discoverServer).
+    return err?.name === 'AbortError' ? { port, timedOut: true } : null;
   } finally {
     clearTimeout(timer);
   }
@@ -83,7 +84,7 @@ async function probePort(port, { noteWaiting = false } = {}) {
 async function discoverServer() {
   const ports = Array.from({ length: PORT_SCAN_COUNT }, (_, i) => BASE_PORT + i);
   const results = await Promise.all(ports.map((p) => probePort(p, { noteWaiting: true })));
-  const hits = results.filter((r) => r && !r.waiting).sort((a, b) => a.port - b.port);
+  const hits = results.filter((r) => r && !r.waiting && !r.timedOut).sort((a, b) => a.port - b.port);
   if (hits.length === 0) {
     await chrome.storage.session.remove(CACHE_KEY);
     // 앱은 떠 있는데 규칙을 아직 못 넘겼다 — 맥에서는 새 버전 첫 실행의 키체인 승인 창을
@@ -95,6 +96,14 @@ async function discoverServer() {
         + "키체인 승인 창('Campfire Safe Storage')에서 로그인 암호를 입력하고 '항상 허용'을 "
         + '누른 뒤 다시 보내 주세요. (검사 없이 전송하지 않습니다)',
       ), { code: 'policy-waiting', port: results.find((r) => r?.waiting).port });
+    }
+    // 앱은 떠 있는데 /health 가 제한 시간(HEALTH_TIMEOUT_MS) 안에 답하지 못했다 — 검사를 돌리느라 바쁜 경우다.
+    // "엔진을 찾을 수 없습니다" 로 알리면 앱이 꺼진 것으로 읽힌다(맥 v0.2.60 M-8: 엔진은 살아 있었다).
+    if (results.some((r) => r?.timedOut)) {
+      throw new Error(
+        '로컬 엔진이 응답하지 않습니다 — 검사를 처리하느라 바쁠 수 있습니다. 잠시 뒤 다시 보내 주세요. '
+        + '(검사 없이 전송하지 않습니다)',
+      );
     }
     throw new Error(
       '로컬 엔진을 찾을 수 없습니다. Campfire 앱이 실행 중인지 확인하세요. '
@@ -272,7 +281,20 @@ async function removeProxyRoute(tabId) {
 
 // 경로 보고의 TTL은 유휴 탭을 위해 10분이다. 닫은 탭만큼은 즉시 지워 연결 화면의
 // "AI 탭 N개"가 실제 열린 탭 수와 바로 맞게 한다.
-chrome.tabs.onRemoved?.addListener((tabId) => { void removeProxyRoute(tabId); });
+// 그 탭의 검토 세션도 지운다 — 남기면 storage.session 에 끝나지 않을 "검사 중" 세션이 쌓인다(맥 v0.2.60 M-8: 막힌
+// "upload" 세션 4개가 status=scanning 으로 남았다).
+chrome.tabs.onRemoved?.addListener((tabId) => {
+  void removeProxyRoute(tabId);
+  void ensureHydrated().then(() => {
+    const gone = [...sessions].filter(([, s]) => s.tabId === tabId).map(([sid]) => sid);
+    for (const sid of gone) {
+      endSession(sid);
+      sessions.delete(sid);
+      if (activeSessionId === sid) activeSessionId = null;
+    }
+    if (gone.length) persistSessions();
+  });
+});
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const JOB_EVENT_POLL_MS = 250;
@@ -447,12 +469,20 @@ function ensureHydrated() {
       .then((data) => {
         const saved = data?.[SESSION_STATE_KEY];
         if (!saved) return;
+        let stale = false;
         for (const [id, s] of Object.entries(saved.sessions || {})) {
+          // 서비스 워커가 다시 떴다 = 그 전에 "검사 중" 이던 세션의 엔진 요청은 함께 끊겼다. 끝날 수 없으니 버린다
+          // (콘텐츠 쪽은 응답 채널이 끊겨 이미 막는 쪽으로 끝났다).
+          if (s?.status === 'scanning') { stale = true; continue; }
           if (!sessions.has(id)) sessions.set(id, s);
         }
         if (activeSessionId == null) activeSessionId = saved.activeSessionId ?? null;
         // seq 는 반드시 단조 증가여야 한다 — 되돌아가면 위 2) 가 재현된다.
         sessionSeq = Math.max(sessionSeq, saved.sessionSeq || 0);
+        if (stale) {
+          if (activeSessionId && !sessions.has(activeSessionId)) activeSessionId = null;
+          persistSessions();
+        }
       })
       .catch(() => { /* storage 가 없으면 메모리만으로 동작한다 */ });
   }

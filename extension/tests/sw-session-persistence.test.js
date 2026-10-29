@@ -39,6 +39,7 @@ const noop = () => {};
  *  같은 객체로 두 번 기동하면 재시작을 재현할 수 있다. */
 function bootWorker(storageBacking, opts = {}) {
   const listeners = [];
+  const removedListeners = []; // chrome.tabs.onRemoved
   const tabsSent = [];
   const reloads = []; // chrome.runtime.reload() 때까지 탭에 보낸 메시지 수
   const local = opts.local || {}; // storage.local — 같은 객체로 다시 기동하면 다시 로드한 뒤를 재현한다
@@ -81,6 +82,7 @@ function bootWorker(storageBacking, opts = {}) {
       tabs: {
         sendMessage: (tabId, msg) => { tabsSent.push({ tabId, msg }); return Promise.resolve(); },
         query: () => Promise.resolve(opts.tabs || []),
+        onRemoved: { addListener: (fn) => removedListeners.push(fn) },
       },
       action: { setBadgeText: noop, setBadgeBackgroundColor: noop },
       sidePanel: { setOptions: () => Promise.resolve(), open: () => Promise.resolve(), close: () => Promise.resolve() },
@@ -113,7 +115,9 @@ function bootWorker(storageBacking, opts = {}) {
     setTimeout(() => respond(undefined), 1500);
   });
 
-  return { send, tabsSent, reloads };
+  const closeTab = (tabId) => removedListeners.forEach((fn) => fn(tabId));
+
+  return { send, tabsSent, reloads, closeTab };
 }
 
 const SESSION_KEY = 'campfireSessionState';
@@ -186,6 +190,32 @@ const pendingState = () => ({
       (storage[SESSION_KEY].sessionSeq || 0) >= 3,
       'seq 가 재시작 뒤 되돌아갔다 — 다음 검토 결과가 패널에서 통째로 무시된다',
     );
+  }
+
+  // ── (3-1) 재시작 전 "검사 중" 이던 세션은 버리고, 닫은 탭의 세션은 지운다 ─────
+  //
+  // 맥 v0.2.60 M-8: 막힌 "upload" 세션 4개가 status=scanning 으로 storage.session 에 남았다. 재시작으로 끊긴 검사는
+  // 끝날 수 없고, 닫은 탭의 세션은 누구도 결정하지 않는다.
+  {
+    const storage = pendingState();
+    Object.assign(storage[SESSION_KEY].sessions, {
+      DEAD: { tabId: 9, kind: 'file', status: 'scanning', progress: [], result: null, error: null,
+        meta: { fileName: 'upload', mimeType: 'text/plain', fileSize: 6274 }, seq: 4 },
+    });
+    storage[SESSION_KEY].activeSessionId = 'DEAD';
+    storage[SESSION_KEY].sessionSeq = 4;
+    const w = bootWorker(storage);
+    await w.send({ type: 'PANEL_READY', tabId: 7 }, {});
+    await new Promise(r => setTimeout(r, 50));
+    const saved = storage[SESSION_KEY];
+    assert.ok(!saved.sessions.DEAD, '재시작으로 끊긴 "검사 중" 세션이 storage 에 남았다');
+    assert.ok(saved.sessions.S1, '결정을 기다리던 세션까지 버렸다');
+    assert.notStrictEqual(saved.activeSessionId, 'DEAD', '버린 세션을 활성 세션으로 남겼다');
+    assert.ok(saved.sessionSeq >= 4, 'seq 가 되돌아갔다');
+
+    w.closeTab(7);
+    await new Promise(r => setTimeout(r, 50));
+    assert.ok(!storage[SESSION_KEY].sessions.S1, '닫은 탭의 검토 세션이 storage 에 남았다');
   }
 
   // ── (4) 재시작 뒤에도 패널이 스냅샷을 되찾을 수 있어야 한다 ─────────────────
