@@ -2968,6 +2968,12 @@ cancelScan(stuckScan);
           throw new Error(`(40) ${host} 는 프록시가 프롬프트를 검사하는데 확장도 검사했다(이중 검토)`);
         }
       }
+      // 맥 D-3: 프록시 경로를 확인한 뒤 20초 쉬고 Enter 해도 확장이 다시 맡지 않는다(예전 15초 TTL 이 만료됐다).
+      await route40('proxy');
+      await clock.tick(20000);
+      if (await scans40('claude.ai', '20초 쉬고 보내는 claude.ai 요청')) {
+        throw new Error('(40) 프록시 경로를 확인한 뒤 시간이 지나자 확장이 다시 프롬프트를 검사했다(맥 D-3)');
+      }
       // 프록시가 프롬프트를 안 보는 사이트(copilot.microsoft.com — 업로드만 프록시)는 프록시 경로여도 확장이 본다.
       await route40('proxy');
       if (!(await scans40('copilot.microsoft.com', '의뢰인 주민번호 900101-1234567'))) {
@@ -3003,11 +3009,15 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of [
-        'chatgpt.com', 'chat.openai.com', 'claude.ai', 'gemini.google.com', 'grok.com', 'www.perplexity.ai',
-      ]) {
+      for (const host of ['chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'www.perplexity.ai']) {
         if (!(await intercepts41(host))) {
           throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
+        }
+      }
+      // 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트는 프록시 방식에서 확장이 손을 뗀다(맥 v0.2.58 프록시 단독 실측).
+      for (const host of ['claude.ai', 'grok.com']) {
+        if (await intercepts41(host)) {
+          throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다`);
         }
       }
       // Perplexity 는 프롬프트를 프록시가 보지만(PROXY_PROMPT_HOSTS), 확장이 붙들어 둔 첨부가 있으면 전송 때

@@ -41,10 +41,13 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
   const posted = [];
   const store = Object.create(null);
   let hasProxyMark = proxyMarked;
+  let skew = 0; // advance(ms) 로 interceptor 가 보는 시계만 앞당긴다
+  const RealDate = Date;
+  const SkewDate = class extends RealDate { static now() { return RealDate.now() + skew; } };
 
   Object.assign(store, {
     console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
-    Promise, Date, Math, JSON, Set, Map, WeakSet, WeakMap, Array, Object, String,
+    Promise, Date: SkewDate, Math, JSON, Set, Map, WeakSet, WeakMap, Array, Object, String,
     Number, Boolean, Error, TypeError, RegExp, Symbol, Proxy, Reflect,
     parseInt, parseFloat, isNaN, Uint32Array, Uint8Array, ArrayBuffer, crypto: webcrypto,
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
@@ -145,6 +148,7 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
     posted,
     sandbox,
     setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
+    advance: (ms) => { skew += ms; },
   };
 }
 
@@ -361,11 +365,20 @@ async function main() {
     );
   }
 
-  // (15-1) 앱+확장 병행에서는 사이트 등록 형식과 전송 시점을 제어할 수 있게 확장이 업로드를 맡는다.
-  //        프록시는 확장이 올린 최종본을 다시 확인하고, 확장이 없을 때의 안전망으로도 남는다.
-  for (const host of [
-    'chatgpt.com', 'chat.openai.com', 'claude.ai', 'gemini.google.com', 'grok.com', 'www.perplexity.ai',
-  ]) {
+  // (14-1) 맥 D-3: 한 번 확인한 프록시 경로는 시간이 지나도 유지한다. 예전엔 표식을 15초 못 보면 확장이 다시 맡아,
+  //        20초 쉬고 보내면 확장·프록시가 같은 업로드를 두 번 붙들었다.
+  {
+    const t = load({ proxyMarked: true, host: 'claude.ai' });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
+    await settle();
+    t.advance(20000);
+    assert.strictEqual(await t.passedThrough(), true, '프록시 경로를 확인한 뒤 20초가 지나자 확장이 다시 업로드를 붙들었다');
+  }
+
+  // (15-1) 프록시가 아직 다 처리하지 못하는 사이트는 프록시 방식이어도 확장이 업로드를 전송 시점까지 맡는다
+  //        (ChatGPT 그림·Gemini 전부·Perplexity 그림 미확인).
+  for (const host of ['chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'www.perplexity.ai']) {
     const t = load({ proxyMarked: true, host });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({
@@ -380,6 +393,15 @@ async function main() {
       await t.passedThrough(), false,
       `${host}: 전송 전 파일 보류를 확장이 맡지 않았다`,
     );
+  }
+
+  // (15-2) 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트(Claude·Grok)는 프록시 방식에서 확장이 손을 뗀다.
+  for (const host of ['claude.ai', 'grok.com']) {
+    const t = load({ proxyMarked: true, host });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
+    await settle();
+    assert.strictEqual(await t.passedThrough(), true, `${host}: 프록시 방식인데 확장이 업로드를 또 붙들었다`);
   }
 
   // (16) copilot.com 처럼 일반 입력을 무시하는 Lexical 에는 편집기 상태로 마스킹본을 넣는다.
