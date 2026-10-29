@@ -81,6 +81,27 @@ function buildStats(engineManager) {
   };
 }
 
+/** 엔진 health가 바뀌면 모델 칩이 쓰는 stats도 함께 보낸다.
+ *
+ * renderer의 홈 칩은 engine:status가 아니라 stats.models를 그린다. 예전에는 엔진 상태만
+ * 2.5초마다 갱신되어, 시작할 때 받은 회색 stats 스냅샷이 첫 검사 완료 전까지 남았다.
+ * SQLite 통계를 매 health tick마다 읽지 않도록 모델 표시가 실제로 달라질 때만 보낸다. */
+function bindEngineStatus(engineManager) {
+  let lastModels = null;
+  const onStatus = (status) => {
+    broadcast('engine:status', status);
+    const confidentialSetting = !isLite(app.getVersion())
+      && !!engineManager.config?.get('confidentialEnabled');
+    const nextModels = deriveModelStatus(status, confidentialSetting);
+    const signature = JSON.stringify(nextModels);
+    if (signature === lastModels) return;
+    lastModels = signature;
+    broadcast('stats:tick', buildStats(engineManager));
+  };
+  engineManager.on('status', onStatus);
+  return () => engineManager.off('status', onStatus);
+}
+
 function register(ctx) {
   const { engineManager, config, proxyToggle, onShowDashboard, onQuit, onEnsureModels, getUpdateState, onInstallUpdate } = ctx;
   const lite = isLite(app.getVersion());
@@ -293,8 +314,8 @@ function register(ctx) {
     return false;
   });
 
-  // 엔진 상태 변화 → 즉시 브로드캐스트
-  engineManager.on('status', (status) => broadcast('engine:status', status));
+  // 엔진 상태 변화 → 즉시 브로드캐스트. 모델 준비 상태가 달라지면 홈 칩도 함께 갱신한다.
+  bindEngineStatus(engineManager);
 
   // 처리현황(파이프라인 단계) 실시간 구독 → 렌더러로 push.
   // 엔진 SSE 를 메인이 중계한다(렌더러는 엔진 포트를 모르고, contextIsolation 아래
@@ -331,4 +352,4 @@ function disposeActivity() {
   busyListeners.clear();
 }
 
-module.exports = { register, broadcast, buildStats, disposeActivity, onPipelineBusy };
+module.exports = { register, broadcast, buildStats, bindEngineStatus, disposeActivity, onPipelineBusy };
