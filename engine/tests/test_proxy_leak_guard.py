@@ -151,3 +151,111 @@ def test_Grok_웹소켓도_원문_값이_남으면_버린다(fake):
     f.websocket.messages = [websocket.WebSocketMessage(Opcode.TEXT, True, msg.encode())]
     asyncio.run(CampfireAddon().websocket_message(f))
     assert f.websocket.messages[-1].dropped and fake["notices"] == [addon_mod._RAW_LEFT]
+
+
+# ── 사이트별 짧은 기억 — 다른 요청으로 새는 것 ─────────────────────────────────
+# Windows v0.2.59 WP-1: Gemini processSession 프롬프트는 잡아 가렸는데(pii=3) 저장된 사용자 메시지는 원문이었다(맥은 가려짐).
+# 같은 글이 다른 요청으로도 나간 것으로 보여, 가려 보낸 원문 값을 그 사이트에 대해 2분 기억하고 그 사이 같은 사이트로
+# 나가는 모든 요청(batchexecute 포함)에서 보이면 막는다.
+
+def _gemini_prompt(text=PROMPT):
+    turn = _ld(2, pb._encode_varint(1 << 3) + pb._encode_varint(1) + _ld(9, _ld(1, text.encode())))
+    return _post(addon_mod.GEMINI_PROMPT_HOST, "/v1/processSession?VER=8&RID=3",
+                 f"count=1&ofs=1&req0___data__={quote(base64.b64encode(turn).decode(), safe='=')}",
+                 "application/x-www-form-urlencoded")
+
+
+def _batchexecute(text):
+    return _post("gemini.google.com", "/_/BardChatUi/data/batchexecute?rpcids=a1",
+                 urlencode([("f.req", json.dumps([[["a1", json.dumps([text]), None, "generic"]]]))]),
+                 "application/x-www-form-urlencoded;charset=UTF-8")
+
+
+def _remembered_blocked(f, fake):
+    return (f.response is not None and f.response.status_code == 403
+            and json.loads(f.response.content)["reason"] == addon_mod._RAW_ELSEWHERE
+            and addon_mod._RAW_ELSEWHERE in fake["notices"])
+
+
+def test_Gemini_가려_보낸_값이_batchexecute_로_나가면_막는다(fake):
+    a = CampfireAddon()
+    p = _gemini_prompt()
+    asyncio.run(a.request(p))
+    assert p.response is None
+    leak = _batchexecute(f"제목: {NAME} 연락처")
+    asyncio.run(a.request(leak))
+    assert _remembered_blocked(leak, fake)
+    ok = _batchexecute("제목: 새 대화")
+    asyncio.run(a.request(ok))
+    assert ok.response is None, "원문 값이 없는 요청까지 막았다"
+
+
+def test_검사_중에_같은_사이트로_동시에_나간_요청도_기다렸다가_막는다(fake, monkeypatch):
+    async def go():
+        release = asyncio.Event()
+
+        async def wait(**_kw):
+            await release.wait()
+            return "send_masked"
+
+        monkeypatch.setattr(addon_mod.broker, "wait", wait)
+        a = CampfireAddon()
+        p, leak = _gemini_prompt(), _batchexecute(f"제목: {NAME}")
+        t1 = asyncio.create_task(a.request(p))
+        await asyncio.sleep(0.02)
+        t2 = asyncio.create_task(a.request(leak))
+        await asyncio.sleep(0.05)
+        assert not t2.done(), "검사 중인데 같은 사이트의 다른 요청을 먼저 보냈다"
+        release.set()
+        await asyncio.gather(t1, t2)
+        return p, leak
+
+    p, leak = asyncio.run(go())
+    assert p.response is None and _remembered_blocked(leak, fake)
+
+
+def test_원본_보내기를_고른_값은_잊는다(fake):
+    a = CampfireAddon()
+    asyncio.run(a.request(_gemini_prompt()))
+    fake["action"] = "send_original"
+    again = _gemini_prompt(f"{NAME} 님께 보낼 메일")
+    asyncio.run(a.request(again))
+    after = _batchexecute(f"제목: {NAME}")
+    asyncio.run(a.request(after))
+    assert again.response is None and after.response is None
+
+
+def test_기억은_시간이_지나면_잊는다(fake, monkeypatch):
+    monkeypatch.setattr(addon_mod, "_SITE_MEMORY_S", -1.0)  # 기억하자마자 지난 것으로
+    a = CampfireAddon()
+    asyncio.run(a.request(_gemini_prompt()))
+    later = _batchexecute(f"제목: {NAME}")
+    asyncio.run(a.request(later))
+    assert later.response is None
+
+
+def test_다른_사이트의_요청은_기억과_상관없다(fake):
+    a = CampfireAddon()
+    asyncio.run(a.request(_gemini_prompt()))
+    other = _post("www.perplexity.ai", "/rest/thread/save", json.dumps({"title": NAME}, ensure_ascii=False),
+                  "application/json")
+    asyncio.run(a.request(other))
+    assert other.response is None
+
+
+def test_Grok_웹소켓의_다른_메시지에_실려도_버린다(fake):
+    from mitmproxy import websocket
+    from wsproto.frame_protocol import Opcode
+
+    f = tflow.twebsocketflow()
+    f.request.host, f.request.path = "grok.com", "/ws/mgw/?uid=1"
+    f.websocket.messages = []
+    a = CampfireAddon()
+    for event in ({"type": "response.create", "item": {"x_grok": {"input_chunks": [{"text": {"text": PROMPT}}]}}},
+                  {"type": "conversation.title", "title": f"{NAME} 연락처"}):
+        f.websocket.messages.append(websocket.WebSocketMessage(
+            Opcode.TEXT, True, json.dumps({"event": event}, ensure_ascii=False).encode()))
+        asyncio.run(a.websocket_message(f))
+    first, second = f.websocket.messages
+    assert not first.dropped and NAME not in first.text
+    assert second.dropped and addon_mod._RAW_ELSEWHERE in fake["notices"]

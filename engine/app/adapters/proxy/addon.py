@@ -468,6 +468,12 @@ _PENDING_TTL_S = 1800.0
 # 참조를 모르는 사이트(Claude·Grok·Perplexity)의 첨부를 "다음 전송" 에 붙이는 시간 — 올린 뒤 이보다 지나면 올렸다
 # 지운 첨부일 수 있어 붙이지 않는다(_judge_attached).
 _GUESS_WINDOW_S = 300.0
+# 가려 보낸 프롬프트에서 찾은 원문 값을 그 사이트에 대해 기억하는 시간 — 그 사이 같은 사이트로 나가는 다른 요청에
+# 실리면 막는다(_remembered_left). Windows v0.2.59 WP-1: Gemini processSession 은 가렸는데(pii=3) 저장본은 원문이었다.
+_SITE_MEMORY_S = 120.0
+# 이보다 큰 본문(파일 원본 등)은 기억 검사를 건너뛴다. ponytail: 큰 업로드는 업로드 검사가 따로 본다 — 큰 본문으로도
+# 원문이 새는 경로가 보이면 상한을 올린다.
+_MAX_MEMORY_BODY = 1 << 20
 
 
 def _site(host: str) -> str:
@@ -513,12 +519,19 @@ class CampfireAddon:
         self._gemini: dict[str, ChatGptUpload] = {}
         # 업로드를 마친 Gemini 파일의 경로(② 응답 본문) → 바꾼 이름. ③ ProcessFile·④ 전송에서 형식·이름을 맞춘다.
         self._gemini_files: dict[str, str] = {}
+        # 사이트 → {가려 보낸 원문 값: 잊을 시각}(_remembered_left), 지금 검사 중인 프롬프트 수와 끝났음 알림(_wait_site_scans)
+        self._site_raws: dict[str, dict[str, float]] = {}
+        self._site_scans: dict[str, int] = {}
+        self._site_idle: dict[str, asyncio.Event] = {}
 
     # ── mitmproxy 훅 ─────────────────────────────────────────────────────────
 
     async def request(self, flow: http.HTTPFlow) -> None:
         try:
+            await self._wait_site_scans(flow)
             await self._on_request(flow)
+            if flow.response is None and self._remembered_left(flow, flow.request.content or b"", flow.request.url):
+                self._block(flow, _RAW_ELSEWHERE)
         except DecisionTimeout as exc:
             # 확인창이 떠 있던 건이라 데스크톱이 이미 "검토 시간이 지나" 를 알린다 — 알림을 또 띄우지 않는다.
             self._block(flow, f"검토 시간이 지나 전송을 취소했습니다 ({exc})", notify=False)
@@ -703,6 +716,7 @@ class CampfireAddon:
         # 없이 이 RPC 하나). 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 또 묻는다 — 해시가 같은 바이트만
         # 뺀다. 프롬프트 칸은 승인 대상이 아니라 그대로 검사한다.
         approved = [f.value for path, f in picked if path != CLAUDE_PROMPT_PATH and _approved_bytes(f.value)]
+        flow.metadata["campfire_exclude"] = approved  # 기억 검사(_remembered_left)도 이 칸은 보지 않는다
         picked = [(path, f) for path, f in picked if path == CLAUDE_PROMPT_PATH or not _approved_bytes(f.value)]
         if not picked:
             return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
@@ -845,6 +859,12 @@ class CampfireAddon:
         msg = flow.websocket.messages[-1]
         if not msg.from_client or not msg.is_text:
             return
+        await self._ws_prompt(flow, msg)
+        if not msg.dropped and self._remembered_left(flow, msg.content):
+            msg.drop()
+            broker.notify(_site(flow.request.pretty_host), flow.metadata.pop("campfire_block_reason", _RAW_ELSEWHERE))
+
+    async def _ws_prompt(self, flow: http.HTTPFlow, msg) -> None:
         key = flow.request.path.split("?")[0]
         host = flow.request.pretty_host
         find_slots = next((f for (h, prefix), f in PROMPT_WS_ENDPOINTS.items()
@@ -1237,6 +1257,19 @@ class CampfireAddon:
     # ── 텍스트 여러 필드 검사 + 한 번의 판단 (Claude 메시지 RPC) ──────────────
 
     async def _scan_texts_and_decide(self, fields, *, host, prompt_fields=(), flow=None):
+        """_scan_texts 를 돌리는 동안 이 사이트의 다른 요청을 붙든다(_wait_site_scans) — 찾은 값을 기억하기 전에 같은 글이
+        다른 요청으로 동시에 나가면 기억 검사를 비켜 간다."""
+        site = _site(host)
+        self._site_scans[site] = self._site_scans.get(site, 0) + 1
+        self._site_idle.setdefault(site, asyncio.Event()).clear()
+        try:
+            return await self._scan_texts(fields, host=host, prompt_fields=prompt_fields, flow=flow)
+        finally:
+            self._site_scans[site] -= 1
+            if not self._site_scans[site]:
+                self._site_idle[site].set()
+
+    async def _scan_texts(self, fields, *, host, prompt_fields=(), flow=None):
         """텍스트 필드 여러 개를 검사하고 **판단은 한 번만** 받는다.
 
         메시지 하나에 프롬프트(2.3)와 인라인 파일(2.15.4)이 같이 있어도 검토 요청은
@@ -1324,9 +1357,12 @@ class CampfireAddon:
         if action == "cancel":
             return None
         if action == "send_original" and not all_forced:
+            self._forget_raws(host, orig_parts)  # 사람이 원문을 보내기로 했다 — 그 글의 값은 이 사이트로 나가도 된다
             return _ORIGINAL
         if flow is not None:
             flow.metadata["campfire_raw_values"] = order  # 다시 싼 본문에 남았는지 _raw_left 가 본다
+        mem = self._site_raws.setdefault(_site(host), {})
+        mem.update(dict.fromkeys(order, time.monotonic() + _SITE_MEMORY_S))
         return [(fld, mt.encode("utf-8")) for fld, mt in per_field]
 
     async def _judge_attached(self, host: str, prompt: str, flow) -> str | None:
@@ -1472,6 +1508,7 @@ class CampfireAddon:
             return None
         if (action == "send_original" and not result.get("forcedMaskItems") and not name_forced and not images_removed
                 and not always_text):
+            self._forget_raws(host, [result.get("originalText") or ""])
             return _ORIGINAL
         return (result.get("maskedText") or "").encode("utf-8")
 
@@ -1514,6 +1551,47 @@ class CampfireAddon:
         flow.metadata["campfire_block_reason"] = _RAW_LEFT
         return True
 
+    async def _wait_site_scans(self, flow: http.HTTPFlow) -> None:
+        """이 사이트의 프롬프트를 검사하는 중이면 본문 있는 요청은 끝날 때까지 기다린다(그 뒤 기억 검사를 받는다).
+
+        본문 없는 요청(Gemini 답 롱폴 GET·경로 확인 HEAD)은 붙들지 않는다. 사람이 확인창을 오래 두면 그만큼 기다린다.
+        """
+        site = _site(flow.request.pretty_host)
+        if not self._site_scans.get(site) or not flow.request.content:
+            return
+        try:
+            await asyncio.wait_for(self._site_idle[site].wait(), config.PROXY_DECISION_TIMEOUT_S + 5)
+        except asyncio.TimeoutError:
+            pass
+
+    def _remembered_left(self, flow: http.HTTPFlow, content: bytes, url: str = "") -> bool:
+        """같은 사이트에서 최근 가려 보낸 원문 값이 이 요청(본문·URL)에 실렸는가 — 다른 요청으로 새는 것(WP-1)을 막는다."""
+        mem = self._site_raws.get(_site(flow.request.pretty_host))
+        if not mem:
+            return False
+        now = time.monotonic()
+        for r in [r for r, until in mem.items() if until < now]:
+            del mem[r]
+        if not mem or len(content) > _MAX_MEMORY_BODY:
+            return False
+        for b in flow.metadata.get("campfire_exclude", ()):
+            content = content.replace(b, b"")
+        where = _raw_left_where(content, mem)
+        if url and _raw_left_where(url.encode(), mem):
+            where.append("URL")
+        if not where:
+            return False
+        logger.warning("[proxy] 앞서 가린 원문 값이 다른 요청에 실림 — 차단 %s %s 자리=%s",
+                       flow.request.method, flow.request.pretty_host + flow.request.path.split("?")[0], where[:10])
+        flow.metadata["campfire_block_reason"] = _RAW_ELSEWHERE
+        return True
+
+    def _forget_raws(self, host: str, texts) -> None:
+        """사람이 원문으로 보내기로 한 글에 든 값은 이 사이트에 대해 잊는다."""
+        mem = self._site_raws.get(_site(host)) or {}
+        for r in [r for r in mem if any(r in t for t in texts)]:
+            del mem[r]
+
     def _swallow(self, flow: http.HTTPFlow) -> None:
         """친 글을 싣는 부수 요청(자동완성·분석)을 보내지 않고 빈 성공으로 끝낸다.
 
@@ -1532,7 +1610,10 @@ _UNREPLACEABLE = object()
 _CANCELLED = "검토 결과 전송하지 않기로 했습니다"
 # 가린 뒤 다시 싼 본문에 찾은 원문 값이 남았다(_raw_left).
 _RAW_LEFT = "가리지 못한 칸이 있어 전송을 막았습니다 — 원문이 그대로 나갈 뻔했습니다"
+# 앞서 가려 보낸 원문 값이 같은 사이트의 다른 요청에 실렸다(_remembered_left).
+_RAW_ELSEWHERE = "앞서 가린 원문 값이 다시 실려 전송을 막았습니다"
 _B64_TOKEN = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+_U_ESCAPE = re.compile(r"\\+u([0-9a-fA-F]{4})")  # JSON 안 JSON 이면 \\uXXXX 로 겹쳐 싼다
 
 
 def _raw_values(result: dict, text: str) -> dict[str, str]:
@@ -1567,7 +1648,9 @@ def _raw_left_where(content: bytes, raws) -> list[str]:
     from urllib.parse import unquote, unquote_plus
 
     text = content.decode("utf-8", "replace")
-    views = [("본문", text), ("form", unquote_plus(text))]
+    form = unquote_plus(text)
+    # JSON 안 JSON(batchexecute f.req)·Google 직렬화는 글자를 \uXXXX 로 싸기도 한다 — 풀어서도 본다.
+    views = [("본문", text), ("form", form), ("이스케이프", _U_ESCAPE.sub(lambda m: chr(int(m[1], 16)), form))]
     try:
         views += list(_json_strings(json.loads(text)))
     except ValueError:
