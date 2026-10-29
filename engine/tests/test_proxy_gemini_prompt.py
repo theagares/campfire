@@ -143,3 +143,35 @@ def test_답_롱폴은_흘려보낸다():
     other = tflow.tflow(req=tutils.treq(method="GET", host="chatgpt.com", path="/x"), resp=True)
     CampfireAddon().responseheaders(other)
     assert not other.response.stream
+
+
+def test_같은_세션의_뒤_POST_는_앞_POST_가_나갈_때까지_기다린다(monkeypatch):
+    # 맥 v0.2.59 R-1: 프롬프트(ofs=1)를 검사하느라 붙든 사이 "턴 끝"(ofs=2)이 먼저 서버에 가면 답이 멈추고 저장되지 않았다.
+    import app.core.pipeline.orchestrator as orch
+
+    async def go():
+        release = asyncio.Event()
+
+        async def run(*, text=None, **_kw):
+            await release.wait()  # 프롬프트 검사가 오래 걸리는 동안
+            return {"maskedText": text, "piiItems": [], "injectionItems": [], "forcedMaskItems": [], "blocked": False,
+                    "scanStatus": "ok", "truncated": False}
+
+        monkeypatch.setattr(orch, "run_pipeline", run)
+        a = CampfireAddon()
+        prompt = _flow(f"count=1&ofs=1&req0___data__={CAPTURED}")
+        turn_end = _flow("count=1&ofs=2&req0___data__=IgIIAQ==")
+        t1 = asyncio.create_task(a.request(prompt))
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(a.request(turn_end))
+        await asyncio.sleep(0.05)
+        assert not t2.done(), "턴 끝(ofs=2)이 검사 중인 프롬프트(ofs=1)보다 먼저 나갔다"
+        other = tflow.tflow(req=tutils.treq(method="POST", host=addon_mod.GEMINI_PROMPT_HOST,
+                                            path="/v1/processSession?VER=8&SID=other&RID=9",
+                                            content=b"count=1&ofs=2&req0___data__=IgIIAQ=="))
+        await asyncio.wait_for(a.request(other), timeout=0.2)  # 다른 세션은 막지 않는다
+        release.set()
+        await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1)
+        assert prompt.response is None and turn_end.response is None
+
+    asyncio.run(go())
