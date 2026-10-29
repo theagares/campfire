@@ -303,6 +303,7 @@
   // 프록시 방식에서 업로드를 프록시가 맡는(확장이 손 떼는) 사이트. content.js 의 PROXY_FILE_HOSTS 와 같다(이유도 거기).
   const _PROXY_FILE_HOSTS = [
     'copilot.microsoft.com', 'claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com',
+    'www.perplexity.ai', 'perplexity.ai',
   ];
   function proxyChecksFiles() {
     // 표식이 오래됐으면(그 사이 앱이 꺼졌거나 프록시를 껐을 수 있다) 업로드를 넘기지 않는다 — 확장이 맡으면 프록시는

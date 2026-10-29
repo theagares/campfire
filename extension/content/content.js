@@ -293,11 +293,12 @@
   // 프록시 방식에서 업로드를 프록시가 맡는(확장이 손 떼는) 사이트. 확장 방식과 프록시 방식을 나눈다(사용자 결정):
   // 프록시 방식이면 확장이 깔렸든 아니든 결과가 같아야 한다. 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트부터
   // 넘긴다 — Claude·Grok(맥 v0.2.58 프록시 단독 실측: docx·png·py 모두 가린 판으로 올라감), Gemini(프록시가 시작 요청부터
-  // _masked.md 로 등록하고 ProcessFile·전송의 형식·이름까지 맞춘다), ChatGPT(그림도 등록부터 _masked.md 로, 늘 OCR 글 —
-  // 사용자 결정 A). Claude 는 첨부 즉시 올리니 칩이 전송 전에 마스킹본(*_masked.md)으로 바뀐다. Perplexity(그림 미확인)는
-  // 프록시가 처리하게 될 때까지 확장이 전송 시점까지 보류해 맡는다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
+  // _masked.md 로 등록하고 ProcessFile·전송의 형식·이름까지 맞춘다), ChatGPT(깨끗한 그림은 원본, 가릴 것이 있으면 막음 —
+  // 사용자 결정 1안), Perplexity(프록시가 등록 batch_create_upload_urls 부터 _masked.md 로, #322). Claude 는 첨부 즉시
+  // 올리니 칩이 전송 전에 마스킹본(*_masked.md)으로 바뀐다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
   const PROXY_FILE_HOSTS = [
     'copilot.microsoft.com', 'claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com',
+    'www.perplexity.ai', 'perplexity.ai',
   ];
   function proxyChecksFiles() {
     // 표식이 오래됐으면 이 첨부는 확장이 맡는다 — 프록시는 확장이 승인한 마스킹본을 다시 검사하지 않는다(#301).
@@ -2782,9 +2783,9 @@
     // MAIN world 등 다른 경로에서 직접 불릴 수 있어 한 번 더 막는다 — 검사 중 원본이
     // 나가는 것만은 어떤 경로로도 일어나면 안 된다.
     if (!protectionEnabled || promptApproved) return;
-    // 프록시가 프롬프트를 보는 사이트라도 확장이 붙들어 둔 첨부가 있으면 함께 검사한다 — Perplexity 는 파일은
-    // 확장(PROXY_FILE_HOSTS 에 없음), 프롬프트는 프록시가 맡아, 여기서 돌아가면 첨부가 검사도 전송도 안 된 채
-    // 프롬프트만 나간다. 확장이 가린 프롬프트는 프록시를 깨끗한 글로 지난다.
+    // 프록시가 프롬프트를 보는 사이트라도 확장이 붙들어 둔 첨부가 있으면 함께 검사한다 — 표식이 오래된 채 첨부하면
+    // 그 첨부는 확장이 맡는데(proxyChecksFiles), 여기서 돌아가면 첨부가 검사도 전송도 안 된 채 프롬프트만 나간다.
+    // 확장이 가린 프롬프트는 프록시를 깨끗한 글로 지난다.
     if (proxyChecksPrompts() && !pendingBatch && proxyEvidenceFresh()) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
