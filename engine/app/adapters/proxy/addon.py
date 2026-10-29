@@ -135,6 +135,17 @@ CHATGPT_REGISTER_PATHS = (
     "/backend-api/files/upload_reservations",
 )
 
+# ChatGPT 이미지(2026-10-29 맥 캡처, 사용자 결정 A — 이미지는 늘 .md 로):
+#   ① POST /backend-api/files  {"file_name":"image.png","mime_type":"image/png","client_resolved_mime_type":…,
+#      "use_case":"multimodal","file_size":N} → 응답 file_id   (문서면 use_case "my_files")
+#   ② PUT …oaiusercontent.com/…/raw  ct=image/png
+#   ③ POST /backend-api/files/process_upload_stream {"file_id","file_name","mime_type","use_case":"multimodal"}
+#   ④ f/conversation messages[].content {"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer",
+#      "asset_pointer":"sediment://file_…",…},"글"]} + metadata.attachments[{"id":"file_…","mime_type":"image/png","name",width,height}]
+# 예전엔 ②만 바꿀 수 없어 가릴 것이 있으면 막았다(맥: 칩 "업로드 실패", 안내 없음). 넷을 file_id 로 이어 함께 바꾼다.
+CHATGPT_PROCESS_PATH = "/backend-api/files/process_upload_stream"
+_IMAGE_NAME = re.compile(r"\.(png|jpe?g|webp|bmp|gif|heic)$", re.I)
+
 # 바이트가 실제로 올라가는 곳.
 #
 # 진짜 방어선은 여기다. 등록 경로가 또 바뀌든 응답 모양이 달라지든, 이 호스트로
@@ -414,6 +425,8 @@ class ChatGptUpload:
     # 재시도는 흔한 일이라 그냥 두면 실제로 밟힌다.
     settled: bytes | None = None
     blocked: bool = False  # 한 번 막았으면 재시도도 막는다
+    # 그림을 등록부터 _masked.md 로 바꿨다(ChatGPT 이미지, 사용자 결정 A) — 원본 그림은 보낼 수 없고 늘 글(OCR)로 간다.
+    as_text: bool = False
 
 
 def size_ceiling(declared: int) -> int:
@@ -434,6 +447,8 @@ class CampfireAddon:
         # 등록 응답에서 받은 upload_url 의 경로 → 그 업로드의 약속값.
         # PUT 은 완전히 다른 호스트(oaiusercontent.com)로 가기 때문에 경로로 잇는다.
         self._chatgpt: dict[str, ChatGptUpload] = {}
+        # 그림을 _masked.md 로 바꿔 등록한 file_id → 바꾼 이름. ③ process_upload_stream·④ 전송에서 맞춘다.
+        self._chatgpt_files: dict[str, str] = {}
         # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
         # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
         self._gemini: dict[str, ChatGptUpload] = {}
@@ -479,6 +494,9 @@ class CampfireAddon:
             if up:
                 logger.info("[proxy]   업로드 헤더 %s", up)
         key = flow.request.path.split("?")[0]
+        if host in CHATGPT_HOSTS and key == CHATGPT_PROCESS_PATH and flow.request.method == "POST":
+            self._chatgpt_process(flow)
+            return
         if host in CHATGPT_HOSTS and key in CHATGPT_REGISTER_PATHS:
             self._chatgpt_register(flow)
             return
@@ -710,8 +728,13 @@ class CampfireAddon:
             body = json.loads(flow.request.get_text() or "")
         except json.JSONDecodeError:
             body = None
+        # ④ _masked.md 로 바꿔 올린 그림을 메시지에서 그림 포인터가 아니라 첨부 문서로 가리키게 한다.
+        converted = (host in CHATGPT_HOSTS and isinstance(body, dict) and bool(self._chatgpt_files)
+                     and _chatgpt_images_to_files(body, self._chatgpt_files))
         slots = find_slots(body) if isinstance(body, dict) else []
         if slots is None:
+            if converted:
+                flow.request.text = _dumps(body)
             return  # 새 글이 없는 전송(다시 생성 등)
         if not await self._mask_slots(flow, host, slots):
             self._block(flow, "메시지 형식을 해석하지 못했거나 검토 결과 전송하지 않기로 했습니다")
@@ -966,6 +989,12 @@ class CampfireAddon:
             return
         masked_name = masked_name_for(original_name)
         nprime: int | None = None
+        # 그림이면 그림 처리(use_case multimodal)로 등록돼 MD 를 넣으면 invalid_image_format 이 된다(2026-10-26 실측).
+        # 사용자 결정 A: 그림은 늘 OCR 글(.md)로 보낸다 — 문서와 같이 my_files 로 등록하고 ③④ 도 맞춘다.
+        as_text = declared > 0 and (
+            body.get("use_case") == "multimodal" or str(body.get("mime_type") or "").startswith("image/")
+            or bool(_IMAGE_NAME.search(original_name))
+        )
 
         if declared > 0:
             # (a) 크기를 선언하는 흐름. 선언값과 실제 크기가 다르면 거부당하므로
@@ -978,12 +1007,14 @@ class CampfireAddon:
             body["mime_type"] = MASKED_MIME
             if "client_resolved_mime_type" in body:
                 body["client_resolved_mime_type"] = MASKED_MIME
+            if as_text and "use_case" in body:
+                body["use_case"] = "my_files"
             flow.request.set_text(json.dumps(body))
         # (b) 크기 선언이 없는 흐름이면 등록 요청은 건드릴 게 없다. 그래도
         # **무장은 해야 한다** — 무장하지 않으면 뒤따르는 PUT 이 차단된다.
         # 응답에서 upload_url 을 받을 때 이어 붙이려고 잠시 들고 있는다.
         flow.metadata["campfire_upload"] = ChatGptUpload(
-            declared=nprime, masked_name=masked_name, original_name=original_name
+            declared=nprime, masked_name=masked_name, original_name=original_name, as_text=as_text
         )
 
     def _chatgpt_register_response(self, flow: http.HTTPFlow) -> None:
@@ -997,6 +1028,10 @@ class CampfireAddon:
         url = data.get("upload_url")
         if not url:
             return
+        if pending.as_text and isinstance(data.get("file_id"), str):
+            self._chatgpt_files[data["file_id"]] = pending.masked_name
+            while len(self._chatgpt_files) > _MAX_TRACKED_UPLOADS:
+                self._chatgpt_files.pop(next(iter(self._chatgpt_files)))
         # PUT 은 chatgpt.com 이 아니라 oaiusercontent.com 으로 간다. 경로만 키로 쓴다.
         path = url.split("?", 1)[0]
         idx = path.find("/", path.find("://") + 3)
@@ -1004,6 +1039,24 @@ class CampfireAddon:
         # 재시도를 위해 남겨 두는 항목이라 스스로는 안 줄어든다. 오래된 것부터 버린다.
         while len(self._chatgpt) > _MAX_TRACKED_UPLOADS:
             self._chatgpt.pop(next(iter(self._chatgpt)))
+
+    def _chatgpt_process(self, flow: http.HTTPFlow) -> None:
+        """③ process_upload_stream — _masked.md 로 바꿔 등록한 그림이면 이름·형식·use_case 를 등록과 맞춘다.
+
+        그대로 두면 ChatGPT 가 그림 처리(multimodal)로 MD 를 읽으려다 실패한다. 모르는 모양이면 손대지 않는다 —
+        바이트는 ②에서 이미 가린 글이다."""
+        try:
+            body = json.loads(flow.request.get_text() or "")
+        except json.JSONDecodeError:
+            return
+        name = self._chatgpt_files.get(body.get("file_id")) if isinstance(body, dict) else None
+        if name is None:
+            return
+        body["file_name"] = name
+        body["mime_type"] = MASKED_MIME
+        if body.get("use_case") == "multimodal":
+            body["use_case"] = "my_files"
+        flow.request.text = _dumps(body)
 
     async def _chatgpt_put(self, flow: http.HTTPFlow, key: str) -> None:
         # pop 하지 않는다 — 재시도된 PUT 이 분기를 못 타고 원본으로 나가는 것을 막는다.
@@ -1024,13 +1077,16 @@ class CampfireAddon:
             mime=mime,
             host="chatgpt.com",
             flow=flow,
-            # 이미지는 사이트가 고를 때부터 그림으로 다뤄(메시지에 그림 포인터·크기를 싣는다) 본문을 MD 로 바꾸면
-            # 처리 단계에서 invalid_image_format 으로 거부된다(2026-10-26 실측). 문서는 지금처럼 바꿔 넣는다.
-            can_replace=not (is_image(data) or mime.lower().startswith("image/")),
+            # 그림 처리로 등록된 이미지는 본문을 MD 로 바꾸면 invalid_image_format 으로 거부된다(2026-10-26 실측).
+            # 등록부터 _masked.md 로 바꾼 그림(as_text)은 늘 OCR 글로 보낸다. 문서는 지금처럼 바꿔 넣는다.
+            can_replace=promise.as_text or not (is_image(data) or mime.lower().startswith("image/")),
+            always_text=promise.as_text,
         )
         if masked is _UNREPLACEABLE:
             promise.blocked = True
-            self._block(flow, "ChatGPT 는 이미지 자리에 가린 글을 받지 않아 보내지 않았습니다 — 가릴 내용이 있는 이미지입니다")
+            self._block(flow, "검사를 끝내지 못한 그림이라 보내지 않았습니다 — 이미지 검사가 꺼져 있거나 글을 읽지 못했습니다"
+                        if promise.as_text else
+                        "ChatGPT 는 이미지 자리에 가린 글을 받지 않아 보내지 않았습니다 — 가릴 내용이 있는 이미지입니다")
             return
         if masked is None:
             promise.blocked = True
@@ -1246,6 +1302,37 @@ class _TextSlot:
 def _dumps(obj) -> str:
     """브라우저 JSON.stringify 와 같은 모양(공백 없음, 한글 그대로)."""
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _chatgpt_images_to_files(body: dict, files: dict[str, str]) -> bool:
+    """④ f/conversation 에서 _masked.md 로 바꿔 올린 그림(file_id)을 그림 포인터가 아니라 첨부 문서로 가리키게 한다.
+
+    content.parts 의 image_asset_pointer 를 빼고(글만 남으면 content_type 을 "text" 로), metadata.attachments 의 그 항목은
+    형식·이름을 바꾸고 그림 크기를 뺀다. 고쳤으면 True."""
+    changed = False
+    for m in body.get("messages") or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if isinstance(parts, list):
+            kept = [p for p in parts if not (
+                isinstance(p, dict) and p.get("content_type") == "image_asset_pointer"
+                and str(p.get("asset_pointer") or "").rsplit("/", 1)[-1] in files)]
+            if len(kept) != len(parts):
+                content["parts"] = kept or [""]  # 그림만 보낸 메시지 — 글 없는 첨부 메시지 모양
+                if content.get("content_type") == "multimodal_text" and all(isinstance(p, str) for p in content["parts"]):
+                    content["content_type"] = "text"
+                changed = True
+        meta = m.get("metadata")
+        for att in (meta.get("attachments") or []) if isinstance(meta, dict) else []:
+            if isinstance(att, dict) and att.get("id") in files:
+                att["mime_type"] = MASKED_MIME
+                att["name"] = files[att["id"]]
+                att.pop("width", None)
+                att.pop("height", None)
+                changed = True
+    return changed
 
 
 def _rename_gemini_file(node, files: dict[str, str]) -> bool:
