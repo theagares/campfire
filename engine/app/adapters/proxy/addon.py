@@ -25,6 +25,7 @@ fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -480,6 +481,8 @@ class CampfireAddon:
         self._chatgpt_files: dict[str, str] = {}
         # 사이트 → 올렸지만 아직 안 보낸 첨부(인젝션 2단계)
         self._pending: dict[str, list[PendingFile]] = {}
+        # Gemini WebChannel 세션(SID) → 그 세션 POST 를 들어온 순서대로 내보내는 자물쇠(_on_request 참고)
+        self._gemini_order: dict[str, asyncio.Lock] = {}
         # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
         # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
         self._gemini: dict[str, ChatGptUpload] = {}
@@ -552,7 +555,22 @@ class CampfireAddon:
             await self._claude_rpc(flow)
             return
         if host == GEMINI_PROMPT_HOST and key == GEMINI_PROMPT_PATH and flow.request.method == "POST":
-            await self._gemini_session(flow)
+            # 같은 세션의 POST 는 들어온 순서대로 내보낸다. h2/h3 에서는 클라이언트가 forward POST 를 여러 개 동시에
+            # 보내는데, 프롬프트(ofs=1)를 검사하느라 붙드는 동안 뒤따르는 "턴 끝"(ofs=2)이 먼저 서버에 가면 답이 시작은
+            # 되지만 턴이 마감되지 않아 멈추고 대화가 저장되지 않았다(맥 v0.2.59 R-1, 2회 재현). asyncio.Lock 은
+            # 기다린 순서대로 넘겨 준다. SID 가 없는 세션 열기 POST 는 막지 않는다.
+            sid = flow.request.query.get("SID") or flow.request.query.get("gsessionid") or ""
+            if not sid:
+                await self._gemini_session(flow)
+                return
+            lock = self._gemini_order.setdefault(sid, asyncio.Lock())
+            while len(self._gemini_order) > _MAX_TRACKED_UPLOADS:  # 오래된 세션부터 — 쓰는 중인 자물쇠는 남긴다
+                old = next(k for k in self._gemini_order)
+                if self._gemini_order[old].locked() or old == sid:
+                    break
+                self._gemini_order.pop(old)
+            async with lock:
+                await self._gemini_session(flow)
             return
         if host in PROMPT_ECHO_HOSTS or key in PROMPT_ECHO_PATHS.get(host, ()):
             self._swallow(flow)
