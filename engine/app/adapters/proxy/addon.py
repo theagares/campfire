@@ -485,6 +485,9 @@ class CampfireAddon:
         self._pending: dict[str, list[PendingFile]] = {}
         # Gemini WebChannel 세션(SID) → 그 세션 POST 를 들어온 순서대로 내보내는 자물쇠(_on_request 참고)
         self._gemini_order: dict[str, asyncio.Lock] = {}
+        # Gemini WebChannel 세션(SID) → 그 세션에서 본 데이터(풀어 둔 protobuf). 첨부 항목의 파일 경로로 전송에 실린
+        # 첨부를 잇는다 — 세션 설정과 프롬프트가 따로 오는 경우가 있다(_gemini_session).
+        self._gemini_refs: dict[str, bytes] = {}
         # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
         # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
         self._gemini: dict[str, ChatGptUpload] = {}
@@ -713,11 +716,15 @@ class CampfireAddon:
         pairs = [p.split("=", 1) for p in (flow.request.get_text() or "").split("&")]
         found = []  # (pairs 인덱스, 메시지, 프롬프트 필드들)
         renamed = {}  # pairs 인덱스 → 첨부 항목의 형식·이름을 고친 메시지(세션 설정)
+        sid = flow.request.query.get("SID") or flow.request.query.get("gsessionid") or ""
+        refs = self._gemini_refs.get(sid, b"")  # 이 세션에서 지금까지 본 데이터(첨부 항목의 파일 경로가 들어 있다)
         for i, pair in enumerate(pairs):
             if len(pair) != 2 or not _WEBCHANNEL_DATA.fullmatch(unquote(pair[0])):
                 continue
             try:
-                msg = pb.decode(base64.b64decode(unquote(pair[1]), validate=True))
+                raw = base64.b64decode(unquote(pair[1]), validate=True)
+                msg = pb.decode(raw)
+                refs = (refs + raw)[-65536:]
             except (ValueError, pb.DecodeError):
                 logger.warning("[proxy] Gemini 전송 데이터를 읽지 못했다 — 차단")
                 self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
@@ -735,6 +742,12 @@ class CampfireAddon:
             # Gemini 가 가린 글을 그 형식으로 읽으려다 깨진 파일로 본다.
             if self._gemini_files and _rename_gemini_items(msg, self._gemini_files):
                 renamed[i] = msg
+        # 세션 설정(첨부 목록)과 프롬프트가 한 POST 에 묶여 오기도, 따로 오기도 한다(맥 캡처) — 세션별로 모아 둔다.
+        if sid:
+            self._gemini_refs[sid] = refs
+            while len(self._gemini_refs) > _MAX_TRACKED_UPLOADS:
+                self._gemini_refs.pop(next(iter(self._gemini_refs)))
+        flow.metadata["campfire_attach_refs"] = refs
         if not found and not renamed:
             return  # 세션 열기·설정·턴 끝 — 사용자 글이 없다
 
@@ -963,6 +976,10 @@ class CampfireAddon:
         self._gemini_files[path] = promise.masked_name
         while len(self._gemini_files) > _MAX_TRACKED_UPLOADS:
             self._gemini_files.pop(next(iter(self._gemini_files)))
+        # 전송 세션 설정(ofs=0)의 첨부 항목이 이 경로로 파일을 가리킨다 — 그 세션에 실린 첨부만 판정한다(_judge_attached).
+        pending = flow.metadata.get("campfire_pending")
+        if pending is not None:
+            pending.ids = (path,)
 
     def _gemini_process_file(self, flow: http.HTTPFlow) -> None:
         """③ ProcessFile 의 f.req 에서 우리가 바꾼 파일의 형식·이름을 맞춘다.
@@ -1270,14 +1287,18 @@ class CampfireAddon:
     async def _judge_attached(self, host: str, prompt: str, flow) -> str | None:
         """이 사이트에 올려 두고 아직 안 보낸 첨부를 이 프롬프트와 함께 인젝션 판정한다. 막아야 하면 이유를 돌려준다.
 
-        ChatGPT 는 전송 본문에 file_id 가 실려 정확히 잇는다(ids). 다른 사이트는 첨부 참조 모양을 확인하지 못해
-        "이 사이트의 다음 전송" 에 붙은 것으로 본다 — 올렸다 뺀 첨부도 한 번은 판정될 수 있다(그 경우 인젝션일 때만 막힌다).
+        참조(ids)가 있는 첨부는 전송에 그 참조가 실렸을 때만 판정한다 — ChatGPT 는 전송 본문의 file_id, Gemini 는 그 세션
+        설정의 첨부 항목에 실린 파일 경로(campfire_attach_refs). 예전엔 Gemini 도 "다음 전송에 붙은 것" 으로 봐, 앞선 시험에서
+        올렸던(또는 뺀) 첨부까지 판정해 막았고, 막힌 첨부가 남아 첨부 없는 새 대화도 계속 막혔다(맥 v0.2.59 R-2).
+        참조를 모르는 사이트(Claude·Grok·Perplexity)는 "이 사이트의 다음 전송" 에 붙은 것으로 본다.
         인젝션이거나 검사를 끝내지 못했으면 그 첨부를 남겨 둔다 — 빼지 않고 다시 보내면 또 막는다.
         """
         site = _site(host)
         now = time.monotonic()
         files = [p for p in self._pending.get(site, []) if now - p.at < _PENDING_TTL_S]
-        body = (flow.request.content or b"") if flow is not None else b""
+        body = b""
+        if flow is not None:
+            body = (flow.request.content or b"") + flow.metadata.get("campfire_attach_refs", b"")
         attached = [p for p in files if not p.ids or any(i.encode() in body for i in p.ids)]
         self._pending[site] = files
         if not attached:
@@ -1317,8 +1338,10 @@ class CampfireAddon:
             site = _site(kw["host"])
             now = time.monotonic()
             keep = [p for p in self._pending.get(site, []) if now - p.at < _PENDING_TTL_S]
-            keep.append(PendingFile(scanned[0], scanned[1], tuple(flow.metadata.get("campfire_file_ids", ())), now))
+            pending = PendingFile(scanned[0], scanned[1], tuple(flow.metadata.get("campfire_file_ids", ())), now)
+            keep.append(pending)
             self._pending[site] = keep[-_MAX_TRACKED_UPLOADS:]
+            flow.metadata["campfire_pending"] = pending  # 응답에서 첨부 참조를 알게 되면 채운다(Gemini 파일 경로)
         return out
 
     async def _scan_upload(
@@ -1355,7 +1378,10 @@ class CampfireAddon:
             logger.info("[proxy] 정책 차단 host=%s", host)  # 파일명엔 등록어가 있을 수 있다
             return None
         if flow is not None and result.get("scanStatus") == "ok":
-            flow.metadata["campfire_scan"] = (masked_name_for(file_name), result.get("maskedText") or "")
+            # 전송 때 판정에는 원문을 쓴다 — 확장 경로(/jobs userPrompt)와 같은 기준이 되게(로컬 1차 판정은 원문, 외부
+            # Solar 에는 파이프라인이 PII 를 가려 보낸다). 가린 글로 판정하면 [이름 마스킹] 같은 토큰 때문에 결과가 갈렸다.
+            # 원문은 메모리에만 30분(_PENDING_TTL_S) — job_registry 가 /jobs 결과를 메모리에 두는 것과 같은 범위다.
+            flow.metadata["campfire_scan"] = (masked_name_for(file_name), result.get("originalText") or "")
 
         # 이름에 등록어가 있으면 내용이 깨끗해도 원본(=원래 이름)을 보내면 안 된다.
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))

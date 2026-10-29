@@ -91,7 +91,8 @@ class DecisionBroker:
         """사람에게 묻지 않고 막은 전송을 알린다. 같은 이유가 잇따르면(사이트의 업로드 재시도) 한 번만 남긴다."""
         last = self._notices[-1] if self._notices else None
         now = time.time()
-        if last and last["host"] == host and last["reason"] == reason and now - last["at"] < 10:
+        # 사이트가 막힌 요청을 몇 번이고 다시 보낸다(맥 v0.2.59: Gemini 6회) — 같은 이유는 1분에 한 번만.
+        if last and last["host"] == host and last["reason"] == reason and now - last["at"] < 60:
             return
         self._notices.append({"id": next(self._notice_ids), "host": host, "reason": reason, "at": now})
         self._notify_change()
