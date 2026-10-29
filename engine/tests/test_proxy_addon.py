@@ -579,9 +579,14 @@ def test_upload_reservations_확정은_실제_PUT한_마스킹본_메타데이�
         content=json.dumps({"file_name": "pii.docx", "mime_type": original_mime, "use_case": "my_files"}).encode(),
     )
     _run(a.request(register))
+    # v0.2.60 Windows HAR 의 실제 upload_reservations 응답 모양. 확정 URL 의
+    # file id 는 file_id 가 아니라 최상위 reservation_id 로 돌아온다.
     register.response = tutils.tresp(content=json.dumps({
+        "eligible": True,
+        "reservation_id": file_id,
         "upload_url": f"https://files.oaiusercontent.com{raw_path}?sig=fixture",
-        "file_id": file_id,
+        "upload_url_expires_at": "2099-01-01T00:00:00Z",
+        "reservation_expires_at": "2099-01-01T00:00:00Z",
     }).encode())
     a.response(register)
 
