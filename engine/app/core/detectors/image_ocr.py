@@ -35,8 +35,27 @@ UNCHECKED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습
 # 가상 메모리(커밋)가 바닥나 사이드카가 죽었는데, 오류를 로그 없이 삼키고 위의 "GPU 없음" 문구를 붙여 원인을 못 찾았다.
 LAUNCH_FAILED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — 이미지 검사 모델을 띄우지 못했습니다(PC 메모리가 부족할 수 있습니다)"
 READ_FAILED_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — 이미지 검사 모델이 그림을 읽다 멈췄습니다(PC 메모리가 부족할 수 있습니다)"
+LOW_MEMORY_REASON = "이미지 속 글자를 검사하지 못해 보내지 않습니다 — PC 메모리가 부족해 이미지 검사 모델을 쓰지 않았습니다(다른 프로그램을 닫고 다시 보내 주세요)"
 
 logger = logging.getLogger("securedoc.engine.image_ocr")
+
+
+def free_commit_mb() -> float | None:
+    """Windows 남은 시스템 커밋(MB, 작업 관리자 '커밋됨' 의 남은 양). 커밋 한도를 넘으면 프로그램이 죽는다.
+    다른 OS(스왑이 자라 커밋 한도가 없다)·모르면 None."""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    class _MemoryStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+            (n, ctypes.c_ulonglong) for n in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                                              "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+
+    status = _MemoryStatus(dwLength=ctypes.sizeof(_MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return status.ullAvailPageFile / 2**20
 
 
 class VarcoOcrProcess(EncoderPiiDetector):
@@ -91,6 +110,9 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.last_failure = None
         if self.no_gpu or not model_status.image_ocr_ready():
             return None
+        if not await self._enough_memory():
+            self.last_failure = LOW_MEMORY_REASON
+            return None
         try:
             await self._ensure_process()
         except RuntimeError as exc:
@@ -110,6 +132,23 @@ class VarcoOcrProcess(EncoderPiiDetector):
         finally:
             self.residency.touch()
             self._arm_unload()
+
+    async def _enough_memory(self) -> bool:
+        """남은 시스템 커밋이 모자라면 띄우지 않는다 / 떠 있으면 읽지 않고 내려 메모리를 돌려준다 — 메모리 작은 PC 가
+        통째로 멎지 않게(v0.2.62 측정: 사이드카 커밋 8GB 로 PC 남은 커밋 0.67GB). 그림은 미검사로 막힌다(안전 쪽)."""
+        free = free_commit_mb()
+        running = self._process_ready
+        need = config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB
+        if free is None or free >= need:
+            return True
+        logger.warning("[image_ocr] 남은 시스템 메모리(커밋) %.0fMB < %dMB — %s", free, need,
+                       "읽지 않고 사이드카를 내림" if running else "사이드카를 띄우지 않음")
+        if running:
+            async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤 내린다
+                await self._kill_process()
+                self._process_ready = False
+                self.residency.state = "unloaded"
+        return False
 
     def _arm_unload(self) -> None:
         if self._idle_task is not None:

@@ -94,6 +94,12 @@ def test_켜면_이미지_파일과_DOCX_PPTX_속_그림_자리에_표시가_남
 
 
 @pytest.fixture(autouse=True)
+def _no_commit_limit(monkeypatch):
+    """이 PC 의 실제 남은 시스템 커밋에 시험이 흔들리지 않게 기본은 '모름'(메모리 안전장치 시험만 따로 흉내 낸다)."""
+    monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _empty_ocr_cache():
     """업로드 사이 OCR 캐시는 프로세스 전역이다 — 같은 _png() 바이트를 쓰는 시험끼리 결과가 새지 않게 비운다."""
     image_ocr._cache.clear()
@@ -253,6 +259,52 @@ def test_사이드카를_못_띄우면_로그를_남기고_GPU_없음이_아니�
     assert infos[0]["reason"] == image_ocr.LAUNCH_FAILED_REASON
     assert not proc.no_gpu  # GPU 가 없는 게 아니다 — 다음 그림에서 다시 띄워 본다
     assert "WinError 1455" in caplog.text
+
+
+def _guarded_proc(monkeypatch, *, free_mb, running):
+    """남은 시스템 커밋을 free_mb 로 흉내 낸 사이드카 — 띄우기·읽기·내리기를 기록한다."""
+    proc = image_ocr.VarcoOcrProcess()
+    proc._process_ready = running
+    calls = {"launch": 0, "rpc": 0, "kill": 0}
+    monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)
+    monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: free_mb)
+
+    async def ensure():
+        calls["launch"] += 1
+
+    async def rpc(_payload):
+        calls["rpc"] += 1
+        return {"results": [{"text": "읽음", "tiles": [], "secs": 1.0}]}
+
+    async def kill():
+        calls["kill"] += 1
+
+    monkeypatch.setattr(proc, "_ensure_process", ensure)
+    monkeypatch.setattr(proc, "_rpc", rpc)
+    monkeypatch.setattr(proc, "_kill_process", kill)
+    return proc, calls
+
+
+def test_남은_시스템_메모리가_모자라면_사이드카를_띄우지_않고_미검사(monkeypatch):
+    # v0.2.62 측정(RAM 15GB): 사이드카 커밋 8GB 로 PC 남은 커밋이 10.4GB → 0.67GB — 띄우기 전에 막는다.
+    proc, calls = _guarded_proc(monkeypatch, free_mb=config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB - 1, running=False)
+    assert asyncio.run(proc.read(_png())) is None
+    assert proc.last_failure == image_ocr.LOW_MEMORY_REASON and calls == {"launch": 0, "rpc": 0, "kill": 0}
+
+
+def test_떠_있을_때_메모리가_바닥나면_읽지_않고_내린다(monkeypatch):
+    proc, calls = _guarded_proc(monkeypatch, free_mb=config.IMAGE_OCR_READ_FREE_COMMIT_MB - 1, running=True)
+    assert asyncio.run(proc.read(_png())) is None
+    assert proc.last_failure == image_ocr.LOW_MEMORY_REASON
+    assert calls == {"launch": 0, "rpc": 0, "kill": 1} and not proc._process_ready, "메모리를 돌려주려면 사이드카를 내려야 한다"
+
+
+def test_메모리가_넉넉하거나_모르면_지금처럼_읽는다(monkeypatch):
+    # 떠 있으면 읽기 기준(2GB)만 넘으면 된다 — 띄우기 기준(10GB)보다 적어도 이미 올린 사이드카로 읽는다
+    proc, calls = _guarded_proc(monkeypatch, free_mb=config.IMAGE_OCR_READ_FREE_COMMIT_MB + 1000, running=True)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls["rpc"] == 1
+    proc, calls = _guarded_proc(monkeypatch, free_mb=None, running=False)  # Windows 가 아니거나 모름
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls == {"launch": 1, "rpc": 1, "kill": 0}
 
 
 def test_GPU_torch_는_이미지_검사_사이드카에만_앞세우고_따로_지정한_파이썬이면_그대로(monkeypatch, tmp_path):

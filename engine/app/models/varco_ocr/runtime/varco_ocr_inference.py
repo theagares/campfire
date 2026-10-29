@@ -21,6 +21,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -210,6 +211,27 @@ def resolve_device() -> str | None:
 
 _BYTES_PER_TOKEN = 0.25 * 1024**2  # 묶음 입력 토큰당 더 쓰는 GPU 메모리(실측 약 0.25MB)
 _HEADROOM = 1.5 * 1024**3  # 출력 KV·작업 공간·조각 크기 흔들림 여유
+# Windows 에서 남겨 둘 시스템 커밋. v0.2.62 측정: VRAM +4.8GB 일 때 사이드카 커밋 8GB — GPU 할당이 커밋으로도 잡힌다고 보고
+# (WDDM 백킹, 확인 중) 큰 묶음이 PC 커밋을 바닥내지 않게 묶음 메모리를 남은 커밋으로도 묶는다.
+_COMMIT_RESERVE = 2 * 1024**3
+
+
+def _free_commit() -> float | None:
+    """Windows 남은 시스템 커밋(바이트). 다른 OS·모르면 None. (엔진 image_ocr.free_commit_mb 와 같은 값 — 사이드카는
+    엔진 패키지를 못 불러 따로 둔다.)"""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    class _MemoryStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+            (n, ctypes.c_ulonglong) for n in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                                              "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+
+    status = _MemoryStatus(dwLength=ctypes.sizeof(_MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return float(status.ullAvailPageFile)
 
 
 def _spare_memory(device: str) -> float | None:
@@ -219,7 +241,9 @@ def _spare_memory(device: str) -> float | None:
         if device == "cuda":
             # 전체 용량이 아니라 남은 VRAM — PII·인젝션 작업자와 브라우저가 같은 카드를 쓴다(v0.2.57 RTX 5070: 다른
             # 프로세스가 약 7GB 를 써 큰 묶음이 CUDA out of memory 로 그림을 못 읽었다).
-            return torch.cuda.mem_get_info()[0]
+            spare = torch.cuda.mem_get_info()[0]
+            commit = _free_commit()
+            return spare if commit is None else min(spare, commit - _COMMIT_RESERVE)
         if device == "mps":
             return torch.mps.recommended_max_memory() - torch.mps.current_allocated_memory()
         if device == "xpu":
