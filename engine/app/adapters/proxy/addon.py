@@ -427,6 +427,35 @@ class ChatGptUpload:
     blocked: bool = False  # 한 번 막았으면 재시도도 막는다
     # 그림을 등록부터 _masked.md 로 바꿨다(ChatGPT 이미지, 사용자 결정 A) — 원본 그림은 보낼 수 없고 늘 글(OCR)로 간다.
     as_text: bool = False
+    file_id: str | None = None  # 등록 응답의 file_id — 전송 메시지의 첨부와 잇는다(인젝션 2단계)
+
+
+@dataclass
+class PendingFile:
+    """프록시 방식에서 올렸지만 아직 보내지 않은 첨부 — 전송 때 그 프롬프트와 함께 인젝션을 판정한다."""
+
+    name: str        # 사용자에게 알릴 이름(_masked.md, 등록어가 있으면 document_masked.md)
+    text: str        # 업로드 때 읽어 가린 글
+    ids: tuple[str, ...]  # 전송 본문에서 찾을 첨부 참조(ChatGPT file_id). 비면 이 사이트의 다음 전송에 붙은 것으로 본다
+    at: float
+
+
+# 인젝션 2단계(프록시 방식): 업로드 때는 사용자 프롬프트가 없어 문서 속 평범한 요청("…정리해 주세요")까지 인젝션으로
+# 잡혔다(맥 v0.2.58). 인젝션 판정은 1·2차 모두 사용자 요청을 기준으로 하는데, 프롬프트 없이 "뚜렷한 공격 문구" 만 고를
+# 보정된 기준은 없다. 그래서 업로드 때는 PII·사용자 지정 단어만 보고, 전송 때 그 프롬프트와 함께 첨부 글을 판정한다.
+# 이미 올라간 파일은 다시 가릴 수 없으니 인젝션이면 전송을 막고 이유를 알린다.
+_PENDING_TTL_S = 1800.0
+
+
+def _site(host: str) -> str:
+    """업로드 호스트와 전송 호스트를 같은 사이트로 묶는다(Gemini 업로드는 push.clients6, ChatGPT 는 blob 호스트)."""
+    if host in CHATGPT_HOSTS or host.endswith(CHATGPT_BLOB_HOST_SUFFIX):
+        return "chatgpt.com"
+    if host in (GEMINI_UPLOAD_HOST, GEMINI_PROMPT_HOST, GEMINI_ROUTE_HOST):
+        return GEMINI_ROUTE_HOST
+    if "perplexity" in host or host.startswith("ppl-ai-file-upload."):  # 업로드는 S3 presigned 호스트로 간다
+        return "perplexity.ai"
+    return host
 
 
 def size_ceiling(declared: int) -> int:
@@ -449,6 +478,8 @@ class CampfireAddon:
         self._chatgpt: dict[str, ChatGptUpload] = {}
         # 그림을 _masked.md 로 바꿔 등록한 file_id → 바꾼 이름. ③ process_upload_stream·④ 전송에서 맞춘다.
         self._chatgpt_files: dict[str, str] = {}
+        # 사이트 → 올렸지만 아직 안 보낸 첨부(인젝션 2단계)
+        self._pending: dict[str, list[PendingFile]] = {}
         # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
         # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
         self._gemini: dict[str, ChatGptUpload] = {}
@@ -1028,6 +1059,8 @@ class CampfireAddon:
         url = data.get("upload_url")
         if not url:
             return
+        if isinstance(data.get("file_id"), str):
+            pending.file_id = data["file_id"]
         if pending.as_text and isinstance(data.get("file_id"), str):
             self._chatgpt_files[data["file_id"]] = pending.masked_name
             while len(self._chatgpt_files) > _MAX_TRACKED_UPLOADS:
@@ -1071,6 +1104,8 @@ class CampfireAddon:
 
         data = flow.request.content or b""
         mime = flow.request.headers.get("content-type", "")
+        if promise.file_id:
+            flow.metadata["campfire_file_ids"] = (promise.file_id,)  # 전송 메시지 attachments[].id 와 같다(맥 캡처)
         masked = await self._scan_and_decide(
             data=data,
             file_name=promise.original_name,
@@ -1133,9 +1168,17 @@ class CampfireAddon:
         인젝션")으로 보면 평범한 요청이 인젝션으로 잡히므로 /jobs/prompt 와 같이 인젝션 검사를
         하지 않는다(PII·자격증명·강제 마스킹만). #247 에서 확장 경로만 바뀌어, 프록시에서는
         "첨부한 파일 내용을 그대로 옮겨 적어줘" 가 [인젝션 마스킹] 으로 나갔다(2026-10-26 실측).
-        인라인 파일 내용은 문서이므로 그대로 문서 기준(인젝션 검사)이다.
-        반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함).
+        인라인 파일 내용은 문서이므로 그대로 문서 기준(인젝션 검사)이되, 이 메시지의 프롬프트를 사용자 요청으로 삼는다.
+        이 사이트에 올려 두고 아직 안 보낸 첨부가 있으면 먼저 이 프롬프트로 인젝션을 판정한다(인젝션 2단계).
+        반환: [(field, 마스킹 bytes)] / `_ORIGINAL` / None(전송 안 함, 이유는 flow.metadata 에).
         """
+        prompt_text = "\n".join(p.value.decode("utf-8", "replace") for p in prompt_fields).strip()
+        if prompt_text:
+            reason = await self._judge_attached(host, prompt_text, flow)
+            if reason:
+                if flow is not None:
+                    flow.metadata["campfire_block_reason"] = reason
+                return None
         # 확장처럼 프롬프트를 먼저 검사한다 — 메시지 안 필드 순서와 상관없이. 대시보드·검토 화면에도
         # 프롬프트가 먼저 나온다. (첨부할 때 따로 올라가는 파일은 전송보다 먼저 와서 순서를 바꿀 수 없다)
         fields = sorted(fields, key=lambda f: not any(f is p for p in prompt_fields))
@@ -1148,6 +1191,7 @@ class CampfireAddon:
             text = fld.value.decode("utf-8", "replace")
             is_prompt = any(fld is p for p in prompt_fields)
             result = await _run_pipeline(text=text, direct_prompt=is_prompt, scan_injection=not is_prompt,
+                                         user_prompt=None if is_prompt else (prompt_text or None),
                                          record_name="prompt.txt" if is_prompt else "message.txt")
             if result.get("blocked"):
                 logger.info("[proxy] 정책 차단 (Claude 메시지)")
@@ -1194,9 +1238,61 @@ class CampfireAddon:
             return _ORIGINAL
         return [(fld, mt.encode("utf-8")) for fld, mt in per_field]
 
+    async def _judge_attached(self, host: str, prompt: str, flow) -> str | None:
+        """이 사이트에 올려 두고 아직 안 보낸 첨부를 이 프롬프트와 함께 인젝션 판정한다. 막아야 하면 이유를 돌려준다.
+
+        ChatGPT 는 전송 본문에 file_id 가 실려 정확히 잇는다(ids). 다른 사이트는 첨부 참조 모양을 확인하지 못해
+        "이 사이트의 다음 전송" 에 붙은 것으로 본다 — 올렸다 뺀 첨부도 한 번은 판정될 수 있다(그 경우 인젝션일 때만 막힌다).
+        인젝션이거나 검사를 끝내지 못했으면 그 첨부를 남겨 둔다 — 빼지 않고 다시 보내면 또 막는다.
+        """
+        site = _site(host)
+        now = time.monotonic()
+        files = [p for p in self._pending.get(site, []) if now - p.at < _PENDING_TTL_S]
+        body = (flow.request.content or b"") if flow is not None else b""
+        attached = [p for p in files if not p.ids or any(i.encode() in body for i in p.ids)]
+        self._pending[site] = files
+        if not attached:
+            return None
+
+        from app.core.pipeline.orchestrator import run_pipeline
+
+        hits, failed = [], []
+        for p in attached:
+            try:
+                r = await run_pipeline(text=p.text, user_prompt=prompt, scan_injection=True, wrap_file=False)
+            except Exception:  # noqa: BLE001 - 판정 실패는 아래에서 막는 쪽으로 다룬다
+                logger.exception("[proxy] 첨부 인젝션 판정 실패")
+                r = {}
+            if r.get("scanStatus") != "ok":
+                failed.append(p.name)
+            elif r.get("injectionItems"):
+                hits.append(p.name)
+        if hits:
+            logger.info("[proxy] 첨부에 인젝션 — 전송 차단 host=%s 첨부 %d개", host, len(hits))
+            return (f"첨부한 파일({', '.join(hits)})에 AI 를 조종하려는 문구(프롬프트 인젝션)가 있어 전송을 막았습니다 "
+                    "— 그 첨부를 빼고 다시 보내 주세요")
+        if failed:
+            return f"첨부한 파일({', '.join(failed)})의 인젝션 검사를 끝내지 못해 전송을 막았습니다 — 잠시 뒤 다시 보내 주세요"
+        self._pending[site] = [p for p in files if p not in attached]
+        return None
+
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
-    async def _scan_and_decide(
+    async def _scan_and_decide(self, **kw) -> bytes | None | object:
+        """업로드를 검사하고 판단을 받는다(_scan_upload). 보내기로 했으면 그 첨부를 이 사이트의 "아직 안 보낸 첨부" 로
+        기억해 전송 때 프롬프트와 함께 인젝션을 판정한다(_judge_attached)."""
+        out = await self._scan_upload(**kw)
+        flow = kw.get("flow")
+        scanned = flow.metadata.get("campfire_scan") if flow is not None else None
+        if scanned and out is not None and out is not _UNREPLACEABLE:
+            site = _site(kw["host"])
+            now = time.monotonic()
+            keep = [p for p in self._pending.get(site, []) if now - p.at < _PENDING_TTL_S]
+            keep.append(PendingFile(scanned[0], scanned[1], tuple(flow.metadata.get("campfire_file_ids", ())), now))
+            self._pending[site] = keep[-_MAX_TRACKED_UPLOADS:]
+        return out
+
+    async def _scan_upload(
         self, *, data: bytes, file_name: str, mime: str, host: str, flow=None, can_replace: bool = True,
         always_text: bool = False,
     ) -> bytes | None | object:
@@ -1221,12 +1317,16 @@ class CampfireAddon:
         # 그대로 넘기면 PDF·DOCX 가 "미지원" 으로 떨어져 **검사되지 않는다.**
         file_name, mime = refine(data, file_name, mime)
 
+        # 업로드 때는 사용자 프롬프트가 없다 — 인젝션은 전송 때 프롬프트와 함께 판정한다(_judge_attached).
         result = await _run_pipeline(
-            file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False, record_name=file_name
+            file_bytes=data, mime_type=mime, file_name=file_name, wrap_file=False, record_name=file_name,
+            scan_injection=False,
         )
         if result.get("blocked"):
             logger.info("[proxy] 정책 차단 host=%s", host)  # 파일명엔 등록어가 있을 수 있다
             return None
+        if flow is not None and result.get("scanStatus") == "ok":
+            flow.metadata["campfire_scan"] = (masked_name_for(file_name), result.get("maskedText") or "")
 
         # 이름에 등록어가 있으면 내용이 깨끗해도 원본(=원래 이름)을 보내면 안 된다.
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))
@@ -1267,8 +1367,9 @@ class CampfireAddon:
         """요청을 사이트에 보내지 않고 여기서 끝낸다.
 
         상태 코드는 403 이다. 사이트 JS 가 이걸 업로드 실패로 보여 주는 게, 조용히
-        성공한 척하는 것보다 낫다.
+        성공한 척하는 것보다 낫다. 검사 단계가 더 구체적인 이유를 남겼으면(첨부 인젝션 등) 그걸 쓴다.
         """
+        reason = flow.metadata.get("campfire_block_reason") or reason
         flow.response = http.Response.make(
             403,
             json.dumps({"error": "campfire_blocked", "reason": reason}, ensure_ascii=False).encode(),
