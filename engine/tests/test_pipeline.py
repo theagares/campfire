@@ -8,6 +8,7 @@ tests/test_detector_registry.py 에서 검증). 이 파일의 마스킹 결과 �
 """
 
 import asyncio
+import base64
 
 import pytest
 
@@ -45,7 +46,7 @@ def test_prompt_pipeline_masks_pii_and_injection():
 
 
 @_needs_models
-def test_txt_file_pipeline_wraps_docx():
+def test_txt_file_pipeline_wraps_md():
     registry.reset_cache()
     content = "성명: 김철수\n연락처: 010-9876-5432".encode("utf-8")
     result = asyncio.run(
@@ -53,8 +54,8 @@ def test_txt_file_pipeline_wraps_docx():
     )
     assert result["scanStatus"] == "ok"
     assert "maskedFile" in result
-    assert result["maskedFile"]["fileName"] == "sample_masked.docx"
-    assert result["maskedFile"]["base64"]
+    assert result["maskedFile"]["fileName"] == "sample_masked.md"
+    assert base64.b64decode(result["maskedFile"]["base64"]).decode() == result["maskedText"]
 
 
 def test_unsupported_format_passes_through():

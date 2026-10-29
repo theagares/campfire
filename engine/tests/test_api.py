@@ -129,7 +129,8 @@ def test_jobs_file_upload_returns_masked(client):
     assert r.status_code == 200
     body = r.json()
     assert body["result"]["stats"]["piiCount"] >= 1
-    assert body["result"]["maskedFile"]["fileName"] == "sample_masked.docx"
+    assert body["result"]["maskedFile"]["fileName"] == "sample_masked.md"
+    assert body["result"]["maskedFile"]["mimeType"] == "text/plain"
 
 
 def test_events_replay(client):
