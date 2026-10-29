@@ -1320,6 +1320,12 @@ class CampfireAddon:
             except Exception:  # noqa: BLE001 - 판정 실패는 아래에서 막는 쪽으로 다룬다
                 logger.exception("[proxy] 첨부 인젝션 판정 실패")
                 r = {}
+            # 다음 시험에서 원인을 바로 가리게 판정 근거를 남긴다(맥 v0.2.59 R-3: 이유·점수가 안 찍혀 오탐인지 몰랐다).
+            # 글은 남기지 않는다 — 구간은 (종류, 시작, 끝, 점수, 출처) 와 첨부 글자 수만. 이름은 등록어가 들면 document_masked.md.
+            spans = [(i.get("type"), i.get("start"), i.get("end"), round(float(i.get("confidence") or 0), 3), i.get("source"))
+                     for i in (r.get("injectionItems") or [])]
+            logger.info("[proxy] 첨부 판정 host=%s 첨부=%s 상태=%s 인젝션=%d 첨부글자=%d 프롬프트글자=%d 구간=%s",
+                        host, p.name, r.get("scanStatus"), len(spans), len(p.text), len(prompt), spans[:10])
             if r.get("scanStatus") != "ok":
                 failed.append(p.name)
             elif r.get("injectionItems"):
