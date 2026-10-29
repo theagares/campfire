@@ -2970,7 +2970,7 @@ cancelScan(stuckScan);
     if (!contentBridgeToken) throw new Error('(40) content.js 가 MAIN world 에 토큰을 건네지 않았다');
     try {
       // 프록시가 프롬프트를 보는 사이트: 프록시 없으면 확장이 검사(대조군), 프록시 경로면 넘긴다.
-      for (const host of ['claude.ai', 'chatgpt.com', 'www.perplexity.ai', 'grok.com']) {
+      for (const host of ['claude.ai', 'chatgpt.com', 'www.perplexity.ai', 'grok.com', 'gemini.google.com']) {
         await route40('extension');
         if (!(await scans40(host, `프록시 없는 ${host} 요청`))) {
           throw new Error(`(40) 대조군: 프록시가 없는데 ${host} 프롬프트를 검사하지 않았다`);
@@ -3046,13 +3046,13 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of ['chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'www.perplexity.ai']) {
+      for (const host of ['chatgpt.com', 'chat.openai.com', 'www.perplexity.ai']) {
         if (!(await intercepts41(host))) {
           throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
         }
       }
       // 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트는 프록시 방식에서 확장이 손을 뗀다(맥 v0.2.58 프록시 단독 실측).
-      for (const host of ['claude.ai', 'grok.com']) {
+      for (const host of ['claude.ai', 'grok.com', 'gemini.google.com']) {
         if (await intercepts41(host)) {
           throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다`);
         }
