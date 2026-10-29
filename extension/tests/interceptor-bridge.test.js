@@ -457,6 +457,26 @@ async function main() {
     assert.deepStrictEqual((applied?.root?.children || []).map((p) => p.children.map((n) => [n.type, n.text])), [
       [['text', '주민번호 [주민등록번호 마스킹]'], ['sentinel', '​‌']], [['text', '둘째 줄'], ['sentinel', '​‌']],
     ], '여러 문단으로 친 글을 사이트와 같은 모양(줄마다 문단)으로 넣지 않았다');
+
+    // Windows v0.2.59 PP-1: Lexical 은 이메일·주소를 autolink 노드(자식에 원문 글)로 감싼다. 글 노드가 아니라고
+    // 남기면 원문 이메일이 마스킹본 뒤에 다시 붙는다. 글을 품은 노드는 버리고 보이지 않는 장식(sentinel)만 남긴다.
+    state.root.children = [{ type: 'paragraph', version: 1, textFormat: 0, children: [
+      { type: 'text', version: 1, detail: 0, format: 0, mode: 'normal', style: '', text: '이름 김민준' },
+      { type: 'linebreak', version: 1 },
+      { type: 'text', version: 1, detail: 0, format: 0, mode: 'normal', style: '', text: '메일 ' },
+      { type: 'autolink', version: 1, url: 'mailto:minjun.kim@example.com', children: [
+        { type: 'text', version: 1, detail: 0, format: 0, mode: 'normal', style: '', text: 'minjun.kim@example.com' },
+      ] },
+      { type: 'hashtag', version: 1, text: '#기밀' },
+      { type: 'sentinel', version: 1, text: '​‌' },
+    ] }];
+    ask({ bridgeToken: TOKEN, lineMode: 'linebreak', text: '이름 [이름 마스킹]\n메일 [이메일 마스킹]', nonce: 'n4' });
+    const json4 = JSON.stringify(applied);
+    assert.ok(!json4.includes('minjun.kim') && !json4.includes('김민준') && !json4.includes('#기밀'),
+      `원문을 품은 노드를 남겨 마스킹본 뒤에 원문이 다시 붙는다: ${json4}`);
+    assert.deepStrictEqual(applied.root.children[0].children.map((n) => [n.type, n.text]), [
+      ['text', '이름 [이름 마스킹]'], ['linebreak', undefined], ['text', '메일 [이메일 마스킹]'], ['sentinel', '​‌'],
+    ]);
   }
 
   console.log('interceptor-bridge ok');

@@ -310,6 +310,8 @@ let nextArtifact = null; // GET_SCAN_ARTIFACT 응답
 let failNextOpenPanel = false;
 // 다음 SCAN_MULTI_PROMPT 를 이 이유로 실패시킨다(엔진을 못 찾음 등).
 let failNextMultiPrompt = null;
+// 설정하면 MAIN world 가 편집기 상태 요청(SECUREDOC_SET_EDITOR_STATE)을 받아 이 함수를 실행하고 ok:true 로 답한다.
+let editorStateReply = null;
 // content.js 가 MAIN world 에 건넨 토큰. 이 토큰이 붙어야 프록시 경로 보고(SECUREDOC_PROXY_ROUTE)를 받는다.
 let contentBridgeToken = '';
 // GET_PROXY_EXPECTATION 에 엔진이 답하는 값, 그리고 content.js 가 MAIN world 에 프록시 기대를 알릴 때 MAIN 이 HEAD 로
@@ -339,6 +341,16 @@ const windowStub = {
   },
   postMessage(data) {
     if (data?.type === 'SECUREDOC_BRIDGE_TOKEN') contentBridgeToken = data.token;
+    if (data?.type === 'SECUREDOC_SET_EDITOR_STATE' && editorStateReply) {
+      const reply = editorStateReply;
+      setTimeout(() => {
+        reply(data);
+        dispatchWindowMessage({
+          __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
+          type: 'SECUREDOC_SET_EDITOR_STATE_RESULT', nonce: data.nonce, ok: true,
+        });
+      }, 0);
+    }
     if (data?.type === 'SECUREDOC_PROXY_EXPECTATION' && data.enabled && mainRouteReply) {
       const mode = mainRouteReply;
       setTimeout(() => dispatchWindowMessage({
@@ -1632,6 +1644,40 @@ cancelScan(stuckScan);
       '반영이 한 틱 늦는 에디터에서 마스킹본을 넣고도 전송하지 않았다 — '
       + '성공한 삽입을 "반응 없음" 으로 오판한 그 회귀다 (실사용자 perplexity)',
     );
+  }
+
+  // (18-d) Windows v0.2.59 PP-1: 편집기 상태로 넣었는데(MAIN 이 ok) 화면 글이 마스킹본과 다르면 다른 수단으로
+  //        덧넣지 않고 멈춘다. 예전엔 "A. 전체 선택 후 삽입" 으로 넘어가 마스킹 문장 뒤에 원본 이메일과 둘째 줄이
+  //        다시 들어갔다(전송은 안 됐지만 다시 보내면 원문이 섞인다).
+  await clock.tick(4000); // promptApproved(3초) 해제 대기
+  const host18d = sandbox.location.hostname;
+  sandbox.location.hostname = 'www.perplexity.ai';
+  const ed18d = new ContentEditableStub('이름 김민준\n메일 minjun.kim@example.com', {
+    acceptDelete: true, acceptSelectionReplace: true,
+  });
+  domBySelector.set('#ask-input', ed18d);
+  const send18d = new SendButtonStub();
+  send18d.disabled = false;
+  domBySelector.set('button[aria-label="제출"]', send18d);
+  documentStub.activeElement = ed18d;
+  // 편집기 상태는 바뀌었지만 원문을 품은 노드가 남아 화면에 원본 이메일이 다시 붙은 상태
+  editorStateReply = () => { ed18d.lines = ['이름 [이름 마스킹]', '메일 [이메일 마스킹]', 'minjun.kim@example.com']; };
+  nextDecision = { action: 'masked', maskedText: '이름 [이름 마스킹]\n메일 [이메일 마스킹]' };
+  try {
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(2000);
+    if (ed18d.inserts !== 0) {
+      throw new Error(`(18-d) 편집기 상태로 넣은 뒤 다른 수단으로 ${ed18d.inserts}회 또 넣었다 — 마스킹본 위에 원문이 쌓인다`);
+    }
+    if (send18d.clicks !== 0) throw new Error('(18-d) 마스킹본과 다른 글이 든 입력창을 그대로 보냈다');
+  } finally {
+    editorStateReply = null;
+    sandbox.location.hostname = host18d;
+    domBySelector.delete('#ask-input');
+    domBySelector.delete('button[aria-label="제출"]');
   }
 
   // (19) 마스킹이 프롬프트를 하나도 바꾸지 않았으면 입력창에 손대지 않는다.

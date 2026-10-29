@@ -274,7 +274,12 @@
     if (!para) return false;
     const tmpl = para.children.find((n) => n.type === 'text')
       || { detail: 0, format: 0, mode: 'normal', style: '', type: 'text', version: 1 };
-    const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak');
+    // 남기는 건 글을 품지 않은 장식 노드뿐이다(Copilot 의 sentinel 은 보이지 않는 글자만 가진다). 자식을 가진 요소
+    // 노드(이메일·주소를 감싼 autolink/link)나 글을 가진 노드(hashtag·mention)까지 남기면 그 안의 **원문**이 마스킹본
+    // 뒤에 다시 붙는다(Windows v0.2.59 PP-1: 마스킹 문장 뒤에 원본 이메일이 다시 들어갔다).
+    const invisible = (s) => !String(s ?? '').replace(/[​-‍﻿\s]/g, '');
+    const keep = para.children.filter((n) => n.type !== 'text' && n.type !== 'linebreak'
+      && !Array.isArray(n.children) && invisible(n.text));
     // 같은 Lexical이라도 사이트의 전송 직렬화가 다르다. Copilot은 linebreak를 버려 문단을 써야 하지만,
     // Perplexity는 반대로 여러 문단을 붙여 보내고 linebreak를 보존한다. 현재 상태의 문단 수로 추측하면
     // 한 사이트 수정이 다른 사이트를 깨므로 content.js의 실측 사이트 설정을 따른다.
