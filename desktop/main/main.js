@@ -28,6 +28,8 @@ const pacServer = require('./pac-server');
 const { ProxyDecisionController } = require('./proxy-decision-ui');
 const { isLite } = require('./edition');
 const { configureAppIdentity } = require('./app-identity');
+const paths = require('./paths');
+const { createFileLogger, showSystemNotification } = require('./system-notification');
 
 // Windows 알림 센터가 설치 바로가기와 같은 앱으로 인식하게 한다. 준비 완료 뒤에
 // 설정하면 시작 직후의 프록시 차단 알림이 조용히 버려질 수 있어 가장 먼저 등록한다.
@@ -300,6 +302,7 @@ app.whenReady().then(async () => {
   // 프록시 요청은 엔진에서 사람 판단을 기다린다. 대시보드가 트레이에 숨겨져도
   // 응답할 수 있도록 메인 프로세스의 네이티브 확인창으로 연결한다. 라이트 판은 프록시가 없다.
   if (!isLite(app.getVersion())) {
+    const notificationLogger = createFileLogger(path.join(paths.userDataRoot(), 'logs', 'desktop-notification.log'));
     proxyDecisionUi = new ProxyDecisionController({
       engineManager,
       dialog,
@@ -314,7 +317,13 @@ app.whenReady().then(async () => {
       // 프록시가 묻지 않고 막은 전송(미지원·검사 실패·첨부 인젝션)의 이유 — 사이트는 "업로드 실패" 만 보여 준다.
       // 창을 띄워 막지 않고 운영체제 알림으로 알린다.
       notify: (title, body) => {
-        if (Notification.isSupported()) new Notification({ title, body }).show();
+        showSystemNotification({
+          Notification, title, body, logger: notificationLogger,
+          fallback: () => {
+            dialog.showMessageBox({ type: 'warning', title, message: body })
+              .catch((err) => notificationLogger.error(`[notification] 대체 창 실패: ${err.message}`));
+          },
+        });
       },
     });
     proxyDecisionUi.start();

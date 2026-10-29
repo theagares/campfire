@@ -1235,8 +1235,12 @@ class CampfireAddon:
         url = data.get("upload_url")
         if not url:
             return
-        if isinstance(data.get("file_id"), str):
-            pending.file_id = data["file_id"]
+        # upload_reservations 의 실응답(HAR)은 claim_and_finish URL 에 쓰는 ID를
+        # file_id 가 아니라 최상위 reservation_id 로 돌려준다. 예전 /files
+        # 등록 응답의 file_id 도 계속 받아 두 경로를 모두 잇는다.
+        claim_id = data.get("reservation_id") or data.get("file_id")
+        if isinstance(claim_id, str) and claim_id:
+            pending.file_id = claim_id
             self._chatgpt_by_id[pending.file_id] = pending
         # PUT 은 chatgpt.com 이 아니라 oaiusercontent.com 으로 간다. 경로만 키로 쓴다.
         path = url.split("?", 1)[0]
