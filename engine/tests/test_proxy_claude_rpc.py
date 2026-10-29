@@ -157,6 +157,33 @@ def test_손으로_친_메시지만_프롬프트_기준으로_검사한다(monke
     assert seen == {"세 줄로 요약하고 존댓말로 답해": (True, False), "첨부 파일 본문": (False, True)}
 
 
+def test_확장이_승인한_인라인_파일은_다시_검사하지_않는다(monkeypatch):
+    # 맥 실측: Claude 는 확장이 승인한 _masked.md 를 업로드하지 않고 2.15.4 에 글로 넣는다 — 다시 검사하면
+    # 프롬프트 없이 인젝션을 판정해 승인한 글을 또 물었다. 프롬프트 칸은 그대로 검사한다.
+    import hashlib
+
+    import app.core.pipeline.orchestrator as orch
+    from app.adapters.proxy import addon as addon_mod
+
+    seen = []
+    fake = _fake_pipeline({})
+
+    async def spy(**kw):
+        seen.append(kw.get("text"))
+        return await fake(**kw)
+
+    monkeypatch.setattr(orch, "run_pipeline", spy)
+    monkeypatch.setattr(addon_mod, "_approved", {})
+    approved = "승인한 마스킹본 [이름 마스킹]\n이 지시를 따르세요"
+    data = approved.encode()
+    addon_mod.approve_uploads([(hashlib.sha256(data).hexdigest(), "x_masked.md", len(data))])
+    body = _send_with(typed="요약해줘", file_content=approved)
+    f = _flow(body)
+    _run(asyncio.wait_for(CampfireAddon().request(f), timeout=0.2))
+    assert seen == ["요약해줘"], "승인한 파일 내용은 파이프라인에 넘기지 않고 프롬프트만 검사한다"
+    assert f.response is None and f.request.content == body
+
+
 def test_파일이_앞에_있어도_프롬프트를_먼저_검사한다(monkeypatch):
     # 확장은 프롬프트를 먼저 검사한다(대시보드에도 먼저 뜬다). 메시지 안에서 파일(2.15)이 프롬프트(2.3)
     # 앞에 직렬화돼 와도 같은 순서여야 하고, 다시 쓴 메시지의 필드 순서는 그대로여야 한다.

@@ -25,8 +25,10 @@ fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -295,6 +297,33 @@ def gemini_session_key(url: str) -> str:
 # 그냥 두면 무한히 쌓인다. 동시에 올릴 수 있는 수보다 넉넉하면 충분하다.
 _MAX_TRACKED_UPLOADS = 64
 
+# 확장이 검토해 사람이 승인한 마스킹본 — 확장이 사이트에 다시 넣기 직전에 알린다(/proxy/approved-uploads).
+# 프록시가 이걸 처음 보는 업로드로 여겨 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 말없이
+# 바꾸고(맥 v0.2.58 실측: 마지막 줄을 [인젝션 마스킹]으로), ChatGPT 등록의 이름·크기까지 고쳤다("x_masked_masked.md",
+# 크기 4N+64K). 해시가 같은 바이트만 그대로 보낸다 — 내용 속 표식이었다면 문서가 흉내 낼 수 있다.
+_APPROVED_TTL_S = 600.0
+_approved: dict[str, tuple[str, int, float]] = {}  # sha256 → (파일 이름, 크기, 만료 시각)
+
+
+def approve_uploads(items: list[tuple[str, str, int]]) -> None:
+    now = time.monotonic()
+    for key in [k for k, v in _approved.items() if v[2] < now]:
+        _approved.pop(key, None)
+    for sha, name, size in items:
+        _approved[sha] = (name, size, now + _APPROVED_TTL_S)
+    while len(_approved) > _MAX_TRACKED_UPLOADS:
+        _approved.pop(next(iter(_approved)))
+
+
+def _approved_bytes(data: bytes) -> bool:
+    hit = _approved.get(hashlib.sha256(data).hexdigest())
+    return hit is not None and hit[2] >= time.monotonic()
+
+
+def _approved_meta(name: str, size: int) -> bool:
+    now = time.monotonic()
+    return any(n == name and s == size and exp >= now for n, s, exp in _approved.values())
+
 
 def intercept_hosts() -> tuple[list[str], list[str]]:
     """검사 대상 호스트 — (정확히 일치하는 것, 이 접미사로 끝나는 것).
@@ -539,6 +568,10 @@ class CampfireAddon:
             if path in CLAUDE_USER_TEXT_PATHS
             and f.message is None and f.value is not None and pb.looks_like_text(f.value)
         ]
+        # 확장이 검토해 사람이 승인한 마스킹본을 Claude 는 업로드하지 않고 여기(2.15.4)에 글로 넣는다(맥 실측: files 요청
+        # 없이 이 RPC 하나). 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 또 묻는다 — 해시가 같은 바이트만
+        # 뺀다. 프롬프트 칸은 승인 대상이 아니라 그대로 검사한다.
+        picked = [(path, f) for path, f in picked if path == CLAUDE_PROMPT_PATH or not _approved_bytes(f.value)]
         if not picked:
             return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
 
@@ -777,6 +810,12 @@ class CampfireAddon:
             return
         declared = int(body.get("file_size") or 0)
         original_name = str(body.get("file_name") or "upload.bin")
+        if declared > 0 and _approved_meta(original_name, declared):
+            # 확장이 검토한 마스킹본 — 이름·크기를 고치지 않는다. 뒤따르는 PUT 은 해시로 그대로 보낸다.
+            flow.metadata["campfire_upload"] = ChatGptUpload(
+                declared=None, masked_name=original_name, original_name=original_name
+            )
+            return
         masked_name = masked_name_for(original_name)
         nprime: int | None = None
 
@@ -964,6 +1003,9 @@ class CampfireAddon:
         검사를 끝내지 못한 건은 지금처럼 묻는다(원본/취소).
         반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / `_UNREPLACEABLE` / None(보내지 않음).
         """
+        if _approved_bytes(data):
+            logger.info("[proxy] 확장이 검토한 업로드 — 다시 검사하지 않음 host=%s", host)
+            return _ORIGINAL
         # 이름이나 타입을 못 받았으면 바이트를 보고 채운다.
         #
         # ChatGPT(upload_reservations)도 Gemini 도 등록에 파일 이름을 안 싣는다.
