@@ -382,8 +382,8 @@ async function main() {
   }
 
   // (15-1) 프록시가 아직 다 처리하지 못하는 사이트는 프록시 방식이어도 확장이 업로드를 전송 시점까지 맡는다
-  //        (ChatGPT 그림·Gemini 전부·Perplexity 그림 미확인).
-  for (const host of ['chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'www.perplexity.ai']) {
+  //        (ChatGPT 그림·Perplexity 그림 미확인).
+  for (const host of ['chatgpt.com', 'chat.openai.com', 'www.perplexity.ai']) {
     const t = load({ proxyMarked: true, host });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({
@@ -400,8 +400,8 @@ async function main() {
     );
   }
 
-  // (15-2) 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트(Claude·Grok)는 프록시 방식에서 확장이 손을 뗀다.
-  for (const host of ['claude.ai', 'grok.com']) {
+  // (15-2) 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트(Claude·Grok·Gemini)는 프록시 방식에서 확장이 손을 뗀다.
+  for (const host of ['claude.ai', 'grok.com', 'gemini.google.com']) {
     const t = load({ proxyMarked: true, host });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });

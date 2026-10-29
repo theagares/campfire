@@ -259,23 +259,24 @@ def test_가린_글을_넣을_수_없는_업로드는_가릴_것이_있을_때�
     assert got is want and bool(asked) is asks
 
 
-def test_gemini_는_가린_글로_못_바꾸니_가릴_것이_있으면_이유를_붙여_막고_재시도도_막는다():
+def test_gemini_는_검사를_끝내지_못한_파일을_이유를_붙여_막고_재시도도_막는다():
+    # 시작 요청에서 이미 _masked.md 로 등록했으니 원본 바이트를 보낼 수 없다(always_text).
     a = CampfireAddon()
     _gem_start(a, declared=1000)
     seen = []
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
-        seen.append(can_replace)
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, always_text=False):
+        seen.append(always_text)
         return addon_mod._UNREPLACEABLE
 
     a._scan_and_decide = fake  # type: ignore[assignment]
     f = _gem_bytes(b"SECRET")
     _run(a.request(f))
-    assert seen == [False]
-    assert f.response is not None and f.response.status_code == 403 and "Gemini".encode() in f.response.content
+    assert seen == [True]
+    assert f.response is not None and f.response.status_code == 403 and "검사를 끝내지 못한".encode() in f.response.content
     f2 = _gem_bytes(b"SECRET")
     _run(a.request(f2))
-    assert f2.response is not None and f2.response.status_code == 403 and seen == [False]
+    assert f2.response is not None and f2.response.status_code == 403 and seen == [True]
 
 
 @pytest.mark.parametrize("content, ctype, replaceable", [
@@ -288,7 +289,7 @@ def test_ChatGPT_이미지는_가린_글로_못_바꾸니_가릴_것이_있으�
     _armed(a, "/files/img/raw")
     seen = []
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         seen.append(can_replace)
         return b"# masked" if can_replace else addon_mod._UNREPLACEABLE
 
@@ -323,7 +324,7 @@ GEM_URL = "https://push.clients6.google.com/upload/?upload_id=SESSION1"
 
 
 def _gem_start(a: CampfireAddon, declared: int = 554273):
-    f = _req("push.clients6.google.com", "/upload/", content=b"x" * 46)
+    f = _req("push.clients6.google.com", "/upload/", content=b"File name: report.docx")  # 2026-10-29 캡처 모양
     f.request.headers["x-goog-upload-protocol"] = "resumable"
     f.request.headers["x-goog-upload-command"] = "start"
     f.request.headers["x-goog-upload-header-content-length"] = str(declared)
@@ -354,7 +355,7 @@ def test_gemini_본문이_마스킹되고_선언값에_맞춰진다():
     start = _gem_start(a, declared=1000)
     nprime = int(start.request.headers["x-goog-upload-header-content-length"])
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         assert b"SECRET" in data
         return b"# masked"
 
@@ -389,7 +390,7 @@ def test_gemini_재시도도_같은_결과를_쓴다():
     _gem_start(a, declared=1000)
     calls = []
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         calls.append(1)
         return b"# masked"
 
@@ -499,7 +500,7 @@ def test_PUT_재시도는_같은_결과를_쓰고_다시_묻지_않는다():
     _armed(a, "/files/abc/raw")
     asked = []
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         asked.append(file_name)
         return b"# masked"
 
@@ -530,7 +531,7 @@ def test_크기선언이_없는_흐름은_패딩하지_않는다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.txt")
     a._chatgpt["/files/nopad/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]
@@ -551,7 +552,7 @@ def test_본문을_바꾸면_타입도_바꾼다():
     promise = ChatGptUpload(declared=None, masked_name="m.md", original_name="a.pdf")
     a._chatgpt["/files/pdf/raw"] = promise
 
-    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True):
+    async def fake(*, data, file_name, mime, host, flow=None, can_replace=True, **_kw):
         return b"# masked"
 
     a._scan_and_decide = fake  # type: ignore[assignment]

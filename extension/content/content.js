@@ -267,10 +267,11 @@
   }
 
   // 프록시가 프롬프트까지 검사하는 사이트(엔진 proxy/addon.py 의 CLAUDE_RPC_HOSTS·
-  // PROMPT_FORM/JSON/WS_ENDPOINTS). 여기 없는 사이트에서 프록시는 업로드만 보므로,
+  // PROMPT_FORM/JSON/WS_ENDPOINTS·GEMINI_PROMPT_HOST). 여기 없는 사이트에서 프록시는 업로드만 보므로,
   // 프록시 경로여도 프롬프트는 확장이 검사한다 — 손을 떼면 친 글이 아무 검사 없이 나간다.
   const PROXY_PROMPT_HOSTS = [
     'claude.ai', 'chatgpt.com', 'chat.openai.com', 'www.perplexity.ai', 'perplexity.ai', 'grok.com',
+    'gemini.google.com',
   ];
   function proxyChecksPrompts() {
     return proxyInPath() && PROXY_PROMPT_HOSTS.includes(location.hostname);
@@ -278,11 +279,11 @@
 
   // 프록시 방식에서 업로드를 프록시가 맡는(확장이 손 떼는) 사이트. 확장 방식과 프록시 방식을 나눈다(사용자 결정):
   // 프록시 방식이면 확장이 깔렸든 아니든 결과가 같아야 한다. 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트부터
-  // 넘긴다 — Claude·Grok(맥 v0.2.58 프록시 단독 실측: docx·png·py 모두 가린 판으로 올라감). Claude 는 첨부 즉시 올리니
-  // 칩이 전송 전에 마스킹본(*_masked.md)으로 바뀐다. ChatGPT(그림은 프록시가 못 바꿔 막힘)·Gemini(전부 막힘)·
-  // Perplexity(그림 미확인)는 프록시가 처리하게 될 때까지 확장이 전송 시점까지 보류해 맡는다.
-  // interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
-  const PROXY_FILE_HOSTS = ['copilot.microsoft.com', 'claude.ai', 'grok.com'];
+  // 넘긴다 — Claude·Grok(맥 v0.2.58 프록시 단독 실측: docx·png·py 모두 가린 판으로 올라감), Gemini(프록시가 시작 요청부터
+  // _masked.md 로 등록하고 ProcessFile·전송의 형식·이름까지 맞춘다). Claude 는 첨부 즉시 올리니 칩이 전송 전에
+  // 마스킹본(*_masked.md)으로 바뀐다. ChatGPT(그림은 프록시가 못 바꿔 막힘)·Perplexity(그림 미확인)는 프록시가 처리하게
+  // 될 때까지 확장이 전송 시점까지 보류해 맡는다. interceptor.js 의 _PROXY_FILE_HOSTS 와 같이 고친다.
+  const PROXY_FILE_HOSTS = ['copilot.microsoft.com', 'claude.ai', 'grok.com', 'gemini.google.com'];
   function proxyChecksFiles() {
     // 표식이 오래됐으면 이 첨부는 확장이 맡는다 — 프록시는 확장이 승인한 마스킹본을 다시 검사하지 않는다(#301).
     // 첨부 버튼을 누르면(pointerdown) 확인이 다시 돌아, 보통은 파일을 고르는 동안 표식이 새로 잡힌다.

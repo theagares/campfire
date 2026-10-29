@@ -286,6 +286,18 @@ GEMINI_UPLOAD_PATH = "/upload/"
 # gemini.google.com 의 same-origin probe 응답에 표식을 달 수 있다. 이 호스트의
 # 프롬프트는 프록시가 해석하지 않고 확장이 계속 검사한다(PROXY_PROMPT_HOSTS 참고).
 GEMINI_ROUTE_HOST = "gemini.google.com"
+# Gemini 파일(2026-10-29 맥 캡처, cfprobe.txt):
+#   ① POST push.clients6/upload/ start   본문 "File name: cfprobe.txt", 길이 헤더 x-goog-upload-header-content-length
+#   ② POST …?upload_id=… "upload, finalize"  본문 = 파일 바이트, 응답 본문 = 파일 경로 "/contrib_service/ttl_1d/…"
+#      (서버는 여기서 형식을 보지 않는다)
+#   ③ POST gemini.google.com …/BardFrontendService/ProcessFile  f.req 안 [[경로, null, 1, "text/plain"], "cfprobe.txt"]
+#      → 파일 id. **형식(MIME)과 이름은 여기 적힌다.**
+#   ④ 전송 processSession ofs=0 세션 설정 안 첨부 항목 {1: {1: 경로, 2: 3, 4: MIME, 5: 파일 id}, 2: 이름, 7: 0}
+# 예전엔 ②만 보고 가린 글을 넣으면 Gemini 가 docx 로 읽으려다 깨진 파일로 거부해 막기만 했다(맥: docx·png·py 전부 막힘).
+# 확장처럼 등록부터 _masked.md 로 보이게 ①의 이름, ②의 본문, ③·④의 형식·이름을 함께 바꾸고, 경로로 잇는다.
+_GEMINI_NAME_PREFIX = "File name: "
+GEMINI_PROCESS_FILE_PATH = "/_/BardChatUi/data/assistant.lamda.BardFrontendService/ProcessFile"
+GEMINI_MASKED_MIME = "text/plain"
 _GOOG_CMD = "x-goog-upload-command"
 _GOOG_LEN = "x-goog-upload-header-content-length"
 _GOOG_URL = "x-goog-upload-url"
@@ -425,6 +437,8 @@ class CampfireAddon:
         # Gemini 는 두 요청이 **같은 경로**(/upload/)로 와서 경로로는 못 가른다.
         # 시작 응답이 돌려주는 업로드 URL 의 세션 식별자로 가른다.
         self._gemini: dict[str, ChatGptUpload] = {}
+        # 업로드를 마친 Gemini 파일의 경로(② 응답 본문) → 바꾼 이름. ③ ProcessFile·④ 전송에서 형식·이름을 맞춘다.
+        self._gemini_files: dict[str, str] = {}
 
     # ── mitmproxy 훅 ─────────────────────────────────────────────────────────
 
@@ -499,6 +513,9 @@ class CampfireAddon:
         if flow.request.method == "POST" and (host, key) in PROMPT_JSON_ENDPOINTS:
             await self._json_prompt(flow, host, PROMPT_JSON_ENDPOINTS[(host, key)])
             return
+        if host == GEMINI_ROUTE_HOST and key == GEMINI_PROCESS_FILE_PATH and flow.request.method == "POST":
+            self._gemini_process_file(flow)
+            return
         if host in _multipart_hosts() and flow.request.method == "POST":
             await self._multipart(flow, host)
 
@@ -532,6 +549,7 @@ class CampfireAddon:
             self._chatgpt_register_response(flow)
         elif host == GEMINI_UPLOAD_HOST:
             self._gemini_start_response(flow)
+            self._gemini_finalize_response(flow)
 
     # ── Claude 메시지 RPC 경로 ───────────────────────────────────────────────
 
@@ -619,6 +637,7 @@ class CampfireAddon:
 
         pairs = [p.split("=", 1) for p in (flow.request.get_text() or "").split("&")]
         found = []  # (pairs 인덱스, 메시지, 프롬프트 필드들)
+        renamed = {}  # pairs 인덱스 → 첨부 항목의 형식·이름을 고친 메시지(세션 설정)
         for i, pair in enumerate(pairs):
             if len(pair) != 2 or not _WEBCHANNEL_DATA.fullmatch(unquote(pair[0])):
                 continue
@@ -637,19 +656,27 @@ class CampfireAddon:
                 logger.warning("[proxy] Gemini 사용자 턴인데 글 칸이 없다 — 차단")
                 self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
                 return
-        if not found:
+            # 우리가 _masked.md 로 바꿔 올린 첨부는 세션 설정 안 형식·이름도 맞춘다(④) — 원래 형식(docx 등)으로 두면
+            # Gemini 가 가린 글을 그 형식으로 읽으려다 깨진 파일로 본다.
+            if self._gemini_files and _rename_gemini_items(msg, self._gemini_files):
+                renamed[i] = msg
+        if not found and not renamed:
             return  # 세션 열기·설정·턴 끝 — 사용자 글이 없다
 
-        prompts = [f for _, _, fields in found for f in fields]
-        masked = await self._scan_texts_and_decide(prompts, host=GEMINI_ROUTE_HOST, prompt_fields=prompts, flow=flow)
-        if masked is None:
-            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+        changed = dict(renamed)
+        if found:
+            prompts = [f for _, _, fields in found for f in fields]
+            masked = await self._scan_texts_and_decide(prompts, host=GEMINI_ROUTE_HOST, prompt_fields=prompts, flow=flow)
+            if masked is None:
+                self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+                return
+            if masked is not _ORIGINAL:
+                for fld, new_bytes in masked:
+                    fld.set_bytes(new_bytes)
+                changed.update({i: msg for i, msg, _ in found})
+        if not changed:
             return
-        if masked is _ORIGINAL:
-            return
-        for fld, new_bytes in masked:
-            fld.set_bytes(new_bytes)
-        for i, msg, _ in found:
+        for i, msg in changed.items():
             pairs[i][1] = quote(base64.b64encode(msg.serialize()).decode("ascii"), safe="=")
         flow.request.text = "&".join("=".join(p) for p in pairs)
 
@@ -764,10 +791,23 @@ class CampfireAddon:
                 logger.warning("[proxy] Gemini 시작 요청에 길이 선언이 없다 — 차단")
                 self._block(flow, "업로드 형식을 해석하지 못해 전송을 막았습니다")
                 return
+            # 본문은 "File name: 보고서.docx" 하나다(2026-10-29 맥 캡처). 이름을 여기서 _masked.md 로 바꾸고, 뒤따르는
+            # ProcessFile(③)·전송(④)의 형식·이름도 같은 이름으로 맞춘다(_gemini_files). 서버는 ②에서 형식을 보지 않는다.
+            # 헤더의 charset 에 기대지 않는다 — 없으면 mitmproxy 가 latin-1 로 풀어 한글 이름이 깨진다.
+            body = (flow.request.content or b"").decode("utf-8", "replace")
+            if not body.startswith(_GEMINI_NAME_PREFIX):
+                logger.warning("[proxy] Gemini 시작 요청 본문이 모르는 모양이다 — 차단")
+                self._block(flow, "업로드 형식을 해석하지 못해 전송을 막았습니다")
+                return
+            original = body[len(_GEMINI_NAME_PREFIX):]
             nprime = size_ceiling(declared)
             flow.request.headers[_GOOG_LEN] = str(nprime)
+            # 확장이 검토한 마스킹본(이름·크기로 알린 것)은 이름을 그대로 둔다 — 다시 바꾸면 x_masked_masked.md 가 된다.
+            masked_name = original if _approved_meta(original, declared) else masked_name_for(original)
+            if masked_name != original:
+                flow.request.content = (_GEMINI_NAME_PREFIX + masked_name).encode("utf-8")
             flow.metadata["campfire_gemini"] = ChatGptUpload(
-                declared=nprime, masked_name="", original_name="upload.bin"
+                declared=nprime, masked_name=masked_name, original_name=original
             )
             return
 
@@ -793,13 +833,13 @@ class CampfireAddon:
             mime=flow.request.headers.get("content-type", ""),
             host="gemini.google.com",
             flow=flow,
-            # 시작 요청 본문("File name: 보고서.docx", 2026-10-26 실측 길이로 확인)이 바이트를 보기 전에 형식을 정해,
-            # 가린 글을 넣으면 Gemini 가 손상된 파일로 거부한다. 확장이 이 사이트 파일을 먼저 가린다(PROXY_FILE_HOSTS).
-            can_replace=False,
+            # 시작 요청에서 이미 _masked.md 로 바꿔 등록했다 — 깨끗해도 원본 바이트가 아니라 글을 올린다.
+            # 확장이 검토한 마스킹본(이름을 안 바꿈)은 해시로 그대로 보낸다(_scan_and_decide 맨 앞).
+            always_text=promise.masked_name != promise.original_name,
         )
         if masked is _UNREPLACEABLE:
             promise.blocked = True
-            self._block(flow, "Gemini 는 가린 글로 바꾼 파일을 받지 않아 보내지 않았습니다 — 가릴 내용이 있는 파일입니다")
+            self._block(flow, "검사를 끝내지 못한 파일이라 보내지 않았습니다 — 지원하지 않는 형식이거나 이미지 검사가 꺼져 있습니다")
             return
         if masked is None:
             promise.blocked = True
@@ -828,6 +868,44 @@ class CampfireAddon:
         self._gemini[gemini_session_key(url)] = pending
         while len(self._gemini) > _MAX_TRACKED_UPLOADS:
             self._gemini.pop(next(iter(self._gemini)))
+
+    def _gemini_finalize_response(self, flow: http.HTTPFlow) -> None:
+        """② 응답 본문(파일 경로)을 바꾼 이름에 묶는다 — ③·④ 가 이 경로로 파일을 가리킨다."""
+        if flow.response is None or "finalize" not in flow.request.headers.get(_GOOG_CMD, "").lower():
+            return
+        promise = self._gemini.get(gemini_session_key(flow.request.url))
+        path = (flow.response.get_text() or "").strip()
+        if promise is None or promise.settled is None or not path or promise.masked_name == promise.original_name:
+            return
+        self._gemini_files[path] = promise.masked_name
+        while len(self._gemini_files) > _MAX_TRACKED_UPLOADS:
+            self._gemini_files.pop(next(iter(self._gemini_files)))
+
+    def _gemini_process_file(self, flow: http.HTTPFlow) -> None:
+        """③ ProcessFile 의 f.req 에서 우리가 바꾼 파일의 형식·이름을 맞춘다.
+
+        모르는 모양이면 손대지 않는다 — 바이트는 ②에서 이미 가린 글이라 내용이 새지 않는다(형식이 어긋나 Gemini 가
+        파일을 못 읽을 뿐이다)."""
+        from urllib.parse import parse_qsl, urlencode
+
+        if not self._gemini_files:
+            return
+        pairs = parse_qsl(flow.request.get_text() or "", keep_blank_values=True)
+        changed = False
+        for idx, (k, v) in enumerate(pairs):
+            if k != "f.req":
+                continue
+            try:
+                outer = json.loads(v)
+                inner = json.loads(outer[1])
+            except (ValueError, TypeError, IndexError, KeyError):
+                return
+            if _rename_gemini_file(inner, self._gemini_files):
+                outer[1] = _dumps(inner)
+                pairs[idx] = (k, _dumps(outer))
+                changed = True
+        if changed:
+            flow.request.text = urlencode(pairs)
 
     # ── multipart 경로 (Claude / Copilot / Perplexity, Gemini 는 미확인) ────
 
@@ -1063,14 +1141,18 @@ class CampfireAddon:
     # ── 공통: 검사 + 사람 판단 ───────────────────────────────────────────────
 
     async def _scan_and_decide(
-        self, *, data: bytes, file_name: str, mime: str, host: str, flow=None, can_replace: bool = True
+        self, *, data: bytes, file_name: str, mime: str, host: str, flow=None, can_replace: bool = True,
+        always_text: bool = False,
     ) -> bytes | None | object:
         """검사하고 판단을 받는다.
 
-        can_replace: 이 업로드 자리에 가린 글(MD)을 넣을 수 있는가. 아니면(Gemini 전부, ChatGPT 이미지) 끝까지
+        can_replace: 이 업로드 자리에 가린 글(MD)을 넣을 수 있는가. 아니면(ChatGPT 이미지) 끝까지
         검사해 가릴 것이 있을 때 묻지 않고 `_UNREPLACEABLE` 을 돌려준다 — 가린 글을 넣으면 사이트가 깨진 파일로
         거부한다(2026-10-26 실측). 그래서 이 경우는 오탐이어도 원본을 보내는 선택지가 없다. 미지원·잘림처럼
         검사를 끝내지 못한 건은 지금처럼 묻는다(원본/취소).
+        always_text: 등록 때 이미 이름·형식을 `_masked.md` 로 바꿔 둔 자리(Gemini) — 원본 바이트는 보낼 수 없다.
+        깨끗해도 추출한 글을 돌려주고, 검사를 끝내지 못했으면(미지원·이미지 검사 꺼짐 등) `_UNREPLACEABLE`,
+        "원본 보내기" 를 골라도 가린 글을 보낸다.
         반환: 마스킹 바이트 / `_ORIGINAL`(원본 그대로) / `_UNREPLACEABLE` / None(보내지 않음).
         """
         if _approved_bytes(data):
@@ -1094,6 +1176,12 @@ class CampfireAddon:
         name_forced = bool(forced_mask.registry.snapshot().find(file_name))
         # 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 원본(그림째)을 보내지 않고 글만 보낸다(사용자 결정 2026-10-28).
         images_removed = bool(result.get("imagesRemoved"))
+        if always_text:
+            if result.get("scanStatus") != "ok":
+                logger.info("[proxy] 검사를 끝내지 못한 업로드 — 원본을 보낼 수 없어 차단 host=%s", host)
+                return _UNREPLACEABLE
+            if _is_clean_result(result) and not name_forced:
+                return (result.get("maskedText") or "").encode("utf-8")
         if _is_clean_result(result) and not name_forced:
             if not images_removed:
                 return _ORIGINAL
@@ -1112,7 +1200,8 @@ class CampfireAddon:
         )
         if action == "cancel":
             return None
-        if action == "send_original" and not result.get("forcedMaskItems") and not name_forced and not images_removed:
+        if (action == "send_original" and not result.get("forcedMaskItems") and not name_forced and not images_removed
+                and not always_text):
             return _ORIGINAL
         return (result.get("maskedText") or "").encode("utf-8")
 
@@ -1157,6 +1246,40 @@ class _TextSlot:
 def _dumps(obj) -> str:
     """브라우저 JSON.stringify 와 같은 모양(공백 없음, 한글 그대로)."""
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _rename_gemini_file(node, files: dict[str, str]) -> bool:
+    """③ ProcessFile f.req 의 [[경로, null, 1, MIME], 이름] 에서 우리가 바꾼 파일의 MIME·이름을 고친다. 고쳤으면 True."""
+    if not isinstance(node, list):
+        return False
+    head = node[0] if node else None
+    if isinstance(head, list) and head and isinstance(head[0], str) and head[0] in files:
+        if len(head) > 3 and isinstance(head[3], str):
+            head[3] = GEMINI_MASKED_MIME
+        if len(node) > 1 and isinstance(node[1], str):
+            node[1] = files[head[0]]
+        return True
+    return any([_rename_gemini_file(child, files) for child in node])  # 목록으로 — 하나 고쳐도 나머지도 본다
+
+
+def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
+    """④ processSession 세션 설정의 첨부 항목 {1: {1: 경로, 4: MIME}, 2: 이름} 에서 MIME·이름을 고친다. 고쳤으면 True."""
+    changed = False
+    items = [f.message for _, f in msg.walk() if f.message is not None]
+    for item in items:
+        ref = next((f.message for f in item.fields if f.number == 1 and f.message is not None), None)
+        path = next((f.value for f in ref.fields if f.number == 1 and f.value is not None), None) if ref else None
+        name = files.get(path.decode("utf-8", "replace")) if path else None
+        if name is None:
+            continue
+        for f in ref.fields:
+            if f.number == 4 and f.wire_type == 2:
+                f.set_bytes(GEMINI_MASKED_MIME.encode())
+        for f in item.fields:
+            if f.number == 2 and f.wire_type == 2:
+                f.set_bytes(name.encode("utf-8"))
+        changed = True
+    return changed
 
 
 def _client_alive(flow):
