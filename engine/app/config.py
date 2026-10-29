@@ -462,6 +462,11 @@ IMAGE_OCR_BATCH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_BATCH", "16"))
 IMAGE_OCR_TOKEN_BUDGET: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_TOKEN_BUDGET", "18000"))
 # 마지막으로 쓴 뒤 이만큼 지나면 사이드카를 내린다 — 가중치만 약 4.1GB 라 계속 두지 않는다.
 IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDLE_UNLOAD_SEC", "120"))
+# Windows 남은 시스템 커밋(MB)이 이보다 적으면 사이드카를 띄우지 않는다 / 떠 있어도 읽지 않고 내린다 — 그림은 미검사로 막힌다.
+# v0.2.62 측정(RTX 5070 12GB, RAM 15GB): 사이드카 커밋 최대 8,070MB 로 PC 남은 커밋이 10.4GB → 0.67GB 까지 떨어졌다.
+# 띄우기 = 사이드카 몫(약 8GB) + 여유 2GB. 커밋 한도를 넘으면 다른 프로그램까지 죽는다.
+IMAGE_OCR_LAUNCH_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_LAUNCH_FREE_COMMIT_MB", "10240"))
+IMAGE_OCR_READ_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_READ_FREE_COMMIT_MB", "2048"))
 IMAGE_OCR_MAX_IMAGES: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MAX_IMAGES", "20"))  # 넘으면 나머지는 미검사로 막는다
 # 이보다 작은 이미지는 아이콘·로고로 보고 건너뛴다(글자 검사 대상 아님).
 IMAGE_OCR_MIN_WIDTH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MIN_WIDTH", "120"))

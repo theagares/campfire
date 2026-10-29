@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.varco_ocr.runtime import varco_ocr_inference as runtime
+
+
+@pytest.fixture(autouse=True)
+def _no_commit_limit(monkeypatch):
+    """이 PC 의 실제 남은 커밋에 시험이 흔들리지 않게 기본은 '모름'(Windows 가 아닌 것처럼)."""
+    monkeypatch.setattr(runtime, "_free_commit", lambda: None)
 
 
 class _Backend:
@@ -93,6 +101,17 @@ def test_Intel_XPU_는_전체에서_쓴_만큼을_빼고_정한다(monkeypatch):
     assert runtime._memory_safe_limits("xpu", *CAP) == (8, 9011)  # 8GB Arc — 예전 단계 규칙은 2/1500
     xpu.get_device_properties = lambda _index: SimpleNamespace(total_memory=16 * GIB)
     assert runtime._memory_safe_limits("xpu", *CAP) == (16, 18000)
+
+
+def test_Windows_는_묶음_메모리를_남은_시스템_커밋으로도_묶는다(monkeypatch):
+    # v0.2.62 측정: VRAM +4.8GB 일 때 사이드카 커밋 8GB — VRAM 이 넉넉해도 PC 커밋이 모자라면 큰 묶음을 쓰지 않는다.
+    _cuda(monkeypatch, 12 * GIB - WEIGHTS_AND_CONTEXT)  # VRAM 은 약 7.4GB 남음
+    monkeypatch.setattr(runtime, "_free_commit", lambda: 5 * GIB)  # 남은 커밋 5GB → 5 − 2(남김) = 3GB
+    assert runtime._memory_safe_limits("cuda", *CAP) == (8, 6144)
+    monkeypatch.setattr(runtime, "_free_commit", lambda: 2.5 * GIB)
+    assert runtime._memory_safe_limits("cuda", *CAP) == (2, 1500)
+    monkeypatch.setattr(runtime, "_free_commit", lambda: 40 * GIB)  # 커밋이 넉넉하면 VRAM 기준 그대로
+    assert runtime._memory_safe_limits("cuda", *CAP) == (16, 18000)
 
 
 # 조각 입력 토큰 — 묶음을 짜려고 조각마다 _encode(전처리)를 한 번 더 돌리지 않고 프로세서 식으로 센다(v0.2.62: GPU 사용률 5%).
