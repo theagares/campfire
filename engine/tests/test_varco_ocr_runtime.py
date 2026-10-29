@@ -93,3 +93,58 @@ def test_Intel_XPU_는_전체에서_쓴_만큼을_빼고_정한다(monkeypatch):
     assert runtime._memory_safe_limits("xpu", *CAP) == (8, 9011)  # 8GB Arc — 예전 단계 규칙은 2/1500
     xpu.get_device_properties = lambda _index: SimpleNamespace(total_memory=16 * GIB)
     assert runtime._memory_safe_limits("xpu", *CAP) == (16, 18000)
+
+
+# 조각 입력 토큰 — 묶음을 짜려고 조각마다 _encode(전처리)를 한 번 더 돌리지 않고 프로세서 식으로 센다(v0.2.62: GPU 사용률 5%).
+RESOLUTIONS = [(600, 40), (1255, 319), (90, 90), (2364, 1038), (300, 1200), (50, 200), (1448, 1086), (420, 226),
+               (1200, 60), (31, 400)]
+
+
+class _FakeProc:
+    """그림 몫 = 가로 + 세로, 프롬프트·대화 틀 몫 = 98 인 가짜 프로세서."""
+
+    image_processor = SimpleNamespace(size={"height": 384, "width": 384})
+
+    def __init__(self):
+        self.encoded = 0
+
+    def _get_number_of_features(self, h, w, _hh, _ww):
+        return h + w
+
+    def apply_chat_template(self, convs, **_kw):
+        self.encoded += 1
+        w, h = convs[0][0]["content"][0]["image"].size
+        return {"input_ids": runtime.torch.zeros((1, h + w + 98))}
+
+
+def test_조각_토큰은_프롬프트_몫을_한_번만_재고_식으로_센다():
+    from PIL import Image
+
+    reader = runtime.Reader.__new__(runtime.Reader)
+    reader.proc = _FakeProc()
+    reader._setup_token_count()
+    assert reader.text_tokens == 98 and reader.proc.encoded == 1
+    assert [reader._ntok(Image.new("RGB", wh)) for wh in RESOLUTIONS] == [w + h + 98 for w, h in RESOLUTIONS]
+    assert reader.proc.encoded == 1, "조각마다 _encode(전처리)를 다시 돌렸다"
+
+
+def test_식으로_센_토큰이_실제_프로세서_인코딩과_같다():
+    """실제 VARCO 프로세서(가중치 없이)로 여러 해상도를 비교한다 — torchvision·모델 파일이 있을 때만(엔진 venv 에는 없다)."""
+    import pytest
+    from PIL import Image
+
+    pytest.importorskip("torchvision")
+    from app import config
+
+    model_dir = config.IMAGE_OCR_ENGINE_DIR / "models"
+    if not (model_dir / "preprocessor_config.json").exists():
+        pytest.skip("VARCO 프로세서 파일이 없다")
+    from transformers import AutoProcessor
+
+    reader = runtime.Reader.__new__(runtime.Reader)
+    reader.proc = AutoProcessor.from_pretrained(model_dir)
+    reader.proc.tokenizer.padding_side = "left"
+    reader._setup_token_count()
+    for wh in RESOLUTIONS:
+        crop = Image.new("RGB", wh)
+        assert reader._encode([crop])["input_ids"].shape[1] == reader._ntok(crop), wh

@@ -333,6 +333,22 @@ class Reader:
         self.batch, self.budget = _memory_safe_limits(device, batch, token_budget)
         self.eos = self.proc.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.pad = self.proc.tokenizer.pad_token_id
+        self._setup_token_count()
+
+    def _setup_token_count(self) -> None:
+        """조각 입력 토큰 수를 전처리 없이 세게 준비한다 — 그림 몫은 프로세서와 같은 식(_get_number_of_features), 프롬프트·
+        대화 틀 몫은 그림 크기와 무관해 작은 그림 하나로 한 번만 잰다. 예전엔 묶음을 짜려고 조각마다 _encode(anyres 384칸
+        자르기·정규화 — CPU 일)를 한 번 더 돌려 길이만 셌다(v0.2.62 측정: GPU 사용률 최대 5%)."""
+        self.side = self.proc.image_processor.size["height"]
+        probe = Image.new("RGB", (64, 64))
+        self.text_tokens = self._encode([probe])["input_ids"].shape[1] - self._image_tokens(probe)
+
+    def _image_tokens(self, crop: Image.Image) -> int:
+        w, h = crop.size
+        return self.proc._get_number_of_features(h, w, self.side, self.side)
+
+    def _ntok(self, crop: Image.Image) -> int:
+        return self._image_tokens(crop) + self.text_tokens
 
     def _encode(self, crops):
         convs = [[{"role": "user", "content": [{"type": "image", "image": c}, {"type": "text", "text": PROMPT}]}] for c in crops]
@@ -345,7 +361,7 @@ class Reader:
         boxes = segment(img)
         crops = [img.crop(b) for _, b in boxes]
         order = sorted(range(len(crops)), key=lambda i: crops[i].size[0] / crops[i].size[1])  # 모양이 비슷한 것끼리
-        ntok = {i: self._encode([crops[i]])["input_ids"].shape[1] for i in order}
+        ntok = {i: self._ntok(crops[i]) for i in order}
         groups, cur = [], []
         for i in order:
             if cur and (len(cur) >= self.batch or (len(cur) + 1) * max(ntok[j] for j in cur + [i]) > self.budget):
