@@ -332,12 +332,14 @@ GEMINI_ROUTE_HOST = "gemini.google.com"
 #      (서버는 여기서 형식을 보지 않는다)
 #   ③ POST gemini.google.com …/BardFrontendService/ProcessFile  f.req 안 [[경로, null, 1, "text/plain"], "cfprobe.txt"]
 #      → 파일 id. **형식(MIME)과 이름은 여기 적힌다.**
-#   ④ 전송 processSession ofs=0 세션 설정 안 첨부 항목 {1: {1: 경로, 2: 3, 4: MIME, 5: 파일 id}, 2: 이름, 7: 0}
+#   ④ 전송 processSession ofs=0 세션 설정 안 첨부 항목 {1: {1: 경로, 2: 종류, 4: MIME, 5: 파일 id}, 2: 이름}
+#      (맥 v0.2.60 캡처: 경로 (1,8,5,1,1,4,1,1), 종류 png=1·docx=10, 그 밖의 칸은 같다)
 # 예전엔 ②만 보고 가린 글을 넣으면 Gemini 가 docx 로 읽으려다 깨진 파일로 거부해 막기만 했다(맥: docx·png·py 전부 막힘).
 # 확장처럼 등록부터 _masked.md 로 보이게 ①의 이름, ②의 본문, ③·④의 형식·이름을 함께 바꾸고, 경로로 잇는다.
 _GEMINI_NAME_PREFIX = "File name: "
 GEMINI_PROCESS_FILE_PATH = "/_/BardChatUi/data/assistant.lamda.BardFrontendService/ProcessFile"
 GEMINI_MASKED_MIME = "text/plain"
+_GEMINI_KIND_IMAGE, _GEMINI_KIND_DOC = 1, 10  # ④ 첨부 항목 1.2 — 그림이면 가린 글을 그림으로 읽는다(M-1)
 _GOOG_CMD = "x-goog-upload-command"
 _GOOG_LEN = "x-goog-upload-header-content-length"
 _GOOG_URL = "x-goog-upload-url"
@@ -1757,8 +1759,6 @@ _MIME_LIKE = re.compile(r"[a-z]+/[\w.+-]+")
 
 def _pb_shape(msg) -> list[str]:
     """protobuf 칸 구조를 글 없이 낸다 — 칸 번호=숫자, MIME 처럼 보이는 값만 그대로, 나머지 글은 길이만(이름·경로가 남지 않게)."""
-    from app.adapters.proxy import protobuf as pb
-
     out, mime = [], None
     for path, f in msg.walk():
         if mime and path[:len(mime)] == mime:
@@ -1772,7 +1772,7 @@ def _pb_shape(msg) -> list[str]:
         elif f.value is not None:
             out.append(f"{key}=len{len(f.value)}")
         elif f.wire_type == 0:
-            out.append(f"{key}={pb._read_varint(f.raw, pb._read_varint(f.raw, 0)[1])[0]}")
+            out.append(f"{key}={f.varint}")
         else:
             out.append(f"{key}=wt{f.wire_type}")
     return out
@@ -1790,7 +1790,11 @@ def _json_shape(node):
 
 
 def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
-    """④ processSession 세션 설정의 첨부 항목 {1: {1: 경로, 4: MIME}, 2: 이름} 에서 MIME·이름을 고친다. 고쳤으면 True."""
+    """④ processSession 세션 설정의 첨부 항목 {1: {1: 경로, 2: 종류, 4: MIME}, 2: 이름} 에서 종류·MIME·이름을 고친다. 고쳤으면 True.
+
+    종류가 그림(1)이면 문서(10)로 바꾼다 — 형식·이름만 바꾸면 Gemini 가 가린 글 바이트를 그림으로 읽어 첨부와 무관한
+    엉터리 답을 냈다(맥 v0.2.60 M-1). 문서(10)+text/plain+가린 글은 docx 에서 정상 요약으로 확인한 조합이다. 다른 종류는 둔다.
+    """
     changed = False
     items = [f.message for _, f in msg.walk() if f.message is not None]
     for item in items:
@@ -1802,6 +1806,8 @@ def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
         for f in ref.fields:
             if f.number == 4 and f.wire_type == 2:
                 f.set_bytes(GEMINI_MASKED_MIME.encode())
+            elif f.number == 2 and f.varint == _GEMINI_KIND_IMAGE:
+                f.set_varint(_GEMINI_KIND_DOC)
         for f in item.fields:
             if f.number == 2 and f.wire_type == 2:
                 f.set_bytes(name.encode("utf-8"))

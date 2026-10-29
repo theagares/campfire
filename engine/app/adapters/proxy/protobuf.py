@@ -71,6 +71,19 @@ class Field:
     message: "Message | None" = None  # 값이 메시지로 읽히면 그 트리
     _dirty: bool = False
 
+    @property
+    def varint(self) -> int | None:
+        """varint 칸의 값. 다른 wire type 이면 None."""
+        if self.wire_type != 0:
+            return None
+        return _read_varint(self.raw, _read_varint(self.raw, 0)[1])[0]
+
+    def set_varint(self, n: int) -> None:
+        """varint 칸의 값을 바꾼다(Gemini 첨부 종류)."""
+        if self.wire_type != 0:
+            raise ValueError("varint 필드가 아니다")
+        self.raw = _encode_varint(self.number << 3) + _encode_varint(n)
+
     def set_bytes(self, new_value: bytes) -> None:
         """이 필드의 length-delimited 값을 바꾼다(문자열 필드 마스킹용)."""
         if self.wire_type != 2:
