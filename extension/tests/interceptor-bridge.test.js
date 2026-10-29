@@ -65,6 +65,13 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
   store.File = class extends BlobStub {
     constructor(name, type) { super(); this.name = name || 'secret.pdf'; if (type) this.type = type; }
   };
+  // fetch FormData 경로(entries·values·append)를 탈 만큼만 흉내 낸다.
+  store.FormData = class {
+    constructor() { this.list = []; }
+    append(key, value) { this.list.push([key, value]); }
+    entries() { return this.list[Symbol.iterator](); }
+    values() { return this.list.map(([, v]) => v)[Symbol.iterator](); }
+  };
   store.FileReader = function () {};
   store.FileReader.prototype = {
     readAsArrayBuffer: noop, readAsDataURL: noop, readAsBinaryString: noop,
@@ -142,20 +149,29 @@ function load({ proxyMarked = false, host = 'chatgpt.com' } = {}) {
     return origFetchCalls.length > 0;
   }
 
-  /** 임의 본문(Blob·File)을 보내고 "인터셉트 없이 통과했는지"를 돌려준다. */
-  async function bodyPassedThrough(body) {
+  /** 임의 본문(Blob·File·FormData)을 url 로 보내고 "인터셉트 없이 통과했는지"를 돌려준다. */
+  async function bodyPassedThrough(body, url = 'https://www.perplexity.ai/rest/event') {
     origFetchCalls.length = 0;
-    sandbox.fetch('https://www.perplexity.ai/rest/event', { method: 'POST', body }).catch(() => {});
+    sandbox.fetch(url, { method: 'POST', body }).catch(() => {});
     await settle();
     return origFetchCalls.length > 0;
+  }
+
+  /** 파일 파트 하나를 담은 FormData(S3 presigned POST 모양 — 서명 칸 뒤에 file). */
+  function formWith(file) {
+    const fd = new store.FormData();
+    fd.append('key', 'web/direct-files/attachments/u1/uuid/paste.txt');
+    fd.append('file', file);
+    return fd;
   }
 
   return {
     config,
     passedThrough,
     bodyPassedThrough,
+    formWith,
     blob: (type) => Object.assign(new store.Blob(), { type }),
-    file: (name, type) => new store.File(name, type),
+    file: (name, type) => Object.assign(new store.File(name), { type }),
     posted,
     sandbox,
     setProxyMarked: (value) => { hasProxyMark = Boolean(value); },
@@ -227,6 +243,37 @@ async function main() {
     assert.strictEqual(await t.bodyPassedThrough(t.file('notes.txt', 'text/plain')), false, '사용자가 넣은 .txt 파일이 검사 없이 나갔다');
     assert.strictEqual(await t.bodyPassedThrough(t.file('README', 'text/plain')), false, '이름 있는 평문 파일(확장자 없음)이 검사 없이 나갔다');
     assert.strictEqual(await t.bodyPassedThrough(t.blob('application/pdf')), false, '이름 없는 PDF Blob 본문이 검사 없이 나갔다(예전 동작)');
+  }
+
+  // (4-1-1) 알려진 업로드 주소(Perplexity S3)로 가는 파일 파트는 이름·형식이 없어도 업로드다 — Perplexity 는 여러 줄
+  //         붙여넣기를 첨부 파일로 바꿔 이 S3 로 올린다. 같은 이름 없는 평문이 분석·기록 주소로 가면 그대로 나간다.
+  {
+    const t = withToken();
+    const S3 = 'https://ppl-ai-file-upload.s3.amazonaws.com/';
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('blob', 'text/plain')), S3), false,
+      'Perplexity S3 로 가는 이름 없는 평문 파일 파트(붙여넣기)가 검사 없이 나갔다');
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('blob', '')), S3), false,
+      'Perplexity S3 로 가는 형식 없는 파일 파트가 검사 없이 나갔다');
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('blob', 'text/plain')),
+      'https://browser-intake-datadoghq.com/api/v2/rum'), true, 'Datadog RUM 으로 가는 이름 없는 평문을 업로드로 붙들었다');
+    assert.strictEqual(await t.bodyPassedThrough(t.blob('text/plain'), 'https://browser-intake-datadoghq.com/api/v2/rum'), true,
+      'Datadog RUM 으로 가는 이름 없는 text/plain Blob 을 업로드로 붙들었다');
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('blob', 'application/json')),
+      'https://www.perplexity.ai/rest/event/analytics'), true, '분석 주소로 가는 평문을 업로드로 붙들었다');
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('a.zip', 'application/zip')), S3), true,
+      '이름 있는 미지원 형식(zip)까지 붙들었다 — 이 규칙은 이름 없는 파일만 더 본다');
+  }
+
+  // (4-1-2) 프록시 방식(표식 새것)이면 Perplexity S3 로 가는 이름 없는 파일 파트도 확장이 손 뗀다(#325 그대로).
+  {
+    const t = load({ proxyMarked: true, host: 'www.perplexity.ai' });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'proxy'),
+      '프록시 표식을 보지 못했다 — 이 사례가 아무것도 확인하지 않는다');
+    assert.strictEqual(await t.bodyPassedThrough(t.formWith(t.file('blob', 'text/plain')),
+      'https://ppl-ai-file-upload.s3.amazonaws.com/'), true, '프록시 방식인데 확장이 Perplexity 업로드를 또 붙들었다');
   }
 
   // (4-2) 그림은 엔진에서 이미지 속 글자 검사를 켰을 때만 가로챈다(content.js 가 imageScan 으로 알린다).
