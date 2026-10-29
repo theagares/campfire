@@ -99,6 +99,18 @@ def _no_commit_limit(monkeypatch):
     monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: None)
 
 
+_real_gpu_worker_first = image_ocr.gpu_worker_first  # 아래 autouse 가 바꾸기 전 — 순서 시험이 진짜를 쓴다
+
+
+@pytest.fixture(autouse=True)
+def _no_gpu_worker(monkeypatch):
+    """사이드카를 띄우는 시험이 진짜 통합 GPU worker(PII·인젝션 모델)를 올리지 않게 한다(Windows 는 기본 켜짐)."""
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(image_ocr, "gpu_worker_first", nothing)
+
+
 @pytest.fixture(autouse=True)
 def _empty_ocr_cache():
     """업로드 사이 OCR 캐시는 프로세스 전역이다 — 같은 _png() 바이트를 쓰는 시험끼리 결과가 새지 않게 비운다."""
@@ -300,11 +312,50 @@ def test_떠_있을_때_메모리가_바닥나면_읽지_않고_내린다(monkey
 
 
 def test_메모리가_넉넉하거나_모르면_지금처럼_읽는다(monkeypatch):
-    # 떠 있으면 읽기 기준(2GB)만 넘으면 된다 — 띄우기 기준(10GB)보다 적어도 이미 올린 사이드카로 읽는다
+    # 떠 있으면 읽기 기준(2GB)만 넘으면 된다 — 띄우기 기준(9GB)보다 적어도 이미 올린 사이드카로 읽는다
     proc, calls = _guarded_proc(monkeypatch, free_mb=config.IMAGE_OCR_READ_FREE_COMMIT_MB + 1000, running=True)
     assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls["rpc"] == 1
     proc, calls = _guarded_proc(monkeypatch, free_mb=None, running=False)  # Windows 가 아니거나 모름
     assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls == {"launch": 1, "rpc": 1, "kill": 0}
+
+
+def test_사이드카를_띄우기_전에_통합_GPU_worker_를_먼저_올린다(monkeypatch):
+    # worker 가 유휴로 내려간 뒤 OCR 이 먼저 떠 남은 VRAM 으로 큰 묶음을 잡으면, 뒤에 올라오는 worker(약 4GB)와 12GB 카드가 넘친다.
+    order = []
+    proc, _calls = _guarded_proc(monkeypatch, free_mb=None, running=False)
+    monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: order.append("commit"))
+    real_ensure = proc._ensure_process
+
+    async def ensure():
+        order.append("launch")
+        await real_ensure()
+
+    class _Worker:
+        async def ensure_ready(self):
+            order.append("worker")
+
+    monkeypatch.setattr(proc, "_ensure_process", ensure)
+    monkeypatch.setattr(image_ocr, "gpu_worker_first", _real_gpu_worker_first)
+    monkeypatch.setattr(image_ocr.combined_gpu, "get_worker", _Worker)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음"
+    assert order == ["worker", "commit", "launch"], "worker 몫을 뺀 남은 메모리로 띄우기 기준·묶음을 정해야 한다"
+
+    order.clear()  # 이미 떠 있으면 worker 를 건드리지 않는다
+    proc._process_ready = True
+    asyncio.run(proc.read(_png()))
+    assert "worker" not in order
+
+
+def test_통합_worker_를_못_쓰면_OCR_은_그대로_띄운다(monkeypatch):
+    proc, calls = _guarded_proc(monkeypatch, free_mb=None, running=False)
+
+    class _Disabled:
+        async def ensure_ready(self):
+            raise image_ocr.combined_gpu.CombinedGpuUnavailable("combined GPU worker is disabled")
+
+    monkeypatch.setattr(image_ocr, "gpu_worker_first", _real_gpu_worker_first)
+    monkeypatch.setattr(image_ocr.combined_gpu, "get_worker", _Disabled)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls["launch"] == 1
 
 
 def test_GPU_torch_는_이미지_검사_사이드카에만_앞세우고_따로_지정한_파이썬이면_그대로(monkeypatch, tmp_path):

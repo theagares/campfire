@@ -27,6 +27,7 @@ from app import config
 from app.core import model_status
 from app.core.parser.images import MARK_RE
 
+from . import combined_gpu
 from .gpu_residency import GpuResidency
 from .pii.encoder import EncoderPiiDetector
 
@@ -56,6 +57,14 @@ def free_commit_mb() -> float | None:
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
     return status.ullAvailPageFile / 2**20
+
+
+async def gpu_worker_first() -> None:
+    """OCR 사이드카를 띄우기 전에 통합 GPU worker(PII·인젝션)를 먼저 올린다(이미 떠 있으면 그대로). 사이드카는 띄울 때 남은
+    VRAM·커밋으로 묶음을 정한다 — worker 가 유휴로 내려간 뒤 OCR 이 먼저 큰 묶음을 잡으면 뒤에 올라오는 worker(약 4GB)와
+    12GB 카드가 넘친다. 못 쓰면(꺼짐·CUDA 없음) 그대로 간다 — 탐지는 개별 사이드카가 한다."""
+    with contextlib.suppress(combined_gpu.CombinedGpuUnavailable):
+        await combined_gpu.get_worker().ensure_ready()
 
 
 class VarcoOcrProcess(EncoderPiiDetector):
@@ -110,6 +119,8 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.last_failure = None
         if self.no_gpu or not model_status.image_ocr_ready():
             return None
+        if not self._process_ready:
+            await gpu_worker_first()  # 메모리 기준·묶음이 worker 몫을 빼고 정해지게 먼저
         if not await self._enough_memory():
             self.last_failure = LOW_MEMORY_REASON
             return None
