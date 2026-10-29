@@ -59,6 +59,7 @@ test('엔진 health가 준비되면 홈 칩용 stats.models도 즉시 갱신한�
     health: {
       modelsReady: { pii: true, injection: true },
       confidential: { enabled: true, ready: true, kgReady: true },
+      imageOcr: { enabled: true, ready: true, gpu: true, accelerator: 'cuda' },
     },
   };
   manager.emit('status', status);
@@ -67,6 +68,7 @@ test('엔진 health가 준비되면 홈 칩용 stats.models도 즉시 갱신한�
   assert.equal(tick?.payload?.models?.pii?.ready, true, 'PII 칩이 회색 스냅샷에 머물렀다');
   assert.equal(tick?.payload?.models?.injection?.ready, true, 'Injection 칩이 회색 스냅샷에 머물렀다');
   assert.equal(tick?.payload?.models?.confidential?.ready, true, '기밀 칩이 회색 스냅샷에 머물렀다');
+  assert.equal(tick?.payload?.models?.imageOcr?.ready, true, 'VARCO 칩이 회색 스냅샷에 머물렀다');
   const ticks = sent.filter((item) => item.channel === 'stats:tick').length;
   manager.emit('status', status);
   assert.equal(
@@ -75,4 +77,27 @@ test('엔진 health가 준비되면 홈 칩용 stats.models도 즉시 갱신한�
     '같은 health 폴링마다 SQLite 통계를 다시 읽고 브로드캐스트했다',
   );
   unbind();
+});
+
+test('VARCO 상태는 꺼짐·준비 경고·작동 중을 구분하고 라이트 판에서는 숨긴다', () => {
+  version = '0.2.57';
+  const statusFor = (status, setting = false) => buildStats({
+    getStatus: () => status,
+    config: { get: (key) => key === 'imageOcrEnabled' && setting },
+  }).models.imageOcr;
+
+  assert.deepEqual(
+    { enabled: statusFor({ state: 'running', health: { imageOcr: { enabled: false } } }).enabled,
+      warning: statusFor({ state: 'running', health: { imageOcr: { enabled: false } } }).warning },
+    { enabled: false, warning: false },
+  );
+  const noGpu = statusFor({ state: 'running', health: { imageOcr: { enabled: true, ready: false, gpu: false } } });
+  assert.equal(noGpu.warning, true);
+  assert.equal(noGpu.label, 'GPU 없음');
+  const ready = statusFor({ state: 'running', health: { imageOcr: { enabled: true, ready: true, gpu: true, accelerator: 'cuda' } } });
+  assert.equal(ready.ready, true);
+  assert.match(ready.label, /CUDA/);
+
+  version = '0.2.57-lite.1';
+  assert.equal(statusFor({ state: 'starting', health: null }, true).enabled, false);
 });

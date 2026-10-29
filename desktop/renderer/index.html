@@ -211,15 +211,24 @@
               </div>
             </div>
 
-            <!-- 기밀 탐지(선택 기능) — 켜져 있을 때만 보인다 (app.js renderDashboard). 리트리버도 A.X 인코더라 같은 그림 -->
-            <div class="dash-row grid grid-2" id="dash-conf-row" style="display:none">
-              <div class="card model-card pii" id="dash-conf-card">
+            <!-- 선택 모델: 기밀은 켜져 있을 때만, VARCO는 정식 판에서 항상 상태를 보인다. -->
+            <div class="dash-row grid grid-2" id="dash-model-optional-row">
+              <div class="card model-card pii" id="dash-conf-card" style="display:none">
                 <span class="mc-title">기밀 탐지 | A.X + Solar</span>
                 <span class="mc-dot" id="dash-conf-dot"></span>
                 <img class="mc-photo" src="../assets/figma/dash-pii-model.png" alt="" />
                 <div class="mc-caption" id="dash-conf-label">A.X 리트리버 · Solar Pro 4 판정</div>
               </div>
-              <div class="card detect-card">
+              <div class="card model-card image" id="dash-image-card">
+                <span class="mc-title">이미지 모델 | NCSOFT VARCO</span>
+                <span class="mc-dot" id="dash-image-dot"></span>
+                <img class="mc-photo" src="../assets/figma/dash-varco-model.svg" alt="" />
+                <div class="mc-caption" id="dash-image-label">VARCO-VISION 2.0 1.7B</div>
+              </div>
+            </div>
+
+            <div class="dash-row grid grid-2" id="dash-detect-optional-row">
+              <div class="card detect-card" id="dash-conf-detect-card" style="display:none">
                 <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-pii-deco.svg" alt="" />기밀 탐지량</div>
                 <div class="dc-stats">
                   <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-conf-today">–</span><span class="sb-unit">건</span></div>
@@ -229,6 +238,17 @@
                 <svg class="dc-chart" id="dc-chart-conf" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
                 <div class="dc-divider"></div>
                 <div class="dc-footer">누적 <b id="tile-conf-total">–</b>건 탐지</div>
+              </div>
+              <div class="card detect-card" id="dash-document-detect-card">
+                <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-pii-deco.svg" alt="" />문서 탐지량</div>
+                <div class="dc-stats">
+                  <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-document-today">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">주간</span><span class="sb-value" id="tile-document-week">–</span><span class="sb-unit">건</span></div>
+                  <div class="stat-box"><span class="sb-label">월간</span><span class="sb-value" id="tile-document-month">–</span><span class="sb-unit">건</span></div>
+                </div>
+                <svg class="dc-chart" id="dc-chart-document" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+                <div class="dc-divider"></div>
+                <div class="dc-footer">누적 <b id="tile-document-total">–</b>건 탐지</div>
               </div>
             </div>
 
