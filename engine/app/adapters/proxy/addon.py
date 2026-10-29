@@ -791,6 +791,10 @@ class CampfireAddon:
                 logger.warning("[proxy] Gemini 사용자 턴인데 글 칸이 없다 — 차단")
                 self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
                 return
+            # 바꿔 올린 파일이 실린 세션 데이터의 칸 구조를 남긴다(글 없이) — 맥 v0.2.60 M-1: 그림은 형식·이름을 바꿨는데도
+            # Gemini 가 가린 글을 그림으로 읽었다. 그림 항목에만 있는 칸을 다음 시험 로그로 바로 찾는다.
+            if self._gemini_files and any(p.encode() in raw for p in self._gemini_files):
+                logger.info("[proxy] Gemini 세션 데이터 칸(바꾼 첨부 있음) %s", _pb_shape(msg)[:120])
             # 우리가 _masked.md 로 바꿔 올린 첨부는 세션 설정 안 형식·이름도 맞춘다(④) — 원래 형식(docx 등)으로 두면
             # Gemini 가 가린 글을 그 형식으로 읽으려다 깨진 파일로 본다.
             if self._gemini_files and _rename_gemini_items(msg, self._gemini_files):
@@ -943,6 +947,9 @@ class CampfireAddon:
         cmd = flow.request.headers.get(_GOOG_CMD, "").lower()
 
         if "start" in cmd:
+            # 그림이 형식을 여기 헤더로 알리는지 보려고 남긴다(M-1). 값은 명령·길이·형식뿐이라 이름이 남지 않는다.
+            logger.info("[proxy] Gemini 시작 요청 헤더 %s",
+                        {k: v for k, v in flow.request.headers.items() if k.lower().startswith("x-goog-upload")})
             # 크기를 미리 선언하는 자리. ChatGPT 의 file_size 와 같은 역할이라
             # 여기서 N' 으로 올려 두고 나중에 본문을 그 크기에 맞춘다.
             declared = int(flow.request.headers.get(_GOOG_LEN) or 0)
@@ -1064,6 +1071,7 @@ class CampfireAddon:
                 inner = json.loads(outer[1])
             except (ValueError, TypeError, IndexError, KeyError):
                 return
+            logger.info("[proxy] Gemini ProcessFile 칸 %s", str(_json_shape(inner))[:600])  # 글 없이 — 그림 칸 찾기(M-1)
             if _rename_gemini_file(inner, self._gemini_files):
                 outer[1] = _dumps(inner)
                 pairs[idx] = (k, _dumps(outer))
@@ -1742,6 +1750,43 @@ def _rename_gemini_file(node, files: dict[str, str]) -> bool:
             node[1] = files[head[0]]
         return True
     return any([_rename_gemini_file(child, files) for child in node])  # 목록으로 — 하나 고쳐도 나머지도 본다
+
+
+_MIME_LIKE = re.compile(r"[a-z]+/[\w.+-]+")
+
+
+def _pb_shape(msg) -> list[str]:
+    """protobuf 칸 구조를 글 없이 낸다 — 칸 번호=숫자, MIME 처럼 보이는 값만 그대로, 나머지 글은 길이만(이름·경로가 남지 않게)."""
+    from app.adapters.proxy import protobuf as pb
+
+    out, mime = [], None
+    for path, f in msg.walk():
+        if mime and path[:len(mime)] == mime:
+            continue  # MIME 글을 메시지로 잘못 푼 하위 칸("image/png" 9바이트가 13번 fixed64 로 읽힌다)
+        key = ".".join(map(str, path))
+        if f.value is not None and _MIME_LIKE.fullmatch(f.value.decode("latin-1")):
+            out.append(f"{key}={f.value.decode('latin-1')}")
+            mime = path
+        elif f.message is not None:
+            continue
+        elif f.value is not None:
+            out.append(f"{key}=len{len(f.value)}")
+        elif f.wire_type == 0:
+            out.append(f"{key}={pb._read_varint(f.raw, pb._read_varint(f.raw, 0)[1])[0]}")
+        else:
+            out.append(f"{key}=wt{f.wire_type}")
+    return out
+
+
+def _json_shape(node):
+    """JSON 구조를 글 없이 낸다 — MIME 처럼 보이는 글만 그대로, 나머지 글은 s<길이>."""
+    if isinstance(node, list):
+        return [_json_shape(x) for x in node]
+    if isinstance(node, dict):
+        return {k: _json_shape(v) for k, v in node.items()}
+    if isinstance(node, str):
+        return node if _MIME_LIKE.fullmatch(node) else f"s{len(node)}"
+    return node
 
 
 def _rename_gemini_items(msg, files: dict[str, str]) -> bool:
