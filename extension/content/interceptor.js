@@ -35,16 +35,19 @@
   // 된다. 그래서 프록시가 **실제로 응답에 찍은 표식 헤더**가 보일 때만 손을 뗀다.
   //
   // 프록시 방식 = 엔진이 프록시를 켰다(_proxyExpected) + 이 탭에서 표식을 실제로 봤다(_proxyRoute).
-  // 한 번 확인한 경로는 시간이 지나도 유지한다. 예전엔 표식을 15초 못 보면 프록시가 빠졌다고 보고 확장이
-  // 다시 맡아, 20초 쉬고 Enter 하면 확장·프록시가 같은 글을 두 번 검사했다(맥 D-3). 경로를 내려놓는 건
-  // 엔진이 프록시를 껐다고 할 때(포커스·클릭·Enter 마다 다시 묻는다)와, 다시 확인한 HEAD 에 표식이 없을 때다.
+  // 확인한 경로는 시간이 지나도 "프록시 방식" 으로 남지만(맥 D-3: 15초 TTL 이던 때 20초 쉬고 Enter 하면 확장이
+  // 다시 맡아 두 번 검사했다), 그 사이 앱이 꺼지거나 프록시를 껐으면 브라우저는 직결로 보낸다. 그래서 실제로 무언가를
+  // 넘기는 순간에는 마지막 표식(_proxyMarkSeenAt)이 _PROXY_RECHECK_MS 안일 때만 바로 손을 뗀다 — 업로드는 여기
+  // proxyChecksFiles, 프롬프트는 content.js 가 붙든 채 다시 확인한다. 경로를 내려놓는 건 엔진이 프록시를 껐다고 할 때
+  // (포커스·클릭·Enter 마다 다시 묻는다)와, 다시 확인한 HEAD 에 표식이 없을 때다.
   // 표식은 손 뗀 동안에도 모든 응답에서 관찰한다(원본 fetch 를 감싼 _origFetch, XHR loadend).
   const _PROXY_MARK_HEADER = 'x-campfire-proxy';
-  const _PROXY_RECHECK_MS = 15000;   // 표식을 이보다 오래 못 봤으면 다음 확인 때 HEAD 로 경로를 다시 본다
+  const _PROXY_RECHECK_MS = 15000;   // 이보다 오래된 표식이면 넘기기 전에 다시 확인한다
   let _proxyRoute = false;
   let _proxyExpected = false;
   let _proxyProbe = null;
-  let _lastProxyEvidenceAt = 0;
+  let _lastProxyEvidenceAt = 0;  // 마지막 확인 시도(HEAD 를 시작한 때 포함) — 확인을 너무 자주 보내지 않으려고
+  let _proxyMarkSeenAt = 0;      // 프록시를 기대하는 동안 표식을 실제로 본 마지막 시각
   let _lastRouteMode = '';
   let _lastRoutePost = 0;
 
@@ -52,25 +55,27 @@
     return _proxyExpected && _proxyRoute;
   }
 
-  function _reportProxyRoute(mode) {
+  // force: content.js 가 넘기기 전에 다시 확인을 기다리고 있다 — 같은 상태여도 바로 답한다.
+  function _reportProxyRoute(mode, force = false) {
     const now = Date.now();
     // 상태 변화는 즉시, 같은 상태는 heartbeat 로만 보낸다. 엔진은 오래된 탭 보고를
     // 자동 만료시키므로 닫힌 탭이 계속 '적용됨'으로 보이지 않는다.
-    if (_bridgeToken && (mode !== _lastRouteMode || now - _lastRoutePost > 5000)) {
+    if (_bridgeToken && (force || mode !== _lastRouteMode || now - _lastRoutePost > 5000)) {
       _lastRouteMode = mode;
       _lastRoutePost = now;
       try {
         window.postMessage({
           __securedoc: true, direction: 'main-to-isolated', bridgeToken: _bridgeToken,
-          type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: _proxyExpected,
+          type: 'SECUREDOC_PROXY_ROUTE', mode, expectedProxy: _proxyExpected, markAt: _proxyMarkSeenAt,
         }, '*');
       } catch { /* noop */ }
     }
   }
 
-  function _setProxyRoute(mode) {
+  function _setProxyRoute(mode, force = false) {
     _proxyRoute = mode === 'proxy'; // 아니면 확장 보호를 즉시 복구한다(fail-closed).
-    _reportProxyRoute(mode);
+    if (_proxyRoute) _proxyMarkSeenAt = Date.now(); // 'proxy' 는 표식을 실제로 본 때만 정한다
+    _reportProxyRoute(mode, force);
   }
 
   function _extensionMode(fallback = false) {
@@ -99,17 +104,17 @@
           signal: controller?.signal,
         });
         if (!_proxyExpected) {
-          _setProxyRoute(_extensionMode());
+          _setProxyRoute(_extensionMode(), true);
           return;
         }
         const marked = !!response?.headers?.get?.(_PROXY_MARK_HEADER);
-        _setProxyRoute(marked ? 'proxy' : _extensionMode(true));
+        _setProxyRoute(marked ? 'proxy' : _extensionMode(true), true);
       } catch {
-        // 일시적인 HEAD 실패 중에도 아직 유효한 실제 표식이 있으면 보호 경로를
-        // 흔들지 않는다. 표식도 없으면 확장을 유지한다.
-        if (!_proxyExpected) _setProxyRoute(_extensionMode());
-        else if (proxyInPath()) _reportProxyRoute('proxy');
-        else _setProxyRoute(_extensionMode(true));
+        // 일시적인 HEAD 실패 중에도 확인한 경로는 흔들지 않는다 — 다만 표식 시각은 그대로라, 넘기는 순간
+        // content.js 는 오래된 표식으로 보고 확장이 검사한다. 확인한 적이 없으면 확장을 유지한다.
+        if (!_proxyExpected) _setProxyRoute(_extensionMode(), true);
+        else if (proxyInPath()) _reportProxyRoute('proxy', true);
+        else _setProxyRoute(_extensionMode(true), true);
       } finally {
         clearTimeout(timeout);
         _proxyProbe = null;
@@ -179,9 +184,10 @@
       _proxyExpected = Boolean(event.data.enabled);
       if (!_proxyExpected) {
         _setProxyRoute(_extensionMode());
-      } else if (proxyInPath() && Date.now() - _lastProxyEvidenceAt < _PROXY_RECHECK_MS) {
-        // 최근 사이트 응답에서 실제 표식을 봤다면 별도 HEAD를 또 보내지 않는다.
-        _reportProxyRoute('proxy');
+      } else if (proxyInPath() && Date.now() - _proxyMarkSeenAt < _PROXY_RECHECK_MS) {
+        // 최근 사이트 응답에서 실제 표식을 봤다면 별도 HEAD를 또 보내지 않는다. content.js 가 넘기기 전에
+        // 이 답을 기다리고 있을 수 있어 같은 상태여도 바로 답한다.
+        _reportProxyRoute('proxy', true);
       } else {
         _probeProxyPath(); // 확인하는 동안에도 이미 확인한 경로는 그대로 둔다(_proxyRoute)
       }
@@ -285,7 +291,10 @@
   // 프록시 방식에서 업로드를 프록시가 맡는(확장이 손 떼는) 사이트. content.js 의 PROXY_FILE_HOSTS 와 같다(이유도 거기).
   const _PROXY_FILE_HOSTS = ['copilot.microsoft.com', 'claude.ai', 'grok.com'];
   function proxyChecksFiles() {
-    return proxyInPath() && _PROXY_FILE_HOSTS.includes(location.hostname);
+    // 표식이 오래됐으면(그 사이 앱이 꺼졌거나 프록시를 껐을 수 있다) 업로드를 넘기지 않는다 — 확장이 맡으면 프록시는
+    // 확장이 승인한 마스킹본을 다시 검사하지 않아(#301) 두 번 검사되지 않는다. 첨부 버튼 클릭이 확인을 다시 띄운다.
+    return proxyInPath() && Date.now() - _proxyMarkSeenAt < _PROXY_RECHECK_MS
+      && _PROXY_FILE_HOSTS.includes(location.hostname);
   }
 
   function isProtectionEnabled() {

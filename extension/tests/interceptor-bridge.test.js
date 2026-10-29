@@ -365,15 +365,20 @@ async function main() {
     );
   }
 
-  // (14-1) 맥 D-3: 한 번 확인한 프록시 경로는 시간이 지나도 유지한다. 예전엔 표식을 15초 못 보면 확장이 다시 맡아,
-  //        20초 쉬고 보내면 확장·프록시가 같은 업로드를 두 번 붙들었다.
+  // (14-1) 표식이 오래되면(그 사이 앱이 꺼졌거나 프록시를 껐을 수 있다) 업로드를 넘기지 않고 확장이 맡는다 — 넘기면
+  //        직결로 검사 없이 나간다. 다시 확인해 표식이 새로 잡히면(첨부 버튼 클릭이 확인을 띄운다) 다시 넘긴다.
+  //        확장이 맡은 마스킹본은 프록시가 다시 검사하지 않아(#301) 두 번 검사되지 않는다.
   {
     const t = load({ proxyMarked: true, host: 'claude.ai' });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
     t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
     await settle();
+    assert.strictEqual(await t.passedThrough(), true, '대조군: 방금 표식을 봤는데 업로드를 붙들었다');
     t.advance(20000);
-    assert.strictEqual(await t.passedThrough(), true, '프록시 경로를 확인한 뒤 20초가 지나자 확장이 다시 업로드를 붙들었다');
+    assert.strictEqual(await t.passedThrough(), false, '표식이 20초 전 것인데 업로드를 프록시에 넘겼다 — 직결이면 검사 없이 나간다');
+    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
+    await settle();
+    assert.strictEqual(await t.passedThrough(), true, '다시 확인해 표식이 새로 잡혔는데 업로드를 계속 붙들었다');
   }
 
   // (15-1) 프록시가 아직 다 처리하지 못하는 사이트는 프록시 방식이어도 확장이 업로드를 전송 시점까지 맡는다
