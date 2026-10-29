@@ -35,6 +35,7 @@ def test_health_signature(client):
     assert "port" in body
     assert body["mcpRiskScanner"]["blocksTargetUse"] is False
     assert body["mcpRiskScanner"]["scoreAffectsAppBehavior"] is False
+    assert ".py" in body["supportedExtensions"]
     assert body["extensionRoute"]["mode"] in {
         "unknown", "proxy", "extension", "fallback", "off", "mixed",
     }

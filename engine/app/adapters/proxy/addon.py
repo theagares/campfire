@@ -1187,6 +1187,13 @@ class CampfireAddon:
             body["mime_type"] = MASKED_MIME
             if "client_resolved_mime_type" in body:
                 body["client_resolved_mime_type"] = MASKED_MIME
+            # Azure block uploads split one logical document across several PUTs.
+            # Campfire replaces the document after scanning, so the proxy must see
+            # one complete PUT; otherwise it would scan/replace an individual block
+            # and ChatGPT would later reject the block list or assembled size.
+            # Images returned above and keep their separate upload flow.
+            if "supports_direct_azure_multipart" in body:
+                body["supports_direct_azure_multipart"] = False
             flow.request.set_text(json.dumps(body))
         # (b) 크기 선언이 없는 흐름이면 등록 요청은 건드릴 게 없다. 그래도
         # **무장은 해야 한다** — 무장하지 않으면 뒤따르는 PUT 이 차단된다.

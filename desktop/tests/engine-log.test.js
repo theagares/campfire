@@ -19,10 +19,24 @@ Module._load = function load(request, parent, isMain) {
   if (request === 'electron') return { app: { isPackaged: false } };
   return originalLoad.call(this, request, parent, isMain);
 };
-const { openEngineLog, capEngineLog, readLogTail } = require('../main/engine-manager');
+const { openEngineLog, rotateEngineLog, capEngineLog, readLogTail } = require('../main/engine-manager');
 Module._load = originalLoad;
 
 const tempLog = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'campfire-engine-log-')), 'logs', 'engine.log');
+
+test('앱 재시작 때 직전 엔진 로그를 engine.log.1로 한 벌 남긴다', () => {
+  const p = tempLog();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, 'previous run\n');
+
+  assert.equal(rotateEngineLog(p), true);
+  assert.equal(fs.readFileSync(`${p}.1`, 'utf8'), 'previous run\n');
+  assert.equal(fs.readFileSync(p, 'utf8'), '');
+
+  // 새 실행에서 아직 로그가 없으면 유용한 백업을 빈 파일로 덮지 않는다.
+  assert.equal(rotateEngineLog(p), false);
+  assert.equal(fs.readFileSync(`${p}.1`, 'utf8'), 'previous run\n');
+});
 
 test('부모가 멈춰 있어도 자식은 로그 파일 핸들에 끝까지 쓴다', async () => {
   const p = tempLog();

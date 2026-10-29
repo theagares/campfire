@@ -728,6 +728,31 @@ def test_확장이_검토한_마스킹본은_ChatGPT_등록의_이름과_크기�
     assert body["file_name"] == "report_masked.md" and body["file_size"] == promise.declared > 406
 
 
+def test_chatgpt_document_forces_single_put_but_image_keeps_multipart():
+    def register(name: str, mime: str) -> dict:
+        flow = _req(
+            "chatgpt.com",
+            "/backend-api/files",
+            content=json.dumps({
+                "file_name": name,
+                "file_size": 4096,
+                "mime_type": mime,
+                "supports_direct_azure_multipart": True,
+            }).encode(),
+        )
+        CampfireAddon()._chatgpt_register(flow)
+        return json.loads(flow.request.get_text())
+
+    document = register(
+        "report.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    image = register("photo.png", "image/png")
+
+    assert document["supports_direct_azure_multipart"] is False
+    assert image["supports_direct_azure_multipart"] is True
+
+
 def test_확장의_경로_확인은_사이트까지_보내지_않고_프록시가_표식을_달아_답한다():
     # 예전엔 AI 사이트가 404 로 답해 콘솔에 빨간 줄이 남았고 확인에 인터넷 왕복이 들어 그동안 전송을 붙들었다(맥 v0.2.59).
     f = tflow.tflow(req=tutils.treq(method="HEAD", host="gemini.google.com",

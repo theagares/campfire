@@ -602,9 +602,18 @@
     'application/vnd.oasis.opendocument.presentation',
     'message/rfc822',
     'text/html',
+    'text/plain',
+    'text/csv',
+    'text/markdown',
+    'text/x-python',
+    'text/javascript',
+    'application/javascript',
+    'application/json',
+    'application/xml',
+    'application/x-yaml',
   ]);
   const SUPPORTED_EXTS =
-    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|json|xml|log)$/i;
+    /\.(pdf|docx|xlsx|pptx|hwp|hwpx|odt|ods|odp|eml|mht|mhtml|html?|txt|csv|tsv|md|jsonl?|xml|log|ya?ml|toml|ini|cfg|conf|env|example|css|jsx?|tsx?|py|java|c|cpp|h|hpp|cs|go|rs|sh|ps1|bat|sql)$/i;
   // 이미지 속 글자 검사를 켰을 때만(_imageScanEnabled) — content.js IMAGE_TYPES·IMAGE_EXTS 와 같다
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
   const IMAGE_EXTS = /\.(png|jpe?g|webp|bmp)$/i;

@@ -65,6 +65,23 @@ def test_stale_route_reports_expire() -> None:
     assert stale["connected"] is False
 
 
+def test_closed_tab_route_is_deleted_immediately_and_requires_extension_origin() -> None:
+    client = _client()
+    report = {"mode": "proxy", "host": "chatgpt.com", "tabId": 3, "expectedProxy": True}
+    other = {"mode": "proxy", "host": "claude.ai", "tabId": 4, "expectedProxy": True}
+    assert client.post("/proxy/extension-route", headers={"Origin": EXT_ORIGIN}, json=report).status_code == 200
+    assert client.post("/proxy/extension-route", headers={"Origin": EXT_ORIGIN}, json=other).status_code == 200
+
+    assert client.delete("/proxy/extension-route/3").status_code == 403
+    response = client.delete("/proxy/extension-route/3", headers={"Origin": EXT_ORIGIN})
+
+    assert response.status_code == 200
+    assert response.json()["activeTabs"] == 1
+    assert response.json()["sites"] == [{
+        "host": "claude.ai", "mode": "proxy", "expectedProxy": True,
+    }]
+
+
 def test_tabs_on_sites_the_proxy_does_not_cover_do_not_make_it_mixed() -> None:
     """copilot.com 은 프록시가 맡지 않아 켜져 있어도 확장이 맡는다 — 그 탭 때문에 "탭별 경로 다름" 이면 안 된다(Windows PX-7)."""
     def put(tab: int, host: str, mode: str) -> None:

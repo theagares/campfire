@@ -163,6 +163,17 @@ async def get_extension_route() -> dict:
     return extension_route_status()
 
 
+@router.delete("/proxy/extension-route/{tab_id}")
+async def delete_extension_route(tab_id: int, request: Request) -> dict:
+    """Remove every route report owned by one closed browser tab."""
+    origin = _require_extension_origin(request)
+    if tab_id < 0:
+        raise HTTPException(status_code=422, detail="invalid tab id")
+    for key in [key for key in _extension_routes if key[0] == origin and key[1] == tab_id]:
+        _extension_routes.pop(key, None)
+    return extension_route_status()
+
+
 @router.post("/proxy/approved-uploads")
 async def approve_uploads(body: ApprovedUploads, request: Request) -> dict:
     # 이 바이트는 프록시가 다시 검사하지 않는다 — 그래서 웹 페이지가 아니라 확장만 알릴 수 있다. 다른 확장도

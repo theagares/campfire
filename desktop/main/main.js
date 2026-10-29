@@ -27,6 +27,11 @@ const systemProxyMod = require('./system-proxy');
 const pacServer = require('./pac-server');
 const { ProxyDecisionController } = require('./proxy-decision-ui');
 const { isLite } = require('./edition');
+const { configureAppIdentity } = require('./app-identity');
+
+// Windows 알림 센터가 설치 바로가기와 같은 앱으로 인식하게 한다. 준비 완료 뒤에
+// 설정하면 시작 직후의 프록시 차단 알림이 조용히 버려질 수 있어 가장 먼저 등록한다.
+configureAppIdentity(app);
 
 // 단일 인스턴스 (중복 실행 방지)
 const gotLock = app.requestSingleInstanceLock();

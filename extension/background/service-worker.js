@@ -256,6 +256,24 @@ async function reportProxyRoute(message, sender) {
 // 진행 이벤트 폴링 (엔진 REST /jobs/{id}/events, EC2 계약 호환)
 // ════════════════════════════════════════════════════════════════════════════
 
+async function removeProxyRoute(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) return false;
+  try {
+    const { res } = await fetchServer(`/proxy/extension-route/${tabId}`, {
+      method: 'DELETE',
+      cache: 'no-store',
+    });
+    return res.ok;
+  } catch {
+    // 엔진이 꺼져 있으면 지울 메모리도 없다. 다음 실행까지 재시도할 필요가 없다.
+    return false;
+  }
+}
+
+// 경로 보고의 TTL은 유휴 탭을 위해 10분이다. 닫은 탭만큼은 즉시 지워 연결 화면의
+// "AI 탭 N개"가 실제 열린 탭 수와 바로 맞게 한다.
+chrome.tabs.onRemoved?.addListener((tabId) => { void removeProxyRoute(tabId); });
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const JOB_EVENT_POLL_MS = 250;
 
