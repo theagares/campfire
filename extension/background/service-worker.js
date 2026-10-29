@@ -165,7 +165,9 @@ async function checkEngineHealthNow() {
     const data = await res.json().catch(() => null);
     setActionBadge('', BADGE_OK);
     if (data) noteImageScan(Boolean(data.imageOcr?.enabled));
-    reloadIfStale();
+    // chrome-extension://manifest.json 은 실행 중인 확장 패키지의 스냅샷이라 설치 폴더가
+    // 새 판으로 바뀌어도 옛 판을 돌려줄 수 있다. 엔진이 설치 폴더에서 직접 읽은 판을 쓴다.
+    void reloadIfStale(data?.installedExtensionVersion);
     return {
       ok: true,
       target: server.target,
@@ -200,14 +202,14 @@ async function checkEngineHealth(force = false) {
 }
 
 // 압축 해제로 설치한 확장은 앱 업데이트로 폴더의 파일이 바뀌어도 크롬이 다시 로드할 때까지 옛 코드를 돈다(v0.2.57
-// Windows EX-5: 폴더는 0.2.57 인데 0.2.54 가 돌아 그림 첨부가 검사 없이 나갔다). 확장 폴더의 파일은 요청마다 디스크에서
-// 읽히므로 manifest.json 을 받아 지금 도는 판과 견준다. 엔진이 응답할 때만 본다 — 앱이 떴으면 설치가 끝난 것이다.
+// Windows EX-5: 폴더는 0.2.57 인데 0.2.54 가 돌아 그림 첨부가 검사 없이 나갔다). chrome-extension:// URL은
+// 실행 중인 패키지 스냅샷을 돌려주므로 폴더 변경을 알아채지 못한다(Windows RL-1). 엔진이 설치 폴더의 manifest를
+// 직접 읽어 /health에 실은 판을 지금 도는 판과 견준다. 엔진이 응답할 때만 본다 — 앱이 떴으면 설치가 끝난 것이다.
 // 검토 중이면 미룬다(다시 로드하면 세션이 사라진다). 같은 판으로는 한 번만 — 다시 로드해도 안 바뀌면 되풀이하지 않는다.
 const SELF_RELOAD_KEY = 'campfireSelfReloadFor';
-async function reloadIfStale() {
+async function reloadIfStale(installedVersion) {
   try {
-    const res = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
-    const onDisk = (await res.json())?.version;
+    const onDisk = installedVersion;
     const running = chrome.runtime.getManifest();
     if (typeof onDisk !== 'string' || onDisk === running.version) return;
     await ensureHydrated();

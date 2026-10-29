@@ -13,6 +13,7 @@ GET /health — 시그니처 필드 필수 (PLAN §11).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -31,6 +32,18 @@ _last_extension_seen_at: float | None = None
 
 def _kg_file_ok() -> bool:
     return bool(config.KG_PATH) and Path(config.KG_PATH).is_file()
+
+
+def _installed_extension_version() -> str | None:
+    """설치 폴더 manifest의 현재 판. 교체 중이거나 손상됐으면 재로드를 유도하지 않는다."""
+    if config.EXTENSION_DIR is None:
+        return None
+    try:
+        manifest = json.loads((config.EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    version = manifest.get("version") if isinstance(manifest, dict) else None
+    return version if isinstance(version, str) and version else None
 
 
 @router.get("/health")
@@ -85,6 +98,9 @@ async def health(request: Request):
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,
         "maxPromptChars": config.MAX_PROMPT_CHARS,
         "extensionLastSeenSecondsAgo": extension_last_seen_seconds_ago,
+        # Chrome의 runtime.getURL(manifest.json)은 실행 중인 옛 패키지 스냅샷을 돌려줄 수 있다.
+        # 확장은 이 디스크 판과 runtime.getManifest().version을 비교해 업데이트 뒤 스스로 재로드한다.
+        "installedExtensionVersion": _installed_extension_version(),
         # 브라우저가 실제 응답 표식을 능동 확인해 보고한 보호 경로다. 엔진 프로세스나
         # 설정값이 아니라 실제 탭 기준이라 프록시/확장 전환 완료 여부를 확인할 수 있다.
         "extensionRoute": extension_route_status(),
