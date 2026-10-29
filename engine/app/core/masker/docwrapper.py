@@ -15,6 +15,9 @@ import io
 import re
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# XML 1.0 이 받지 않는 글자 — NULL·제어 문자(\t\n\r 은 된다), 짝 없는 서로게이트, U+FFFE·FFFF.
+# lxml 이 ValueError 로 막아 /jobs 가 500 이 됐다(맥 v0.2.60 M-8: 붙여 넣은 글에 제어 문자, PDF 의 \f 도 같다).
+_XML_INVALID = re.compile("[^\t\n\r\x20-퟿-�\U00010000-\U0010ffff]")
 
 
 def _masked_name(orig_file_name: str, new_ext: str) -> str:
@@ -33,7 +36,7 @@ def wrap_as_docx(masked_text: str, orig_file_name: str) -> dict:
     from docx.oxml.ns import qn
 
     doc = Document()
-    for line in masked_text.split("\n"):
+    for line in _XML_INVALID.sub("", masked_text).split("\n"):
         para = doc.add_paragraph()
         if line.strip():
             run = para.add_run(line)
