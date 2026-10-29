@@ -162,6 +162,10 @@
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') refreshProxyExpectation();
     }, true);
+    // 글을 치는 동안에도 갱신한다(1.5초에 한 번) — 프록시 방식에서 Enter 때 표식이 오래돼 있으면 전송을 붙들고 다시
+    // 확인한 뒤 전송 버튼을 대신 눌러야 하는데(#304), 그 재전송이 Gemini 의 턴 마감을 깨뜨려 답이 멈췄다(맥 v0.2.59
+    // R-1: 세션 설정만 먼저 나가고 프롬프트가 1.2초 뒤 따로 갔다). 치는 동안 경로를 다시 확인해 두면 Enter 는 바로 넘긴다.
+    document.addEventListener('input', () => refreshProxyExpectation(), true);
   }
 
   // ── MAIN world 가 알려주는 "지금 파일을 올리는 중" 신호 ────────────────────
