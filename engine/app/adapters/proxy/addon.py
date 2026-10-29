@@ -448,6 +448,9 @@ class PendingFile:
 # 보정된 기준은 없다. 그래서 업로드 때는 PII·사용자 지정 단어만 보고, 전송 때 그 프롬프트와 함께 첨부 글을 판정한다.
 # 이미 올라간 파일은 다시 가릴 수 없으니 인젝션이면 전송을 막고 이유를 알린다.
 _PENDING_TTL_S = 1800.0
+# 참조를 모르는 사이트(Claude·Grok·Perplexity)의 첨부를 "다음 전송" 에 붙이는 시간 — 올린 뒤 이보다 지나면 올렸다
+# 지운 첨부일 수 있어 붙이지 않는다(_judge_attached).
+_GUESS_WINDOW_S = 300.0
 
 
 def _site(host: str) -> str:
@@ -1290,12 +1293,16 @@ class CampfireAddon:
         참조(ids)가 있는 첨부는 전송에 그 참조가 실렸을 때만 판정한다 — ChatGPT 는 전송 본문의 file_id, Gemini 는 그 세션
         설정의 첨부 항목에 실린 파일 경로(campfire_attach_refs). 예전엔 Gemini 도 "다음 전송에 붙은 것" 으로 봐, 앞선 시험에서
         올렸던(또는 뺀) 첨부까지 판정해 막았고, 막힌 첨부가 남아 첨부 없는 새 대화도 계속 막혔다(맥 v0.2.59 R-2).
-        참조를 모르는 사이트(Claude·Grok·Perplexity)는 "이 사이트의 다음 전송" 에 붙은 것으로 본다.
-        인젝션이거나 검사를 끝내지 못했으면 그 첨부를 남겨 둔다 — 빼지 않고 다시 보내면 또 막는다.
+        참조를 모르는 사이트(Claude·Grok·Perplexity)는 올린 지 _GUESS_WINDOW_S 안의 첨부를 "이 사이트의 다음 전송" 에 붙은
+        것으로 본다(그보다 오래된 것은 뺀다 — 올렸다 지운 첨부일 수 있다).
+        인젝션이거나 검사를 끝내지 못했으면: 참조로 이은 첨부는 남겨 둔다(빼지 않고 다시 보내면 또 막는다). 추정으로 이은
+        첨부는 한 번 막고 대기 목록에서 뺀다 — 남겨 두면 그 사이트의 이후 전송이 첨부 없는 새 대화까지 계속 막힌다(Gemini
+        R-2 와 같은 모양). 대신 이유에 "그 파일을 지우고 다시 보내 주세요" 를 싣는다.
         """
         site = _site(host)
         now = time.monotonic()
-        files = [p for p in self._pending.get(site, []) if now - p.at < _PENDING_TTL_S]
+        files = [p for p in self._pending.get(site, [])
+                 if now - p.at < (_PENDING_TTL_S if p.ids else _GUESS_WINDOW_S)]
         body = b""
         if flow is not None:
             body = (flow.request.content or b"") + flow.metadata.get("campfire_attach_refs", b"")
@@ -1317,12 +1324,16 @@ class CampfireAddon:
                 failed.append(p.name)
             elif r.get("injectionItems"):
                 hits.append(p.name)
+        if hits or failed:
+            guessed = [p for p in attached if not p.ids]
+            self._pending[site] = [p for p in files if p not in guessed]  # 추정 연결은 한 번만 막는다
+            tail = "그 파일을 지우고 다시 보내 주세요" if guessed else "그 첨부를 빼고 다시 보내 주세요"
         if hits:
             logger.info("[proxy] 첨부에 인젝션 — 전송 차단 host=%s 첨부 %d개", host, len(hits))
-            return (f"첨부한 파일({', '.join(hits)})에 AI 를 조종하려는 문구(프롬프트 인젝션)가 있어 전송을 막았습니다 "
-                    "— 그 첨부를 빼고 다시 보내 주세요")
+            return f"첨부한 파일({', '.join(hits)})에 AI 를 조종하려는 문구(프롬프트 인젝션)가 있어 전송을 막았습니다 — {tail}"
         if failed:
-            return f"첨부한 파일({', '.join(failed)})의 인젝션 검사를 끝내지 못해 전송을 막았습니다 — 잠시 뒤 다시 보내 주세요"
+            return (f"첨부한 파일({', '.join(failed)})의 인젝션 검사를 끝내지 못해 전송을 막았습니다 — "
+                    + (tail if guessed else "잠시 뒤 다시 보내 주세요"))
         self._pending[site] = [p for p in files if p not in attached]
         return None
 
