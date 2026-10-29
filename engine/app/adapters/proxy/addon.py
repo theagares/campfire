@@ -231,13 +231,24 @@ def _chatgpt_slots(body):
 
 
 def _perplexity_slots(body):
-    if not isinstance(body.get("query_str"), str):
+    query = body.get("query_str")
+    if not isinstance(query, str):
         return []
-    slots = [(body, "query_str")]
-    params = body.get("params")
-    if isinstance(params, dict) and isinstance(params.get("dsl_query"), str):
-        slots.append((params, "dsl_query"))
-    return slots
+    # 같은 글이 query_str·params.dsl_query 말고 다른 칸에도 실릴 수 있다(Windows v0.2.59 WPX-1: 모델은 가린 글을 받았는데
+    # 저장된 말풍선은 원문) — 공백만 다른 것까지 같은 글이 실린 칸을 모두 가린다. 남은 칸은 _raw_left 가 막는다.
+    norm = " ".join(query.split())
+    return list(_same_text_slots(body, norm)) if norm else [(body, "query_str")]
+
+
+def _same_text_slots(obj, norm):
+    """obj 안에서 글(공백 접음)이 norm 과 같은 칸 (담는 dict/list, 키) 를 모두 찾는다."""
+    items = obj.items() if isinstance(obj, dict) else enumerate(obj) if isinstance(obj, list) else ()
+    for k, v in items:
+        if isinstance(v, str):
+            if " ".join(v.split()) == norm:
+                yield obj, k
+        else:
+            yield from _same_text_slots(v, norm)
 
 
 def _grok_slots(msg):
@@ -685,6 +696,7 @@ class CampfireAddon:
         # 확장이 검토해 사람이 승인한 마스킹본을 Claude 는 업로드하지 않고 여기(2.15.4)에 글로 넣는다(맥 실측: files 요청
         # 없이 이 RPC 하나). 다시 검사하면 사용자 프롬프트 없이 인젝션을 판정해 승인한 글을 또 묻는다 — 해시가 같은 바이트만
         # 뺀다. 프롬프트 칸은 승인 대상이 아니라 그대로 검사한다.
+        approved = [f.value for path, f in picked if path != CLAUDE_PROMPT_PATH and _approved_bytes(f.value)]
         picked = [(path, f) for path, f in picked if path == CLAUDE_PROMPT_PATH or not _approved_bytes(f.value)]
         if not picked:
             return  # 전송인데 텍스트 콘텐츠가 없다(드묾) — 건드릴 것 없음.
@@ -702,6 +714,8 @@ class CampfireAddon:
         for fld, new_bytes in masked:
             fld.set_bytes(new_bytes)
         flow.request.content = msg.serialize()
+        if self._raw_left(flow, flow.request.content, exclude=approved):
+            self._block(flow, _RAW_LEFT)
 
     # ── Gemini 프롬프트 (WebChannel processSession) ─────────────────────────
 
@@ -770,6 +784,8 @@ class CampfireAddon:
         for i, msg in changed.items():
             pairs[i][1] = quote(base64.b64encode(msg.serialize()).decode("ascii"), safe="=")
         flow.request.text = "&".join("=".join(p) for p in pairs)
+        if self._raw_left(flow, flow.request.content):
+            self._block(flow, _RAW_LEFT)
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         # Gemini 답은 processSession GET 롱폴로 흘러온다. 프록시는 본문을 통째로 받은 뒤 넘기므로(stream_large_bodies
@@ -795,6 +811,8 @@ class CampfireAddon:
         for i in idx:
             pairs[i] = (field, replaced.get(pairs[i][1], pairs[i][1]))
         flow.request.text = urlencode(pairs)
+        if self._raw_left(flow, flow.request.content):
+            self._block(flow, _RAW_LEFT)
 
     async def _json_prompt(self, flow: http.HTTPFlow, host: str, find_slots) -> None:
         try:
@@ -813,6 +831,8 @@ class CampfireAddon:
             self._block(flow, "메시지 형식을 해석하지 못했거나 검토 결과 전송하지 않기로 했습니다")
             return
         flow.request.text = _dumps(body)
+        if self._raw_left(flow, flow.request.content):
+            self._block(flow, _RAW_LEFT)
 
     async def websocket_message(self, flow: http.HTTPFlow) -> None:
         """웹소켓으로 보내는 프롬프트(Grok). 막을 때는 그 메시지만 버린다."""
@@ -836,6 +856,8 @@ class CampfireAddon:
             if not await self._mask_slots(flow, host, slots):
                 raise ValueError("글 칸이 없거나 검토 결과 전송하지 않기로 했다")
             msg.text = _dumps(obj)
+            if self._raw_left(flow, msg.content):
+                raise ValueError("가린 뒤에도 원문 값이 남았다")
         except Exception as exc:
             # 통과시키면 원본이 나간다. 그 메시지만 버린다(사이트는 답을 못 받고 멈춘다).
             logger.warning("[proxy] 웹소켓 프롬프트 차단 %s%s (%s)", host, key, exc)
@@ -1231,8 +1253,11 @@ class CampfireAddon:
         # 확장처럼 프롬프트를 먼저 검사한다 — 메시지 안 필드 순서와 상관없이. 대시보드·검토 화면에도
         # 프롬프트가 먼저 나온다. (첨부할 때 따로 올라가는 파일은 전송보다 먼저 와서 순서를 바꿀 수 없다)
         fields = sorted(fields, key=lambda f: not any(f is p for p in prompt_fields))
+        if flow is not None:
+            flow.metadata.pop("campfire_raw_values", None)
         per_field = []          # (field, masked_text)
         all_pii, all_inj, all_forced = [], [], []
+        raws: dict[str, str] = {}  # 찾은 원문 값 → 자리표시자
         orig_parts, masked_parts = [], []
         scan_statuses, reasons = [], []
         truncated = False
@@ -1250,12 +1275,21 @@ class CampfireAddon:
             all_pii += result.get("piiItems", [])
             all_inj += result.get("injectionItems", [])
             all_forced += result.get("forcedMaskItems", [])
+            raws.update(_raw_values(result, text))
             orig_parts.append(text)
-            masked_parts.append(masked_text)
             scan_statuses.append(result.get("scanStatus"))
             if result.get("reason"):
                 reasons.append(str(result["reason"]))
             truncated = truncated or bool(result.get("truncated"))
+
+        # 찾은 값이 같은 글(또는 다른 칸)에 한 번 더 나오는데 탐지가 놓친 자리도 가린다 — Perplexity 는 이메일을
+        # "[x](mailto:x)" 로 싣는데 괄호 안 두 번째 이메일을 놓치면 원문이 남는다(WPX-1). 긴 값부터 바꾼다.
+        order = sorted(raws, key=len, reverse=True)
+        for i, (fld, mt) in enumerate(per_field):
+            for r in order:
+                mt = mt.replace(r, raws[r])
+            per_field[i] = (fld, mt)
+        masked_parts = [mt for _, mt in per_field]
 
         scan_status = "ok" if scan_statuses and all(s == "ok" for s in scan_statuses) else (
             next((s for s in scan_statuses if s and s != "ok"), "failed")
@@ -1285,6 +1319,8 @@ class CampfireAddon:
             return None
         if action == "send_original" and not all_forced:
             return _ORIGINAL
+        if flow is not None:
+            flow.metadata["campfire_raw_values"] = order  # 다시 싼 본문에 남았는지 _raw_left 가 본다
         return [(fld, mt.encode("utf-8")) for fld, mt in per_field]
 
     async def _judge_attached(self, host: str, prompt: str, flow) -> str | None:
@@ -1453,6 +1489,25 @@ class CampfireAddon:
             {"Content-Type": "application/json; charset=utf-8"},
         )
 
+    def _raw_left(self, flow: http.HTTPFlow, content: bytes, exclude=()) -> bool:
+        """가린 뒤 다시 싼 본문에 이번 검사에서 찾은 원문 값이 남았는가 — 다섯 사이트 공통 안전장치(WPX-1).
+
+        검사한 칸 말고 같은 글이 실린 모르는 칸이 있으면 모델은 가린 글을 받아도 서버엔 원문이 저장된다. 남았으면 막을
+        이유를 flow.metadata 에 둔다. exclude: 검사하지 않고 그대로 보내는 칸(확장이 승인한 첨부)의 바이트.
+        """
+        raws = flow.metadata.pop("campfire_raw_values", None)
+        if not raws:
+            return False
+        for b in exclude:
+            content = content.replace(b, b"")
+        where = _raw_left_where(content, raws)
+        if not where:
+            return False
+        logger.warning("[proxy] 가린 뒤에도 원문 값이 남음 — 차단 host=%s 자리=%s",
+                       flow.request.pretty_host, where[:10])  # 값은 남기지 않는다
+        flow.metadata["campfire_block_reason"] = _RAW_LEFT
+        return True
+
     def _swallow(self, flow: http.HTTPFlow) -> None:
         """친 글을 싣는 부수 요청(자동완성·분석)을 보내지 않고 빈 성공으로 끝낸다.
 
@@ -1469,6 +1524,54 @@ _ORIGINAL = object()
 _UNREPLACEABLE = object()
 # 사람이 확인창에서 보내지 않기로 한 차단 이유 — 데스크톱 알림을 띄우지 않는다(_block).
 _CANCELLED = "검토 결과 전송하지 않기로 했습니다"
+# 가린 뒤 다시 싼 본문에 찾은 원문 값이 남았다(_raw_left).
+_RAW_LEFT = "가리지 못한 칸이 있어 전송을 막았습니다 — 원문이 그대로 나갈 뻔했습니다"
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+
+
+def _raw_values(result: dict, text: str) -> dict[str, str]:
+    """검사 결과에서 가린 원문 값(PII·자격증명·등록어) → 자리표시자. 2자 이하는 뺀다 — 다른 글 안에도 흔하다."""
+    from app.core.masker.masker import placeholder_for
+
+    src = result.get("originalText") or text
+    out = {}
+    for it in (result.get("piiItems") or []) + (result.get("forcedMaskItems") or []):
+        raw = it.get("text")
+        if not raw and isinstance(it.get("start"), int) and isinstance(it.get("end"), int):
+            raw = src[it["start"]:it["end"]]
+        if raw and len(raw.strip()) > 2:
+            out[raw] = placeholder_for(str(it.get("type") or ""))
+    return out
+
+
+def _json_strings(obj, path=""):
+    """JSON 안의 글을 (자리, 글) 로 모두 낸다."""
+    if isinstance(obj, str):
+        yield path, obj
+    elif isinstance(obj, (dict, list)):
+        for k, v in (obj.items() if isinstance(obj, dict) else enumerate(obj)):
+            yield from _json_strings(v, f"{path}.{k}" if path else str(k))
+
+
+def _raw_left_where(content: bytes, raws) -> list[str]:
+    """보내는 본문을 풀 수 있는 대로 풀어 원문 값이 남은 자리 이름을 돌려준다(글은 담지 않는다).
+
+    날것(protobuf 도 글이 바이트 그대로 이어 있다)·URL 풀기(form)·JSON 칸·base64 조각(Gemini 의 protobuf)을 본다.
+    """
+    from urllib.parse import unquote, unquote_plus
+
+    text = content.decode("utf-8", "replace")
+    views = [("본문", text), ("form", unquote_plus(text))]
+    try:
+        views += list(_json_strings(json.loads(text)))
+    except ValueError:
+        pass
+    for tok in _B64_TOKEN.findall(unquote(text)):
+        try:
+            views.append(("base64", base64.urlsafe_b64decode(tok + "=" * (-len(tok) % 4)).decode("utf-8", "replace")))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(where for where, s in views if any(r in s for r in raws)))
 
 
 class _TextSlot:
