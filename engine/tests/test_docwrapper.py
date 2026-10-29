@@ -1,31 +1,22 @@
-"""가린 글을 DOCX 로 감쌀 때 XML 에 넣을 수 없는 글자가 있어도 실패하지 않는다.
+"""가린 글은 늘 <이름>_masked.md(text/plain)로 감싼다 — 확장 utils/docwrapper.js wrapAsMd 와 같은 이름·형식(사용자 결정).
 
-맥 v0.2.60 M-8: Perplexity 에 붙여 넣은 글(확장이 "upload" 파일로 받음)에 제어 문자가 섞여, docwrapper 의 add_run 에서
-lxml 이 "All strings must be XML compatible" 로 막아 /jobs 가 15번 500 이 됐다. PDF 추출 글의 \f(쪽 나눔)도 같다.
+예전엔 DOCX 로 감싸 확장 방식에서 같은 파일이 DOCX(아무것도 안 풂)·MD(하나라도 풂) 두 형식으로 나갔고, 제어 문자가 섞인 글은
+XML 오류로 /jobs 가 500 이 됐다(맥 v0.2.60 M-8).
 """
 
 from __future__ import annotations
 
-import io
-
 from app.core.masker import docwrapper
 
 
-def _text(docx_bytes: bytes) -> str:
-    from docx import Document
-
-    return "\n".join(p.text for p in Document(io.BytesIO(docx_bytes)).paragraphs)
-
-
-def test_제어_문자가_섞여도_감싼다():
-    masked = "담당자: [이름 마스킹]\x00\x0b 연락처\x0c\n둘째 줄\x1f 끝\ud800￾� 😀\t탭"
-    out = docwrapper.wrap_masked_file(masked, "upload")
-    assert out["file_name"] == "upload_masked.docx" and out["mime_type"] == docwrapper.DOCX_MIME
-    text = _text(out["bytes"])
-    assert text == "담당자: [이름 마스킹] 연락처\n둘째 줄 끝� 😀\t탭"
+def test_늘_masked_md_text_plain_으로_감싼다():
+    for orig, want in (("보고서.pdf", "보고서_masked.md"), ("pii.docx", "pii_masked.md"), ("upload", "upload_masked.md"),
+                       ("a.b.txt", "a.b_masked.md"), ("", "masked_document_masked.md")):
+        out = docwrapper.wrap_masked_file("첫 줄\n[이름 마스킹]", orig)
+        assert (out["file_name"], out["mime_type"]) == (want, "text/plain"), orig
+        assert out["bytes"] == "첫 줄\n[이름 마스킹]".encode()
 
 
-def test_평범한_글은_그대로다():
-    out = docwrapper.wrap_masked_file("첫 줄\n\n셋째 줄 [전화번호 마스킹]", "보고서.pdf")
-    assert out["file_name"] == "보고서_masked.docx"
-    assert _text(out["bytes"]) == "첫 줄\n\n셋째 줄 [전화번호 마스킹]"
+def test_제어_문자_서로게이트가_섞여도_감싼다():
+    out = docwrapper.wrap_masked_file("담당\x00\x0b 연락처\x0c\n끝\ud800 😀", "upload")
+    assert out["bytes"] == "담당\x00\x0b 연락처\x0c\n끝? 😀".encode()

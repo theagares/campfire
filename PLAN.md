@@ -271,8 +271,8 @@ class Detector(Protocol):
 | TXT | 내장 | |
 
 - 청크 분할(1,500자) 후 detector에 전달 — 기존 파이프라인 설계 유지.
-- 마스킹 결과 파일 래핑은 기존 `docwrapper.js` 로직을 Python으로 이식
-  (DOCX OOXML 빌드, PDF 입력도 `_masked.docx` 출력).
+- 마스킹 결과 파일 래핑은 확장 `docwrapper.js` 와 같게 늘 `<이름>_masked.md`(text/plain) 로 낸다
+  (PDF·DOCX 입력도 `_masked.md`). 확장·프록시·엔진이 같은 형식이 되게 맞췄다 — 예전엔 엔진만 `_masked.docx` 였다.
 
 ---
 
