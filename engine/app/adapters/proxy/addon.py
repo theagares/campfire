@@ -60,6 +60,8 @@ MASKED_MIME = "text/markdown"
 # "Lowercased 'X-Campfire-Proxy' header ..." 를 로그에 남겼다(맥 실측). 헤더 이름은
 # 대소문자를 가리지 않으므로 확장(interceptor.js 의 'x-campfire-proxy')은 그대로 읽는다.
 PROXY_MARK_HEADER = "x-campfire-proxy"
+# 확장이 "이 탭이 프록시를 지나는가" 를 묻는 경로(interceptor.js _probeProxyPath). 프록시가 직접 답한다.
+PROXY_PROBE_PATH = "/.well-known/campfire-proxy-probe"
 
 
 def masked_name_for(original: str) -> str:
@@ -515,6 +517,11 @@ class CampfireAddon:
 
     async def _on_request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host
+        if flow.request.path.split("?")[0] == PROXY_PROBE_PATH:
+            # 확장의 경로 확인(HEAD, interceptor.js _probeProxyPath)은 사이트까지 보내지 않고 여기서 답한다 — 예전엔
+            # AI 사이트가 404 로 답해 콘솔에 빨간 줄이 남았고, 확인에 인터넷 왕복(~1초)이 들어 그동안 전송을 붙들었다.
+            flow.response = http.Response.make(204, b"", {PROXY_MARK_HEADER: "1", "cache-control": "no-store"})
+            return
         if config.PROXY_LOG_REQUESTS and flow.request.method in ("POST", "PUT"):
             logger.info(
                 "[proxy] %s %s%s ct=%s len=%s",

@@ -724,3 +724,12 @@ def test_확장이_검토한_마스킹본은_ChatGPT_등록의_이름과_크기�
     assert (body["file_name"], body["file_size"], promise.declared) == ("image_masked.md", 406, None)
     body, promise = register("report.docx", 406)  # 알리지 않은 업로드는 지금처럼 고친다
     assert body["file_name"] == "report_masked.md" and body["file_size"] == promise.declared > 406
+
+
+def test_확장의_경로_확인은_사이트까지_보내지_않고_프록시가_표식을_달아_답한다():
+    # 예전엔 AI 사이트가 404 로 답해 콘솔에 빨간 줄이 남았고 확인에 인터넷 왕복이 들어 그동안 전송을 붙들었다(맥 v0.2.59).
+    f = tflow.tflow(req=tutils.treq(method="HEAD", host="gemini.google.com",
+                                    path="/.well-known/campfire-proxy-probe?ts=123", content=b""))
+    _run(CampfireAddon().request(f))
+    assert f.response is not None and f.response.status_code == 204
+    assert f.response.headers.get(addon_mod.PROXY_MARK_HEADER) == "1"

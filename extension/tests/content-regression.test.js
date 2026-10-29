@@ -542,6 +542,8 @@ const chromeStub = {
   },
 };
 
+// 최상위 창으로 돈다 — content.js 는 최상위 창에서만 포커스·입력 때 프록시 경로를 다시 확인한다((39-1)).
+windowStub.top = windowStub;
 const sandbox = {
   window: windowStub,
   document: documentStub,
@@ -2983,6 +2985,24 @@ cancelScan(stuckScan);
       chromeStub.runtime.id = savedId;
     }
     if (!badgeText().includes('탭을 새로고침')) throw new Error(`(39) 끊긴 탭에 새로고침 안내가 없다: ${badgeText()}`);
+  }
+
+  // (39-1) 글을 치는 동안에도 프록시 경로를 다시 확인한다 — Enter 때 표식이 오래돼 전송을 붙들고 대신 다시 보내면
+  //        Gemini 의 턴 마감이 깨져 답이 멈췄다(맥 v0.2.59 R-1). 확인은 1.5초에 한 번으로 묶인다.
+  {
+    await clock.tick(2000);
+    const before391 = runtimeMessages.length;
+    dispatchDocumentEvent('input', { target: promptEditorStub });
+    await flush();
+    if (!runtimeMessages.slice(before391).some(m => m.type === 'GET_PROXY_EXPECTATION')) {
+      throw new Error('(39-1) 글을 치는 동안 프록시 경로를 다시 확인하지 않았다 — Enter 때 전송을 붙들게 된다');
+    }
+    const before392 = runtimeMessages.length;
+    dispatchDocumentEvent('input', { target: promptEditorStub });
+    await flush();
+    if (runtimeMessages.slice(before392).some(m => m.type === 'GET_PROXY_EXPECTATION')) {
+      throw new Error('(39-1) 칠 때마다 엔진에 물었다 — 1.5초에 한 번으로 묶여야 한다');
+    }
   }
 
   // (40) 프록시 경로여도 프롬프트는 프록시가 실제로 검사하는 사이트에서만 넘긴다(PROXY_PROMPT_HOSTS).
