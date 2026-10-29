@@ -166,10 +166,11 @@ def test_같은_세션의_뒤_POST_는_앞_POST_가_나갈_때까지_기다린�
         t2 = asyncio.create_task(a.request(turn_end))
         await asyncio.sleep(0.05)
         assert not t2.done(), "턴 끝(ofs=2)이 검사 중인 프롬프트(ofs=1)보다 먼저 나갔다"
+        # 다른 세션은 이 자물쇠로 막지 않는다. 본문 있는 요청은 검사 중 같은 사이트 대기(_wait_site_scans)로 붙들므로
+        # 자물쇠가 세션별인지는 본문 없는 POST 로 본다.
         other = tflow.tflow(req=tutils.treq(method="POST", host=addon_mod.GEMINI_PROMPT_HOST,
-                                            path="/v1/processSession?VER=8&SID=other&RID=9",
-                                            content=b"count=1&ofs=2&req0___data__=IgIIAQ=="))
-        await asyncio.wait_for(a.request(other), timeout=0.2)  # 다른 세션은 막지 않는다
+                                            path="/v1/processSession?VER=8&SID=other&RID=9", content=b""))
+        await asyncio.wait_for(a.request(other), timeout=0.2)
         release.set()
         await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1)
         assert prompt.response is None and turn_end.response is None
