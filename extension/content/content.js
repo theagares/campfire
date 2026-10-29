@@ -258,6 +258,7 @@
   // 시간이 지나도 유지한다. 15초 TTL 이던 때는 20초 쉬고 Enter 하면 확장이 다시 맡았다(맥 D-3).
   // (판단 근거·설계는 interceptor.js proxyInPath 주석 참고)
   let proxyRoute = false;
+  let proxyExpected = false; // 엔진 설정은 프록시지만, 이 탭의 최신 표식은 아직 없을 수 있다
   let proxyMarkAt = 0; // MAIN world 가 표식을 실제로 본 마지막 시각
   const PROXY_FRESH_MS = 15000; // interceptor.js _PROXY_RECHECK_MS 와 같다
   const proxyRouteWaiters = new Set();
@@ -304,6 +305,19 @@
     // 표식이 오래됐으면 이 첨부는 확장이 맡는다 — 프록시는 확장이 승인한 마스킹본을 다시 검사하지 않는다(#301).
     // 첨부 버튼을 누르면(pointerdown) 확인이 다시 돌아, 보통은 파일을 고르는 동안 표식이 새로 잡힌다.
     return proxyEvidenceFresh() && PROXY_FILE_HOSTS.includes(location.hostname);
+  }
+
+  /** MAIN world가 파일을 붙든 시점의 최종 소유권 결정.
+   *
+   * 표식이 오래됐다고 즉시 확장이 맡으면, pointerdown에서 시작한 HEAD가 몇 ms 뒤
+   * 성공해 프록시도 같은 원본을 검사한다. MAIN world의 요청은 이 Promise가 끝날 때까지
+   * 원본 업로드를 보류하므로, 최대 2초 안에 같은 HEAD 결과를 두 world가 함께 쓴다.
+   */
+  async function proxyWillHandleSelectedFile() {
+    if (!PROXY_FILE_HOSTS.includes(location.hostname)) return false;
+    if (proxyEvidenceFresh()) return true;
+    if (!proxyExpected) return false;
+    return reconfirmProxyRoute();
   }
 
   function isSupportedFile(file) {
@@ -3048,6 +3062,7 @@
     if (event.data.type === 'SECUREDOC_PROXY_ROUTE') {
       if (event.data.bridgeToken !== bridgeToken) return;
       proxyRoute = event.data.mode === 'proxy';
+      proxyExpected = Boolean(event.data.expectedProxy);
       proxyMarkAt = proxyRoute ? Number(event.data.markAt) || 0 : 0;
       for (const done of [...proxyRouteWaiters]) done(proxyEvidenceFresh());
       if (window.top === window) {
@@ -3067,6 +3082,14 @@
       if (event.data.bridgeToken !== bridgeToken) return; // 위조 메시지 차단
       const { inputId, file, mimeType, fileName, fileSize } = event.data.payload;
       if (!protectionEnabled) { sendResultToMain({ inputId, action: 'passthrough' }); return; }
+
+      // MAIN world가 stale 표식을 보고 파일을 붙든 경우, 패널을 열기 전에 경로 재확인을
+      // 기다린다. 성공하면 원본은 프록시가 검사하므로 확장은 완전히 손을 떼고, 실패·
+      // 시간 초과면 아래의 기존 확장 검사로 내려가 fail-closed를 유지한다.
+      if (await proxyWillHandleSelectedFile()) {
+        sendResultToMain({ inputId, action: 'passthrough' });
+        return;
+      }
 
       if (!(await openSidePanel())) {
         showBlockedBadge('⚠️ 보호 확인을 완료하지 못해 업로드를 멈췄습니다. 검토 없이 문서가 나가지 않도록 막았습니다 — 다시 시도해 주세요.');
