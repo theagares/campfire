@@ -3088,9 +3088,8 @@ cancelScan(stuckScan);
     }
   }
 
-  // (41) 앱+확장 병행에서는 파일을 전송 시점까지 확장이 보류한다. ChatGPT 는 이미지 등록 뒤 MD 치환 시
-  //      형식 오류가 나고, Claude·Grok 은 첨부 즉시 마스킹본이 올라간다. Gemini·Perplexity 도 등록
-  //      메타데이터를 프록시가 바꾸지 못한다. 확장이 올린 최종본은 프록시가 다시 확인한다.
+  // (41) 프록시 방식(표식이 새것)이면 다섯 사이트 모두 파일을 프록시가 맡고 확장은 손을 뗀다(사용자 결정 — 확장이
+  //      깔렸든 아니든 결과가 같게). 표식이 오래된 채 첨부하면 그 첨부는 확장이 맡고, 전송 때 함께 검사한다.
   {
     const route41 = (mode) => dispatchWindowMessage({
       __securedoc: true, direction: 'main-to-isolated', bridgeToken: contentBridgeToken,
@@ -3112,19 +3111,19 @@ cancelScan(stuckScan);
     };
     try {
       await route41('proxy');
-      for (const host of ['www.perplexity.ai']) {
-        if (!(await intercepts41(host))) {
-          throw new Error(`(41) ${host} 파일을 전송 전에 확장이 보류하지 않았다`);
-        }
-      }
-      // 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트는 프록시 방식에서 확장이 손을 뗀다(맥 v0.2.58 프록시 단독 실측).
-      for (const host of ['claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com']) {
+      for (const host of ['claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com', 'www.perplexity.ai',
+        'copilot.microsoft.com']) {
         if (await intercepts41(host)) {
-          throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다`);
+          throw new Error(`(41) ${host} 는 프록시 방식이면 프록시가 파일을 맡는데 확장도 가로챘다(이중 검토)`);
         }
       }
-      // Perplexity 는 프롬프트를 프록시가 보지만(PROXY_PROMPT_HOSTS), 확장이 붙들어 둔 첨부가 있으면 전송 때
-      // 확장이 함께 검사해야 한다 — 아니면 첨부는 검사도 전송도 안 된 채 프롬프트만 나간다.
+      // 표식이 오래된 채 첨부하면 확장이 맡는다(프록시는 확장이 승인한 마스킹본을 다시 검사하지 않는다, #301).
+      // 프롬프트는 프록시가 보는 사이트라도(PROXY_PROMPT_HOSTS) 확장이 붙들어 둔 첨부가 있으면 전송 때 함께 검사해야
+      // 한다 — 아니면 첨부는 검사도 전송도 안 된 채 프롬프트만 나간다.
+      await clock.tick(20000);
+      if (!(await intercepts41('www.perplexity.ai'))) {
+        throw new Error('(41) 표식이 오래됐는데 첨부를 확장이 맡지 않았다 — 직결이면 검사 없이 나간다');
+      }
       sandbox.location.hostname = 'www.perplexity.ai';
       promptEditorStub.value = '첨부한 문서를 요약해줘';
       documentStub.activeElement = promptEditorStub;
@@ -3139,9 +3138,6 @@ cancelScan(stuckScan);
       nextDecision = null;
       await clock.tick(500);
       if (!started41) throw new Error('(41) 프록시가 프롬프트를 보는 사이트에서 붙들어 둔 첨부를 전송 때 검사하지 않았다');
-      if (await intercepts41('copilot.microsoft.com')) {
-        throw new Error('(41) copilot.microsoft.com 은 프록시가 파일을 맡는데 확장도 가로챘다(이중 검토)');
-      }
     } finally {
       await route41('extension');
       sandbox.location.hostname = 'chatgpt.com';

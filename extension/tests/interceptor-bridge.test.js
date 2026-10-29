@@ -381,31 +381,17 @@ async function main() {
     assert.strictEqual(await t.passedThrough(), true, '다시 확인해 표식이 새로 잡혔는데 업로드를 계속 붙들었다');
   }
 
-  // (15-1) 프록시가 아직 다 처리하지 못하는 사이트는 프록시 방식이어도 확장이 업로드를 전송 시점까지 맡는다
-  //        (Perplexity 그림 미확인).
-  for (const host of ['www.perplexity.ai']) {
+  // (15-1) 프록시 방식이면 다섯 사이트 모두(Claude·Grok·Gemini·ChatGPT·Perplexity) 확장이 업로드에서 손을 뗀다 —
+  //        Perplexity 도 프록시가 등록부터 _masked.md 로 바꾼다(#322).
+  for (const host of ['claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com', 'www.perplexity.ai']) {
     const t = load({ proxyMarked: true, host });
     t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
-    t.config({
-      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
-    });
+    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
     await settle();
     assert.ok(
       t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE' && m.mode === 'proxy'),
       `${host}: 프록시 표식을 보지 못했다 — 이 사례가 아무것도 확인하지 않는다`,
     );
-    assert.strictEqual(
-      await t.passedThrough(), false,
-      `${host}: 전송 전 파일 보류를 확장이 맡지 않았다`,
-    );
-  }
-
-  // (15-2) 프록시만으로 문서·그림·텍스트 파일이 다 되는 사이트(Claude·Grok·Gemini·ChatGPT)는 프록시 방식에서 확장이 손을 뗀다.
-  for (const host of ['claude.ai', 'grok.com', 'gemini.google.com', 'chatgpt.com', 'chat.openai.com']) {
-    const t = load({ proxyMarked: true, host });
-    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
-    t.config({ type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true });
-    await settle();
     assert.strictEqual(await t.passedThrough(), true, `${host}: 프록시 방식인데 확장이 업로드를 또 붙들었다`);
   }
 
