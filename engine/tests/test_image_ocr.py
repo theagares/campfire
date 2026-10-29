@@ -93,6 +93,14 @@ def test_켜면_이미지_파일과_DOCX_PPTX_속_그림_자리에_표시가_남
     assert MARK_RE.search(extract_pptx(_pptx_with_picture(), images)) and len(images) == 1
 
 
+@pytest.fixture(autouse=True)
+def _empty_ocr_cache():
+    """업로드 사이 OCR 캐시는 프로세스 전역이다 — 같은 _png() 바이트를 쓰는 시험끼리 결과가 새지 않게 비운다."""
+    image_ocr._cache.clear()
+    yield
+    image_ocr._cache.clear()
+
+
 def _fake_reader(monkeypatch, results):
     calls = []
 
@@ -132,6 +140,44 @@ def test_같은_그림은_한_번만_읽는다(monkeypatch):
     blob = _png()
     text, infos = asyncio.run(image_ocr.fill("0 1", [blob, blob]))
     assert len(calls) == 1 and [i["status"] for i in infos] == ["read", "read"] and text.count("로고 아님") == 2
+
+
+def test_다른_업로드에서_읽은_그림은_30분_안에_다시_읽지_않는다(monkeypatch):
+    # 맥 v0.2.60: 그림 든 문서가 OCR 을 기다리다 Claude 업로드 시간이 지났다 — 다시 붙이면 곧바로 끝나야 한다.
+    calls = _fake_reader(monkeypatch, [{"text": "고객 김민준", "tiles": [], "secs": 7.5}])
+    blob = _png()
+    first, _ = asyncio.run(image_ocr.fill("0", [blob]))
+    again, infos = asyncio.run(image_ocr.fill("앞 0", [blob]))  # 다른 문서·다른 업로드
+    assert len(calls) == 1, "다른 업로드의 같은 그림을 다시 읽었다"
+    assert first == "[이미지 1]\n고객 김민준" and again == "앞 [이미지 1]\n고객 김민준"
+    assert infos[0]["status"] == "read" and infos[0]["secs"] == 0.0
+
+
+def test_못_읽은_그림은_담지_않아_다음에_다시_읽는다(monkeypatch):
+    calls = _fake_reader(monkeypatch, [None, {"text": "다시 읽음", "tiles": [], "secs": 1}])
+    blob = _png()
+    _, infos = asyncio.run(image_ocr.fill("0", [blob]))
+    assert infos[0]["status"] == "unchecked"
+    text, infos = asyncio.run(image_ocr.fill("0", [blob]))
+    assert len(calls) == 2 and infos[0]["status"] == "read" and text.endswith("다시 읽음")
+
+
+def test_OCR_캐시는_가득_차면_오래된_것부터_밀어낸다(monkeypatch):
+    a, b = _png(color=(250, 250, 250)), _png(color=(240, 240, 240))
+    calls = _fake_reader(monkeypatch, [{"text": t, "tiles": [], "secs": 1} for t in ("가", "나", "가")])
+    monkeypatch.setattr(image_ocr, "_CACHE_MAX", 1)
+    for blob in (a, b, a):  # b 가 들어오며 a 가 밀려났다
+        asyncio.run(image_ocr.fill("0", [blob]))
+    assert len(calls) == 3
+
+
+def test_OCR_캐시는_30분이_지나면_다시_읽는다(monkeypatch):
+    calls = _fake_reader(monkeypatch, [{"text": "가", "tiles": [], "secs": 1}, {"text": "가", "tiles": [], "secs": 1}])
+    monkeypatch.setattr(image_ocr, "_CACHE_TTL_SEC", -1.0)  # 담자마자 지난 것으로
+    blob = _png()
+    asyncio.run(image_ocr.fill("0", [blob]))
+    asyncio.run(image_ocr.fill("0", [blob]))
+    assert len(calls) == 2, "시간이 지난 OCR 결과를 다시 썼다"
 
 
 def _varco_runtime():
