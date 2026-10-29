@@ -114,6 +114,61 @@ def test_Windows_는_묶음_메모리를_남은_시스템_커밋으로도_묶는
     assert runtime._memory_safe_limits("cuda", *CAP) == (16, 18000)
 
 
+def test_불러온_뒤_캐시를_비우고_나서_남은_메모리로_묶음을_정한다(monkeypatch):
+    # 불러오며 버린 lm_head 자리(약 0.6GB)가 할당기 캐시에 남으면 mem_get_info 가 쓰는 중으로 본다 — 12GB 카드에 통합 worker 가
+    # 같이 있으면 묶음이 4 → 2 로 줄어 그림 44장이 455 → 705초(서버 흉내 측정).
+    import transformers
+
+    order = []
+    proc = SimpleNamespace(tokenizer=SimpleNamespace(padding_side="right", pad_token_id=0, convert_tokens_to_ids=lambda _t: 1))
+    monkeypatch.setattr(runtime, "load_model", lambda *_a: order.append("load"))
+    monkeypatch.setattr(runtime, "_empty_cache", lambda _d: order.append("empty"))
+    monkeypatch.setattr(runtime, "_memory_safe_limits", lambda *_a: order.append("limits") or (4, 4112))
+    monkeypatch.setattr(transformers.AutoProcessor, "from_pretrained", lambda *_a, **_k: proc)
+    monkeypatch.setattr(runtime.Reader, "_setup_token_count", lambda self: None)
+    runtime.Reader("models", 16, 18000, "cuda")
+    assert order == ["load", "empty", "limits"]
+
+
+class _Tiny(runtime.torch.nn.Module):
+    """VARCO 와 같은 키 모양의 작은 모델 — 체크포인트(4.53 저장) 키를 5.x 키로 바꿔 읽는지 본다."""
+
+    def __init__(self):
+        super().__init__()
+        nn = runtime.torch.nn
+        self.model = nn.Module()
+        self.model.language_model = nn.Module()
+        self.model.language_model.embed_tokens = nn.Embedding(4, 3, dtype=runtime.torch.float16)
+        self.model.vision_tower = nn.Linear(2, 5, bias=False, dtype=runtime.torch.float16)
+        self.lm_head = nn.Linear(3, 4, bias=False, dtype=runtime.torch.float16)
+
+    def get_input_embeddings(self):
+        return self.model.language_model.embed_tokens
+
+
+def test_가중치를_버퍼_하나에_차례로_읽어도_텐서마다_제_값이_들어간다(monkeypatch, tmp_path):
+    import transformers
+    from safetensors.torch import save_file
+
+    torch = runtime.torch
+    big = torch.arange(12, dtype=torch.float16).reshape(4, 3)  # 큰 텐서를 먼저 — 버퍼에 남은 값이 다음 텐서로 새면 안 된다
+    small = -torch.arange(1, 11, dtype=torch.float16).reshape(5, 2)
+    save_file({"language_model.model.embed_tokens.weight": big, "vision_tower.vision_model.weight": small},
+              str(tmp_path / "model.safetensors"))
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: None)
+    monkeypatch.setattr(transformers.LlavaOnevisionForConditionalGeneration, "_from_config",
+                        classmethod(lambda cls, *_a, **_k: _Tiny()))
+    model = runtime.load_model(tmp_path, "cpu")
+    assert torch.equal(model.get_input_embeddings().weight, big)
+    assert torch.equal(model.model.vision_tower.weight, small)
+    assert model.lm_head.weight.data_ptr() == model.get_input_embeddings().weight.data_ptr()  # tie_word_embeddings
+
+    with open(tmp_path / "model.safetensors", "r+b") as f:  # 잘린 파일은 조용히 넘어가지 않는다
+        f.truncate(f.seek(0, 2) - 4)
+    with pytest.raises(RuntimeError, match="잘렸다"):
+        runtime.load_model(tmp_path, "cpu")
+
+
 # 조각 입력 토큰 — 묶음을 짜려고 조각마다 _encode(전처리)를 한 번 더 돌리지 않고 프로세서 식으로 센다(v0.2.62: GPU 사용률 5%).
 RESOLUTIONS = [(600, 40), (1255, 319), (90, 90), (2364, 1038), (300, 1200), (50, 200), (1448, 1086), (420, 226),
                (1200, 60), (31, 400)]
