@@ -25,9 +25,11 @@ fail-closed 원칙: 이 파일의 모든 경로는 "판단이 안 서면 안 보
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -249,6 +251,16 @@ PROMPT_WS_ENDPOINTS = {
     ("grok.com", "/ws/mgw/"): _grok_slots,
 }
 
+# Gemini 프롬프트(2026-10-29 맥 실측, 확장 끔·프록시 켬): batchexecute·StreamGenerate 가 아니라 WebChannel 로 간다.
+#   POST geminiweb-pa.clients6.google.com/v1/processSession?VER=8&…  form "count=N&ofs=K&req0___data__=<base64 protobuf>…"
+#   ofs=0 세션 설정(언어·대화 id·첨부 목록), 다음이 프롬프트 {2: {1: 1, 9: {1: "글"}}}, 끝이 {4: {1: 1}}.
+#   답은 같은 경로의 GET(TYPE=xmlhttp) 롱폴로 흘러온다.
+# 이 호스트가 PAC 밖이라 크롬이 QUIC 로 직결해 프록시가 전송을 아예 못 봤다 — 저장본에 원문이 그대로 남았다.
+GEMINI_PROMPT_HOST = "geminiweb-pa.clients6.google.com"
+GEMINI_PROMPT_PATH = "/v1/processSession"
+GEMINI_PROMPT_FIELD = (2, 9, 1)
+_WEBCHANNEL_DATA = re.compile(r"req\d+___data__")
+
 # 전송이 아닌데 친 글을 그대로 싣는 요청(같은 실측). 전송을 가려도 원문이 여기로 샌다.
 # 검사할 자리가 아니라(입력 중에 계속 나간다) 아예 보내지 않는다 — 자동완성·분석만 빠진다.
 #   ChatGPT     POST /backend-api/f/conversation/prepare  partial_query(입력 중인 글, 전송 전 미리 보냄)
@@ -337,7 +349,7 @@ def intercept_hosts() -> tuple[list[str], list[str]]:
     exact = (
         MULTIPART_HOSTS
         | CHATGPT_HOSTS
-        | {GEMINI_UPLOAD_HOST, GEMINI_ROUTE_HOST}
+        | {GEMINI_UPLOAD_HOST, GEMINI_ROUTE_HOST, GEMINI_PROMPT_HOST}
         | set(UNSUPPORTED_UPLOADS)
         | {h for h, _ in PROMPT_FORM_ENDPOINTS}
         | {h for h, _ in PROMPT_JSON_ENDPOINTS}
@@ -475,6 +487,9 @@ class CampfireAddon:
         if host in CLAUDE_RPC_HOSTS and key in CLAUDE_MESSAGE_RPC_PATHS:
             await self._claude_rpc(flow)
             return
+        if host == GEMINI_PROMPT_HOST and key == GEMINI_PROMPT_PATH and flow.request.method == "POST":
+            await self._gemini_session(flow)
+            return
         if host in PROMPT_ECHO_HOSTS or key in PROMPT_ECHO_PATHS.get(host, ()):
             self._swallow(flow)
             return
@@ -588,6 +603,61 @@ class CampfireAddon:
         for fld, new_bytes in masked:
             fld.set_bytes(new_bytes)
         flow.request.content = msg.serialize()
+
+    # ── Gemini 프롬프트 (WebChannel processSession) ─────────────────────────
+
+    async def _gemini_session(self, flow: http.HTTPFlow) -> None:
+        """form 의 reqN___data__(base64 protobuf) 마다 2.9.1 프롬프트를 검사하고 가린 글로 다시 싼다.
+
+        form 은 parse_qsl 로 풀지 않는다 — 값의 base64 '+' 가 날것으로 오면 공백으로 바뀐다. 바꾼 칸만 다시 쓰고
+        나머지 칸(count·ofs·세션 설정)은 바이트 그대로 둔다. 못 읽는 데이터 칸이나, 사용자 턴 모양({2: {9: …}})인데
+        글 칸이 없는 것은 모르는 모양이라 통과가 아니라 막는다.
+        """
+        from urllib.parse import quote, unquote
+
+        from app.adapters.proxy import protobuf as pb
+
+        pairs = [p.split("=", 1) for p in (flow.request.get_text() or "").split("&")]
+        found = []  # (pairs 인덱스, 메시지, 프롬프트 필드들)
+        for i, pair in enumerate(pairs):
+            if len(pair) != 2 or not _WEBCHANNEL_DATA.fullmatch(unquote(pair[0])):
+                continue
+            try:
+                msg = pb.decode(base64.b64decode(unquote(pair[1]), validate=True))
+            except (ValueError, pb.DecodeError):
+                logger.warning("[proxy] Gemini 전송 데이터를 읽지 못했다 — 차단")
+                self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
+                return
+            fields = [f for path, f in msg.walk() if path == GEMINI_PROMPT_FIELD
+                      and f.wire_type == 2 and f.value is not None and pb.looks_like_text(f.value)]
+            if fields:
+                found.append((i, msg, fields))
+            # 사용자 턴은 최상위가 필드 2 하나뿐이다(실측). 세션 설정은 최상위 필드가 여럿이라 여기 안 걸린다.
+            elif {f.number for f in msg.fields} == {2} and any(path == GEMINI_PROMPT_FIELD[:2] for path, _ in msg.walk()):
+                logger.warning("[proxy] Gemini 사용자 턴인데 글 칸이 없다 — 차단")
+                self._block(flow, "메시지 형식을 해석하지 못해 전송을 막았습니다")
+                return
+        if not found:
+            return  # 세션 열기·설정·턴 끝 — 사용자 글이 없다
+
+        prompts = [f for _, _, fields in found for f in fields]
+        masked = await self._scan_texts_and_decide(prompts, host=GEMINI_ROUTE_HOST, prompt_fields=prompts, flow=flow)
+        if masked is None:
+            self._block(flow, "검토 결과 전송하지 않기로 했습니다")
+            return
+        if masked is _ORIGINAL:
+            return
+        for fld, new_bytes in masked:
+            fld.set_bytes(new_bytes)
+        for i, msg, _ in found:
+            pairs[i][1] = quote(base64.b64encode(msg.serialize()).decode("ascii"), safe="=")
+        flow.request.text = "&".join("=".join(p) for p in pairs)
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        # Gemini 답은 processSession GET 롱폴로 흘러온다. 프록시는 본문을 통째로 받은 뒤 넘기므로(stream_large_bodies
+        # 없음) 그대로 두면 답이 다 끝날 때까지 안 보이거나 멈춘다. 이 호스트 응답은 검사하지 않으니 흘려보낸다.
+        if flow.request.pretty_host == GEMINI_PROMPT_HOST and flow.response is not None:
+            flow.response.stream = True
 
     # ── 다른 사이트의 프롬프트 전송 (form / JSON) ────────────────────────────
 
