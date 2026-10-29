@@ -93,14 +93,16 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-const tipFor = (label, masked, locked = false) => locked
-  ? `${label} — 사용자 지정 규칙으로 항상 마스킹`
-  : `${label} — ${masked ? '눌러서 마스킹 해제' : '눌러서 다시 마스킹'}`;
+const tipFor = (label, masked, locked = false, reason = '') => reason
+  ? `${label}(${reason}) — 사람이 못 보게 숨겨 둔 글이라 항상 마스킹`
+  : locked
+    ? `${label} — 사용자 지정 규칙으로 항상 마스킹`
+    : `${label} — ${masked ? '눌러서 마스킹 해제' : '눌러서 다시 마스킹'}`;
 
 // 마킹된 구간은 그 자체가 버튼이다 — 문서에서 바로 눌러 마스킹을 풀거나 다시 건다.
 // (우측 목록의 토글과 같은 상태를 공유하며, 어느 쪽을 바꿔도 양쪽이 함께 갱신된다.)
 // 기밀 문장은 안쪽 PII 를 품은 채 그린다 — 안쪽 표시를 누르면 그 항목만 바뀐다(클릭은 closest('.mark')).
-const MARK_CLASS = { inj: 'inj', forced: 'forced', conf: 'conf' };
+const MARK_CLASS = { inj: 'inj', forced: 'forced', conf: 'conf', hidden: 'hidden' };
 function segmentsToHtml(segments) {
   return segments.map(seg => {
     if (seg.type === 'text') return esc(seg.text);
@@ -108,7 +110,7 @@ function segmentsToHtml(segments) {
     const cls = MARK_CLASS[seg.cat] || 'pii';
     return `<span class="mark ${cls}${seg.fallback ? ' fallback' : ''}${masked ? '' : ' kept'}" data-key="${esc(seg.key)}" data-label="${esc(seg.label)}"`
       + (seg.locked
-        ? ` aria-disabled="true" title="${esc(tipFor(seg.label, true, true))}"`
+        ? ` aria-disabled="true" title="${esc(tipFor(seg.label, true, true, seg.reason))}"`
         : ` role="button" tabindex="0" aria-pressed="${masked}" title="${esc(tipFor(seg.label, masked))}"`)
       + `>${seg.children ? segmentsToHtml(seg.children) : esc(seg.original)}</span>`;
   }).join('');
@@ -536,7 +538,7 @@ function renderItems() {
     <div class="solo" data-key="${esc(s.key)}">
       <span class="cat ${s.cat}"></span>
       <div class="s-text">
-        <div class="s-label">${esc(s.label)}${s.locked ? ' · 필수' : ''}</div>
+        <div class="s-label">${esc(s.label)}${s.reason ? ` · ${esc(s.reason)}` : s.locked ? ' · 필수' : ''}</div>
         <div class="s-snip">${esc(trunc(s.original, 90))}</div>
       </div>
       <label class="switch">
@@ -564,7 +566,7 @@ function syncMark(key) {
   el.diff.querySelectorAll(`.mark[data-key="${CSS.escape(key)}"]`).forEach(m => {
     m.classList.toggle('kept', !masked);
     m.setAttribute('aria-pressed', String(masked));
-    m.title = tipFor(m.dataset.label || '', masked, !!segment?.locked);
+    m.title = tipFor(m.dataset.label || '', masked, !!segment?.locked, segment?.reason);
   });
 }
 

@@ -13,6 +13,7 @@ app/core/parser/eml.py
 
 from __future__ import annotations
 
+import re
 from email import message_from_bytes, policy
 from email.message import EmailMessage
 
@@ -65,12 +66,19 @@ def extract_eml(file_bytes: bytes) -> str:
             html_fallback.append(_decode(part))
 
     # text/plain 이 있으면 그걸 쓴다. HTML 전용 메일일 때만 태그를 벗겨 쓴다.
-    if not bodies and html_fallback:
+    hidden_html: list[str] = []
+    if html_fallback:
+        from .hidden import HE, HS
         from .html import strip_tags
 
-        bodies = [strip_tags(h) for h in html_fallback]
+        if bodies:
+            # 글 본문을 쓰더라도 HTML 쪽에만 숨겨 둔 글(parser/hidden.py)은 붙인다 — 받는 쪽(AI)이 HTML 을 읽을 수 있다
+            hidden_html = [seg for h in html_fallback for seg in re.findall(f"{HS}.[^{HE}]*{HE}", strip_tags(h), re.S)]
+        else:
+            bodies = [strip_tags(h) for h in html_fallback]
 
     if attachments:
         parts.append("첨부: " + ", ".join(attachments))
     parts.extend(b.strip() for b in bodies if b.strip())
+    parts.extend(hidden_html)
     return "\n\n".join(parts)

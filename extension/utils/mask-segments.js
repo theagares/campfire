@@ -25,6 +25,7 @@ export const TYPE_LABELS = {
   SYSTEM_PROMPT_LEAK: '시스템 프롬프트 유출', JAILBREAK: '탈옥 시도',
   HIDDEN_COMMAND: '숨겨진 명령', DATA_EXFILTRATION: '데이터 유출 시도',
   OTHER_INJECTION: '프롬프트 인젝션',
+  HIDDEN_TEXT: '숨긴 글',  // 엔진 parser/hidden.py — 사람이 못 보게 숨긴 글. 인젝션 계열이지만 늘 잠근다
 };
 
 export const labelOf = (t) => TYPE_LABELS[t] ?? t;
@@ -53,7 +54,13 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
     ...(piiItems || []).map(i => ({ ...i, cat: i.type === 'CONFIDENTIAL' ? 'conf' : 'pii' })),
     ...(injectionItems || []).map(i => ({ ...i, cat: 'inj' })),
     ...(forcedMaskItems || []).map(i => ({ ...i, cat: 'forced', mandatory: true })),
-  ].map(i => ({ ...i, start: at(i.start), end: at(i.end) }))
+  ].map(i => ({
+    ...i,
+    // 숨긴 글(흰 바탕 흰 글씨 등)은 어느 목록에 와도(문서는 인젝션, 프롬프트는 PII 목록) 잠근다 — 패널에서 풀 수 없다
+    ...(i.type === 'HIDDEN_TEXT' ? { cat: 'hidden', mandatory: true } : {}),
+    start: at(i.start),
+    end: at(i.end),
+  }))
     .filter(i => Number.isInteger(i.start) && Number.isInteger(i.end) && i.start >= 0 && i.end > i.start)
     // 바깥 구간이 먼저 — 같은 자리에서 시작하는 기밀 문장이 안쪽 필수 단어보다 앞서야 품을 수 있다
     .sort((a, b) => a.start - b.start || b.end - a.end || Number(!!b.mandatory) - Number(!!a.mandatory));
@@ -81,6 +88,7 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
         };
         // 솔라 판정을 못 해 근거 문장을 가린 기밀(엔진 source 'encoder') — 화면은 점선 테두리로 구분한다
         if (it.cat === 'conf' && it.source === 'encoder') seg.fallback = true;
+        if (it.cat === 'hidden' && it.reason) seg.reason = it.reason;  // "흰 바탕 흰 글씨" 같은 짧은 이유
         if (it.children) seg.children = toSegments(it.children, start, it.end);
         segs.push(seg);
       }
@@ -101,10 +109,14 @@ export function buildSegments(text, piiItems, injectionItems, keyPrefix = 'doc',
  * 인젝션 구간도 겹친 PII·필수 단어를 자식으로 품는다. 솔라 없이 잡힌 인젝션은 128토큰 덩어리라 안쪽 항목과
  * 겹치기 쉬운데, 합치면 덩어리 전체가 그 항목의 색·이름(필수 단어면 잠김)으로 바뀌었다. 덩어리 경계가
  * PII 가운데를 자르면 부모를 늘려 통째로 품는다(엔진 masker.merge_overlapping 과 같은 규칙).
+ * 숨긴 글도 PII·필수 단어를 같은 식으로 품고, 인젝션 덩어리와 겹치면 그 안의 잠긴 자식이 된다 — 인젝션을 풀어도
+ * 숨긴 글은 가린 채 남는다. 그 밖의 겹침은 합친 구간 전체가 숨긴 글(잠금)이다.
  */
 function mergeSpans(items) {
   const all = [];
   const leaf = (cat) => cat === 'pii' || cat === 'forced';
+  const fits = (parent, cat) => leaf(cat) || (parent === 'inj' && cat === 'hidden');
+  const holder = (cat) => cat === 'inj' || cat === 'hidden';
   for (const item of items) {
     const prev = all[all.length - 1];
     if (!prev || item.start >= prev.end) {
@@ -115,17 +127,22 @@ function mergeSpans(items) {
       (prev.children ||= []).push(item);
       continue;
     }
-    if (prev.cat === 'inj' && leaf(item.cat)) {
+    if (holder(prev.cat) && fits(prev.cat, item.cat)) {
       prev.end = Math.max(prev.end, item.end);
       (prev.children ||= []).push(item);
       continue;
     }
-    if (item.cat === 'inj' && leaf(prev.cat)) {
+    if (holder(item.cat) && fits(item.cat, prev.cat)) {
       all[all.length - 1] = { ...item, start: prev.start, end: Math.max(prev.end, item.end), children: [prev] };
       continue;
     }
     prev.end = Math.max(prev.end, item.end);
-    if (item.mandatory) {
+    if (item.cat === 'hidden' || prev.cat === 'hidden') {
+      prev.mandatory = true;
+      prev.cat = 'hidden';
+      prev.type = 'HIDDEN_TEXT';
+      prev.reason ||= item.reason;
+    } else if (item.mandatory) {
       prev.mandatory = true;
       prev.cat = 'forced';
       prev.type = 'USER_DEFINED_TERM';
