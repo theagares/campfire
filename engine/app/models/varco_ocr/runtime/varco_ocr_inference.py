@@ -242,14 +242,51 @@ def _free_commit() -> float | None:
     return float(status.ullAvailPageFile)
 
 
+def _nvml_free() -> float | None:
+    """Windows: 카드 전체의 남은 VRAM(바이트, nvidia-smi 의 free 와 같은 값). WDDM 의 cudaMemGetInfo 는 다른 프로세스 몫을
+    빼지 않은 값을 줘, 카드 전체로 다시 묶는다 — v0.2.63 후보 3차 실측(RTX 5070 12GB): 통합 worker 가 떠 카드 9.6GB 사용
+    중인데 묶음 16/16994 를 잡아 카드가 11.8GB 로 차고, WDDM 이 worker 의 VRAM 을 RAM 으로 밀어내 남은 물리 메모리가 0.2GB.
+    드라이버가 깐 System32\\nvml.dll 을 ctypes 로(새 의존성 없음). 카드가 여러 장이면 CUDA 장치와 맞추기 어려워, 또는 못
+    쓰면 None — 그때는 지금처럼 cudaMemGetInfo 만 본다. 리눅스는 cudaMemGetInfo 가 카드 전체를 보므로 부르지 않는다."""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    class _Memory(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+    try:
+        nvml = ctypes.WinDLL(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvml.dll"))
+        if nvml.nvmlInit_v2() != 0:
+            return None
+    except (OSError, AttributeError):
+        return None
+    try:
+        count, handle, mem = ctypes.c_uint(), ctypes.c_void_p(), _Memory()
+        if nvml.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or count.value != 1:
+            return None
+        if nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(handle)) != 0:
+            return None
+        if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) != 0:
+            return None
+        return float(mem.free)
+    except AttributeError:
+        return None
+    finally:
+        nvml.nvmlShutdown()
+
+
 def _spare_memory(device: str) -> float | None:
     """가중치를 올린 뒤 묶음에 쓸 수 있는 메모리(바이트) = 남은 메모리(+ 이미 쓴 양 − 가중치 — 이미 쓴 양이 가중치다).
     모르면 None."""
     try:
         if device == "cuda":
             # 전체 용량이 아니라 남은 VRAM — PII·인젝션 작업자와 브라우저가 같은 카드를 쓴다(v0.2.57 RTX 5070: 다른
-            # 프로세스가 약 7GB 를 써 큰 묶음이 CUDA out of memory 로 그림을 못 읽었다).
+            # 프로세스가 약 7GB 를 써 큰 묶음이 CUDA out of memory 로 그림을 못 읽었다). Windows 는 카드 전체(NVML)로도 묶는다.
             spare = torch.cuda.mem_get_info()[0]
+            card = _nvml_free()
+            if card is not None:
+                spare = min(spare, card)
             commit = _free_commit()
             return spare if commit is None else min(spare, commit - _COMMIT_RESERVE)
         if device == "mps":
@@ -603,8 +640,10 @@ def main() -> None:
         print(json.dumps({"ready": False, "error": "no_accelerator"}), flush=True)
         return
     reader = Reader(Path(args.model_dir), args.batch, args.token_budget, device, bool(args.cuda_graph))
+    card = _nvml_free() if device == "cuda" else None
     print(json.dumps({"ready": True, "device": device, "batch": reader.batch, "budget": reader.budget,
-                      "graph": reader.graph is not None}), flush=True)
+                      "graph": reader.graph is not None,
+                      "card_free_mb": None if card is None else round(card / 2**20)}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:

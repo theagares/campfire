@@ -41,9 +41,8 @@ LOW_MEMORY_REASON = "이미지 속 글자를 검사하지 못해 보내지 않�
 logger = logging.getLogger("securedoc.engine.image_ocr")
 
 
-def free_commit_mb() -> float | None:
-    """Windows 남은 시스템 커밋(MB, 작업 관리자 '커밋됨' 의 남은 양). 커밋 한도를 넘으면 프로그램이 죽는다.
-    다른 OS(스왑이 자라 커밋 한도가 없다)·모르면 None."""
+def _memory_status():
+    """Windows GlobalMemoryStatusEx. 다른 OS·모르면 None."""
     if os.name != "nt":
         return None
     import ctypes
@@ -56,7 +55,21 @@ def free_commit_mb() -> float | None:
     status = _MemoryStatus(dwLength=ctypes.sizeof(_MemoryStatus))
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
-    return status.ullAvailPageFile / 2**20
+    return status
+
+
+def free_commit_mb() -> float | None:
+    """Windows 남은 시스템 커밋(MB, 작업 관리자 '커밋됨' 의 남은 양). 커밋 한도를 넘으면 프로그램이 죽는다.
+    다른 OS(스왑이 자라 커밋 한도가 없다)·모르면 None."""
+    status = _memory_status()
+    return None if status is None else status.ullAvailPageFile / 2**20
+
+
+def free_physical_mb() -> float | None:
+    """Windows 남은(사용 가능한) 물리 메모리(MB). 커밋은 넉넉해도 WDDM 이 VRAM 을 RAM 으로 밀어내면 이게 바닥난다
+    (v0.2.63 후보 3차 실측: 남은 커밋 11.9GB 인데 물리 0.2GB). 다른 OS·모르면 None."""
+    status = _memory_status()
+    return None if status is None else status.ullAvailPhys / 2**20
 
 
 async def gpu_worker_first() -> None:
@@ -112,6 +125,14 @@ class VarcoOcrProcess(EncoderPiiDetector):
     async def _warmup(self) -> None:
         return None
 
+    async def _read_ready_line(self, timeout_sec, tag):
+        """사이드카 준비 응답의 묶음·예산·그래프·카드 남은 VRAM 을 남긴다 — 이 PC 의 실제 묶음을 로그로 봐야 원인을 찾는다
+        (v0.2.63 후보 Windows 측정 때는 측정용 핫패치로만 볼 수 있었다)."""
+        payload = await super()._read_ready_line(timeout_sec, tag)
+        logger.info("[image_ocr] 사이드카 준비: %s",
+                    {k: payload.get(k) for k in ("device", "batch", "budget", "graph", "card_free_mb")})
+        return payload
+
     async def detect(self, text: str, *, meta=None):  # noqa: ARG002 - Detector 가 아니다
         raise NotImplementedError
 
@@ -136,23 +157,34 @@ class VarcoOcrProcess(EncoderPiiDetector):
                 self.last_failure = LAUNCH_FAILED_REASON
             return None
         request = {"images": [base64.b64encode(blob).decode("ascii")]}
+        died_once = False
         try:
-            try:
-                result = await self._rpc(request)
-            except RuntimeError as exc:
-                # CUDA 그래프 경로가 실패했다(사이드카가 'graph_failed' 로 답하고 끝났거나 답 없이 죽었다) — 그 CUDA 문맥은
-                # 믿지 않는다. 이번 실행 동안 그래프를 끄고 HF 경로로 다시 띄워 같은 그림을 다시 읽는다(그림이 막히지 않게).
-                if not self.cuda_graph or not ("graph_failed" in str(exc) or "응답 없이 종료됨" in str(exc)):
-                    raise
-                logger.warning("[image_ocr] CUDA 그래프 경로가 실패해 이번 실행 동안 끈다 — HF 경로로 다시 띄워 같은 그림을 "
-                               "다시 읽음: %s", exc)
-                self.cuda_graph = False
-                async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤
-                    await self._kill_process()
-                    self._process_ready = False
-                await self._ensure_process()
-                result = await self._rpc(request)
-            return result["results"][0]
+            while True:
+                try:
+                    return (await self._rpc(request))["results"][0]
+                except RuntimeError as exc:
+                    # 그래프를 켠 사이드카가 끝났다 — 그 CUDA 문맥은 믿지 않고 다시 띄워 같은 그림을 다시 읽는다(그림이 막히지
+                    # 않게). 'graph_failed' 표식이면 그래프 탓이 분명해 이번 실행 동안 끈다. 답 없이 죽은 것은 외부 종료·메모리
+                    # 부족일 수도 있어(v0.2.63 후보 3차: 측정 감시가 끈 것을 그래프 실패로 받아들였다) 한 번은 그래프를 켠 채
+                    # 다시 띄우고, 같은 그림에서 또 답 없이 죽으면 그때 끈다.
+                    marker, died = "graph_failed" in str(exc), "응답 없이 종료됨" in str(exc)
+                    if not self.cuda_graph or not (marker or died):
+                        raise
+                    if marker or died_once:
+                        logger.warning("[image_ocr] CUDA 그래프 경로가 실패해 이번 실행 동안 끈다 — HF 경로로 다시 띄워 같은 "
+                                       "그림을 다시 읽음: %s", exc)
+                        self.cuda_graph = False
+                    else:
+                        died_once = True
+                        logger.warning("[image_ocr] 사이드카가 답 없이 끝났다(외부 종료·메모리 부족일 수 있음) — 그래프를 켠 "
+                                       "채 한 번 다시 띄워 같은 그림을 다시 읽음: %s", exc)
+                    async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤
+                        await self._kill_process()
+                        self._process_ready = False
+                    if not await self._enough_memory():  # 메모리가 모자라 죽었으면 다시 띄우지 않고 그림만 뺀다((가))
+                        self.last_failure = LOW_MEMORY_REASON
+                        return None
+                    await self._ensure_process()
         except Exception as exc:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
             logger.warning("[image_ocr] 그림을 읽지 못함: %s", exc)
             self.last_failure = READ_FAILED_REASON
@@ -162,14 +194,19 @@ class VarcoOcrProcess(EncoderPiiDetector):
             self._arm_unload()
 
     async def _enough_memory(self) -> bool:
-        """남은 시스템 커밋이 모자라면 띄우지 않는다 / 떠 있으면 읽지 않고 내려 메모리를 돌려준다 — 메모리 작은 PC 가
-        통째로 멎지 않게(v0.2.62 측정: 사이드카 커밋 8GB 로 PC 남은 커밋 0.67GB). 그림은 미검사로 막힌다(안전 쪽)."""
-        free = free_commit_mb()
+        """남은 시스템 커밋·물리 메모리가 모자라면 띄우지 않는다 / 떠 있으면 읽지 않고 내려 메모리를 돌려준다 — 메모리 작은
+        PC 가 통째로 멎지 않게(v0.2.62 측정: 사이드카 커밋 8GB 로 PC 남은 커밋 0.67GB, v0.2.63 후보 3차: 커밋은 넉넉한데
+        WDDM 이 VRAM 을 RAM 으로 밀어내 물리 0.2GB). 그림은 빼고 글만 보낸다(fill 의 LOW_MEMORY_REASON, 사용자 결정 (가))."""
         running = self._process_ready
-        need = config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB
-        if free is None or free >= need:
+        checks = (("커밋", free_commit_mb(),
+                   config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB),
+                  ("물리", free_physical_mb(),
+                   config.IMAGE_OCR_READ_FREE_PHYS_MB if running else config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB))
+        short = [(name, free, need) for name, free, need in checks if free is not None and free < need]
+        if not short:
             return True
-        logger.warning("[image_ocr] 남은 시스템 메모리(커밋) %.0fMB < %dMB — %s", free, need,
+        name, free, need = short[0]
+        logger.warning("[image_ocr] 남은 시스템 메모리(%s) %.0fMB < %dMB — %s", name, free, need,
                        "읽지 않고 사이드카를 내림" if running else "사이드카를 띄우지 않음")
         if running:
             async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤 내린다

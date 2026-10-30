@@ -97,6 +97,7 @@ def test_켜면_이미지_파일과_DOCX_PPTX_속_그림_자리에_표시가_남
 def _no_commit_limit(monkeypatch):
     """이 PC 의 실제 남은 시스템 커밋에 시험이 흔들리지 않게 기본은 '모름'(메모리 안전장치 시험만 따로 흉내 낸다)."""
     monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: None)
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: None)
 
 
 _real_gpu_worker_first = image_ocr.gpu_worker_first  # 아래 autouse 가 바꾸기 전 — 순서 시험이 진짜를 쓴다
@@ -311,6 +312,34 @@ def test_떠_있을_때_메모리가_바닥나면_읽지_않고_내린다(monkey
     assert calls == {"launch": 0, "rpc": 0, "kill": 1} and not proc._process_ready, "메모리를 돌려주려면 사이드카를 내려야 한다"
 
 
+def test_커밋이_넉넉해도_남은_물리_메모리가_모자라면_띄우지_않는다(monkeypatch):
+    # v0.2.63 후보 3차(페이지 파일을 늘린 뒤): 남은 커밋 11.9GB 인데 WDDM 이 VRAM 을 RAM 으로 밀어내 물리 0.2GB
+    proc, calls = _guarded_proc(monkeypatch, free_mb=40000, running=False)
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB - 1)
+    assert asyncio.run(proc.read(_png())) is None
+    assert proc.last_failure == image_ocr.LOW_MEMORY_REASON and calls == {"launch": 0, "rpc": 0, "kill": 0}
+
+
+def test_떠_있을_때_물리_메모리가_바닥나면_읽지_않고_내리고_읽기_기준_위면_읽는다(monkeypatch):
+    proc, calls = _guarded_proc(monkeypatch, free_mb=40000, running=True)
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: config.IMAGE_OCR_READ_FREE_PHYS_MB - 1)
+    assert asyncio.run(proc.read(_png())) is None and calls["kill"] == 1 and not proc._process_ready
+    proc, calls = _guarded_proc(monkeypatch, free_mb=40000, running=True)
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: config.IMAGE_OCR_READ_FREE_PHYS_MB + 1)  # 띄우기 기준보다는 아래
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls["kill"] == 0
+
+
+def test_사이드카_준비_응답의_묶음_예산_그래프를_로그에_남긴다(monkeypatch, caplog):
+    async def ready(_self, _timeout, _tag):
+        return {"ready": True, "device": "cuda", "batch": 4, "budget": 4608, "graph": True, "card_free_mb": 2662}
+
+    monkeypatch.setattr(image_ocr.EncoderPiiDetector, "_read_ready_line", ready)
+    with caplog.at_level("INFO", logger="securedoc.engine.image_ocr"):
+        payload = asyncio.run(image_ocr.VarcoOcrProcess()._read_ready_line(10, "image_ocr"))
+    assert payload["batch"] == 4
+    assert "'batch': 4" in caplog.text and "'graph': True" in caplog.text and "'card_free_mb': 2662" in caplog.text
+
+
 def test_메모리가_넉넉하거나_모르면_지금처럼_읽는다(monkeypatch):
     # 떠 있으면 읽기 기준(2GB)만 넘으면 된다 — 띄우기 기준(9GB)보다 적어도 이미 올린 사이드카로 읽는다
     proc, calls = _guarded_proc(monkeypatch, free_mb=config.IMAGE_OCR_READ_FREE_COMMIT_MB + 1000, running=True)
@@ -387,8 +416,12 @@ def test_켰을_때만_이미지_형식이_지원_목록에_있다(monkeypatch, 
         importlib.reload(config)
 
 
-def _graph_proc(monkeypatch, first_error: str):
-    """CUDA 그래프를 켠 사이드카 — 첫 읽기는 first_error 로 실패하고 그 뒤로는 읽는다. 띄우기·내리기·요청을 기록한다."""
+GRAPH_FAILED = "image_ocr: 추론 오류: graph_failed: AcceleratorError: CUDA error: an illegal memory access was encountered"
+DIED = "image_ocr: 서브프로세스가 응답 없이 종료됨: "  # 표식도 못 남기고 끝났다(그래프 탓이거나 외부 종료·메모리 부족)
+
+
+def _graph_proc(monkeypatch, *errors: str):
+    """CUDA 그래프를 켠 사이드카 — 처음 읽기들이 errors 로 차례로 실패하고 그 뒤로는 읽는다. 띄우기·내리기·요청을 기록한다."""
     monkeypatch.setattr(config, "IMAGE_OCR_CUDA_GRAPH", True)
     proc = image_ocr.VarcoOcrProcess()
     monkeypatch.setattr(image_ocr.model_status, "image_ocr_ready", lambda: True)
@@ -404,8 +437,8 @@ def _graph_proc(monkeypatch, first_error: str):
 
     async def rpc(_payload):
         calls["rpc"] += 1
-        if calls["rpc"] == 1:
-            raise RuntimeError(first_error)
+        if calls["rpc"] <= len(errors):
+            raise RuntimeError(errors[calls["rpc"] - 1])
         return {"results": [{"text": "읽음", "tiles": [], "secs": 1.0}]}
 
     monkeypatch.setattr(proc, "_ensure_process", ensure)
@@ -414,12 +447,8 @@ def _graph_proc(monkeypatch, first_error: str):
     return proc, calls
 
 
-@pytest.mark.parametrize("error", [
-    "image_ocr: 추론 오류: graph_failed: AcceleratorError: CUDA error: an illegal memory access was encountered",
-    "image_ocr: 서브프로세스가 응답 없이 종료됨: ",  # 표식도 못 남기고 죽었다
-])
-def test_CUDA_그래프가_실패하면_그래프를_끈_사이드카로_다시_띄워_같은_그림을_다시_읽고_이후로도_끈다(monkeypatch, caplog, error):
-    proc, calls = _graph_proc(monkeypatch, error)
+def test_graph_failed_표식이면_그래프를_끈_사이드카로_다시_띄워_같은_그림을_다시_읽고_이후로도_끈다(monkeypatch, caplog):
+    proc, calls = _graph_proc(monkeypatch, GRAPH_FAILED)
     with caplog.at_level("WARNING", logger="securedoc.engine.image_ocr"):
         assert asyncio.run(proc.read(_png()))["text"] == "읽음", "그림이 막히면 안 된다"
     assert calls == {"spawn": ["1", "0"], "kill": 1, "rpc": 2} and not proc.cuda_graph
@@ -427,6 +456,39 @@ def test_CUDA_그래프가_실패하면_그래프를_끈_사이드카로_다시_
     proc._process_ready = False  # 유휴로 내려간 뒤 다시 띄워도 그래프는 꺼진 채
     assert asyncio.run(proc.read(_png()))["text"] == "읽음"
     assert calls["spawn"] == ["1", "0", "0"] and calls["kill"] == 1
+
+
+def test_답_없이_한_번_죽으면_그래프를_켠_채_다시_띄워_다시_읽는다(monkeypatch, caplog):
+    # v0.2.63 후보 3차: 측정 감시가 메모리 때문에 끈 것을 그래프 실패로 받아들여 그 실행 동안 그래프가 꺼졌다
+    proc, calls = _graph_proc(monkeypatch, DIED)
+    with caplog.at_level("WARNING", logger="securedoc.engine.image_ocr"):
+        assert asyncio.run(proc.read(_png()))["text"] == "읽음"
+    assert calls == {"spawn": ["1", "1"], "kill": 1, "rpc": 2} and proc.cuda_graph
+    assert "그래프를 켠 채 한 번 다시 띄워" in caplog.text
+
+
+def test_같은_그림에서_또_답_없이_죽으면_그때_그래프를_끈다(monkeypatch):
+    proc, calls = _graph_proc(monkeypatch, DIED, DIED)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음", "그림이 막히면 안 된다"
+    assert calls == {"spawn": ["1", "1", "0"], "kill": 2, "rpc": 3} and not proc.cuda_graph
+    # 다음 그림은 처음부터 다시 센다 — 그림 하나에서 한 번 죽은 걸로는 끄지 않았다
+    proc2, calls2 = _graph_proc(monkeypatch, DIED)
+    assert asyncio.run(proc2.read(_png()))["text"] == "읽음" and proc2.cuda_graph
+
+
+def test_답_없이_죽은_뒤_메모리가_모자라면_다시_띄우지_않고_그림만_뺀다(monkeypatch):
+    proc, calls = _graph_proc(monkeypatch, DIED)
+    proc._process_ready = True  # 이미 떠 있다
+
+    async def died_then_short(_payload):  # 읽다 죽었고, 그 사이 물리 메모리가 띄우기 기준 아래로
+        calls["rpc"] += 1
+        monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB - 1)
+        raise RuntimeError(DIED)
+
+    monkeypatch.setattr(proc, "_rpc", died_then_short)
+    assert asyncio.run(proc.read(_png())) is None
+    assert proc.last_failure == image_ocr.LOW_MEMORY_REASON, "막지 말고 그림만 빼야 한다((가))"
+    assert calls["spawn"] == [] and calls["rpc"] == 1
 
 
 def test_그래프와_무관한_오류는_지금처럼_미검사로_다시_띄우지_않는다(monkeypatch):
