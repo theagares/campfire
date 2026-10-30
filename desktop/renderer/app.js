@@ -370,6 +370,20 @@ $('#proxy-hint').addEventListener('click', (e) => {
 function renderDashboard() {
   const s = state.stats;
   const banner = $('#stats-source-banner');
+
+  // 선택한 v3 페어형 배치는 기능 조합마다 빈 grid-area 가 남지 않도록 상태 클래스로
+  // 레이아웃을 바꾼다. 통계 응답이 오기 전에도 카드 위치가 먼저 안정적으로 잡힌다.
+  const confShown = confidentialOn();
+  const imageShown = !state.lite;
+  const dashboardGrid = $('#dashboard-grid');
+  dashboardGrid.classList.toggle('conf-off', !confShown);
+  dashboardGrid.classList.toggle('lite', state.lite);
+  $('#dash-conf-card').style.display = confShown ? '' : 'none';
+  $('#dash-conf-detect-card').style.display = confShown ? '' : 'none';
+  $('#dash-image-card').style.display = imageShown ? '' : 'none';
+  $('#dash-document-detect-card').style.display = imageShown ? '' : 'none';
+  $('#dash-model-optional-row').style.display = confShown || imageShown ? '' : 'none';
+  $('#dash-detect-optional-row').style.display = confShown || imageShown ? '' : 'none';
   if (!s) return;
 
   if (s.available === false) {
@@ -402,14 +416,6 @@ function renderDashboard() {
   setModelDot('#dash-inj-dot', '#dash-inj-label', m.injection, 'EXAONE 4.0 1.2B');
 
   // 기밀 탐지(선택 기능)는 켜져 있을 때만, VARCO/문서 탐지량은 정식 판에서 항상 보인다.
-  const confShown = confidentialOn();
-  const imageShown = !state.lite;
-  $('#dash-conf-card').style.display = confShown ? '' : 'none';
-  $('#dash-conf-detect-card').style.display = confShown ? '' : 'none';
-  $('#dash-image-card').style.display = imageShown ? '' : 'none';
-  $('#dash-document-detect-card').style.display = imageShown ? '' : 'none';
-  $('#dash-model-optional-row').style.display = confShown || imageShown ? '' : 'none';
-  $('#dash-detect-optional-row').style.display = confShown || imageShown ? '' : 'none';
   if (confShown) {
     const conf = s.confidential || {};
     $('#tile-conf-today').textContent = fmt(conf.today);
