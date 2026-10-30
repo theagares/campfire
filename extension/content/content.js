@@ -1860,14 +1860,20 @@
   }
 
   // 폭 없는 문자. Copilot(copilot.com) 입력창은 글 끝에 ​‌ 를 붙여 둔다 — 그대로 비교하면
-  // 마스킹본을 제대로 넣어도 "다르다" 로 보고, 검사에도 보이지 않는 문자가 섞인다.
+  // 마스킹본을 제대로 넣어도 "다르다" 로 본다. 비교(setEditorText norm)와 다시 넣는 글에서만 뺀다.
   const stripZeroWidth = (s) => String(s || '').replace(/[​-‍⁠﻿]/g, '');
+  // 엔진이 숨긴 글로 잡는 보이지 않는 문자(engine parser/hidden.py 와 같은 범위): 폭 없는 문자 4개 이상 이어짐, 방향 제어·
+  // 태그 문자는 한 글자도. 보이는 글이 없어도 이것이 있으면 검사한다.
+  const ENGINE_INVISIBLE = /[​-‏⁠-⁤﻿]{4,}|[‪-‮⁦-⁩\u{E0000}-\u{E007F}]/u;
 
   function getEditorText(cfg) {
     const editor = findEditor(cfg);
     if (!editor) return '';
     if (editor.tagName === 'TEXTAREA') return editor.value.trim();
-    return stripZeroWidth(editor.innerText || editor.textContent || '').trim();
+    // 검사 원문에서는 폭 없는 문자를 지우지 않는다 — 엔진이 4개 이상 이어진 것을 숨긴 글로 잡는다(parser/hidden.py).
+    // 지우면 입력창의 U+200B×8 이 엔진엔 안 보여 "원본 전송" 으로 그대로 AI 에 갔다(v0.2.63 Windows 재확인 H3,
+    // claude.ai·Gemini). Copilot 끝 2자는 엔진이 잡지 않는다(3자 이하).
+    return (editor.innerText || editor.textContent || '').trim();
   }
 
   /** MAIN world(interceptor.js)에 편집기 상태로 글을 넣어 달라고 한다. 응답이 없으면 false.
@@ -1918,6 +1924,11 @@
     // 삽입 직전에 반드시 비었는지 확인하고, 비우지 못한 상태에서는 삽입을 한 번까지만
     // 허용한다(선택 영역 대체로 성공하는 에디터를 살리기 위해). 그 한 번이 실패하면
     // 더 넣지 않고 중단한다.
+    //
+    // 다시 넣는 글에서는 폭 없는 문자를 뺀다. 검사 원문은 그대로 보내므로(getEditorText) 마스킹본에는 엔진이 남긴
+    // 3자 이하 묶음(Copilot 끝 ​‌ 등)이 섞여 온다 — 넣으면 편집기가 붙이는 것과 이어져 4자가 되고 다음 검사에서
+    // 숨긴 글로 잘못 잡힌다. 4자 이상(숨긴 글)은 이미 마스킹본에서 가려졌다.
+    text = stripZeroWidth(text);
     const norm = (s) => stripZeroWidth(s).replace(/\s+/g, ' ').trim();
     const target = norm(text);
     const current = () => norm(editor.innerText || editor.textContent || '');
@@ -2827,7 +2838,9 @@
     if (proxyChecksPrompts() && !pendingBatch && proxyEvidenceFresh()) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
-    if (!text || text.length < 2) return;
+    // 문턱은 보이는 글로 센다 — Copilot 빈 입력창은 끝 ​‌ 2자만 있어(trim 은 못 지운다) 그대로 세면 빈 Enter·첨부만
+    // 보내기에도 패널이 떴다. 보이는 글이 짧아도 엔진이 잡을 보이지 않는 문자가 있으면 검사한다(폭 없는 문자만 8개 등).
+    if (stripZeroWidth(text).trim().length < 2 && !ENGINE_INVISIBLE.test(text)) return;
 
     // 프록시 방식인데 마지막 표식이 오래됐다 — 그 사이 앱이 꺼졌거나 프록시를 껐으면 지금 보내는 글은 직결로 나간다.
     // 붙든 채 엔진·경로를 다시 확인하고(수십 ms), 여전히 프록시면 패널 없이 그대로 다시 보낸다(맥 D-3: 확장이

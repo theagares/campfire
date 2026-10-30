@@ -3359,6 +3359,68 @@ cancelScan(stuckScan);
     if (start43?.payload?.items?.length !== 1) throw new Error(`(43) 같은 파일이 두 번 검사로 갔다: ${start43?.payload?.items?.length}`);
   }
 
+  // (44) 폭 없는 문자 — v0.2.63 Windows 재확인 H3: claude.ai·Gemini 입력란에 "안녕"+U+200B×8+"하세요"(13자)를 넣었는데
+  //      getEditorText 가 폭 없는 문자를 지워 엔진엔 5자만 가고 숨긴 글 0건 → "원본 전송". 입력란의 13자가 그대로 AI 에 갈
+  //      수 있었다. 검사 원문은 그대로 보내고(엔진이 4자 이상을 숨긴 글로 잡는다), 비교·다시 넣는 글에서만 뺀다.
+  {
+    const ZW8 = '​'.repeat(8);
+    const COPILOT_TAIL = '​‌'; // Copilot 입력창이 글 끝에 붙여 두는 2자 — 엔진은 3자 이하라 잡지 않는다
+    const send44 = new SendButtonStub();
+    send44.disabled = false;
+    domBySelector.set('[data-testid="send-button"]', send44);
+    const run44 = async (initial, decision) => {
+      await clock.tick(4000); // promptApproved(3초) 해제 대기
+      const ed = new ContentEditableStub(initial, { acceptDelete: true });
+      domBySelector.set('#prompt-textarea', ed);
+      documentStub.activeElement = ed;
+      const before = runtimeMessages.length;
+      const clicks = send44.clicks;
+      nextDecision = decision;
+      dispatchDocumentEvent('keydown', {
+        key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+        preventDefault() {}, stopImmediatePropagation() {},
+      });
+      await clock.tick(1200);
+      const scan = runtimeMessages.slice(before).find(m => m.type === 'START_SCAN');
+      return { ed, scanned: scan?.payload?.text, sent: send44.clicks - clicks };
+    };
+    const hasZW = (s) => /[​-‍⁠﻿]/.test(s);
+
+    // (44-a) 숨긴 글(U+200B×8)은 엔진까지 그대로 가야 하고, 가린 마스킹본에는 폭 없는 문자가 남지 않는다.
+    const a = await run44(`안녕${ZW8}하세요`, { action: 'masked', maskedText: '안녕[숨긴 글 마스킹]하세요' });
+    if (a.scanned !== `안녕${ZW8}하세요`) {
+      throw new Error(`(44-a) 검사 원문에서 폭 없는 문자를 지웠다(${[...(a.scanned || '')].length}자) — 엔진이 숨긴 글을 못 본다`);
+    }
+    if (hasZW(a.ed.lines.join('')) || !a.ed.lines.join('').includes('[숨긴 글 마스킹]') || a.sent !== 1) {
+      throw new Error(`(44-a) 마스킹본만 넣고 보내야 한다: ${JSON.stringify(a.ed.lines)} sent=${a.sent}`);
+    }
+
+    // (44-b) Copilot 끝 2자 — 원문 그대로 검사하되(엔진이 잡지 않는다) 입력창을 다시 쓰거나 전송을 막지 않는다.
+    const b = await run44(`요약해 줘${COPILOT_TAIL}`, { action: 'passthrough' });
+    if (b.scanned !== `요약해 줘${COPILOT_TAIL}`) throw new Error(`(44-b) 검사 원문이 달라졌다: ${JSON.stringify(b.scanned)}`);
+    if (b.ed.inserts !== 0 || b.sent !== 1) {
+      throw new Error(`(44-b) 그대로 보낼 글을 다시 썼거나(inserts=${b.ed.inserts}) 보내지 않았다(sent=${b.sent})`);
+    }
+
+    // (44-c) Copilot 에서 다른 이유(PII)로 가렸을 때 — 엔진 마스킹본에 남은 끝 2자를 다시 넣지 않는다. 넣으면 편집기가
+    //        붙이는 2자와 이어져 4자가 되고, 다음 검사에서 숨긴 글로 잘못 잡힌다.
+    const c = await run44(`전화 010-1234-5678${COPILOT_TAIL}`,
+      { action: 'masked', maskedText: `전화 [전화번호 마스킹]${COPILOT_TAIL}` });
+    if (hasZW(c.ed.lines.join('')) || c.ed.lines.join('') !== '전화 [전화번호 마스킹]' || c.sent !== 1) {
+      throw new Error(`(44-c) 다시 넣은 글에 폭 없는 문자가 남았거나 보내지 않았다: ${JSON.stringify(c.ed.lines)} sent=${c.sent}`);
+    }
+
+    // (44-d) Copilot 빈 입력창(끝 2자만) + Enter — 예전처럼 검사·패널 없이 지나간다. 문턱이 폭 없는 문자를 세면 빈 Enter·
+    //        첨부만 보내기에도 패널이 떴다(PR #357 리뷰).
+    const d = await run44(COPILOT_TAIL, null);
+    nextDecision = null;
+    if (d.scanned !== undefined) throw new Error(`(44-d) 빈 Copilot 입력창을 검사로 보냈다: ${JSON.stringify(d.scanned)}`);
+
+    // (44-e) 보이는 글 없이 폭 없는 문자만 8개 — 짧다고 건너뛰면 숨긴 글이 검사 없이 나간다.
+    const e = await run44(ZW8, { action: 'cancel' });
+    if (e.scanned !== ZW8) throw new Error(`(44-e) 폭 없는 문자 8개를 검사하지 않았다: ${JSON.stringify(e.scanned)}`);
+  }
+
   console.log('content regression ok');
   process.exit(0);
 })();
