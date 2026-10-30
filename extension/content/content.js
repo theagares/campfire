@@ -1862,6 +1862,9 @@
   // 폭 없는 문자. Copilot(copilot.com) 입력창은 글 끝에 ​‌ 를 붙여 둔다 — 그대로 비교하면
   // 마스킹본을 제대로 넣어도 "다르다" 로 본다. 비교(setEditorText norm)와 다시 넣는 글에서만 뺀다.
   const stripZeroWidth = (s) => String(s || '').replace(/[​-‍⁠﻿]/g, '');
+  // 엔진이 숨긴 글로 잡는 보이지 않는 문자(engine parser/hidden.py 와 같은 범위): 폭 없는 문자 4개 이상 이어짐, 방향 제어·
+  // 태그 문자는 한 글자도. 보이는 글이 없어도 이것이 있으면 검사한다.
+  const ENGINE_INVISIBLE = /[​-‏⁠-⁤﻿]{4,}|[‪-‮⁦-⁩\u{E0000}-\u{E007F}]/u;
 
   function getEditorText(cfg) {
     const editor = findEditor(cfg);
@@ -2835,7 +2838,9 @@
     if (proxyChecksPrompts() && !pendingBatch && proxyEvidenceFresh()) return;
     if (blockedWhileScanning(event)) return;
     const text = getEditorText(cfg);
-    if (!text || text.length < 2) return;
+    // 문턱은 보이는 글로 센다 — Copilot 빈 입력창은 끝 ​‌ 2자만 있어(trim 은 못 지운다) 그대로 세면 빈 Enter·첨부만
+    // 보내기에도 패널이 떴다. 보이는 글이 짧아도 엔진이 잡을 보이지 않는 문자가 있으면 검사한다(폭 없는 문자만 8개 등).
+    if (stripZeroWidth(text).trim().length < 2 && !ENGINE_INVISIBLE.test(text)) return;
 
     // 프록시 방식인데 마지막 표식이 오래됐다 — 그 사이 앱이 꺼졌거나 프록시를 껐으면 지금 보내는 글은 직결로 나간다.
     // 붙든 채 엔진·경로를 다시 확인하고(수십 ms), 여전히 프록시면 패널 없이 그대로 다시 보낸다(맥 D-3: 확장이

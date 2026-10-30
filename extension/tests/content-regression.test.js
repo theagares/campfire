@@ -3409,6 +3409,16 @@ cancelScan(stuckScan);
     if (hasZW(c.ed.lines.join('')) || c.ed.lines.join('') !== '전화 [전화번호 마스킹]' || c.sent !== 1) {
       throw new Error(`(44-c) 다시 넣은 글에 폭 없는 문자가 남았거나 보내지 않았다: ${JSON.stringify(c.ed.lines)} sent=${c.sent}`);
     }
+
+    // (44-d) Copilot 빈 입력창(끝 2자만) + Enter — 예전처럼 검사·패널 없이 지나간다. 문턱이 폭 없는 문자를 세면 빈 Enter·
+    //        첨부만 보내기에도 패널이 떴다(PR #357 리뷰).
+    const d = await run44(COPILOT_TAIL, null);
+    nextDecision = null;
+    if (d.scanned !== undefined) throw new Error(`(44-d) 빈 Copilot 입력창을 검사로 보냈다: ${JSON.stringify(d.scanned)}`);
+
+    // (44-e) 보이는 글 없이 폭 없는 문자만 8개 — 짧다고 건너뛰면 숨긴 글이 검사 없이 나간다.
+    const e = await run44(ZW8, { action: 'cancel' });
+    if (e.scanned !== ZW8) throw new Error(`(44-e) 폭 없는 문자 8개를 검사하지 않았다: ${JSON.stringify(e.scanned)}`);
   }
 
   console.log('content regression ok');
