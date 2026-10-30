@@ -1860,14 +1860,17 @@
   }
 
   // 폭 없는 문자. Copilot(copilot.com) 입력창은 글 끝에 ​‌ 를 붙여 둔다 — 그대로 비교하면
-  // 마스킹본을 제대로 넣어도 "다르다" 로 보고, 검사에도 보이지 않는 문자가 섞인다.
+  // 마스킹본을 제대로 넣어도 "다르다" 로 본다. 비교(setEditorText norm)와 다시 넣는 글에서만 뺀다.
   const stripZeroWidth = (s) => String(s || '').replace(/[​-‍⁠﻿]/g, '');
 
   function getEditorText(cfg) {
     const editor = findEditor(cfg);
     if (!editor) return '';
     if (editor.tagName === 'TEXTAREA') return editor.value.trim();
-    return stripZeroWidth(editor.innerText || editor.textContent || '').trim();
+    // 검사 원문에서는 폭 없는 문자를 지우지 않는다 — 엔진이 4개 이상 이어진 것을 숨긴 글로 잡는다(parser/hidden.py).
+    // 지우면 입력창의 U+200B×8 이 엔진엔 안 보여 "원본 전송" 으로 그대로 AI 에 갔다(v0.2.63 Windows 재확인 H3,
+    // claude.ai·Gemini). Copilot 끝 2자는 엔진이 잡지 않는다(3자 이하).
+    return (editor.innerText || editor.textContent || '').trim();
   }
 
   /** MAIN world(interceptor.js)에 편집기 상태로 글을 넣어 달라고 한다. 응답이 없으면 false.
@@ -1918,6 +1921,11 @@
     // 삽입 직전에 반드시 비었는지 확인하고, 비우지 못한 상태에서는 삽입을 한 번까지만
     // 허용한다(선택 영역 대체로 성공하는 에디터를 살리기 위해). 그 한 번이 실패하면
     // 더 넣지 않고 중단한다.
+    //
+    // 다시 넣는 글에서는 폭 없는 문자를 뺀다. 검사 원문은 그대로 보내므로(getEditorText) 마스킹본에는 엔진이 남긴
+    // 3자 이하 묶음(Copilot 끝 ​‌ 등)이 섞여 온다 — 넣으면 편집기가 붙이는 것과 이어져 4자가 되고 다음 검사에서
+    // 숨긴 글로 잘못 잡힌다. 4자 이상(숨긴 글)은 이미 마스킹본에서 가려졌다.
+    text = stripZeroWidth(text);
     const norm = (s) => stripZeroWidth(s).replace(/\s+/g, ' ').trim();
     const target = norm(text);
     const current = () => norm(editor.innerText || editor.textContent || '');
