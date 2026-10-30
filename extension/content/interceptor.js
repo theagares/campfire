@@ -43,6 +43,9 @@
   // 표식은 손 뗀 동안에도 모든 응답에서 관찰한다(원본 fetch 를 감싼 _origFetch, XHR loadend).
   const _PROXY_MARK_HEADER = 'x-campfire-proxy';
   const _PROXY_RECHECK_MS = 15000;   // 이보다 오래된 표식이면 넘기기 전에 다시 확인한다
+  // copilot.com uploads through a worker/OneDrive path that the local proxy does
+  // not own. The content script is therefore always the protection path there.
+  const _EXTENSION_ONLY_HOSTS = new Set(['copilot.com']);
   let _proxyRoute = false;
   let _proxyExpected = false;
   let _proxyProbe = null;
@@ -181,7 +184,7 @@
     }
     if (event.data.type === 'SECUREDOC_PROXY_EXPECTATION') {
       if (!fromIsolated(event.data)) return;
-      _proxyExpected = Boolean(event.data.enabled);
+      _proxyExpected = Boolean(event.data.enabled) && !_EXTENSION_ONLY_HOSTS.has(location.hostname);
       if (!_proxyExpected) {
         _setProxyRoute(_extensionMode());
       } else if (proxyInPath() && Date.now() - _proxyMarkSeenAt < _PROXY_RECHECK_MS) {

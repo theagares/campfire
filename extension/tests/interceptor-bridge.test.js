@@ -376,6 +376,23 @@ async function main() {
     );
   }
 
+  // (11-1) copilot.com is extension-only. A global proxy setting must not turn
+  // its route into fallback or make the dashboard claim that a proxy is expected.
+  {
+    const t = load({ proxyMarked: false, host: 'copilot.com' });
+    t.config({ type: 'SECUREDOC_BRIDGE_TOKEN', token: TOKEN });
+    t.config({
+      type: 'SECUREDOC_PROXY_EXPECTATION', bridgeToken: TOKEN, enabled: true,
+    });
+    await settle();
+    assert.ok(t.posted.some((m) => m.type === 'SECUREDOC_PROXY_ROUTE'
+      && m.mode === 'extension' && m.expectedProxy === false));
+    assert.strictEqual(
+      await t.passedThrough(), false,
+      'copilot.com must remain extension-owned even when the global proxy is enabled',
+    );
+  }
+
   // (12) 엔진이 프록시를 기대해도 실제 HEAD 응답에 표식이 있을 때만 확장이 양보한다.
   {
     // copilot.microsoft.com 은 아직 프록시가 파일 등록까지 맡는 대조군이다.
