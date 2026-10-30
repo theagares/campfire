@@ -477,6 +477,13 @@ IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDL
 # 사이드카는 남은 커밋에 맞춰 묶음을 줄이므로(varco_ocr_inference._free_commit) 실제 몫은 대개 8GB 보다 작다. 측정이 바뀌면 env 로.
 IMAGE_OCR_LAUNCH_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_LAUNCH_FREE_COMMIT_MB", "9216"))
 IMAGE_OCR_READ_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_READ_FREE_COMMIT_MB", "2048"))
+# 같은 자리에서 남은(사용 가능한) 물리 메모리도 본다 — 페이지 파일을 늘려 커밋은 넉넉해도 WDDM 이 VRAM 을 RAM 으로 밀어내면
+# 물리 메모리가 바닥나 PC 전체가 페이징으로 멎는다(v0.2.63 후보 3차 실측, RAM 15.5GB: 남은 커밋 11.9GB 인데 물리 0.2GB).
+# 띄우기 1.5GB: 그때 통합 worker 가 떠 있어도 OCR 띄우기 직전 물리 2.8GB 였다 — 평소엔 걸리지 않고, 브라우저 등으로 이미 빠듯할
+# 때만 그림을 빼고 글만 보낸다. 읽기 0.5GB: Windows 가 사용 가능 메모리를 0.5GB 아래로 내리는 건 이미 심한 페이징일 때다.
+# 카드 전체 VRAM 으로 묶음을 정한 뒤(varco_ocr_inference._nvml_free)로는 밀어내기 자체가 드물어 거의 걸리지 않을 값이다.
+IMAGE_OCR_LAUNCH_FREE_PHYS_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_LAUNCH_FREE_PHYS_MB", "1536"))
+IMAGE_OCR_READ_FREE_PHYS_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_READ_FREE_PHYS_MB", "512"))
 IMAGE_OCR_MAX_IMAGES: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MAX_IMAGES", "20"))  # 넘으면 나머지는 미검사로 막는다
 # 이보다 작은 이미지는 아이콘·로고로 보고 건너뛴다(글자 검사 대상 아님).
 IMAGE_OCR_MIN_WIDTH: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_MIN_WIDTH", "120"))

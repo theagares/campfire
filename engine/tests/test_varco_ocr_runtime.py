@@ -11,8 +11,9 @@ from app.models.varco_ocr.runtime import varco_ocr_inference as runtime
 
 @pytest.fixture(autouse=True)
 def _no_commit_limit(monkeypatch):
-    """이 PC 의 실제 남은 커밋에 시험이 흔들리지 않게 기본은 '모름'(Windows 가 아닌 것처럼)."""
+    """이 PC 의 실제 남은 커밋·카드(NVML)에 시험이 흔들리지 않게 기본은 '모름'(Windows 가 아닌 것처럼)."""
     monkeypatch.setattr(runtime, "_free_commit", lambda: None)
+    monkeypatch.setattr(runtime, "_nvml_free", lambda: None)
 
 
 class _Backend:
@@ -112,6 +113,31 @@ def test_Windows_는_묶음_메모리를_남은_시스템_커밋으로도_묶는
     assert runtime._memory_safe_limits("cuda", *CAP) == (2, 1500)
     monkeypatch.setattr(runtime, "_free_commit", lambda: 40 * GIB)  # 커밋이 넉넉하면 VRAM 기준 그대로
     assert runtime._memory_safe_limits("cuda", *CAP) == (16, 18000)
+
+
+def test_Windows_는_카드_전체_남은_VRAM_NVML_으로_묶음을_정한다(monkeypatch):
+    # v0.2.63 후보 3차 실측(RTX 5070 12.2GB, 통합 worker 동거): 카드 전체 9.6GB 사용 중인데 cudaMemGetInfo 는 다른 프로세스 몫을
+    # 빼지 않아 묶음 16/16994 → 카드가 11.8GB 로 차고 WDDM 이 worker 의 VRAM 을 RAM 으로 밀어냈다.
+    card_total, card_used = 12.2 * GIB, 9.6 * GIB
+    _cuda(monkeypatch, 7.0 * GIB)  # cudaMemGetInfo 가 준 값(크다)
+    monkeypatch.setattr(runtime, "_nvml_free", lambda: card_total - card_used)
+    batch, budget = runtime._memory_safe_limits("cuda", *CAP, graph=True)
+    assert batch in (2, 4)
+    assert budget * runtime._BYTES_PER_TOKEN + runtime._HEADROOM + runtime._graph_bytes(batch) <= card_total - card_used, \
+        "묶음이 카드의 남은 VRAM 을 넘는다 — worker 를 RAM 으로 밀어낸다"
+    # NVML 을 못 쓰면(카드 여러 장·드라이버에 없음) 지금처럼 cudaMemGetInfo 로
+    monkeypatch.setattr(runtime, "_nvml_free", lambda: None)
+    assert runtime._memory_safe_limits("cuda", *CAP, graph=True)[0] == 16
+    # 카드가 비어 있으면 NVML 쪽이 더 커도 cudaMemGetInfo 를 넘지 않는다(작은 쪽)
+    monkeypatch.setattr(runtime, "_nvml_free", lambda: 11 * GIB)
+    assert runtime._spare_memory("cuda") == 7.0 * GIB
+
+
+def test_NVML_은_Windows_에서만_부른다(monkeypatch):
+    monkeypatch.undo()  # autouse 가 바꾼 _nvml_free 를 진짜로
+    # 모듈이 보는 os 만 바꾼다 — 전역 os.name 을 바꾸면 pytest 의 pathlib 까지 POSIX 로 착각한다
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="posix", path=runtime.os.path, environ=runtime.os.environ))
+    assert runtime._nvml_free() is None
 
 
 def test_불러온_뒤_캐시를_비우고_나서_남은_메모리로_묶음을_정한다(monkeypatch):
