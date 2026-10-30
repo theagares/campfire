@@ -2606,6 +2606,104 @@ cancelScan(stuckScan);
     }
   }
 
+  // (30-a) 파일을 나눠 붙이며 컴포저가 다시 그려져, 같은 선택자에 예전 비활성
+  //        전송 버튼과 현재 활성 버튼이 함께 남아도 현재 버튼으로 자동 전송한다.
+  //
+  //        Copilot C9 실측: 두 마스킹 파일은 작성창에 정상적으로 붙었고 화면의 전송
+  //        버튼도 활성 상태였지만 60초 넘게 자동 전송되지 않았다. querySelector 는
+  //        문서 앞쪽의 숨은 옛 버튼 하나만 골라 계속 "잠김"으로 판단했다.
+  {
+    await clock.tick(9000);
+    delete sandbox.MutationObserver;
+
+    const attach = (name) => {
+      const file = new FileStub(['pdf bytes'], name, { type: 'application/pdf' });
+      const input = new HTMLInputElementStub(file, name);
+      domBySelector.set('input[type="file"]', input);
+      dispatchDocumentEvent('change', {
+        target: input, composedPath: () => [input, documentStub],
+        preventDefault() {}, stopImmediatePropagation() {},
+      });
+      return input;
+    };
+    attach('split-send-a.pdf');
+    await flush();
+    attach('split-send-b.pdf');
+    await flush();
+
+    const stale = new SendButtonStub();
+    stale.disabled = true;
+    stale.isConnected = true;
+    stale.getBoundingClientRect = () => ({ width: 0, height: 0 });
+    const live = new SendButtonStub();
+    live.disabled = false;
+    live.isConnected = true;
+    live.getBoundingClientRect = () => ({ width: 40, height: 40 });
+    domBySelector.set('[data-testid="send-button"]', stale); // querySelector 가 보는 옛 버튼
+    domBySelectorAll.set('[data-testid="send-button"]', [stale, live]);
+
+    promptEditorStub.value = '두 문서 요약해줘';
+    documentStub.activeElement = promptEditorStub;
+    nextDecision = {
+      action: 'send', promptText: '두 문서 요약해줘',
+      files: [
+        { id: 'f0', action: 'masked', artifactId: 'split-send-art-a' },
+        { id: 'f1', action: 'masked', artifactId: 'split-send-art-b' },
+      ],
+    };
+    let artTurn = 0;
+    const arts = [
+      { ok: true, base64: btoa('masked a'), mimeType: 'text/markdown', fileName: 'split-send-a_masked.md' },
+      { ok: true, base64: btoa('masked b'), mimeType: 'text/markdown', fileName: 'split-send-b_masked.md' },
+    ];
+    const origSend = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = function (message, cb) {
+      if (message.type === 'GET_SCAN_ARTIFACT') { cb?.(arts[artTurn++] || { ok: false }); return; }
+      return origSend.call(this, message, cb);
+    };
+    dispatchDocumentEvent('keydown', {
+      key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+      preventDefault() {}, stopImmediatePropagation() {},
+    });
+    await clock.tick(25000);
+    chromeStub.runtime.sendMessage = origSend;
+    domBySelectorAll.delete('[data-testid="send-button"]');
+    domBySelector.set('[data-testid="send-button"]', sendButtonStub);
+
+    if (live.clicks !== 1) {
+      throw new Error(`(30-a) 현재 활성 전송 버튼을 누르지 않았다 (live=${live.clicks}, stale=${stale.clicks})`);
+    }
+    if (stale.clicks) throw new Error('(30-a) 숨은 옛 전송 버튼을 눌렀다');
+  }
+
+  // (30-b) 사이트 상한보다 많은 파일은 원본 change 를 사이트에 흘리지 않고
+  //        Campfire 단계에서 한 번에 거부한다. 원본과 마스킹본을 함께 붙이는 식으로
+  //        사이트 한도를 소모해서는 안 된다(Copilot C8 조사).
+  {
+    await clock.tick(9000);
+    appendedToRoot.length = 0;
+    const input = new HTMLInputElementStub(null, 'six-at-once');
+    input.files = Array.from({ length: 6 }, (_, i) =>
+      new FileStub(['pdf bytes'], `limit-${i + 1}.pdf`, { type: 'application/pdf' }));
+    let prevented = false;
+    let stopped = false;
+    dispatchDocumentEvent('change', {
+      target: input, composedPath: () => [input, documentStub],
+      preventDefault() { prevented = true; },
+      stopImmediatePropagation() { stopped = true; },
+    });
+    await flush();
+
+    if (!prevented || !stopped) {
+      throw new Error('(30-b) 6개 원본 change 가 사이트까지 전파됐다');
+    }
+    const badge = appendedToRoot.find(el => el?.id === '__ups_pending_badge' && !el.removed);
+    const text = (badge?.children || []).map(c => String(c?.textContent || '')).join(' ');
+    if (!text.includes('최대 5개')) {
+      throw new Error(`(30-b) 6개 제한 안내가 없다: ${text || '(없음)'}`);
+    }
+  }
+
   // (31) 업로드가 칩보다 먼저 시작돼도 다중 배치를 "첨부 실패" 로 막지 않는다.
   //
   //      실측(grok, 파일 2개): 주입 +45ms 에 업로드 2건 시작 → 증거 대기가 "업로드

@@ -1794,12 +1794,50 @@
     'button[data-testid*="submit" i]',
   ];
 
+  /** 한 선택자에 맞는 요소를 전부 돌려준다.
+   *
+   *  SPA 는 컴포저를 다시 그릴 때 옛 컴포저를 즉시 지우지 않고 숨겨 둔 채 새 것을
+   *  붙이기도 한다(Copilot C9: 파일 선택을 두 번 연 뒤 같은 전송 버튼 선택자에 숨은
+   *  비활성 버튼과 화면의 활성 버튼이 함께 남음). querySelector 하나만 쓰면 문서 앞쪽의
+   *  옛 버튼을 영원히 기다리고, 화면의 버튼이 활성인데도 자동 전송이 멈춘다. */
+  function elementsForSelector(sel) {
+    try {
+      const all = Array.from(document.querySelectorAll?.(sel) || []);
+      if (all.length) return all;
+      const one = document.querySelector(sel);
+      return one ? [one] : [];
+    } catch (_) { return []; }
+  }
+
+  const buttonEnabled = (button) => !!button
+    && !button.disabled && button.getAttribute?.('aria-disabled') !== 'true';
+
+  /** 현재 컴포저에서 쓸 전송 버튼. 활성 버튼을 우선하고, 모두 잠겨 있을 때만 화면의
+   *  잠긴 버튼을 돌려준다(첨부 업로드 대기는 그 잠김이 풀릴 때까지 기다려야 한다). */
+  function pickSendButton(cfg, { enabledOnly = false } = {}) {
+    const seen = new Set();
+    const found = [];
+    for (const sel of sendButtonSelectors(cfg)) {
+      for (const button of elementsForSelector(sel)) {
+        if (seen.has(button)) continue;
+        seen.add(button);
+        found.push({ button, sel });
+      }
+    }
+    const connected = found.filter(({ button }) => button.isConnected !== false);
+    const visible = connected.filter(({ button }) => isVisibleEl(button));
+    const pool = visible.length ? visible : (connected.length ? connected : found);
+    const ready = pool.find(({ button }) => buttonEnabled(button));
+    if (ready || enabledOnly) return ready || null;
+    return pool[0] || null;
+  }
+
   /** 전송 버튼 후보 선택자 목록. 사이트별 선택자가 문서에서 하나도 안 잡힐 때만
    *  일반 후보를 덧붙인다(= 선택자가 깨진 상태). */
   function sendButtonSelectors(cfg) {
     const configured = (cfg?.sendBtnSel || '').split(',').map(s => s.trim()).filter(Boolean);
     const anyPresent = configured.some(sel => {
-      try { return !!document.querySelector(sel); } catch (_) { return false; }
+      return elementsForSelector(sel).some(isVisibleEl);
     });
     if (anyPresent) return configured;
     // 여기서 경고하지 않는다. 이 함수는 폴링 중에도 매번 불리는데, 컴포저가 아직
@@ -2183,10 +2221,7 @@
   // ══════════════════════════════════════════════════════════════════════════
 
   function findSendButtonEl(cfg) {
-    for (const sel of sendButtonSelectors(cfg)) {
-      try { const b = document.querySelector(sel); if (b) return b; } catch (_) { /* 무시 */ }
-    }
-    return null;
+    return pickSendButton(cfg)?.button || null;
   }
 
   function describeNode(el) {
@@ -2680,15 +2715,7 @@
       );
       return 'unknown';
     };
-    const sendBtn = () => {
-      for (const sel of sendButtonSelectors(cfg)) {
-        try {
-          const b = document.querySelector(sel);
-          if (b) return b;
-        } catch (_) { /* 잘못된 선택자는 건너뛴다 */ }
-      }
-      return null;
-    };
+    const sendBtn = () => pickSendButton(cfg)?.button || null;
     const locked = () => {
       const b = sendBtn();
       return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
@@ -2767,14 +2794,11 @@
     while (Date.now() < deadline) {
       // 매 회 다시 고른다 — 사이트별 선택자가 깨졌으면 일반 후보로 폴백해야 하고,
       // 그 판정은 DOM 이 다시 그려지면 바뀔 수 있다.
-      for (const sel of sendButtonSelectors(cfg)) {
-        let btn = null;
-        try { btn = document.querySelector(sel); } catch (_) { continue; }
-        if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
-          btn.click();
-          console.log(`[SecureDoc] 재전송: 버튼 클릭 성공 (${Date.now() - startedAt}ms, sel=${sel})`);
-          return true;
-        }
+      const ready = pickSendButton(cfg, { enabledOnly: true });
+      if (ready) {
+        ready.button.click();
+        console.log(`[SecureDoc] 재전송: 버튼 클릭 성공 (${Date.now() - startedAt}ms, sel=${ready.sel})`);
+        return true;
       }
       await new Promise(r => setTimeout(r, 200));
     }
