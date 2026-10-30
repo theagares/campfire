@@ -701,6 +701,17 @@ function multiSummary() {
   return { total, maskCount: Math.max(0, total - state.unmasked.size), sending, excluded };
 }
 
+/** 그림을 빼고 보낸 까닭(단독·다중 검사 공통) — r 은 엔진 결과 또는 다중 검사의 문서. 없으면 ''.
+ *  이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 SW 가 원본 대신 그림을 뺀 글만 보낸다(사용자 결정 2026-10-28).
+ *  PC 메모리가 모자라 그림을 읽지 않았을 때도 같은 길이다(엔진 imagesRemovedReason = memory). 커밋 한도가 작아서면
+ *  (imagesRemovedMemory = commit) 페이지 파일을 늘리면 풀린다 — 방법은 Campfire 앱이 보여 준다. */
+function imagesRemovedNote(r) {
+  if (!(r?.imagesRemoved > 0)) return '';
+  const why = r.imagesRemovedReason !== 'memory' ? '이미지 검사 꺼짐'
+    : r.imagesRemovedMemory === 'commit' ? 'PC 메모리 부족 — Campfire 앱에서 해결 방법을 볼 수 있습니다' : 'PC 메모리 부족';
+  return `그림 ${r.imagesRemoved}개는 빼고 보냄(${why})`;
+}
+
 function refreshSummary() {
   if (state.kind === 'multi') {
     // 활성 탭 항목 수에서 **전체 탭**의 해제 수를 빼면 안 된다. 다른 탭에서 해제를
@@ -720,6 +731,10 @@ function refreshSummary() {
     } else {
       const sendText = sending.length ? `전송: ${docNames(sending)}` : '전송할 문서 없음';
       files = excluded.length ? `${sendText} · 제외: ${docNames(excluded)}` : sendText;
+      // 그림을 빼고 보내는 문서 — 하나면 문구만, 여럿이면 문서 이름을 붙여 잇는다
+      const notes = sending.filter(d => imagesRemovedNote(d))
+        .map(d => (sending.length > 1 ? `${d.fileName} ${imagesRemovedNote(d)}` : imagesRemovedNote(d)));
+      if (notes.length) files = [files, ...notes].join(' · ');
     }
     el.maskSummary.textContent = maskCount > 0 ? `${files} · ${maskCount}건 마스킹` : files;
     el.maskSummary.classList.toggle('clear', maskCount <= 0 && total === 0);
@@ -731,14 +746,8 @@ function refreshSummary() {
 
   const total = allItemSegments().length;
   const maskCount = allItemSegments().filter(s => s.locked || !state.unmasked.has(s.key)).length;
-  // 이미지 속 글자 검사가 꺼져 문서 속 그림을 검사하지 못했으면 SW 가 원본 대신 그림을 뺀 글만 보낸다(사용자 결정 2026-10-28).
-  // PC 메모리가 모자라 그림을 읽지 않았을 때도 같은 길이다(엔진 imagesRemovedReason = memory). 커밋 한도가 작아서면
-  // (imagesRemovedMemory = commit) 페이지 파일을 늘리면 풀린다 — 방법은 Campfire 앱이 보여 준다.
-  const memoryWhy = state.result?.imagesRemovedMemory === 'commit'
-    ? 'PC 메모리 부족 — Campfire 앱에서 해결 방법을 볼 수 있습니다' : 'PC 메모리 부족';
-  const removed = state.result?.imagesRemoved > 0
-    ? ` · 그림 ${state.result.imagesRemoved}개는 빼고 보냄(${
-      state.result.imagesRemovedReason === 'memory' ? memoryWhy : '이미지 검사 꺼짐'})` : '';
+  const note = imagesRemovedNote(state.result);
+  const removed = note ? ` · ${note}` : '';
   if (maskCount > 0) {
     el.maskSummary.textContent = `${maskCount}건 마스킹 후 전송${removed}`;
     el.maskSummary.classList.remove('clear');

@@ -290,4 +290,27 @@ assert.ok(sandbox.blockingReason(), '검사 중인 파일이 있는데 전송이
   assert.strictEqual(els.get('btn-send').disabled, true, '미완료 파일이 남은 DONE 상태에서 전송 버튼이 열렸다');
 }
 
-console.log('panel-multi-gate.test.js: 8개 블록 통과');
+// ── 9) 그림을 빼고 보내는 문서는 다중 검사 요약에도 단독 검사와 같은 문구로 보인다 ──────────────
+//     v0.2.63 Windows 재확인 M1: 메모리가 모자라 그림을 뺐는데(엔진 memoryShort.kind=commit) 파일+프롬프트(늘 다중)
+//     패널 요약은 "전송: base_with_image.docx" 뿐이었다 — 문구가 단독 검사 분기에만 있었다.
+{
+  const summary = (docs) => {
+    sandbox.renderMulti({ kind: 'multi', status: 'ready', docs, prompt: { status: 'done', counts: { pii: 0, injection: 0 } } });
+    return els.get('mask-summary').textContent;
+  };
+  const doc = (id, fileName, extra = {}) => ({ id, fileName, status: 'done', counts: { pii: 0, injection: 0 }, ...extra });
+  const memory = { imagesRemoved: 1, imagesRemovedReason: 'memory', imagesRemovedMemory: 'commit' };
+
+  assert.strictEqual(summary([doc('f0', 'base_with_image.docx', memory)]),
+    '전송: base_with_image.docx · 그림 1개는 빼고 보냄(PC 메모리 부족 — Campfire 앱에서 해결 방법을 볼 수 있습니다)',
+    '메모리 부족으로 그림을 뺐는데 요약에 안내가 없다');
+  assert.strictEqual(summary([doc('f0', 'off.docx', { imagesRemoved: 2, imagesRemovedReason: 'off' })]),
+    '전송: off.docx · 그림 2개는 빼고 보냄(이미지 검사 꺼짐)');
+  // 여러 문서면 그림을 뺀 문서마다 이름을 붙여 잇는다
+  assert.strictEqual(summary([doc('f0', 'a.docx', memory), doc('f1', 'b.pdf'), doc('f2', 'c.pptx', { imagesRemoved: 3 })]),
+    '전송: a.docx, b.pdf, c.pptx · a.docx 그림 1개는 빼고 보냄(PC 메모리 부족 — Campfire 앱에서 해결 방법을 볼 수 있습니다)'
+    + ' · c.pptx 그림 3개는 빼고 보냄(이미지 검사 꺼짐)');
+  assert.strictEqual(summary([doc('f0', 'plain.docx')]), '전송: plain.docx', '그림을 빼지 않은 문서에 문구가 붙었다');
+}
+
+console.log('panel-multi-gate.test.js: 9개 블록 통과');

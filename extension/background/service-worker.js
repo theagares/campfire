@@ -884,6 +884,11 @@ async function scanMultiItem(sessionId, session, payload) {
         // 이미지 속 글자 검사가 꺼져 검사하지 못한 문서 속 그림 수 — 있으면 "원본" 결정도 그림을 뺀 글로 보낸다.
         imagesRemoved: result.imagesRemoved || 0,
       };
+      // 그림을 뺀 까닭도 문서에 싣는다 — 패널 아래 요약이 문서마다 "그림 N개는 빼고 보냄(…)" 을 보인다(단독 검사와 같은
+      // 문구). 파일+프롬프트는 늘 다중 검사라, 없으면 메모리 부족(#345·#353) 안내가 실사용에서 거의 안 보였다(v0.2.63 M1).
+      doc.imagesRemoved = result.imagesRemoved || 0;
+      doc.imagesRemovedReason = result.imagesRemovedReason || null;
+      doc.imagesRemovedMemory = result.imagesRemovedMemory || null;
       doc.truncated = !!result.truncated;
       doc.scannedChars = result.scannedChars ?? 0;
       doc.originalChars = result.originalChars ?? 0;
