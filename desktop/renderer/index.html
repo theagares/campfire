@@ -163,7 +163,7 @@
       <section class="view" id="view-dashboard">
         <div class="content-header"></div>
         <div class="content-body">
-          <div class="content-col" style="max-width:573px">
+          <div class="content-col dashboard-col">
             <div class="page-head">
               <h1>대시보드</h1>
               <p>현황을 한눈에 확인하세요</p>
@@ -171,6 +171,7 @@
 
             <div id="stats-source-banner"></div>
 
+            <div id="dashboard-grid">
             <div class="dash-row grid grid-2">
               <div class="card model-card pii" id="home-model-pii-card">
                 <span class="mc-title">PII 모델 &nbsp;| SKT A.X</span>
@@ -187,7 +188,7 @@
             </div>
 
             <div class="dash-row grid grid-2">
-              <div class="card detect-card">
+              <div class="card detect-card" id="dash-pii-detect-card">
                 <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-pii-deco.svg" alt="" />PII 탐지량</div>
                 <div class="dc-stats">
                   <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-pii-today">–</span><span class="sb-unit">건</span></div>
@@ -198,7 +199,7 @@
                 <div class="dc-divider"></div>
                 <div class="dc-footer">누적 <b id="tile-pii-total">–</b>건 탐지</div>
               </div>
-              <div class="card detect-card">
+              <div class="card detect-card" id="dash-inj-detect-card">
                 <div class="dc-title"><img class="dc-deco" src="../assets/figma/dash-inj-deco.svg" alt="" />INJECTION 탐지량</div>
                 <div class="dc-stats">
                   <div class="stat-box"><span class="sb-label">일간</span><span class="sb-value" id="tile-inj-today">–</span><span class="sb-unit">건</span></div>
@@ -222,7 +223,7 @@
               <div class="card model-card image" id="dash-image-card">
                 <span class="mc-title">이미지 모델 | NCSOFT VARCO</span>
                 <span class="mc-dot" id="dash-image-dot"></span>
-                <img class="mc-photo" src="../assets/figma/dash-varco-model.svg" alt="" />
+                <img class="mc-photo" src="../assets/figma/dash-varco-model.png" alt="" />
                 <div class="mc-caption" id="dash-image-label">VARCO-VISION 2.0 1.7B</div>
               </div>
             </div>
@@ -252,9 +253,10 @@
               </div>
             </div>
 
-            <div class="dash-row card res-card">
+            <div class="dash-row card res-card" id="dash-resource-card">
               <div class="rc-title"><img class="rc-deco" src="../assets/figma/dash-res-deco.svg" alt="" />시스템 리소스</div>
               <div class="res-cols" id="db-resources"></div>
+            </div>
             </div>
           </div>
         </div>

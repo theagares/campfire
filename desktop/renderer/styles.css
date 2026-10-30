@@ -227,9 +227,10 @@ img { display:block; }
 .model-card.inj .mc-photo { left:33.571%; top:25%; width:31.071%; height:63.971%; }
 .model-card.inj .mc-caption { top:77.206%; }
 
-/* VARCO 이미지는 회사 로고를 복제하지 않은 임시 추상 일러스트다. */
+/* VARCO 마크는 바깥이 투명한 원본 비율 그대로 둔다. A.X·EXAONE처럼 그림만 보이되
+   원형으로 자르지 않고 카드 가운데에서 비슷한 시각적 무게를 갖도록 맞춘다. */
 .model-card.image .mc-dot { right:3.571%; }
-.model-card.image .mc-photo { left:33.571%; top:20.588%; width:31.071%; height:63.971%; }
+.model-card.image .mc-photo { left:50%; transform:translateX(-50%); top:25%; width:auto; height:50%; border-radius:0; object-fit:contain; }
 .model-card.image .mc-caption { top:77.206%; }
 
 /* 탐지량 카드 (Figma 63:255/63:256 좌표를 280×176 기준 %로 환산)
@@ -306,6 +307,95 @@ img { display:block; }
 .res-block .rb-sub-item { display:flex; align-items:baseline; justify-content:flex-start; gap:5px; }
 .res-block .rb-sub-label { color:rgba(0,0,0,.45); }
 .res-block .rb-sub-value { color:rgba(0,0,0,.7); font-weight:500; }
+
+/* ── 대시보드 v3 · 모델/탐지 페어형 ──
+   원래 카드 부품은 유지하고 본문 폭·카드 크기·배치만 시안 v3 2번에 맞춘다. */
+#view-dashboard .content-body { padding:18px 24px 24px; }
+#view-dashboard .dashboard-col { width:100%; max-width:880px; }
+#view-dashboard .page-head { margin-bottom:14px; }
+#dashboard-grid {
+  display:grid; gap:10px;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-template-rows:148px 148px 180px;
+  grid-template-areas:
+    "m1 d1 m2 d2"
+    "m3 d3 m4 d4"
+    "res res res res";
+}
+#dashboard-grid > .dash-row:not(.res-card) { display:contents; }
+#dashboard-grid > .dash-row + .dash-row { margin-top:0; }
+#dashboard-grid .card { min-width:0; width:auto; margin:0; height:100%; }
+
+#dashboard-grid .model-card .mc-title { font-size:11.5px; line-height:13px; }
+#dashboard-grid .model-card .mc-dot { width:8px; height:8px; }
+#dashboard-grid .model-card .mc-caption { font-size:8.5px; }
+/* A.X 원본은 정사각형이라 낮고 넓은 카드에서 cover가 좌우를 자른다. */
+#dashboard-grid .model-card.pii .mc-photo { object-fit:contain; }
+#dashboard-grid .detect-card .dc-title { font-size:11.5px; gap:5px; white-space:nowrap; }
+#dashboard-grid .detect-card .dc-deco { width:13px; height:13px; }
+#dashboard-grid .dc-stats { gap:5px; }
+#dashboard-grid .stat-box { gap:1px; padding:3px; }
+#dashboard-grid .stat-box .sb-label { font-size:8px; line-height:9px; }
+#dashboard-grid .stat-box .sb-value { font-size:14px; line-height:16px; }
+#dashboard-grid .stat-box .sb-unit { font-size:8px; line-height:9px; }
+#dashboard-grid .dc-footer { font-size:10px; }
+
+#home-model-pii-card { grid-area:m1; }
+#home-model-inj-card { grid-area:m2; }
+#dash-conf-card { grid-area:m3; }
+#dash-image-card { grid-area:m4; }
+#dash-pii-detect-card { grid-area:d1; }
+#dash-inj-detect-card { grid-area:d2; }
+#dash-conf-detect-card { grid-area:d3; }
+#dash-document-detect-card { grid-area:d4; }
+#dash-resource-card { grid-area:res; }
+
+/* 기밀 OFF는 시안과 같이 3열(모델 한 줄, 탐지량 한 줄)로 빈칸 없이 줄인다. */
+#dashboard-grid.conf-off {
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-rows:128px 148px 180px;
+  grid-template-areas:
+    "m1 m2 m4"
+    "d1 d2 d4"
+    "res res res";
+}
+/* Lite 판은 VARCO/문서 카드를 제외한 카드만 빈칸 없이 재배치한다. */
+#dashboard-grid.lite {
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-rows:104px 148px 180px;
+  grid-template-areas:
+    "m1 m2 m3"
+    "d1 d2 d3"
+    "res res res";
+}
+#dashboard-grid.lite.conf-off {
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-areas:
+    "m1 m2"
+    "d1 d2"
+    "res res";
+}
+
+/* 넓고 낮은 리소스 카드에서는 원래 칸의 내부 비율을 유지한 채 네 칸만 한 줄로 옮긴다. */
+#dashboard-grid .res-cols {
+  display:grid; grid-template-columns:repeat(4,minmax(0,206px));
+  align-items:start; justify-content:center; gap:8px; padding:48px 16px 12px;
+}
+#dashboard-grid .res-divider { display:none; }
+#dashboard-grid .res-block { position:relative; left:auto !important; top:auto !important; width:auto; min-width:0; gap:6px; }
+#dashboard-grid .res-block .rb-icon { width:29px; height:29px; flex-basis:29px; }
+#dashboard-grid .res-block .rb-head { gap:10px; }
+#dashboard-grid .res-block .rb-body { padding-left:39px; }
+#dashboard-grid .res-block .rb-label { font-size:13px; }
+#dashboard-grid .res-block .rb-value { font-size:12px; }
+#dashboard-grid .res-block .rb-bar { height:7px; }
+#dashboard-grid .res-block .rb-sub { gap:3px; margin-top:7px; font-size:9.03px; }
+
+/* 최소 창은 시안처럼 내부 부품을 다시 그리지 않고 본문 전체를 같은 비율로 축소한다. */
+@media (max-width:1000px) {
+  #view-dashboard .content-body { padding:14px 18px 18px; overflow:hidden; }
+  #view-dashboard .dashboard-col { width:880px; max-width:none; zoom:.735; margin:0 auto; }
+}
 
 /* ── 처리현황 (파이프라인, Figma 좌표를 580×393 기준 %로 환산) ── */
 .pipe-card {
