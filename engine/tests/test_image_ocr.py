@@ -98,6 +98,7 @@ def _no_commit_limit(monkeypatch):
     """이 PC 의 실제 남은 시스템 커밋에 시험이 흔들리지 않게 기본은 '모름'(메모리 안전장치 시험만 따로 흉내 낸다)."""
     monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: None)
     monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: None)
+    monkeypatch.setattr(image_ocr, "commit_limit_mb", lambda: None)
 
 
 _real_gpu_worker_first = image_ocr.gpu_worker_first  # 아래 autouse 가 바꾸기 전 — 순서 시험이 진짜를 쓴다
@@ -346,6 +347,39 @@ def test_메모리가_넉넉하거나_모르면_지금처럼_읽는다(monkeypat
     assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls["rpc"] == 1
     proc, calls = _guarded_proc(monkeypatch, free_mb=None, running=False)  # Windows 가 아니거나 모름
     assert asyncio.run(proc.read(_png()))["text"] == "읽음" and calls == {"launch": 1, "rpc": 1, "kill": 0}
+
+
+def test_메모리_부족_까닭을_커밋과_물리로_나눠_health_에_싣고_다시_읽으면_지운다(monkeypatch):
+    # 커밋이면 페이지 파일을 늘리면 풀리고(앱이 방법 안내), 물리면 다른 프로그램을 닫으면 풀린다 — 앱이 둘을 달리 안내한다
+    proc, _calls = _guarded_proc(monkeypatch, free_mb=5423.4, running=False)  # 1차 실측: worker 뒤 남은 커밋
+    monkeypatch.setattr(image_ocr, "_process", proc)
+    monkeypatch.setattr(image_ocr, "commit_limit_mb", lambda: 33669.4)
+    assert asyncio.run(proc.read(_png())) is None
+    short = image_ocr.status()["memoryShort"]
+    assert {k: short[k] for k in ("kind", "freeMb", "needMb", "commitLimitMb")} == {
+        "kind": "commit", "freeMb": 5423, "needMb": config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB, "commitLimitMb": 33669}
+    assert short["at"].startswith("20")
+
+    monkeypatch.setattr(image_ocr, "free_commit_mb", lambda: 40000)
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB - 1)
+    assert asyncio.run(proc.read(_png())) is None
+    assert image_ocr.status()["memoryShort"]["kind"] == "phys"
+
+    monkeypatch.setattr(image_ocr, "free_physical_mb", lambda: 8000)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음"
+    assert image_ocr.status()["memoryShort"] is None, "다시 읽었으면 안내를 거둔다"
+
+
+def test_윈도우가_아니면_메모리를_모르고_memoryShort_도_생기지_않는다(monkeypatch):
+    import types
+
+    with monkeypatch.context() as m:  # 모듈의 os 만 — 전역 os.name 을 바꾸면 pathlib 이 깨진다
+        m.setattr(image_ocr, "os", types.SimpleNamespace(name="posix"))
+        assert image_ocr._memory_status() is None  # free_commit_mb·free_physical_mb·commit_limit_mb 가 모두 이것을 지난다
+    proc, _calls = _guarded_proc(monkeypatch, free_mb=None, running=False)
+    monkeypatch.setattr(image_ocr, "_process", proc)
+    assert asyncio.run(proc.read(_png()))["text"] == "읽음"
+    assert image_ocr.status()["memoryShort"] is None
 
 
 def test_사이드카를_띄우기_전에_통합_GPU_worker_를_먼저_올린다(monkeypatch):

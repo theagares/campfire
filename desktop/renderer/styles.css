@@ -232,6 +232,8 @@ img { display:block; }
 .model-card.image .mc-dot { right:3.571%; }
 .model-card.image .mc-photo { left:50%; transform:translateX(-50%); top:25%; width:auto; height:50%; border-radius:0; object-fit:contain; }
 .model-card.image .mc-caption { top:77.206%; }
+/* 메모리 한도가 작아 그림을 뺐을 때 — 캡션을 누르면 설정의 해결 방법이 펼쳐진다(.conn-link 처럼 밑줄만) */
+.model-card .mc-caption.has-guide { cursor:pointer; text-decoration:underline; }
 
 /* 탐지량 카드 (Figma 63:255/63:256 좌표를 280×176 기준 %로 환산)
    — 기존엔 flex-column 자유배치라 콘텐츠 총합이 176px 를 넘어 footer(누적 N건)가
@@ -531,6 +533,10 @@ img { display:block; }
 .banner { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:10px; font-size:12px; }
 .banner.warn { background:var(--warn-soft); color:var(--ink-900); border:1px solid var(--warn); }
 .banner.info { background:var(--purple-soft); color:var(--ink-600); }
+/* 이미지 검사 메모리 안내(설정) — .banner.warn 안에 페이지 파일 늘리는 방법을 접어 둔다 */
+.memory-guide summary { cursor:pointer; font-weight:600; margin-top:6px; }
+.memory-guide details > * + * { margin-top:6px; }
+.memory-guide ol { margin-bottom:0; padding-left:18px; }
 .divider { height:1px; background:var(--line-06); margin:2px 0; }
 .tabnum { font-variant-numeric:tabular-nums; }
 .pill { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:9999px; font-size:12px; font-weight:600; background:#f5f5f5; border:1px solid var(--line-08); }

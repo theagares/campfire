@@ -1028,6 +1028,8 @@ def _build_result(
     if images_removed:  # 검사하지 않고 뺀 문서 속 그림 수 — 원본 대신 글만 보낸다
         result["imagesRemoved"] = images_removed
         result["imagesRemovedReason"] = images_removed_reason or "off"  # off = 이미지 검사 꺼짐, memory = PC 메모리 부족
+        if images_removed_reason == "memory":  # commit = 페이지 파일을 늘리면 풀림(앱이 안내), phys = 다른 프로그램을 닫으면 풀림
+            result["imagesRemovedMemory"] = (image_ocr.get().memory_short or {}).get("kind")
     if user_prompt is not None:
         # 문서와 "함께" 넘어온 실제 사용자 프롬프트의 PII 스캔 결과 — 확장 프로그램이
         # 문서 첨부를 보류했다가 프롬프트 전송 시점에 함께 넘긴 경우에만 채워진다.
