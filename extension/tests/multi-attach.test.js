@@ -38,7 +38,7 @@ const engineResults = {
   // 잘린 파일: 뒷부분을 안 봤다는 사실이 상태로 드러나야 한다
   'long.pdf': { scanStatus: 'ok', originalText: '앞부분만', piiItems: [], injectionItems: [], truncated: true, scannedChars: 4, originalChars: 900 },
   // 이미지 속 글자 검사가 꺼져 그림을 검사하지 못한 문서 — 깨끗해도 원본(그림째) 대신 글만 나가야 한다
-  'pic.docx': { scanStatus: 'ok', originalText: '그림 옆 설명', piiItems: [], injectionItems: [], imagesRemoved: 1, truncated: false, scannedChars: 7, originalChars: 7 },
+  'pic.docx': { scanStatus: 'ok', originalText: '그림 옆 설명', piiItems: [], injectionItems: [], imagesRemoved: 1, imagesRemovedReason: 'memory', imagesRemovedMemory: 'commit', truncated: false, scannedChars: 7, originalChars: 7 },
   'forced.pdf': {
     scanStatus: 'ok', originalText: 'secret 공개', piiItems: [], injectionItems: [],
     forcedMaskItems: [{ start: 0, end: 6, type: 'USER_DEFINED_TERM', mandatory: true }],
@@ -532,6 +532,11 @@ const binaryFile = (name) => Object.assign(new Blob(['x'], { type: 'application/
     });
     await send({ type: 'FINISH_MULTI_SCAN', sessionId: 'pic-1', leaseId: lp });
     await settle();
+    // 패널 요약이 "그림 N개는 빼고 보냄(…)" 을 보이도록 그림을 뺀 수와 까닭이 문서에 실린다(v0.2.63 M1)
+    const picDoc = panelOf('PANEL_SCAN_ITEM').filter(m => m.doc?.id === 'p0').slice(-1)[0]?.doc;
+    assert.deepStrictEqual(
+      [picDoc?.imagesRemoved, picDoc?.imagesRemovedReason, picDoc?.imagesRemovedMemory], [1, 'memory', 'commit'],
+      '패널로 가는 문서에 그림을 뺀 까닭이 없다');
 
     const original = await send({
       type: 'PANEL_MULTI_DECISION', sessionId: 'pic-1',
