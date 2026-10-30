@@ -31,12 +31,29 @@ def cuda_torch_path() -> str | None:
     return str(config.IMAGE_OCR_GPU_TORCH_DIR)
 
 
+def ocr_in_worker() -> bool:
+    """이미지 OCR(VARCO)을 통합 worker 안에서 읽는가 — CUDA·torch 바닥(Windows 커밋 약 2GB·VRAM 약 0.4GB)을 PII·인젝션과
+    한 번만 쓴다. 같은 파이썬(같은 torch·transformers)으로 뜨는 CUDA worker 일 때만. 맥(MPS)·Intel(XPU)은 지금처럼 사이드카다.
+    실제 CUDA 여부는 worker 가 뜰 때 확인한다(못 쓰면 OCR 도 사이드카로)."""
+    return (config.IMAGE_OCR_ENABLED and config.IMAGE_OCR_IN_WORKER and config.COMBINED_GPU_WORKER_ENABLED
+            and config.IMAGE_OCR_PYTHON_EXECUTABLE == config.COMBINED_GPU_PYTHON_EXECUTABLE
+            and model_status.image_ocr_accelerator() in ("cuda", "external"))
+
+
 class CombinedGpuUnavailable(RuntimeError):
     """The combined CUDA path cannot be used; callers should use sidecars."""
 
 
 class CombinedGpuNoCuda(CombinedGpuUnavailable):
     """이 기기에 CUDA 가 없다 — 앱을 다시 켜도 바뀌지 않으므로 이번 실행 동안 끈다."""
+
+
+class CombinedGpuOcrDied(CombinedGpuUnavailable):
+    """OCR 요청 중에 worker 가 답 없이 끝났다(멎음·외부 종료·메모리 부족) — image_ocr 가 다시 띄워 다시 읽을지 정한다."""
+
+
+class CombinedGpuOcrError(RuntimeError):
+    """worker 가 OCR 요청에 오류로 답했다. graph_failed·cuda_failed 면 worker 는 이미 끝나 정리했다."""
 
 
 class CombinedGpuClient:
@@ -51,6 +68,8 @@ class CombinedGpuClient:
         self._next_id = 0
         self._prewarm_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
+        self.ocr_available = False  # 이 worker 가 OCR 인자를 받고 떴다(ready 의 ocr)
+        self.ocr_loaded = False  # OCR 가중치가 올라가 있다 — 프로세스가 내려가면 같이 사라진다
 
     def _runtime_script(self):
         return config.APP_DIR / "models" / "combined_gpu_inference.py"
@@ -80,6 +99,16 @@ class CombinedGpuClient:
                 "--injection-compact-hidden-states"
                 if config.INJECTION_COMPACT_HIDDEN_STATES
                 else "--no-injection-compact-hidden-states"
+            ),
+            *(
+                [
+                    "--ocr-runtime", str(config.IMAGE_OCR_ENGINE_DIR / "runtime" / "varco_ocr_inference.py"),
+                    "--ocr-model-dir", str(config.IMAGE_OCR_ENGINE_DIR / "models"),
+                    "--ocr-batch", str(config.IMAGE_OCR_BATCH),
+                    "--ocr-token-budget", str(config.IMAGE_OCR_TOKEN_BUDGET),
+                ]
+                if ocr_in_worker()
+                else []
             ),
         ]
 
@@ -116,6 +145,8 @@ class CombinedGpuClient:
             raise CombinedGpuUnavailable(
                 f"combined GPU worker unavailable: {payload.get('error', payload)!s}"
             )
+        self.ocr_available = bool(payload.get("ocr"))
+        self.ocr_loaded = False
         self._ready = True
         self._last_used = asyncio.get_running_loop().time()
         self._idle_task = asyncio.create_task(self._idle_watcher())
@@ -185,36 +216,55 @@ class CombinedGpuClient:
             if expected_id is None or payload.get("id") == expected_id:
                 return payload
 
-    async def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
-        await self.ensure_ready()
+    async def _request(
+        self, payload: dict[str, Any], *, timeout: float | None = None, ocr: bool = False, spawn: bool = True
+    ) -> dict[str, Any]:
+        """요청 하나를 보내고 답 하나를 받는다. ocr=True(이미지 OCR 요청): 오류 답은 돌려주고(worker 를 끄지 않는다 — 그림 한 장의
+        실패로 PII·인젝션을 개별 sidecar 로 보내지 않게), 답 없이 끝나면 CombinedGpuOcrDied 로 알리되 실패로 세지 않는다.
+        spawn=False: 떠 있지 않으면 띄우지 않고 CombinedGpuUnavailable(가중치 내리기용)."""
         request_id = str(self._next_id)
         self._next_id += 1
         request = {"id": request_id, **payload}
-        async with self._request_lock:
-            proc = self._process
-            if proc is None:  # 대기하는 사이 유휴 해제됐다
-                raise CombinedGpuUnavailable("combined GPU worker was unloaded")
-            assert proc.stdin is not None
-            self._last_used = asyncio.get_running_loop().time()
-            try:
-                proc.stdin.write(
-                    (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
-                )
-                await proc.stdin.drain()
-                response = await self._read_response(
-                    config.DETECT_INFER_TIMEOUT_SEC, expected_id=request_id
-                )
-            except asyncio.CancelledError:
-                # 응답을 읽다 만 프로세스는 다음 요청과 줄이 어긋난다 — 버리되, 끄지는 않는다.
-                self._drop_process()
-                raise
-            except BaseException as exc:
-                await self.stop()
-                self._note_failure()
-                if isinstance(exc, CombinedGpuUnavailable):
+        for attempt in range(2):
+            if spawn:
+                await self.ensure_ready()
+            async with self._request_lock:
+                proc = self._process
+                if proc is None or proc.returncode is not None or not self._ready:
+                    # 줄 서 있는 사이 내려갔다(유휴 해제·OCR 오류로 끝남) — 한 번 새로 띄워 받는다. 예전엔 바로 개별 sidecar 로
+                    # 갔는데, 이제 그림 하나가 worker 를 다시 띄우게 하면 그동안 기다리던 PII·인젝션 요청이 모두 밀려났다.
+                    if spawn and attempt == 0:
+                        continue
+                    raise CombinedGpuUnavailable("combined GPU worker was unloaded")
+                assert proc.stdin is not None
+                self._last_used = asyncio.get_running_loop().time()
+                try:
+                    proc.stdin.write(
+                        (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+                    )
+                    await proc.stdin.drain()
+                    response = await self._read_response(
+                        timeout or config.DETECT_INFER_TIMEOUT_SEC, expected_id=request_id
+                    )
+                except asyncio.CancelledError:
+                    # 응답을 읽다 만 프로세스는 다음 요청과 줄이 어긋난다 — 버리되, 끄지는 않는다.
+                    self._drop_process()
                     raise
-                raise CombinedGpuUnavailable(str(exc)) from exc
-            self._last_used = asyncio.get_running_loop().time()
+                except BaseException as exc:
+                    await self.stop()
+                    if ocr:  # 그림이 worker 를 끝냈다 — 세지 않는다(쌓이면 PII·인젝션까지 이번 실행 동안 개별로 밀린다)
+                        raise CombinedGpuOcrDied(str(exc)) from exc
+                    self._note_failure()
+                    if isinstance(exc, CombinedGpuUnavailable):
+                        raise
+                    raise CombinedGpuUnavailable(str(exc)) from exc
+                self._last_used = asyncio.get_running_loop().time()
+                if ocr and str(response.get("error", "")).startswith(("graph_failed", "cuda_failed")):
+                    # 답하고 끝나는 중이다 — 다음 탐지 요청에 죽어 가는 프로세스를 넘기지 않게 지금 정리한다
+                    await self.stop()
+            break
+        if ocr:
+            return response
         if "error" in response:
             await self.fail()
             raise CombinedGpuUnavailable(
@@ -300,6 +350,37 @@ class CombinedGpuClient:
             injection_results += injection_rows
         return pii_entities, pii_kept, injection_results
 
+    async def _ocr_request(self, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
+        await self.ensure_ready()
+        if not self.ocr_available:
+            raise CombinedGpuUnavailable("combined GPU worker was started without OCR")
+        response = await self._request(payload, timeout=timeout, ocr=True)
+        if "error" in response:
+            if response["error"] == "ocr_unavailable":
+                raise CombinedGpuUnavailable("combined GPU worker was started without OCR")
+            raise CombinedGpuOcrError(str(response["error"]))
+        return response
+
+    async def ocr_load(self, *, cuda_graph: bool) -> dict[str, Any]:
+        """OCR 가중치를 worker 안에 올리고 사이드카 ready 와 같은 정보(device·batch·budget·graph·card_free_mb)를 돌려준다."""
+        response = await self._ocr_request({"command": "ocr_load", "cuda_graph": cuda_graph},
+                                           timeout=config.PII_LOAD_TIMEOUT_SEC)
+        self.ocr_loaded = True
+        return response
+
+    async def ocr_read(self, image_b64: str, *, cuda_graph: bool) -> dict[str, Any]:
+        """그림 한 장 → {"text", "tiles", "secs"} — 사이드카 응답의 results[0] 과 같다."""
+        response = await self._ocr_request({"command": "ocr_read", "images": [image_b64], "cuda_graph": cuda_graph})
+        self.ocr_loaded = True  # 내려가 있었으면 worker 가 읽으며 다시 올렸다
+        return response["results"][0]
+
+    async def ocr_unload(self) -> None:
+        """OCR 가중치만 내린다 — 프로세스(PII·인젝션)는 남는다. 떠 있지 않으면 띄우지 않는다."""
+        if self.ocr_loaded:
+            with contextlib.suppress(CombinedGpuUnavailable):
+                await self._request({"command": "ocr_unload"}, ocr=True, spawn=False)
+        self.ocr_loaded = False
+
     def prewarm_background(self, on_unavailable=None) -> None:
         """앱 시작과 함께 띄운다. 쓸 수 없으면(CUDA 없음 등) on_unavailable 로 개별 sidecar 를
         대신 예열한다 — 그러지 않으면 GPU 없는 기기는 첫 검사에서 PII 모델을 처음 올린다."""
@@ -349,6 +430,7 @@ class CombinedGpuClient:
         proc = self._process
         self._process = None
         self._ready = False
+        self.ocr_loaded = False
         if proc is not None and proc.returncode is None:
             with contextlib.suppress(Exception):
                 proc.terminate()
@@ -359,6 +441,7 @@ class CombinedGpuClient:
         proc = self._process
         self._process = None
         self._ready = False
+        self.ocr_loaded = False
         if proc is None or proc.returncode is not None:
             return
         proc.terminate()

@@ -105,6 +105,13 @@ _real_gpu_worker_first = image_ocr.gpu_worker_first  # 아래 autouse 가 바꾸
 
 
 @pytest.fixture(autouse=True)
+def _sidecar_by_default(monkeypatch):
+    """기존 시험은 사이드카 경로를 본다 — NVIDIA PC 에서 시험이 진짜 통합 worker(모델)로 OCR 을 보내지 않게(worker 안 OCR
+    시험은 가짜 worker 를 따로 끼운다)."""
+    monkeypatch.setattr(config, "IMAGE_OCR_IN_WORKER", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_gpu_worker(monkeypatch):
     """사이드카를 띄우는 시험이 진짜 통합 GPU worker(PII·인젝션 모델)를 올리지 않게 한다(Windows 는 기본 켜짐)."""
     async def nothing():

@@ -477,6 +477,13 @@ IMAGE_OCR_IDLE_UNLOAD_SEC: float = float(os.environ.get("SECUREDOC_IMAGE_OCR_IDL
 # 사이드카는 남은 커밋에 맞춰 묶음을 줄이므로(varco_ocr_inference._free_commit) 실제 몫은 대개 8GB 보다 작다. 측정이 바뀌면 env 로.
 IMAGE_OCR_LAUNCH_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_LAUNCH_FREE_COMMIT_MB", "9216"))
 IMAGE_OCR_READ_FREE_COMMIT_MB: int = int(os.environ.get("SECUREDOC_IMAGE_OCR_READ_FREE_COMMIT_MB", "2048"))
+# Windows NVIDIA(CUDA)는 OCR 을 통합 GPU worker(PII·인젝션) 프로세스 안에서 읽는다(combined_gpu.ocr_in_worker) — CUDA·torch
+# 바닥(커밋 약 2GB: torch 가져오기 1.37 + CUDA 문맥 0.34 + cuBLAS 0.29, VRAM 약 0.4GB)을 한 번만 쓴다. 0 이면 지금처럼 사이드카.
+IMAGE_OCR_IN_WORKER: bool = os.environ.get("SECUREDOC_IMAGE_OCR_IN_WORKER", "1") != "0"
+# worker 안에서 가중치를 올릴 때의 남은 커밋 기준 — OCR 몫은 가중치·읽기 몫뿐이라 사이드카 기준(9,216 = 사이드카 약 8GB + 여유
+# 1GB)에서 바닥 몫 약 2GB 를 뺐다.
+IMAGE_OCR_WORKER_LAUNCH_FREE_COMMIT_MB: int = int(
+    os.environ.get("SECUREDOC_IMAGE_OCR_WORKER_LAUNCH_FREE_COMMIT_MB", "7168"))
 # 같은 자리에서 남은(사용 가능한) 물리 메모리도 본다 — 페이지 파일을 늘려 커밋은 넉넉해도 WDDM 이 VRAM 을 RAM 으로 밀어내면
 # 물리 메모리가 바닥나 PC 전체가 페이징으로 멎는다(v0.2.63 후보 3차 실측, RAM 15.5GB: 남은 커밋 11.9GB 인데 물리 0.2GB).
 # 띄우기 1.5GB: 그때 통합 worker 가 떠 있어도 OCR 띄우기 직전 물리 2.8GB 였다 — 평소엔 걸리지 않고, 브라우저 등으로 이미 빠듯할

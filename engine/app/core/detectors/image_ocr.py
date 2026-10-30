@@ -107,6 +107,14 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.memory_short: dict[str, Any] | None = None
         self._idle_task: asyncio.Task | None = None
         self.cuda_graph = config.IMAGE_OCR_CUDA_GRAPH  # 그래프 경로가 한 번 실패하면 이번 실행 동안 끈다
+        self.in_worker = False  # 마지막 그림을 통합 GPU worker 안에서 읽었다(/health inWorker)
+        self._worker_ocr_off = False  # 그래프를 끄고도 worker 를 끝냈다 — 이번 실행 동안 사이드카로(PII·인젝션을 지킨다)
+
+    def _worker(self) -> combined_gpu.CombinedGpuClient | None:
+        """OCR 을 읽을 통합 worker — Windows CUDA 에서(combined_gpu.ocr_in_worker). 못 쓰면 None(지금처럼 사이드카)."""
+        if self._worker_ocr_off or not combined_gpu.ocr_in_worker():
+            return None
+        return combined_gpu.get_worker()
 
     def _spawn_args(self) -> list[str]:
         return [
@@ -151,6 +159,12 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.last_failure = None
         if self.no_gpu or not model_status.image_ocr_ready():
             return None
+        if (worker := self._worker()) is not None:
+            try:
+                return await self._read_in_worker(worker, blob)
+            except combined_gpu.CombinedGpuUnavailable as exc:  # 꺼짐·CUDA 없음·OCR 없이 뜸 — 이 그림부터 사이드카로
+                logger.info("[image_ocr] 통합 worker 안에서 못 읽어 사이드카로 읽음: %s", exc)
+        self.in_worker = False
         if not self._process_ready:
             await gpu_worker_first()  # 메모리 기준·묶음이 worker 몫을 빼고 정해지게 먼저
         if not await self._enough_memory():
@@ -204,13 +218,68 @@ class VarcoOcrProcess(EncoderPiiDetector):
             self.residency.touch()
             self._arm_unload()
 
-    async def _enough_memory(self) -> bool:
+    async def _read_in_worker(self, worker: combined_gpu.CombinedGpuClient, blob: bytes) -> dict[str, Any] | None:
+        """통합 worker 안에서 한 장 읽는다. 사이드카 경로와 같은 규칙: 메모리 안전장치, graph_failed 면 그래프를 끄고 다시,
+        답 없이 한 번 끝나면 그래프를 켠 채 다시, 같은 그림에서 또 끝나면 끄고 다시 — worker 를 다시 띄우는 동안 들어온
+        PII·인젝션 요청은 새 worker 를 기다린다(combined_gpu._request). 그래프를 끄고도 worker 를 끝내면 이번 실행 동안
+        사이드카로 넘긴다(그림이 PII·인젝션을 거듭 다시 띄우게 하지 않게). worker 를 못 쓰면 CombinedGpuUnavailable."""
+        await worker.ensure_ready()
+        image = base64.b64encode(blob).decode("ascii")
+        died_once = False
+        async with self._request_lock:  # 유휴 내리기가 올리기·읽기 사이에 끼지 않게
+            self.in_worker = True
+            loading = False
+            try:
+                while True:
+                    if not await self._enough_memory(worker):
+                        self.last_failure = LOW_MEMORY_REASON
+                        return None
+                    try:
+                        if loading := not worker.ocr_loaded:
+                            ready = await worker.ocr_load(cuda_graph=self.cuda_graph)
+                            logger.info("[image_ocr] 통합 worker 안에서 준비: %s",
+                                        {k: ready.get(k) for k in ("device", "batch", "budget", "graph", "card_free_mb")})
+                        loading = False
+                        got = await worker.ocr_read(image, cuda_graph=self.cuda_graph)
+                        self.memory_short = None
+                        return got
+                    except (combined_gpu.CombinedGpuOcrError, combined_gpu.CombinedGpuOcrDied) as exc:
+                        marker = "graph_failed" in str(exc)
+                        died = isinstance(exc, combined_gpu.CombinedGpuOcrDied) or "cuda_failed" in str(exc)
+                        if not (marker or died):
+                            raise
+                        if not self.cuda_graph:
+                            logger.warning("[image_ocr] 그래프 없이도 통합 worker 가 끝났다 — 이번 실행 동안 OCR 은 사이드카로: %s",
+                                           exc)
+                            self._worker_ocr_off = True
+                            raise combined_gpu.CombinedGpuUnavailable(str(exc)) from exc
+                        if marker or died_once:
+                            logger.warning("[image_ocr] CUDA 그래프 경로가 실패해 이번 실행 동안 끈다 — 통합 worker 를 다시 "
+                                           "띄워 같은 그림을 다시 읽음: %s", exc)
+                            self.cuda_graph = False
+                        else:
+                            died_once = True
+                            logger.warning("[image_ocr] 통합 worker 가 OCR 중 답 없이 끝났다(외부 종료·메모리 부족일 수 있음) — "
+                                           "그래프를 켠 채 한 번 다시 띄워 같은 그림을 다시 읽음: %s", exc)
+            except combined_gpu.CombinedGpuUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 한 장을 못 읽으면 그 이미지만 미검사로 둔다(입력이 막힌다)
+                logger.warning("[image_ocr] 통합 worker 안에서 %s: %s", "OCR 을 올리지 못함" if loading else "그림을 읽지 못함", exc)
+                self.last_failure = LAUNCH_FAILED_REASON if loading else READ_FAILED_REASON
+                return None
+            finally:
+                self.residency.touch()
+                self._arm_unload()
+
+    async def _enough_memory(self, worker: combined_gpu.CombinedGpuClient | None = None) -> bool:
         """남은 시스템 커밋·물리 메모리가 모자라면 띄우지 않는다 / 떠 있으면 읽지 않고 내려 메모리를 돌려준다 — 메모리 작은
         PC 가 통째로 멎지 않게(v0.2.62 측정: 사이드카 커밋 8GB 로 PC 남은 커밋 0.67GB, v0.2.63 후보 3차: 커밋은 넉넉한데
-        WDDM 이 VRAM 을 RAM 으로 밀어내 물리 0.2GB). 그림은 빼고 글만 보낸다(fill 의 LOW_MEMORY_REASON, 사용자 결정 (가))."""
-        running = self._process_ready
-        checks = (("commit", free_commit_mb(),
-                   config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB),
+        WDDM 이 VRAM 을 RAM 으로 밀어내 물리 0.2GB). 그림은 빼고 글만 보낸다(fill 의 LOW_MEMORY_REASON, 사용자 결정 (가)).
+        worker 안에서 읽으면 올리기 기준이 가중치·읽기 몫뿐이고, 내릴 때도 가중치만 내린다(PII·인젝션은 남는다)."""
+        running = worker.ocr_loaded if worker is not None else self._process_ready
+        launch_commit = (config.IMAGE_OCR_WORKER_LAUNCH_FREE_COMMIT_MB if worker is not None
+                         else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB)
+        checks = (("commit", free_commit_mb(), config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else launch_commit),
                   ("phys", free_physical_mb(),
                    config.IMAGE_OCR_READ_FREE_PHYS_MB if running else config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB))
         short = [(kind, free, need) for kind, free, need in checks if free is not None and free < need]
@@ -221,9 +290,13 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self.memory_short = {"kind": kind, "freeMb": round(free), "needMb": need,
                              "commitLimitMb": None if limit is None else round(limit),
                              "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        where = "worker 안 OCR 가중치를" if worker is not None else "사이드카를"
         logger.warning("[image_ocr] 남은 시스템 메모리(%s) %.0fMB < %dMB — %s", "커밋" if kind == "commit" else "물리",
-                       free, need, "읽지 않고 사이드카를 내림" if running else "사이드카를 띄우지 않음")
-        if running:
+                       free, need, f"읽지 않고 {where} 내림" if running else f"{where} 올리지 않음")
+        if running and worker is not None:
+            await worker.ocr_unload()  # 부르는 쪽(_read_in_worker)이 이미 _request_lock 을 쥐고 있다
+            self.residency.state = "unloaded"
+        elif running:
             async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤 내린다
                 await self._kill_process()
                 self._process_ready = False
@@ -241,6 +314,8 @@ class VarcoOcrProcess(EncoderPiiDetector):
         async with self._request_lock:  # 읽는 중이면 끝날 때까지 기다린다
             await self._kill_process()
             self._process_ready = False
+            if (worker := self._worker()) is not None:
+                await worker.ocr_unload()  # 가중치만 — PII·인젝션 프로세스는 남는다
             self.residency.state = "unloaded"
 
     async def close(self) -> None:
@@ -271,6 +346,7 @@ def status() -> dict[str, Any]:
         "cudaGraph": _process.cuda_graph if _process is not None else config.IMAGE_OCR_CUDA_GRAPH,  # 실패 뒤 꺼졌는가
         # 메모리 때문에 그림을 뺀 마지막 까닭 {kind: commit|phys, freeMb, needMb, commitLimitMb, at} — Windows 에서만 생긴다
         "memoryShort": _process.memory_short if _process is not None else None,
+        "inWorker": _process.in_worker if _process is not None else None,  # 마지막 그림을 통합 GPU worker 안에서 읽었다
     }
 
 

@@ -464,8 +464,10 @@ function renderImageMemory(model) {
   $('#image-ocr-memory-text').textContent = text;
   if (!commit) return;
   const limit = short.commitLimitMb != null ? `${GB(short.commitLimitMb)}GB` : '알 수 없음';
-  $('#image-ocr-memory-size').textContent = `지금 커밋 한도 ${limit} — PII·인젝션 모델 약 7GB 와 그림 모델 약 9GB(여유 포함)가 `
-    + `함께 들어가야 합니다. 이번에는 남은 ${GB(short.freeMb)}GB 로 약 ${GB(Math.max(0, short.needMb - short.freeMb))}GB 모자랐습니다.`;
+  // 필요한 양은 엔진이 쓴 기준(needMb) 그대로 — OCR 을 통합 worker 안에서 읽으면 사이드카보다 작다
+  $('#image-ocr-memory-size').textContent = `지금 커밋 한도 ${limit} — PII·인젝션 모델이 뜬 뒤 그림 모델을 올리려면 `
+    + `약 ${GB(short.needMb)}GB 가 남아 있어야 합니다(여유 포함). `
+    + `이번에는 남은 ${GB(short.freeMb)}GB 로 약 ${GB(Math.max(0, short.needMb - short.freeMb))}GB 모자랐습니다.`;
 }
 function openImageMemoryGuide() {
   if (!$('#dash-image-label').classList.contains('has-guide')) return;
