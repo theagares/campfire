@@ -308,4 +308,17 @@ const meta = (n) => ({ fileName: `file-${n}.docx` });
   assert.strictEqual(p.hidden('confidential-pill'), true, '기밀 탐지를 껐는데 줄이 보인다');
 }
 
+// ── (10) 메모리 때문에 그림을 뺐을 때 — 커밋 한도가 작아서면 Campfire 앱에서 해결 방법을 볼 수 있다고 덧붙인다 ──
+{
+  const removed = (memory) => {
+    const p = loadPanel();
+    p.send({ type: 'PANEL_RESULT', tabId: TAB, sessionId: 'M', seq: 1, kind: 'file', meta: meta('M'),
+      result: { ...result('M'), imagesRemoved: 2, imagesRemovedReason: 'memory', imagesRemovedMemory: memory } });
+    return p.text('mask-summary');
+  };
+  assert.strictEqual(removed('commit'), '글만 전송 · 그림 2개는 빼고 보냄(PC 메모리 부족 — Campfire 앱에서 해결 방법을 볼 수 있습니다)');
+  assert.strictEqual(removed('phys'), '글만 전송 · 그림 2개는 빼고 보냄(PC 메모리 부족)', '물리 메모리는 다른 프로그램을 닫으면 풀린다 — 앱 안내 없음');
+  assert.strictEqual(removed(undefined), '글만 전송 · 그림 2개는 빼고 보냄(PC 메모리 부족)', '옛 엔진(필드 없음)은 지금 문구 그대로');
+}
+
 console.log('panel-session ok');

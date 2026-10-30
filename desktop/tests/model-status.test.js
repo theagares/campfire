@@ -101,3 +101,31 @@ test('VARCO 상태는 꺼짐·준비 경고·작동 중을 구분하고 라이�
   version = '0.2.57-lite.1';
   assert.equal(statusFor({ state: 'starting', health: null }, true).enabled, false);
 });
+
+test('메모리 부족 안내는 Windows 정식 판에서 이미지 검사가 켜져 있고 엔진이 알렸을 때만 넘긴다', () => {
+  const short = { kind: 'commit', freeMb: 5423, needMb: 9216, commitLimitMb: 33669, at: '2026-10-30T09:47:00+0900' };
+  const image = (extra = {}) => ({ enabled: true, ready: true, gpu: true, accelerator: 'cuda', ...extra });
+  const memoryShort = (health, platform = 'win32') => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform });
+    try {
+      return buildStats({
+        getStatus: () => ({ state: 'running', health }),
+        config: { get: (key) => key === 'imageOcrEnabled' },
+      }).models.imageOcr.memoryShort;
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  };
+
+  version = '0.2.57';
+  assert.deepEqual(memoryShort({ imageOcr: image({ memoryShort: short }) }), short);
+  assert.deepEqual(memoryShort({ imageOcr: image({ memoryShort: { ...short, kind: 'phys' } }) }).kind, 'phys');
+  assert.equal(memoryShort({ imageOcr: image({ memoryShort: null }) }), null, '부족이 없으면 안내도 없다');
+  assert.equal(memoryShort({ imageOcr: image() }), null, '옛 엔진(필드 없음)도 안내 없음');
+  assert.equal(memoryShort({ imageOcr: image({ memoryShort: short }) }, 'darwin'), null, '맥은 페이지 파일 안내 대상이 아니다');
+  assert.equal(memoryShort({ imageOcr: { ...image({ memoryShort: short }), enabled: false } }), null, '이미지 검사를 끄면 숨긴다');
+  version = '0.2.57-lite.1';
+  assert.equal(memoryShort({ imageOcr: image({ memoryShort: short }) }), null, '라이트 판은 이미지 검사가 없다');
+  version = '0.2.57';
+});

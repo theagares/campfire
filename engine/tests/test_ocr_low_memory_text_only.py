@@ -57,7 +57,12 @@ def test_다른_이유로_못_읽은_그림은_지금처럼_미검사(monkeypatc
     assert infos[0]["status"] == "unchecked"
 
 
-def test_프록시는_메모리_부족으로_뺀_그림을_알리고_원본_대신_글을_보낸다(monkeypatch):
+@pytest.mark.parametrize("memory, tail", [
+    (None, ""), ("phys", ""),
+    # 커밋 한도가 작아서면 페이지 파일을 늘리면 풀린다 — 앱(설정·대시보드)이 방법을 보여 준다
+    ("commit", " — Campfire 앱에서 해결 방법을 볼 수 있습니다"),
+])
+def test_프록시는_메모리_부족으로_뺀_그림을_알리고_원본_대신_글을_보낸다(monkeypatch, memory, tail):
     pytest.importorskip("mitmproxy")
     import app.adapters.proxy.addon as addon_mod
     import app.core.pipeline.orchestrator as orch
@@ -65,7 +70,7 @@ def test_프록시는_메모리_부족으로_뺀_그림을_알리고_원본_대�
     async def run(**_kw):
         return {"originalText": "보고서 본문", "maskedText": "보고서 본문", "piiItems": [], "injectionItems": [],
                 "forcedMaskItems": [], "blocked": False, "scanStatus": "ok", "truncated": False,
-                "imagesRemoved": 2, "imagesRemovedReason": "memory"}
+                "imagesRemoved": 2, "imagesRemovedReason": "memory", "imagesRemovedMemory": memory}
 
     notices = []
     monkeypatch.setattr(orch, "run_pipeline", run)
@@ -74,4 +79,17 @@ def test_프록시는_메모리_부족으로_뺀_그림을_알리고_원본_대�
         data=b"PK docx", file_name="report.docx", mime="application/vnd.openxmlformats-officedocument."
         "wordprocessingml.document", host="claude.ai"))
     assert got == "보고서 본문".encode(), "그림째 원본이 아니라 그림을 뺀 글을 보내야 한다"
-    assert notices == ["PC 메모리가 부족해 문서 속 그림 2장은 빼고 글만 보냈습니다"]
+    assert notices == [f"PC 메모리가 부족해 문서 속 그림 2장은 빼고 글만 보냈습니다{tail}"]
+
+
+@pytest.mark.parametrize("reason, short, want", [
+    ("memory", {"kind": "commit"}, "commit"), ("memory", {"kind": "phys"}, "phys"), ("off", {"kind": "commit"}, None),
+])
+def test_결과에_메모리_부족이_커밋인지_물리인지_싣는다(monkeypatch, reason, short, want):
+    from app.core.pipeline import orchestrator
+
+    monkeypatch.setattr(image_ocr.get(), "memory_short", short)
+    result = orchestrator._build_result(
+        original_text="글", masked_text="글", pii_items=[], injection_items=[], forced_mask_items=[], scan_status="ok",
+        reason=None, blocked=False, masked_file=None, images_removed=1, images_removed_reason=reason)
+    assert result.get("imagesRemovedMemory") == want

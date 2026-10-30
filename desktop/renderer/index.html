@@ -387,6 +387,24 @@
             </div>
             <input type="checkbox" id="image-ocr-enabled" />
           </div>
+          <!-- 메모리 때문에 그림을 뺐을 때(엔진 /health imageOcr.memoryShort, Windows). 앱은 페이지 파일을 바꾸지 않는다 — 관리자·재부팅이 필요해 안내만 -->
+          <div class="banner warn" id="image-ocr-memory" style="display:none">
+            <div class="memory-guide">
+              <div id="image-ocr-memory-text"></div>
+              <details id="image-ocr-memory-guide">
+                <summary>해결 방법 보기</summary>
+                <div id="image-ocr-memory-size"></div>
+                <ol>
+                  <li>시작 메뉴에서 '고급 시스템 설정 보기'를 엽니다.</li>
+                  <li>고급 탭 → 성능의 [설정]을 누릅니다.</li>
+                  <li>다시 고급 탭 → 가상 메모리의 [변경]을 누릅니다.</li>
+                  <li>'모든 드라이브에 대한 페이징 파일 크기 자동 관리'를 끄고, 시스템 드라이브(C:)를 고른 뒤 '사용자 지정 크기'에 처음 크기 16384, 최대 크기 32768(MB)을 넣습니다.</li>
+                  <li>[설정] → [확인]을 누르고 PC 를 다시 시작합니다.</li>
+                </ol>
+                <div>관리자 권한이 필요하고 다시 시작해야 적용됩니다. Campfire 는 이 설정을 바꾸지 않습니다.</div>
+              </details>
+            </div>
+          </div>
         </div>
 
         <div class="divider"></div>

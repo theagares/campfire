@@ -81,6 +81,9 @@ function deriveModelStatus(engineStatus, confidentialSetting = false, imageOcrSe
       warning: imageEnabled && !imageActive,
       accelerator: image.accelerator || null,
       label: imageLabel,
+      // 메모리 때문에 그림을 뺀 마지막 까닭(엔진 image_ocr.memoryShort) — 커밋이면 페이지 파일 늘리는 법을 안내한다.
+      // 페이지 파일 안내는 Windows 만 해당이고, 라이트 판은 이미지 검사가 없다(imageEnabled false).
+      memoryShort: (process.platform === 'win32' && running && imageEnabled && image.memoryShort) || null,
     },
   };
 }

@@ -72,6 +72,12 @@ def free_physical_mb() -> float | None:
     return None if status is None else status.ullAvailPhys / 2**20
 
 
+def commit_limit_mb() -> float | None:
+    """Windows 커밋 한도(MB, 물리 메모리 + 페이지 파일). 다른 OS·모르면 None."""
+    status = _memory_status()
+    return None if status is None else status.ullTotalPageFile / 2**20
+
+
 async def gpu_worker_first() -> None:
     """OCR 사이드카를 띄우기 전에 통합 GPU worker(PII·인젝션)를 먼저 올린다(이미 떠 있으면 그대로). 사이드카는 띄울 때 남은
     VRAM·커밋으로 묶음을 정한다 — worker 가 유휴로 내려간 뒤 OCR 이 먼저 큰 묶음을 잡으면 뒤에 올라오는 worker(약 4GB)와
@@ -96,6 +102,9 @@ class VarcoOcrProcess(EncoderPiiDetector):
         self._next_id = 0
         self.no_gpu = False  # 사이드카가 GPU 를 못 찾았다 — 다시 띄우지 않는다(매번 띄워 보며 시간을 쓰지 않게)
         self.last_failure: str | None = None  # 마지막 read() 가 None 을 준 까닭(없으면 GPU·모델 미준비)
+        # 메모리가 모자라 띄우지 않았거나 내린 마지막 까닭(/health memoryShort) — 커밋이면 앱이 페이지 파일 늘리는 법을,
+        # 물리면 다른 프로그램을 닫으라고 안내한다. 그림을 다시 읽으면 지운다.
+        self.memory_short: dict[str, Any] | None = None
         self._idle_task: asyncio.Task | None = None
         self.cuda_graph = config.IMAGE_OCR_CUDA_GRAPH  # 그래프 경로가 한 번 실패하면 이번 실행 동안 끈다
 
@@ -161,7 +170,9 @@ class VarcoOcrProcess(EncoderPiiDetector):
         try:
             while True:
                 try:
-                    return (await self._rpc(request))["results"][0]
+                    got = (await self._rpc(request))["results"][0]
+                    self.memory_short = None
+                    return got
                 except RuntimeError as exc:
                     # 그래프를 켠 사이드카가 끝났다 — 그 CUDA 문맥은 믿지 않고 다시 띄워 같은 그림을 다시 읽는다(그림이 막히지
                     # 않게). 'graph_failed' 표식이면 그래프 탓이 분명해 이번 실행 동안 끈다. 답 없이 죽은 것은 외부 종료·메모리
@@ -198,16 +209,20 @@ class VarcoOcrProcess(EncoderPiiDetector):
         PC 가 통째로 멎지 않게(v0.2.62 측정: 사이드카 커밋 8GB 로 PC 남은 커밋 0.67GB, v0.2.63 후보 3차: 커밋은 넉넉한데
         WDDM 이 VRAM 을 RAM 으로 밀어내 물리 0.2GB). 그림은 빼고 글만 보낸다(fill 의 LOW_MEMORY_REASON, 사용자 결정 (가))."""
         running = self._process_ready
-        checks = (("커밋", free_commit_mb(),
+        checks = (("commit", free_commit_mb(),
                    config.IMAGE_OCR_READ_FREE_COMMIT_MB if running else config.IMAGE_OCR_LAUNCH_FREE_COMMIT_MB),
-                  ("물리", free_physical_mb(),
+                  ("phys", free_physical_mb(),
                    config.IMAGE_OCR_READ_FREE_PHYS_MB if running else config.IMAGE_OCR_LAUNCH_FREE_PHYS_MB))
-        short = [(name, free, need) for name, free, need in checks if free is not None and free < need]
+        short = [(kind, free, need) for kind, free, need in checks if free is not None and free < need]
         if not short:
             return True
-        name, free, need = short[0]
-        logger.warning("[image_ocr] 남은 시스템 메모리(%s) %.0fMB < %dMB — %s", name, free, need,
-                       "읽지 않고 사이드카를 내림" if running else "사이드카를 띄우지 않음")
+        kind, free, need = short[0]
+        limit = commit_limit_mb()
+        self.memory_short = {"kind": kind, "freeMb": round(free), "needMb": need,
+                             "commitLimitMb": None if limit is None else round(limit),
+                             "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        logger.warning("[image_ocr] 남은 시스템 메모리(%s) %.0fMB < %dMB — %s", "커밋" if kind == "commit" else "물리",
+                       free, need, "읽지 않고 사이드카를 내림" if running else "사이드카를 띄우지 않음")
         if running:
             async with self._request_lock:  # 다른 업로드가 읽는 중이면 끝난 뒤 내린다
                 await self._kill_process()
@@ -254,6 +269,8 @@ def status() -> dict[str, Any]:
         "accelerator": model_status.image_ocr_accelerator(),
         "noGpu": _process.no_gpu if _process is not None else None,  # 사이드카가 가속기를 못 썼다 — 한 번 띄워 봐야 안다
         "cudaGraph": _process.cuda_graph if _process is not None else config.IMAGE_OCR_CUDA_GRAPH,  # 실패 뒤 꺼졌는가
+        # 메모리 때문에 그림을 뺀 마지막 까닭 {kind: commit|phys, freeMb, needMb, commitLimitMb, at} — Windows 에서만 생긴다
+        "memoryShort": _process.memory_short if _process is not None else None,
     }
 
 

@@ -427,6 +427,7 @@ function renderDashboard() {
   }
   if (imageShown) {
     setModelDot('#dash-image-dot', '#dash-image-label', m.imageOcr, 'VARCO-VISION 2.0 1.7B');
+    renderImageMemory(m.imageOcr);
     renderTrendChart('#dc-chart-document', s.trend, 'document', '#2F8C7C');
   }
 
@@ -438,6 +439,47 @@ function renderDashboard() {
 
   renderResources($('#db-resources'));
 }
+// 메모리 때문에 문서 속 그림을 빼고 보냈을 때(엔진 imageOcr.memoryShort, Windows). 커밋 한도가 작으면 페이지 파일을 늘리면
+// 풀린다 — 대시보드 캡션을 누르면 설정의 해결 방법을 펼친다. 물리 메모리면 다른 프로그램을 닫으라고만 한다.
+const GB = (mb) => (mb / 1024).toFixed(1);
+function renderImageMemory(model) {
+  const short = model && model.memoryShort;
+  const commit = !!short && short.kind === 'commit';
+  const caption = $('#dash-image-label');
+  caption.classList.toggle('has-guide', commit);
+  if (commit) {
+    caption.setAttribute('role', 'button');
+    caption.tabIndex = 0;
+  } else {
+    caption.removeAttribute('role');
+    caption.removeAttribute('tabindex');
+  }
+  const text = !short ? ''
+    : commit ? 'PC 메모리 한도(커밋)가 작아 문서 속 그림을 검사하지 못하고 빼고 보냈습니다. Windows 페이지 파일을 늘리면 그림도 검사합니다.'
+      : 'PC 메모리가 부족해 문서 속 그림을 빼고 보냈습니다. 다른 프로그램을 닫고 다시 보내 주세요.';
+  caption.title = text;
+  if (short) caption.textContent = commit ? '메모리 한도 부족으로 그림 제외 · 해결 방법' : '메모리 부족으로 그림 제외 · 다른 프로그램 닫기';
+  $('#image-ocr-memory').style.display = short ? '' : 'none';
+  $('#image-ocr-memory-guide').style.display = commit ? '' : 'none';
+  $('#image-ocr-memory-text').textContent = text;
+  if (!commit) return;
+  const limit = short.commitLimitMb != null ? `${GB(short.commitLimitMb)}GB` : '알 수 없음';
+  $('#image-ocr-memory-size').textContent = `지금 커밋 한도 ${limit} — PII·인젝션 모델 약 7GB 와 그림 모델 약 9GB(여유 포함)가 `
+    + `함께 들어가야 합니다. 이번에는 남은 ${GB(short.freeMb)}GB 로 약 ${GB(Math.max(0, short.needMb - short.freeMb))}GB 모자랐습니다.`;
+}
+function openImageMemoryGuide() {
+  if (!$('#dash-image-label').classList.contains('has-guide')) return;
+  openSettings();
+  $('#image-ocr-memory-guide').open = true;
+  $('#image-ocr-memory').scrollIntoView({ block: 'center' });
+}
+$('#dash-image-label').addEventListener('click', openImageMemoryGuide);
+$('#dash-image-label').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault();
+  openImageMemoryGuide();
+});
+
 function renderTrendChart(svgSel, trend, key, color) {
   const svg = $(svgSel);
   if (!svg) return;
