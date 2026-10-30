@@ -35,7 +35,7 @@ def ocr_in_worker() -> bool:
     """이미지 OCR(VARCO)을 통합 worker 안에서 읽는가 — CUDA·torch 바닥(Windows 커밋 약 2GB·VRAM 약 0.4GB)을 PII·인젝션과
     한 번만 쓴다. 같은 파이썬(같은 torch·transformers)으로 뜨는 CUDA worker 일 때만. 맥(MPS)·Intel(XPU)은 지금처럼 사이드카다.
     실제 CUDA 여부는 worker 가 뜰 때 확인한다(못 쓰면 OCR 도 사이드카로)."""
-    return (config.IMAGE_OCR_ENABLED and config.IMAGE_OCR_IN_WORKER
+    return (config.IMAGE_OCR_ENABLED and config.IMAGE_OCR_IN_WORKER and config.COMBINED_GPU_WORKER_ENABLED
             and config.IMAGE_OCR_PYTHON_EXECUTABLE == config.COMBINED_GPU_PYTHON_EXECUTABLE
             and model_status.image_ocr_accelerator() in ("cuda", "external"))
 

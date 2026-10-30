@@ -49,7 +49,8 @@ class OcrSlot:
     def load(self, cuda_graph: bool) -> dict[str, Any]:
         if self.runtime is None:
             # 엔진은 이 프로세스의 stderr 를 죽었을 때만 읽는다 — 처리기·모델 경고가 쌓여 파이프가 차면 PII·인젝션까지
-            # 멈출 수 있어 사이드카(varco_ocr_inference.main)처럼 조용히 한다
+            # 멈출 수 있어 사이드카(varco_ocr_inference.main)처럼 조용히 한다. 프로세스 전체라 이 뒤로는 PII·인젝션 경고도 안 남는다
+            # (오류·죽을 때의 stderr 는 그대로)
             import warnings
 
             from transformers.utils import logging as hf_logging

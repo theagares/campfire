@@ -124,6 +124,7 @@ def test_OCR_없이_뜬_worker_면_사이드카로_넘기게_Unavailable(client,
 def ocr_pc(monkeypatch):
     monkeypatch.setattr(config, "IMAGE_OCR_ENABLED", True)
     monkeypatch.setattr(config, "IMAGE_OCR_IN_WORKER", True)
+    monkeypatch.setattr(config, "COMBINED_GPU_WORKER_ENABLED", True)
     monkeypatch.setattr(config, "IMAGE_OCR_PYTHON_EXECUTABLE", sys.executable)
     monkeypatch.setattr(config, "COMBINED_GPU_PYTHON_EXECUTABLE", sys.executable)
     monkeypatch.setattr(model_status, "image_ocr_accelerator", lambda: "cuda")
@@ -134,12 +135,14 @@ def test_Windows_CUDA_면_worker_에_OCR_인자를_넘긴다(ocr_pc):
     assert args[args.index("--ocr-runtime") + 1].endswith("varco_ocr_inference.py") and "--ocr-model-dir" in args
 
 
-@pytest.mark.parametrize("change", ["mps", "xpu", "off", "env_off", "other_python"])
+@pytest.mark.parametrize("change", ["mps", "xpu", "off", "env_off", "worker_off", "other_python"])
 def test_worker_안_OCR_을_쓰지_않는_경우(ocr_pc, monkeypatch, change):
     if change in ("mps", "xpu"):
         monkeypatch.setattr(model_status, "image_ocr_accelerator", lambda: change)
     elif change == "off":
         monkeypatch.setattr(config, "IMAGE_OCR_ENABLED", False)
+    elif change == "worker_off":  # 통합 worker 를 env 로 껐다 — 그림마다 worker 를 불러 보지 않고 바로 사이드카
+        monkeypatch.setattr(config, "COMBINED_GPU_WORKER_ENABLED", False)
     elif change == "env_off":  # SECUREDOC_IMAGE_OCR_IN_WORKER=0 — 5차 측정에서 견주어 볼 수 있게
         monkeypatch.setattr(config, "IMAGE_OCR_IN_WORKER", False)
     else:
