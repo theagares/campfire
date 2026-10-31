@@ -16,7 +16,8 @@
  *     유의 — settings.json 은 암호화되지 않는다.)
  *   - securityEnabled: bool                (트레이 ON/OFF = 엔진 가동 여부)
  *   - mcpRiskScannerEnabled: bool          (선택형 별도 stdio MCP 사이드카, 기본 OFF)
- *   - pipelineLayout: {nodeId: {x,y}}      (처리현황 노드 드래그 배치, PLAN §8)
+ *   - pipelineLayout: {version,nodes:{nodeId:{left,top}}}
+ *                                             (처리현황 노드 드래그 배치, PLAN §8)
  *   - detector 선택 항목은 없다. 엔진 registry 가 종류별 구현을 하나씩만 들고 있어
  *     (pii: encoder, injection: llm_mcp) 고를 대상이 없고, 실제로 예전의
  *     piiDetector/injectionDetector 는 저장·전달되면서도 엔진이 읽지 않는 값이었다.
@@ -45,7 +46,7 @@ const DEFAULTS = {
   kgPath: '', // 회사 KG JSONL 경로. 엔진이 스캔마다 수정 시각을 보고 바뀌면 다시 읽는다.
   // 이미지 속 글자 검사(VARCO OCR 4.3GB, NVIDIA·Intel Arc·Apple Silicon GPU 필요. Windows 는 GPU 실행 환경도 받음). 끄면 지금처럼 이미지 파일은 미지원·문서 속 그림은 검사 안 함.
   imageOcrEnabled: false,
-  pipelineLayout: {}, // 처리현황 화면 노드 배치 (PLAN §8 드래그 저장)
+  pipelineLayout: {}, // 판 번호가 맞는 처리현황 노드 배치만 renderer 가 사용한다
   gpuResidency: { pii: 'always', injection: 'idle_unload', idleTimeoutMin: 10 },
   // 프록시 토글(proxy-toggle.js). proxySystemPrevious 는 우리가 시스템 프록시를 덮어쓰기
   // **전의** 값이다 — null 이면 안 덮어썼다. 앱이 강제 종료돼도 다음 실행 때 이걸로 되돌린다.
