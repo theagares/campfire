@@ -307,9 +307,21 @@ async def scan_text(text: str, user_prompt: str = "") -> dict[str, Any]:
 async def scan_file(file_path: str, mime_type: str = "", user_prompt: str = "") -> dict[str, Any]:
     """로컬 파일을 파서 경유로 검사한다(PII/인젝션 탐지 + 마스킹본).
 
-    TXT/PDF/DOCX 를 지원한다(스캔 PDF 및 HWP/HWPX/XLSX/PPTX 는 v1 미지원 → scanStatus 로
-    표시 후 통과, PLAN §9.2). mime_type 을 비우면 확장자로 추정한다. 반환 형식은 scan_text 와
-    동일하며 path 필드가 추가된다.
+    읽는 형식:
+      - 문서: .pdf .docx .hwp .hwpx .odt
+      - 표: .xlsx .ods .csv .tsv
+      - 발표: .pptx .odp
+      - 메일·웹 보관: .eml .mht .mhtml
+      - 웹: .html .htm
+      - 텍스트·데이터: .txt .md .json .jsonl .xml .log
+      - 코드·설정: .py .js .jsx .ts .tsx .css .java .c .cpp .h .hpp .cs .go .rs .sh .ps1 .bat
+        .sql .yaml .yml .toml .ini .cfg .conf .env .example (그 밖의 확장자도 평문이면 텍스트로 읽는다)
+    이미지 검사(VARCO OCR)를 켜면 이미지 파일(.png .jpg .jpeg .webp .bmp, 화면 캡처)과 DOCX·PPTX
+    속 그림의 글도 읽는다. 꺼져 있으면 이미지 파일은 검사하지 않고, 문서 속 그림은 빼고 글만 검사한다.
+    스캔(이미지) PDF 와 구형 .xls .ppt 는 읽지 못해 scanStatus="unsupported" 로 표시하고 탐지 없이
+    돌려준다.
+
+    mime_type 을 비우면 확장자로 추정한다. 반환 형식은 scan_text 와 동일하며 path 필드가 추가된다.
 
     user_prompt: 이 파일을 읽게 만든 실제 사용자 요청(있으면, scan_text 참고).
     """
