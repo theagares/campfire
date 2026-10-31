@@ -586,30 +586,31 @@ function subRow(items) {
 
 // ── 처리현황 (드래그 가능한 다이어그램, PLAN §8 확정: "요소를 드래그해 위치를 조정"은
 // 디자인 표현이 아니라 실제 구현할 기능) ─────────────────────────────────────
-// 좌표는 Figma 노드(120:481 그룹, 카드 원점 기준 66,94)를 460×220 캔버스로 환산하고,
-// "탐지 종류 부분이 힌트 문구에 붙어 보인다"는 피드백을 반영해 y를 전체적으로 +15 내렸다.
-// 기밀 탐지 노드(opt:'confidential')는 기밀 탐지가 켜져 있을 때만 그린다. 그때는 세 줄이 들어가야 해서
-// PII·INJECTION 줄을 위로 당긴 기본 위치(top3)를 쓴다(사용자가 끌어 놓은 위치가 있으면 그게 우선).
+// 최종 시안 좌표를 460×220 캔버스 백분율로 옮겼다. 기밀 탐지 노드
+// (opt:'confidential')는 기밀 탐지가 켜졌을 때만 그리고, 그때는 세 줄용 위치(top3)를 쓴다.
+// 저장 좌표는 레이아웃 판이 같은 것만 읽는다. v1(문서 파싱 중심) 좌표를 새 흐름에 적용하면
+// 노드가 겹치므로 판 번호가 없는 옛 pipelineLayout 은 의도적으로 무시한다.
+const PIPE_LAYOUT_VERSION = 2;
 const PIPE_NODES = [
-  { id:'receive', src:'receive', label:null, left:0,      top:25.45, w:9.53, h:19.93 },
-  { id:'parse',   src:'parse', ext:'svg', label:null, left:34.13, top:25, w:18.91, h:20 },
-  { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:62.77, top:6.82, top3:1, w:9.53, h:19.93 },
-  { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:62.77, top:44.88, top3:30, w:9.53, h:19.93 },
-  { id:'conf-detect', src:'conf-detect', ext:'svg', label:'기밀 탐지', left:62.77, top:59, w:9.53, h:19.93, opt:'confidential' },
-  { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:88.81, top:6.82, top3:1, w:9.53, h:19.93 },
-  { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:88.77, top:45.64, top3:30, w:9.53, h:19.93 },
-  { id:'conf-done', src:'conf-done', ext:'svg', label:'기밀 마스킹 완료', left:88.79, top:59, w:9.53, h:19.93, opt:'confidential' },
-  { id:'text-extract', src:'text-extract', label:'텍스트\n직접 추출', left:39.3, top:64.2, w:9.78, h:20.45 },
+  { id:'receive', src:'receive', label:'시작', left:0, top:34, w:9.53, h:19.93 },
+  { id:'text-extract', src:'text-extract-unified', ext:'svg', label:'텍스트\n직접 추출', left:20, top:34, w:9.53, h:19.93 },
+  { id:'ocr', src:'varco-ocr', ext:'svg', label:'이미지 OCR', left:40, top:34, w:9.53, h:19.93 },
+  { id:'pii-detect', src:'pii-detect', label:'PII 탐지', left:63, top:17, top3:0, w:9.53, h:19.93 },
+  { id:'inj-detect', src:'inj-detect', label:'INJECTION 탐지', left:63, top:55, top3:34, w:9.53, h:19.93 },
+  { id:'conf-detect', src:'pii-detect', label:'기밀 탐지', left:63, top:68, w:9.53, h:19.93, opt:'confidential' },
+  { id:'pii-done', src:'pii-done', label:'PII 마스킹 완료', left:89, top:17, top3:0, w:9.53, h:19.93 },
+  { id:'inj-done', src:'inj-done', label:'INJECTION 차단 완료', left:89, top:55, top3:34, w:9.53, h:19.93 },
+  { id:'conf-done', src:'conf-done', ext:'svg', label:'기밀 마스킹 완료', left:89, top:68, w:9.53, h:19.93, opt:'confidential' },
 ];
 const PIPE_EDGES = [
-  { from:'receive', to:'parse' },
-  { from:'parse', to:'pii-detect' },
-  { from:'parse', to:'inj-detect' },
-  { from:'parse', to:'conf-detect' },
+  { from:'receive', to:'text-extract' },
+  { from:'text-extract', to:'ocr' },
+  { from:'ocr', to:'pii-detect' },
+  { from:'ocr', to:'inj-detect' },
+  { from:'ocr', to:'conf-detect' },
   { from:'pii-detect', to:'pii-done' },
   { from:'inj-detect', to:'inj-done' },
   { from:'conf-detect', to:'conf-done' },
-  { from:'text-extract', to:'parse', dashed:true },
 ];
 const pipeNodeEls = {};
 let pipeDiagramBuilt = false;
@@ -619,11 +620,19 @@ let pipeSaveTimer = null;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+const savedPipelinePositions = (settings) => {
+  const layout = settings && settings.pipelineLayout;
+  return layout && layout.version === PIPE_LAYOUT_VERSION
+    && layout.nodes && typeof layout.nodes === 'object'
+    ? layout.nodes
+    : {};
+};
+
 function buildPipelineDiagram() {
   if (pipeDiagramBuilt) return;
   pipeDiagramBuilt = true;
   const canvas = $('#pipe-diagram');
-  const saved = (state.settings && state.settings.pipelineLayout) || {};
+  const saved = savedPipelinePositions(state.settings);
   pipeConfShown = confidentialOn();
 
   PIPE_NODES.forEach((n) => {
@@ -753,7 +762,9 @@ function schedulePipeLayoutSave() {
       if (!el) return;
       layout[n.id] = { left: parseFloat(el.style.left), top: parseFloat(el.style.top) };
     });
-    api.savePipelineLayout(layout).catch(() => {});
+    const saved = { version: PIPE_LAYOUT_VERSION, nodes: layout };
+    if (state.settings) state.settings.pipelineLayout = saved;
+    api.savePipelineLayout(saved).catch(() => {});
   }, 400);
 }
 
@@ -775,7 +786,7 @@ function schedulePipeLayoutSave() {
 const PIPE_STAGE_ORDER = ['receive', 'parse', 'pii', 'injection', 'confidential', 'mask'];
 const PIPE_STAGE_NODES = {
   receive: ['receive'],
-  parse: ['parse'],
+  parse: ['text-extract', 'ocr'],
   pii: ['pii-detect'],
   injection: ['inj-detect'],
   confidential: ['conf-detect'],
@@ -784,13 +795,17 @@ const PIPE_STAGE_NODES = {
 // 각 단계에서 "빛이 흐르는" 구간 = 그 단계로 들어오는 연결선.
 // receive 는 들어오는 선이 없어 노드만 빛난다.
 const PIPE_STAGE_EDGES = {
-  parse: ['receive>parse'],
-  pii: ['parse>pii-detect'],
-  injection: ['parse>inj-detect'],
-  confidential: ['parse>conf-detect'],
+  parse: ['receive>text-extract', 'text-extract>ocr'],
+  pii: ['ocr>pii-detect'],
+  injection: ['ocr>inj-detect'],
+  confidential: ['ocr>conf-detect'],
   mask: ['pii-detect>pii-done', 'inj-detect>inj-done', 'conf-detect>conf-done'],
 };
 const pipeEdgeKey = (e) => `${e.from}>${e.to}`;
+const pipeEdgeVisible = (key) => {
+  const [from, to] = key.split('>');
+  return !!pipeNodeEls[from] && !!pipeNodeEls[to];
+};
 
 // 완료 직후 곧바로 회색으로 돌아가면 마지막 단계가 깜빡이고 끝나 눈에 안 남는다 —
 // 잠깐 "완료" 상태를 보여주고 사그라들게 한다.
@@ -939,12 +954,14 @@ function renderPipeline() {
 
   // 이미 지나온 구간은 계속 켜두고(어디까지 왔는지 남는다), 지금 구간만 빛이 흐른다.
   const currentStage = furthest === -1 ? null : PIPE_STAGE_ORDER[furthest];
-  const flowing = busy && currentStage ? (PIPE_STAGE_EDGES[currentStage] || []) : [];
+  const flowing = busy && currentStage
+    ? (PIPE_STAGE_EDGES[currentStage] || []).filter(pipeEdgeVisible)
+    : [];
   const passed = new Set();
   if (busy || pipeActivity.settling) {
     const upto = pipeActivity.settling ? PIPE_STAGE_ORDER.length : furthest;
     PIPE_STAGE_ORDER.slice(0, Math.max(upto, 0)).forEach((s) => {
-      (PIPE_STAGE_EDGES[s] || []).forEach((k) => passed.add(k));
+      (PIPE_STAGE_EDGES[s] || []).filter(pipeEdgeVisible).forEach((k) => passed.add(k));
     });
   }
   pipeFlow.lit = new Set([...passed, ...flowing]);
