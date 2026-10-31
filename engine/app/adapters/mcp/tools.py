@@ -29,6 +29,7 @@ from app.core import activity as activity_bus
 from app.core.detectors import registry
 from app.core import forced_mask
 from app.core.masker import masker
+from app.core.parser import hidden as hidden_marks
 from app.core.pipeline.orchestrator import run_pipeline
 from app.store import db
 
@@ -155,6 +156,22 @@ def _redact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: v for k, v in item.items() if k != "text"} for item in items]
 
 
+def _mcp_hidden_items(text: str) -> list[dict[str, Any]]:
+    """MCP 밖으로 나가는 문자열에 강제할 숨긴 글 항목. 문자 판정은 hidden.py 한 곳만 쓴다."""
+    return [
+        {
+            "type": hidden_marks.TYPE,
+            "start": span["start"],
+            "end": span["end"],
+            "confidence": 1.0,
+            "text": text[span["start"]:span["end"]],
+            "source": "hidden_format",
+            "reason": span["reason"],
+        }
+        for span in hidden_marks.invisible_spans(text, all_invisible=True)
+    ]
+
+
 def _shown(value: Any) -> str:
     """경로·파일명에 든 사용자 지정 단어를 가린 문자열.
 
@@ -162,7 +179,7 @@ def _shown(value: Any) -> str:
     가린 경로로는 다시 열 수 없다 — 등록어를 내보내지 않는 쪽을 택했다.
     """
     text = str(value)
-    items = forced_mask.registry.snapshot().find(text)
+    items = list(forced_mask.registry.snapshot().find(text)) + _mcp_hidden_items(text)
     return masker.apply_masking(text, items)["masked_text"] if items else text
 
 
@@ -223,6 +240,9 @@ async def _run_pipeline_broadcast(**kwargs: Any) -> dict[str, Any]:
 
     ok = True
     try:
+        # MCP 응답은 사람이 검토하는 패널을 거치지 않고 AI 에게 곧바로 가므로,
+        # 확장·프록시보다 엄격한 숨긴 글 기준을 이 어댑터에서 항상 켠다.
+        kwargs["mask_all_hidden"] = True
         return await run_pipeline(emit=emit, **kwargs)
     except Exception:
         ok = False
@@ -350,13 +370,13 @@ async def scan_files(root: str = ".", pattern: str = "*", max_results: int = 20)
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 사이트별 독립 에러 처리(PLAN §11)
-            skipped.append({"path": _shown(path), "reason": str(exc)})
+            skipped.append({"path": _shown(path), "reason": _shown(exc)})
 
     total = sum(it["detectionCount"] for it in items)
     any_blocked = any(it["blocked"] for it in items)
     return {
-        "root": str(root_path),
-        "pattern": pattern,
+        "root": _shown(root_path),
+        "pattern": _shown(pattern),
         "fileCount": len(items),
         "skippedCount": len(skipped),
         "detectionCount": total,
@@ -378,9 +398,10 @@ async def mask_text(
     """탐지 항목 목록으로 텍스트에 마스킹만 재적용한다(재탐지 없음).
 
     scan_* 가 이미 maskedText 를 함께 주므로 보통은 불필요하다. 항목 일부를 편집(예: 특정
-    PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다. 반환: {maskedText, applied}.
+    PII만 제외)한 뒤 마스킹 결과를 다시 만들고 싶을 때 사용한다. 다만 MCP 필수 정책인
+    숨긴 글과 사용자 지정 단어는 목록에서 빼도 다시 찾아 적용한다. 반환: {maskedText, applied}.
     """
-    items = list(pii_items) + list(injection_items or [])
+    items = list(pii_items) + list(injection_items or []) + _mcp_hidden_items(text)
     snapshot = forced_mask.registry.snapshot()
     if not snapshot.ready:
         raise RuntimeError("강제 마스킹 규칙을 아직 불러오지 못했습니다")
@@ -458,7 +479,7 @@ async def secure_list_files(root: str = ".", pattern: str = "*", max_results: in
             break
         if path.is_file():
             files.append({"path": _shown(path), "name": _shown(path.name), "kind": _file_kind(path)})
-    return {"root": str(root_path), "count": len(files), "files": files}
+    return {"root": _shown(root_path), "count": len(files), "files": files}
 
 
 # ── 도구 6b: secure_search_files ──────────────────────────────────────────────
@@ -497,7 +518,12 @@ async def secure_search_files(
                 # 여기는 일부러 방송하지 않는다 — 매칭 라인마다 파이프라인을 도는 루프라
                 # 검색 한 번에 처리현황이 수백 번 깜빡이게 된다. 검색은 "지금 무슨 문서를
                 # 처리 중인가" 로 보여줄 단위가 아니다.
-                line_res = await run_pipeline(text=line, file_name="search.txt", wrap_file=False)
+                line_res = await run_pipeline(
+                    text=line,
+                    file_name="search.txt",
+                    wrap_file=False,
+                    mask_all_hidden=True,
+                )
                 results.append(
                     {
                         "path": _shown(path),
@@ -509,7 +535,12 @@ async def secure_search_files(
                 )
                 if len(results) >= max_results:
                     break
-    return {"root": str(root_path), "query": query, "count": len(results), "results": results}
+    return {
+        "root": _shown(root_path),
+        "query": _shown(query),
+        "count": len(results),
+        "results": results,
+    }
 
 
 # ── 도구 7: get_status ────────────────────────────────────────────────────────

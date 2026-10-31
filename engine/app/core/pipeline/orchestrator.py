@@ -529,6 +529,7 @@ async def run_pipeline(
     user_prompt: str | None = None,
     direct_prompt: bool = False,
     scan_injection: bool = True,
+    mask_all_hidden: bool = False,
 ) -> dict[str, Any]:
     """텍스트(prompt) 또는 파일 파이프라인 공통 실행기.
 
@@ -549,6 +550,10 @@ async def run_pipeline(
     scan_injection: False 이면 입력 본문에 대한 인젝션 탐지를 전부 생략한다. 확장
     프로그램의 사용자 프롬프트 전용 경로가 사용하며 PII·자격증명·강제 마스킹은
     그대로 수행한다. 파일/MCP 등 일반 텍스트 검사는 기본값 True 를 유지한다.
+
+    mask_all_hidden: MCP 처럼 사람이 원문을 검토하지 않는 경로에서만 True. 폭 없는
+    문자 한 글자와 변형 선택자까지 전부 숨긴 글로 잡는다. 기본 False 이므로 확장·
+    프록시의 기존 4글자 기준은 바뀌지 않는다.
     """
     emit = emit or _noop_emit
     scan_status = STATUS_OK
@@ -589,7 +594,9 @@ async def run_pipeline(
                     if key in info:
                         info[key] = remap(info[key])
     # 보이지 않는 유니코드는 형식과 관계없이 모든 글(프롬프트·txt·코드 포함)에서 찾는다
-    hidden_spans = hidden_marks.merge(hidden_spans + hidden_marks.invisible_spans(text or ""))
+    hidden_spans = hidden_marks.merge(hidden_spans + hidden_marks.invisible_spans(
+        text or "", all_invisible=mask_all_hidden
+    ))
     images_unchecked = any(i["status"] == "unchecked" for i in image_infos)
     images_read = [i for i in image_infos if i["status"] == "read"]
     await emit({"type": "step", "step": 1, "label": "파싱 완료", "done": True})
@@ -608,7 +615,10 @@ async def run_pipeline(
             "reason": f"문서가 길어 앞 {config.MAX_TEXT_CHARS:,}자만 검사했습니다 (전체 {original_chars:,}자)",
         })
     hidden_items = _hidden_items(text or "", hidden_spans)
-    user_prompt_hidden = _hidden_items(user_prompt, hidden_marks.invisible_spans(user_prompt)) if user_prompt else []
+    user_prompt_hidden = _hidden_items(
+        user_prompt,
+        hidden_marks.invisible_spans(user_prompt, all_invisible=mask_all_hidden),
+    ) if user_prompt else []
     hidden_block, hidden_reason = _hidden_policy(hidden_items + user_prompt_hidden)
 
     # Mandatory literal rules do not depend on either ML model.  Capture one
