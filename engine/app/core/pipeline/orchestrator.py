@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable
 from app import config
 from app.core import forced_mask, model_status
 from app.core.detectors import combined_gpu, confidential, image_ocr, registry
-from app.core.detectors.pii import credentials
+from app.core.detectors.pii import credentials, fixed
 from app.core.detectors.base import Detection
 from app.core.masker import docwrapper, masker
 from app.core.parser import STATUS_FAILED, STATUS_OK, STATUS_TIMEOUT
@@ -165,7 +165,8 @@ async def _detect_pii(text: str) -> list[Detection]:
     # 중복 forward와 경계 조각 오탐이 늘어나므로 원문 전체를 한 청크로 넘긴다.
     whole_text = [{"text": text, "offset": 0}]
     model_items = await _detect_all(registry.get_pii_detector(), text, whole_text)
-    return _dedupe(list(model_items) + credentials.detect(text))
+    # 내부 고정 PII 규칙(pii/fixed.py)도 PII 를 합치는 모든 자리(아래 셋 포함)에서 더한다
+    return fixed.merge(_dedupe(list(model_items) + credentials.detect(text)), text)
 
 
 async def _detect_pii_with_keep(
@@ -181,7 +182,7 @@ async def _detect_pii_with_keep(
     if not callable(detect_with_keep):
         return await _detect_pii(text), []
     model_items, kept = await detect_with_keep(text, meta=None)
-    return _dedupe(list(model_items) + credentials.detect(text)), kept
+    return fixed.merge(_dedupe(list(model_items) + credentials.detect(text)), text), kept
 
 
 def _pii_spans_for_chunk(pii_items: list[Detection] | None, ch: dict) -> list[dict]:
@@ -417,15 +418,15 @@ async def _try_combined_local_inference(
         document_entities = entity_lists[:document_count]
         prompt_entities = entity_lists[document_count:]
         document_kept = keep_lists[:document_count]
-        pii_items = _dedupe(
+        pii_items = fixed.merge(_dedupe(
             list(decode(text, document_windows, document_entities))
             + credentials.detect(text)
-        )
+        ), text)
         user_pii_items = (
-            _dedupe(
+            fixed.merge(_dedupe(
                 list(decode(user_prompt, prompt_windows, prompt_entities))
                 + credentials.detect(user_prompt)
-            )
+            ), user_prompt)
             if user_prompt
             else []
         )
@@ -703,7 +704,7 @@ async def run_pipeline(
         # 정규식이라(모듈 docstring) 모델 상태와 무관하게 돈다. 오히려 이 창(설치
         # 직후 다운로드 중)이 제일 위험하다 — 여기서 건너뛰면 secure_read_file(".env")
         # 이 원문 그대로 decision:"clean" 으로 나간다(#147 이 막으려던 그 누출).
-        cred_items = credentials.detect(text)
+        cred_items = fixed.merge(credentials.detect(text), text)
         user_prompt_masked = None
         if user_prompt is not None:
             user_prompt_masked = masker.apply_masking(
