@@ -19,13 +19,46 @@ $archivePath = Join-Path $outputRoot $archiveName
 
 $excludedDirectories = @('tests', 'scripts', 'dist', 'node_modules')
 $excludedFiles = @('.DS_Store', 'Thumbs.db')
-$files = Get-ChildItem -LiteralPath $extensionRoot -Recurse -File | ForEach-Object {
-  $relativePath = $_.FullName.Substring($extensionRoot.Length).TrimStart('\', '/').Replace('\', '/')
+$repoRoot = Split-Path -Parent $extensionRoot
+$git = Get-Command git -ErrorAction SilentlyContinue
+$candidateFiles = @()
+$usingTrackedFiles = $false
+
+if ($null -ne $git) {
+  $trackedPaths = @(& $git.Source -C $repoRoot -c core.quotepath=false ls-files -- extension 2>$null)
+  if ($LASTEXITCODE -eq 0) {
+    $usingTrackedFiles = $true
+    $candidateFiles = @($trackedPaths | ForEach-Object {
+      $repoRelativePath = ([string]$_).Trim().Replace('\', '/')
+      if (-not $repoRelativePath.StartsWith('extension/')) { return }
+      $sourcePath = Join-Path $repoRoot $repoRelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+      if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { return }
+      [pscustomobject]@{
+        Source = $sourcePath
+        Relative = $repoRelativePath.Substring('extension/'.Length)
+      }
+    })
+  }
+}
+
+if (-not $usingTrackedFiles) {
+  $candidateFiles = @(Get-ChildItem -LiteralPath $extensionRoot -Recurse -File | ForEach-Object {
+    $relativePath = $_.FullName.Substring($extensionRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    $pathParts = $relativePath -split '/'
+    if (@($pathParts | Where-Object { $_.StartsWith('.') -or $_.StartsWith('_') }).Count) { return }
+    [pscustomobject]@{ Source = $_.FullName; Relative = $relativePath }
+  })
+}
+
+$files = $candidateFiles | ForEach-Object {
+  $relativePath = $_.Relative
   $topDirectory = ($relativePath -split '/', 2)[0]
   if ($excludedDirectories -contains $topDirectory) { return }
-  if ($excludedFiles -contains $_.Name) { return }
-  if ($_.Extension -in @('.map', '.zip') -or $_.Name.EndsWith('.test.js')) { return }
-  [pscustomobject]@{ Source = $_.FullName; Relative = $relativePath }
+  $fileName = [IO.Path]::GetFileName($relativePath)
+  $extension = [IO.Path]::GetExtension($relativePath)
+  if ($excludedFiles -contains $fileName) { return }
+  if ($extension -in @('.map', '.zip') -or $fileName.EndsWith('.test.js')) { return }
+  $_
 } | Sort-Object Relative
 
 if (-not ($files.Relative -contains 'manifest.json')) {
@@ -53,6 +86,7 @@ try {
 
 Write-Host "Created: $archivePath"
 Write-Host "Version: $($manifest.version)"
+Write-Host "Source: $(if ($usingTrackedFiles) { 'git tracked files' } else { 'filesystem fallback' })"
 Write-Host "Included files ($($files.Count)):"
 $files.Relative | ForEach-Object { Write-Host "  $_" }
 Write-Output $archivePath
