@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
                 db.close_db()
 
 
-app = FastAPI(title="Campfire engine", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Campfire engine", version="0.3.0", lifespan=lifespan)
 # 확장 프로그램 오리진만 허용한다 (chrome-extension://<32자 ID>).
 #
 # 예전 값은 allow_origins=["*"] 였다. 이 API 는 인증이 없고 GET 두 번이면 최근 job 의

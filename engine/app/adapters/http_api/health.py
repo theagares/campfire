@@ -75,7 +75,7 @@ async def health(request: Request):
         "service": config.SERVICE_NAME,       # 고정 시그니처 (PLAN §11)
         "port": config.BOUND_PORT,            # 실제 바인딩 포트
         "status": "ok",
-        "version": "0.1.0",
+        "version": "0.3.0",
         "detectors": registry.active_detectors(),
         # 룰베이스 폴백 제거 후 detectors 이름은 항상 encoder/llm_mcp라 "탐지가 실제로
         # 동작하는지"를 이름만으로 알 수 없다 — 가중치 실제 존재 여부를 따로 내려준다
