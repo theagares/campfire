@@ -67,7 +67,6 @@ def test_mcp도_정상_이모지의_이음_선택자_국기_태그는_보존한�
         ("가\ufe0f나", "가[숨긴 글 마스킹]나"),
         ("\u2764\ufe0f\ufe0f", "\u2764\ufe0f[숨긴 글 마스킹]"),
         ("🏴\U000e0067", "🏴[숨긴 글 마스킹]"),
-        ("\ufeff본문", "[숨긴 글 마스킹]본문"),
     ],
 )
 def test_정상_이모지_모양이_아니면_예외로_우회할_수_없다(no_models, text, expected):
@@ -86,3 +85,31 @@ def test_mask_text로_항목을_다시_골라도_숨긴_글은_남길_수_없다
 
 def test_mcp_경로와_파일명으로도_숨긴_글을_내보내지_않는다(no_models):
     assert tools._shown("report\u200b.txt") == "report[숨긴 글 마스킹].txt"
+
+
+def test_mcp_파일_도구는_맨_앞_bom은_숨긴_글로_세지_않는다(
+    no_models, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(tools, "_PROJECT_ROOT", tmp_path.resolve())
+    path = tmp_path / "bom.txt"
+    path.write_bytes(b"\xef\xbb\xbf" + "정상 본문".encode())
+
+    scanned = asyncio.run(tools.scan_file(str(path)))
+    read = asyncio.run(tools.secure_read_file(str(path)))
+
+    assert "[숨긴 글 마스킹]" not in scanned["maskedText"]
+    assert "[숨긴 글 마스킹]" not in read["content"]
+
+
+def test_mcp_파일_도구는_본문_중간_bom은_한_글자도_가린다(
+    no_models, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(tools, "_PROJECT_ROOT", tmp_path.resolve())
+    path = tmp_path / "middle-bom.txt"
+    path.write_text("앞\ufeff뒤", encoding="utf-8")
+
+    scanned = asyncio.run(tools.scan_file(str(path)))
+    read = asyncio.run(tools.secure_read_file(str(path)))
+
+    assert scanned["maskedText"] == "앞[숨긴 글 마스킹]뒤"
+    assert read["content"] == "앞[숨긴 글 마스킹]뒤"

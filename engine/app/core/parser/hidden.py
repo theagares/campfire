@@ -107,14 +107,16 @@ def _is_all_invisible(ch: str) -> bool:
 
 
 def _all_invisible_spans(text: str) -> list[dict]:
-    """MCP 전용: 보이지 않는 문자를 길이 제한 없이 찾되 정상 이모지는 보존한다."""
+    """MCP 전용: 보이지 않는 문자를 길이 제한 없이 찾되 선두 BOM·정상 이모지는 보존한다."""
     flag_tags = _flag_tag_exceptions(text) if _BLACK_FLAG in text else set()
     out: list[dict] = []
     start: int | None = None
 
     for i, ch in enumerate(text):
         is_hidden = _is_all_invisible(ch)
-        if i in flag_tags:
+        if i == 0 and ch == "\ufeff":  # 메모장·엑셀 등이 붙이는 파일 인코딩 BOM
+            is_hidden = False
+        elif i in flag_tags:
             is_hidden = False
         elif ch == "‍":  # 이모지 사이의 ZERO WIDTH JOINER
             is_hidden = not (
