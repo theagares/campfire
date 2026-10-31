@@ -220,6 +220,10 @@ async function reloadIfStale(installedVersion) {
   try {
     const onDisk = installedVersion;
     const running = chrome.runtime.getManifest();
+    // 웹스토어 설치본은 앱 번들 폴더와 별개이며 reload 해도 같은 스토어 판을 다시 읽는다.
+    // getSelf().installType 은 management 권한이 필요하므로, 권한 추가 없이 스토어가
+    // manifest 에 넣는 update_url 로 구분한다. 압축 해제판에는 이 필드가 없다.
+    if (typeof running.update_url === 'string' && running.update_url) return;
     if (typeof onDisk !== 'string' || onDisk === running.version) return;
     await ensureHydrated();
     if (sessions.size) return;
