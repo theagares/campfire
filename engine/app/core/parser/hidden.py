@@ -11,6 +11,7 @@ app/core/parser/hidden.py
 from __future__ import annotations
 
 import re
+import unicodedata
 from bisect import bisect_left
 from typing import Callable
 
@@ -31,6 +32,109 @@ _ZERO_WIDTH = re.compile("[​-‏⁠-⁤﻿]{4,}")
 # 방향 제어 U+202A–202E·2066–2069(글 순서 뒤집기)와 태그 문자 U+E0000–E007F(ASCII smuggling)는 한 글자도
 _ALWAYS = re.compile("[‪-‮⁦-⁩\U000e0000-\U000e007f]+")
 _TAGS_END = "\U000e007f"
+_BLACK_FLAG = "\U0001f3f4"
+
+# MCP 는 사람이 검토하는 패널 없이 결과를 곧바로 AI 에게 돌려준다. 그 경로에서는
+# Unicode Default_Ignorable_Code_Point 전부와 화면에 나타나지 않는 제어 문자를 한
+# 글자부터 잡는다. Cf 범주만 보면 CGJ·한글 채움·변형 선택자처럼 다른 범주인 문자가
+# 빠지므로 Unicode 파생 속성의 나머지 범위를 함께 둔다.
+_DEFAULT_IGNORABLE_RANGES = (
+    (0x034F, 0x034F),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCAF),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_DEFAULT_IGNORABLE = frozenset(
+    cp
+    for start, end in _DEFAULT_IGNORABLE_RANGES
+    for cp in range(start, end + 1)
+)
+
+
+def _is_emoji_base(ch: str) -> bool:
+    """VS16·ZWJ 를 정상 이모지 안에서만 살리기 위한 보수적인 이모지 바탕 판정."""
+    cp = ord(ch)
+    return (
+        ch in "#*0123456789©®™〰〽㊗㊙"
+        or 0x2190 <= cp <= 0x21FF
+        or 0x2300 <= cp <= 0x23FF
+        or 0x2500 <= cp <= 0x27BF
+        or 0x2B00 <= cp <= 0x2BFF
+        or 0x1F000 <= cp <= 0x1FAFF
+    )
+
+
+def _is_emoji_component(ch: str) -> bool:
+    cp = ord(ch)
+    return _is_emoji_base(ch) or ch == "️" or 0x1F3FB <= cp <= 0x1F3FF
+
+
+def _flag_tag_exceptions(text: str) -> set[int]:
+    """검은 깃발 + 태그 문자 + CANCEL TAG 로 된 지역 깃발의 태그 위치."""
+    safe: set[int] = set()
+    i = 0
+    while i < len(text):
+        if text[i] != _BLACK_FLAG:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(text) and 0xE0020 <= ord(text[j]) <= 0xE007E:
+            j += 1
+        if j > i + 1 and j < len(text) and text[j] == _TAGS_END:
+            safe.update(range(i + 1, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return safe
+
+
+def _is_all_invisible(ch: str) -> bool:
+    cp = ord(ch)
+    category = unicodedata.category(ch)
+    return (
+        category == "Cf"
+        or (category == "Cc" and not ch.isspace())
+        or cp in _DEFAULT_IGNORABLE
+    )
+
+
+def _all_invisible_spans(text: str) -> list[dict]:
+    """MCP 전용: 보이지 않는 문자를 길이 제한 없이 찾되 정상 이모지는 보존한다."""
+    flag_tags = _flag_tag_exceptions(text) if _BLACK_FLAG in text else set()
+    out: list[dict] = []
+    start: int | None = None
+
+    for i, ch in enumerate(text):
+        is_hidden = _is_all_invisible(ch)
+        if i in flag_tags:
+            is_hidden = False
+        elif ch == "‍":  # 이모지 사이의 ZERO WIDTH JOINER
+            is_hidden = not (
+                i > 0 and i + 1 < len(text)
+                and _is_emoji_component(text[i - 1])
+                and _is_emoji_base(text[i + 1])
+            )
+        elif ch == "️":  # 이모지 바로 뒤의 VARIATION SELECTOR-16
+            is_hidden = not (i > 0 and _is_emoji_base(text[i - 1]))
+
+        if is_hidden:
+            if start is None:
+                start = i
+        elif start is not None:
+            out.append({"start": start, "end": i, "reason": REASONS["u"]})
+            start = None
+
+    if start is not None:
+        out.append({"start": start, "end": len(text), "reason": REASONS["u"]})
+    return out
 
 
 def wrap(text: str, code: str) -> str:
@@ -74,8 +178,14 @@ def extract(text: str) -> tuple[str, list[dict], Callable[[int], int]]:
     return "".join(pieces), spans, lambda pos: pos - bisect_left(cuts, pos)
 
 
-def invisible_spans(text: str) -> list[dict]:
-    """보이지 않는 유니코드 구간. 글 맨 앞 BOM 은 세지 않고, 지역 깃발(🏴 + 태그 문자)은 뺀다."""
+def invisible_spans(text: str, *, all_invisible: bool = False) -> list[dict]:
+    """보이지 않는 유니코드 구간.
+
+    기본은 패널에서 사람이 보는 확장·프록시 기준(폭 없는 문자 4개 이상)을 유지한다.
+    all_invisible 은 MCP 전용으로 한 글자부터 잡되 정상 이모지의 ZWJ·VS16·국기 태그는 뺀다.
+    """
+    if all_invisible:
+        return _all_invisible_spans(text)
     out = []
     for m in _ZERO_WIDTH.finditer(text):
         s, e = m.span()
