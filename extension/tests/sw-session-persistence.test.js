@@ -304,9 +304,16 @@ const pendingState = () => ({
       health: { forcedMask: { managed: true, ready: true } } };
     // chrome-extension://.../manifest.json 은 폴더가 바뀌어도 실행 중인 판을 돌려준다.
     // 설치 폴더를 직접 읽는 엔진 /health 의 판을 기준으로 해야 새 판을 알아챈다(Windows RL-1).
-    const boot = (state, local, installedVersion = '9.9.9') => bootWorker({ k: engine, ...state }, {
+    const unpackedManifest = {
+      version: '0.2.57', content_scripts: [{ matches: ['https://chatgpt.com/*'] }],
+    };
+    const storeManifest = {
+      ...unpackedManifest,
+      update_url: 'https://clients2.google.com/service/update2/crx',
+    };
+    const boot = (state, local, installedVersion = '9.9.9', manifest = unpackedManifest) => bootWorker({ k: engine, ...state }, {
       local, tabs: [{ id: 7 }],
-      manifest: { version: '0.2.57', content_scripts: [{ matches: ['https://chatgpt.com/*'] }] },
+      manifest,
       fetch: async (url) => ({
         ok: true,
         json: async () => (url.endsWith('/health')
@@ -323,6 +330,10 @@ const pendingState = () => ({
     let w = boot({}, local);
     assert.deepStrictEqual(await healthCheck(w), [1], '폴더가 새 판인데 다시 로드하지 않았거나, 탭에 알리기 전에 다시 로드했다');
     assert.strictEqual(w.tabsSent[0].msg.type, 'EXTENSION_RELOADING');
+    assert.deepStrictEqual(
+      await healthCheck(boot({}, {}, '9.9.9', storeManifest)), [],
+      '웹스토어 설치본은 다시 로드해도 같은 판인데 자동 다시 로드했다',
+    );
     assert.deepStrictEqual(await healthCheck(boot({}, local)), [], '다시 로드해도 판이 그대로면 되풀이하면 안 된다');
     assert.deepStrictEqual(await healthCheck(boot(pendingState(), {})), [], '검토 중인 세션을 날렸다');
     assert.deepStrictEqual(await healthCheck(boot({}, {}, '0.2.57')), [], '같은 판인데 다시 로드했다');

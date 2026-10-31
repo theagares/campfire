@@ -15,6 +15,7 @@ __pycache__/
 
 # Chrome extension local QA artifacts (test profiles, large & machine-specific)
 extension/.qa/
+extension/dist/
 # 압축 안 된 확장을 올리면 Chrome 이 차단 규칙(rules/)을 색인해 여기에 써 둔다
 extension/_metadata/
 qa/browser/test-results/
